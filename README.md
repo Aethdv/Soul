@@ -5,11 +5,17 @@
       
 Project Start along with learning Rust -> 25.06.2025
 
-### Early expectations
- * Surpassing SF 8 by the end of the summer.
- * Try to get competitive vs [Clockwork](<https://github.com/official-clockwork/clockwork>) over the time.
+#### Just so I remember
+- [ ] Look into [87flowers](<https://github.com/87flowers>) attack table implementation once `AVX2` support will be added (in v1.0).
 
-### Goals of the project
+#### Early expectations
+ * Surpassing SF 8 by the end of the summer.
+
+#### Goals of the project
  * A significant aim of this project is to serve a high-quality, documented Rust chess engine codebase.
  * Surpassing Stockfish Classical
+ * Try to get competitive vs [Clockwork](<https://github.com/official-clockwork/clockwork>) over the time.
  * Ideally go into NNUE after accomplishing the second goal.
+
+#### Thanks,
+- [Cosmo](<https://github.com/cosmobobak>) for helping me start learning Rust and wrap my head around this.
