@@ -1,0 +1,16 @@
+[package]
+name = "Soul"
+version = "0.1"
+edition = "2024"
+description = "uci hce α/β chess engine."
+license = "GPL-3.0"
+readme = "README.md"
+keywords = ["chess", "treesearch"]
+categories = ["games"]
+repository = "https://github.com/Aethdv/Soul"
+authors = ["Aethdv (aethrdv@gmail.com)"]
+rust-version = "1.75.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
