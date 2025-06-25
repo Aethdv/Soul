@@ -6,7 +6,7 @@ Start of the project, along with learning Rust -> 25.06.2025
 - [ ] Implement a 64-bit integer bitboard. (just in case I'll get frustrated -> [Cosmo's squareset](<https://github.com/cosmobobak/viridithas/blob/master/src/chess/squareset.rs>))
 
 #### Just so I remember
-- [ ] Look into [87flowers](<https://github.com/87flowers>) attack table implementation once `AVX2` support will be added (in v1.0).
+- Look into [87flowers's](<https://github.com/87flowers>) [byteboard attack table](<https://87flowers.com/byteboard-attack-tables-1/>) implementation **(AVX512)**. [AVX2 support](<https://github.com/official-clockwork/Clockwork/commit/5a8a38afed3b15a23059efb25dd4ed3547775e3e>)
 
 #### Early expectations
  * Surpassing SF 8 by the end of the summer.
@@ -14,8 +14,8 @@ Start of the project, along with learning Rust -> 25.06.2025
 #### Goals of the project
  * A significant aim of this project is to serve a high-quality, documented Rust chess engine codebase.
  * Surpassing Stockfish Classical
- * Try to get competitive vs [Clockwork](<https://github.com/official-clockwork/clockwork>) over the time.
- * Ideally go into NNUE after accomplishing the second goal.
+ * Try to get competitive vs [Clockwork](<https://github.com/official-clockwork/clockwork>).
+ * Ideally go into NNUE after accomplishing the second goal and third goal.
 
 #### Thanks,
 - [Cosmo](<https://github.com/cosmobobak>) for helping me start learning Rust and wrap my head around this.
