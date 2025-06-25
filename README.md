@@ -1,9 +1,9 @@
+Start of the project, along with learning Rust -> 25.06.2025
+
 ## Roadmap
 - [ ] Learn Rust well enough. Resources -> [fasterthanli](<https://fasterthanli.me/articles/a-half-hour-to-learn-rust>)
 - [ ] Plan the file structure.
 - [ ] Implement a 64-bit integer bitboard. (just in case I'll get frustrated -> [Cosmo's squareset](<https://github.com/cosmobobak/viridithas/blob/master/src/chess/squareset.rs>))
-      
-Project Start along with learning Rust -> 25.06.2025
 
 #### Just so I remember
 - [ ] Look into [87flowers](<https://github.com/87flowers>) attack table implementation once `AVX2` support will be added (in v1.0).
