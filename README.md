@@ -1,5 +1,3 @@
-# ⚠️ Temporarily postponed :(
-
 Started Learning Rust -> 26.06.2025
 
 ## Roadmap
@@ -12,6 +10,7 @@ Started Learning Rust -> 26.06.2025
 
 #### Just so I remember
 - Look into [87flowers's](<https://github.com/87flowers>) [byteboard attack table](<https://87flowers.com/byteboard-attack-tables-1/>) implementation **(AVX512)**. [AVX2 support](<https://github.com/official-clockwork/Clockwork/commit/5a8a38afed3b15a23059efb25dd4ed3547775e3e>)
+- [Bitboard Viewer](<https://tearth.dev/bitboard-viewer/>)
 
 #### Goals of the project
  * A significant aim of this project is to serve a high-quality, documented Rust chess engine codebase.
