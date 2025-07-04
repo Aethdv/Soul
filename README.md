@@ -13,10 +13,10 @@ Started Learning Rust -> 26.06.2025
 - [Bitboard Viewer](<https://tearth.dev/bitboard-viewer/>)
 
 #### Goals of the project
- * A significant aim of this project is to serve a high-quality, documented Rust chess engine codebase.
- * Surpassing Stockfish Classical
+ * A significant aim of this project is to serve a high-quality, documented codebase.
  * Try to get competitive vs [Clockwork](<https://github.com/official-clockwork/clockwork>).
- * Ideally go into NNUE after accomplishing the second goal and third goal.
+ * Surpassing Stockfish Classical
+ * Ideally go into NNUE after accomplishing the second and third goal.
 
 #### Thanks,
-- [Cosmo](<https://github.com/cosmobobak>) for helping me start learning Rust and wrap my head around this.
+- [Cosmo](<https://github.com/cosmobobak>) for helping me start learning Rust and wrap my head around this. (Author of [Viridithas](<https://github.com/cosmobobak/viridithas>), top [13](<https://www.sp-cc.de/>))
