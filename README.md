@@ -19,4 +19,4 @@ Started Learning Rust -> 26.06.2025
  * Ideally go into NNUE after accomplishing the second and third goal.
 
 #### Thanks,
-- [Cosmo](<https://github.com/cosmobobak>) for helping me start learning Rust and wrap my head around this. (Author of [Viridithas](<https://github.com/cosmobobak/viridithas>), top [13](<https://www.sp-cc.de/>))
+- [Cosmo](<https://github.com/cosmobobak>) for helping me start learning Rust and wrap my head around this. (Author of [Viridithas](<https://github.com/cosmobobak/viridithas>), top [12](<https://www.sp-cc.de/>))
