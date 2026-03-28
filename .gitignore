@@ -2,7 +2,7 @@ soul
 search
 eval
 target/
-data/
+/data/
 openings/
 scripts/
 *.soul
