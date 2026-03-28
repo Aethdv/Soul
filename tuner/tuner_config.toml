@@ -1,0 +1,54 @@
+[evaltune]
+beta1 = 0.9
+beta2 = 0.99
+weight_decay = 0.00001
+batch_size = 262144
+epochs = 4000
+grad_clip = 1.0
+k_min = 0.003
+k_max = 0.010
+
+[evaltune.lr_schedule]
+type = "cosine"
+base = 0.1
+min = 0.0001
+warmup_ratio = 0.1
+restarts = 1
+
+[evaltune.wdl_schedule]
+type = "stable-decay"
+start = 0.4
+end = 0.1
+stable_ratio = 0.35
+
+[searchtune]
+population_scale = 2.0  # λ = ceil((3·ln(n) + 4) · scale), floored at 16.
+                        # Higher = more statistical coverage per generation, but
+                        # proportionally more games. 2.0 is a good default for noisy Elo.
+sigma_init = 0.25
+sigma_restart = 0.4
+min_sigma = 0.02
+max_restarts = 3
+stagnation_threshold = 15
+h2h_pairs = 300
+validation_pairs = 1000
+
+reeval_interval = 8
+confidence_factor = 2.0 # Elo - k · stderr
+
+epochs = 200
+pairs = 128
+tc = "4+0.04"
+h2h_tc = "1.0+0.01"
+val_tc = "1.0+0.01"
+speed_penalty = 115.0
+centering_penalty = 100.0
+active_softness = 0.5
+sigma_boost_factor = 2.0
+
+[general]
+checkpoint_interval = 50
+
+log_level = "info" # "debug", "info", "warn", "error"
+log_file = "tuner.log"
+tensorboard_dir = "runs"

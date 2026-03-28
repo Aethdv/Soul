@@ -1,0 +1,48 @@
+max_width = 110
+tab_spaces = 4
+newline_style = "Unix"
+edition = "2024"
+
+blank_lines_upper_bound = 1
+brace_style = "SameLineWhere"
+
+chain_width = 60
+combine_control_expr = false
+condense_wildcard_suffixes = true
+control_brace_style = "AlwaysSameLine"
+
+enum_discrim_align_threshold = 20
+
+fn_call_width = 80
+fn_params_layout = "Tall"
+format_code_in_doc_comments = true
+
+group_imports = "StdExternalCrate"
+
+hex_literal_case = "Upper"
+
+imports_granularity = "Crate"
+
+match_arm_leading_pipes = "Never"
+match_block_trailing_comma = true
+
+overflow_delimited_expr = true
+
+reorder_impl_items = false
+reorder_imports = true
+
+single_line_if_else_max_width = 50
+spaces_around_ranges = false
+struct_field_align_threshold = 30
+
+trailing_comma = "Vertical"
+trailing_semicolon = true
+
+unstable_features = true
+
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+where_single_line = true
+comment_width = 100
+wrap_comments = false

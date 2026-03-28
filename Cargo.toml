@@ -1,0 +1,66 @@
+[package]
+name = "soul"
+version = "0.1.0"
+license = "AGPL-3.0"
+readme = "README.md"
+authors = ["Aethdv (aethrdv@gmail.com)"]
+description = "A modern alpha-beta chess engine, featuring Hand-Crafted Evaluation with SIMD acceleration."
+repository = "https://github.com/Aethdv/Soul"
+keywords = [
+    "chess",
+    "chess-engine",
+    "treesearch",
+    "alpha-beta",
+    "negamax",
+    "hce",
+]
+categories = ["games", "simulation"]
+edition = "2024"
+rust-version = "1.94.0"
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[workspace]
+members = ["tuner"]
+
+[lib]
+name = "soul"
+path = "src/lib.rs"
+
+[[bin]]
+name = "soul"
+path = "src/main.rs"
+
+[dependencies]
+parking_lot = "0.12.5"
+paste = "1.0.15"
+rayon = "1.11.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0.18"
+zstd = { version = "0.13.3", default-features = false }
+fastrand = "2.3.0"
+ctrlc = "3.5.1"
+zerocopy = { version = "0.8.39", default-features = false, features = ["derive", "simd"] }
+
+[features]
+searchtune = []
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+debug = false
+split-debuginfo = "off"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
+[profile.dev]
+opt-level = 3
+debug = true
+panic = "abort"
+split-debuginfo = "unpacked"

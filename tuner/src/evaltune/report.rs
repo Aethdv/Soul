@@ -1,0 +1,230 @@
+use std::io::{BufWriter, Write};
+
+use soul::{core::psqt, engine::eval_params::Tunable};
+
+use crate::evaltune::storage::Snapshot;
+
+pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64]) {
+    println!();
+    let count = snapshots.len();
+    if count == 0 {
+        return;
+    }
+    println!("Top {count} snapshots (sorted by L_val):");
+    for (i, snap) in snapshots.iter().enumerate() {
+        println!("  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error);
+    }
+    println!();
+
+    println!("Best Snapshot:");
+    let best_snap = snapshots.first().unwrap();
+    let mut best_values = vec![0.0; values.len()];
+    for t in all_params {
+        if let Some(&v) = best_snap.params.get(&t.name) {
+            best_values[t.idx] = v;
+        } else {
+            best_values[t.idx] = values[t.idx];
+        }
+    }
+
+    let best = best_snap.error;
+    print_params(all_params, initial_values, &best_values);
+
+    if let Ok(log_file) = std::fs::OpenOptions::new()
+        .append(true)
+        .open("evaltune_log.txt")
+    {
+        let mut w = BufWriter::new(log_file);
+        writeln!(w, "\n=== Top {count} Snapshots ===").ok();
+        for (i, snap) in snapshots.iter().enumerate() {
+            writeln!(w, "{}. Epoch {} | L_val: {:.6}", i + 1, snap.epoch, snap.error).ok();
+        }
+        writeln!(w, "\n=== Best Snapshot Parameters (Epoch {}) ===", best_snap.epoch).ok();
+        write_params(&mut w, all_params, &best_values, None);
+    }
+    println!("\x1b[93mBest L_val: {best:.6} (Epoch {})\x1b[0m", best_snap.epoch);
+}
+
+/// Prints parameters to stdout with ANSI green highlighting for changed values.
+pub fn print_params(params: &[Tunable], initial: &[f64], values: &[f64]) {
+    let mut out = std::io::stdout().lock();
+    write_params(&mut out, params, values, Some(initial));
+}
+
+/// Writes all tuned parameters to any `impl Write` sink.
+/// Pass `initial` to highlight changed values, `None` for plain log output.
+pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], initial: Option<&[f64]>) {
+    let colored = initial.is_some();
+
+    if colored {
+        writeln!(w, "\n// --- Tuned Parameters (paste into eval_params.rs) ---").ok();
+    }
+    writeln!(w, "define_psqt_params! {{").ok();
+    if colored {
+        writeln!(w, "    // Files A-D (mirrored to E-H) × 8 ranks").ok();
+    }
+
+    for p_idx in 0..6 {
+        let psqt_offset = p_idx * 64;
+        let name = params[psqt_offset]
+            .name
+            .strip_prefix("MG_")
+            .unwrap_or(&params[psqt_offset].name)
+            .split('[')
+            .next()
+            .unwrap();
+        writeln!(w, "    {name} = [").ok();
+
+        for row in 0..8 {
+            write!(w, "        ").ok();
+            for col in 0..4 {
+                let sq_idx = row * 4 + col;
+                let mg_idx = psqt_offset + sq_idx;
+                let eg_idx = psqt_offset + 32 + sq_idx;
+
+                let mg_val = values[mg_idx].round() as i32;
+                let eg_val = values[eg_idx].round() as i32;
+                let fixed = params[mg_idx].is_fixed;
+
+                let s = if fixed {
+                    format!("CS({mg_val:>3}, {eg_val:>4}),")
+                } else {
+                    format!("S({mg_val:>4}, {eg_val:>4}),")
+                };
+
+                let changed = initial.is_some_and(|ini| {
+                    mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32
+                });
+                write!(w, "{}", highlight(&format!("{s: <16}"), changed, initial)).ok();
+            }
+            writeln!(w).ok();
+        }
+        writeln!(w, "    ],").ok();
+    }
+
+    let mat = psqt::LAYOUT.material_offset;
+    if params.len() > mat {
+        writeln!(w, "}}\n\ndefine_simple_params! {{").ok();
+        let pieces = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
+        writeln!(w, "    MATERIAL = [").ok();
+        for (pt, name) in pieces.iter().enumerate() {
+            let mg_idx = mat + pt;
+            let eg_idx = mat + 6 + pt;
+            if eg_idx >= params.len() {
+                break;
+            }
+
+            let mg_val = values[mg_idx].round() as i32;
+            let eg_val = values[eg_idx].round() as i32;
+            let fixed = params[mg_idx].is_fixed;
+
+            let tag = if fixed { "CS" } else { "S" };
+            let s = format!("{tag}({mg_val:>4}, {eg_val:>4}), // {name}");
+
+            let changed = initial.is_some_and(|ini| {
+                mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32
+            });
+            writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
+        }
+        writeln!(w, "    ],").ok();
+    }
+
+    writeln!(w, "}}").ok();
+
+    if params.len() > psqt::LAYOUT.mobility_open_offset {
+        writeln!(w, "\ndefine_simd_params! {{").ok();
+
+        let mobility_bands = [
+            ("MG_MOBILITY_OPEN", psqt::LAYOUT.mobility_open_offset),
+            ("EG_MOBILITY_OPEN", psqt::LAYOUT.mobility_open_offset + 4),
+            ("MG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset),
+            ("EG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset + 4),
+        ];
+
+        for (name, offset) in &mobility_bands {
+            writeln!(w, "    {name} = [").ok();
+            write!(w, "        ").ok();
+            write_weight_array(w, *offset, 4, values, params, initial);
+            writeln!(w, "],").ok();
+        }
+
+        writeln!(w, "}}").ok();
+    }
+
+    if params.len() > psqt::LAYOUT.weight_offset {
+        if colored {
+            writeln!(w, "\ndefine_weight_params! {{").ok();
+        }
+
+        write!(w, "    PHASE_WEIGHTS       = [").ok();
+        write_weight_array(w, psqt::LAYOUT.weight_offset, 6, values, params, initial);
+        writeln!(w, "], // [P, N, B, R, Q, K]").ok();
+
+        if params.len() > psqt::LAYOUT.attacker_offset {
+            write!(w, "    ATTACKER_WEIGHTS    = [").ok();
+            write_weight_array(w, psqt::LAYOUT.attacker_offset, 6, values, params, initial);
+            writeln!(w, "], // [0, 1, 2, 3, 4, 5] attackers × weak").ok();
+        }
+
+        if params.len() > psqt::LAYOUT.king_safety_offset {
+            write!(w, "    KING_SAFETY_WEIGHTS = [").ok();
+            write_weight_array(w, psqt::LAYOUT.king_safety_offset, 3, values, params, initial);
+            writeln!(w, "], // [Pawn Shield, Ortho Exp, Diag Exp]").ok();
+        }
+
+        if params.len() > psqt::LAYOUT.xray_offset {
+            write!(w, "    XRAY_WEIGHTS        = [").ok();
+            write_weight_array(w, psqt::LAYOUT.xray_offset, 1, values, params, initial);
+            writeln!(w, "], // [Ortho King]").ok();
+        }
+
+        if colored {
+            writeln!(w, "}}").ok();
+        }
+    }
+
+    if colored {
+        writeln!(w, "// -------------------------------------\n").ok();
+    }
+}
+
+/// Writes a slice of weight parameters as a comma-separated list.
+///
+/// When `initial` is `Some`, changed values are highlighted with ANSI green.
+pub fn write_weight_array<W: Write>(
+    w: &mut W,
+    offset: usize,
+    count: usize,
+    values: &[f64],
+    params: &[Tunable],
+    initial: Option<&[f64]>,
+) {
+    for i in 0..count {
+        let idx = offset + i;
+        if idx >= values.len() {
+            break;
+        }
+
+        let val = values[idx].round() as i32;
+        let fixed = params[idx].is_fixed;
+
+        let tag = if fixed { "CV" } else { "V" };
+        let s = format!("{tag}({val})");
+
+        if i > 0 {
+            write!(w, ", ").ok();
+        }
+
+        let changed = initial.is_some_and(|ini| val != ini[idx].round() as i32);
+        write!(w, "{}", highlight(&s, changed, initial)).ok();
+    }
+}
+
+/// Wraps text in ANSI green if `changed` is true and `initial` is `Some`.
+fn highlight(s: &str, changed: bool, initial: Option<&[f64]>) -> String {
+    if initial.is_some() && changed {
+        format!("\x1b[32m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}

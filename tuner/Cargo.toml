@@ -1,0 +1,33 @@
+[package]
+name = "tuner"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "evaltune"
+path = "src/bin/evaltune.rs"
+
+[[bin]]
+name = "searchtune"
+path = "src/bin/searchtune.rs"
+
+[dependencies]
+soul = { path = "../" }
+clap = { version = "4.5.58", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+fastrand = "2.3.0"
+parking_lot = "0.12.5"
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+zstd = { version = "0.13.3", default-features = false }
+toml = "1.0.1"
+paste = "1.0.15"
+thiserror = "2.0.18"
+
+[features]
+default = []
+searchtune = ["soul/searchtune"]

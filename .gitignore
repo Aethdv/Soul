@@ -1,0 +1,48 @@
+soul
+search
+eval
+target/
+data/
+openings/
+scripts/
+*.soul
+*.soul.zst
+*.json
+*.book
+*.epd
+*.pgn
+*.exe
+
+perf.data*
+flamegraph.svg
+profdir/*
+*.log
+
+# Neovim
+.nvim/
+.nvimrc
+.exrc
+Session.vim
+# persistent undo
+.undodir/
+# LSP / rust-analyzer
+rust-project.json
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+\#*\#
+*.~undo-tree~
+
+# Nano backup files
+*.save
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini

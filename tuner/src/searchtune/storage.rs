@@ -1,0 +1,65 @@
+use std::{
+    collections::BTreeMap,
+    fs::{File, rename},
+    io::BufReader,
+};
+
+use serde::{Deserialize, Serialize};
+
+pub const CHECKPOINT_FILE: &str = "searchtune_checkpoint.json";
+pub const CHECKPOINT_VERSION: u32 = 1;
+
+/// Checkpoint for CMA-ES state.
+///
+/// Engine tuning takes days. Hardware crashes, power flickers, and impatient humans
+/// terminating the process are inevitable.
+#[derive(Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub version:     u32,
+    pub epoch:       usize,
+    pub best_elo:    f64,
+    pub best_params: Vec<f64>,
+    pub mean:        Vec<f64>,
+    pub sigma:       f64,
+    pub variances:   Vec<f64>,
+    pub p_sigma:     Vec<f64>,
+    pub p_c:         Vec<f64>,
+    /// Denormalized integer values.
+    /// Intentionally redundant with `best_params` — derivable via `param.denormalize()`,
+    /// but included for `jq`-friendliness without needing to rerun the engine.
+    pub best_values: BTreeMap<String, i32>,
+}
+
+impl Checkpoint {
+    pub fn save(&self) -> Result<(), crate::core::error::CheckpointError> {
+        let tmp_file = format!("{CHECKPOINT_FILE}.tmp");
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(&tmp_file)?);
+        serde_json::to_writer(&mut writer, self)?;
+        std::io::Write::flush(&mut writer)?;
+        rename(&tmp_file, CHECKPOINT_FILE)?;
+        Ok(())
+    }
+
+    pub fn load() -> Result<Option<Self>, crate::core::error::CheckpointError> {
+        let file = match File::open(CHECKPOINT_FILE) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let reader = BufReader::new(file);
+        let cp: Self = serde_json::from_reader(reader)?;
+
+        if cp.version != CHECKPOINT_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Checkpoint version mismatch! (Expected: {}, Found: {})",
+                    CHECKPOINT_VERSION, cp.version
+                ),
+            )
+            .into());
+        }
+
+        Ok(Some(cp))
+    }
+}
