@@ -3,16 +3,20 @@
 
 //! Kogge-Stone Parallel Prefix Fills (SIMD).
 //!
-//! Architectural Note:
-//! This module is not currently used in `MovePicker` generation (which relies
-//! on `_pext_u64` BMI2 lookups for sequential square-by-square generation).
+//! # Architectural Note
 //!
-//! Instead, this mathematically complete implementation is preserved for the next
-//! tuning cycle to provide Bulk SIMD Mobility and Zone Control generation during
-//! the Evaluation phase. By broadcasting a bitboard of all Rooks/Queens into a `Vu64x4`,
-//! these functions allow us to calculate the aggregate board pressure of all sliders
-//! simultaneously in a single branchless sweep, eliminating piece-iteration loops
-//! within the hot evaluation path.
+//! This module is intentionally kept out of `MovePicker` and `movegen.rs`.
+//! Move generation requires discrete `(from, to)` square pairs to encode `Move`
+//! structs. Parallel prefix fills aggregate influence, destroying the `from`
+//! square identity (i.e. you know a square is attacked, but not by which rook).
+//! Disentangling a bulk fill back into discrete moves costs more cycles than
+//! sequential `_pext_u64` (BMI2) lookups.
+//!
+//! Instead, this mathematically complete implementation powers the `SpatialTensor`
+//! used during the Evaluation phase. By broadcasting a bitboard of all Rooks/Queens
+//! into a `Vu64x4`, these functions calculate the aggregate board pressure, mobility,
+//! and x-ray batteries of all sliders simultaneously in a single branchless sweep,
+//! getting rid of piece-iteration loops entirely in the hot eval path.
 
 use super::*;
 
