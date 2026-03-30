@@ -57,6 +57,7 @@ enum Stage {
     Hash,
     GenCaptures,
     YieldCaptures,
+    GenQSearchQuiets,
     GenQuiets,
     YieldQuiets,
     Done,
@@ -70,6 +71,8 @@ pub struct MovePicker {
     mvvlva_v:   [i32; 8],
     mvvlva_a:   [i32; 8],
     mvvlva_ep:  i32,
+    is_qsearch: bool,
+    in_check:   bool,
 }
 
 // Ensure move bit-packing assumes correctly.
@@ -86,6 +89,23 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            is_qsearch: false,
+            in_check: false,
+        }
+    }
+
+    #[inline]
+    pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, in_check: bool) -> Self {
+        Self {
+            stage: Stage::Hash,
+            hash_move,
+            candidates: [MaybeUninit::uninit(); MAX_MOVES],
+            count: 0,
+            mvvlva_v: cfg.mvvlva_v,
+            mvvlva_a: cfg.mvvlva_a,
+            mvvlva_ep: cfg.search_params.mvvlva_ep,
+            is_qsearch: true,
+            in_check,
         }
     }
 
@@ -125,7 +145,11 @@ impl MovePicker {
                         // INVARIANT: When YieldCaptures is exhausted, count is exactly 0.
                         // This allows GenQuiets to reuse the candidates array from the beginning
                         // without needing an explicit clear() or reallocation.
-                        self.stage = Stage::GenQuiets;
+                        if self.is_qsearch && !self.in_check {
+                            self.stage = Stage::GenQSearchQuiets;
+                        } else {
+                            self.stage = Stage::GenQuiets;
+                        }
                         continue;
                     }
                     // Pop from the back: since the array is sorted ascending,
@@ -138,6 +162,18 @@ impl MovePicker {
                     if Some(mv) != self.hash_move {
                         return Some(mv);
                     }
+                },
+
+                Stage::GenQSearchQuiets => {
+                    self.gen_qsearch_quiets(board, history);
+                    // SAFETY: self.count accurately tracks initialized items.
+                    if self.count > 1 {
+                        unsafe {
+                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
+                            std::slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
+                        }
+                    }
+                    self.stage = Stage::YieldQuiets;
                 },
 
                 Stage::GenQuiets => {
@@ -327,6 +363,29 @@ impl MovePicker {
     }
 
     // ──────── Quiet Move Generation ────────
+
+    /// Generate only quiet queen promotions for QSearch.
+    #[inline]
+    fn gen_qsearch_quiets(&mut self, board: &Position, history: &History) {
+        let us = board.side_bb[board.stm];
+        let occ = board.occ;
+        let empty = !occ;
+
+        let stm = board.stm;
+        let up = stm.forward_dir();
+        let up_d = up.delta();
+
+        let pawns = board.role_bb[PieceType::Pawn] & us;
+        let all_pushes = pawns.shift(up) & empty;
+
+        let prom_mask = if stm == Color::White { RANK_8 } else { RANK_1 };
+        let promo_pushes = all_pushes & prom_mask;
+
+        for to in promo_pushes {
+            let from = Square((to.0 as i8 - up_d) as u8);
+            self.add_quiet_node(Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
+        }
+    }
 
     /// Generate all non-capturing pseudo-legal moves, including castling.
     fn gen_quiets(&mut self, board: &Position, history: &History) {

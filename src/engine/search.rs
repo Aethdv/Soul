@@ -29,12 +29,8 @@ use crate::{
         moves::Move,
     },
     engine::{
-        eval::{evaluate, evaluate_fast, extract_phase, lazy_eval_margin},
-        history,
-        movegen::gen_legal_moves,
-        movepicker::MovePicker,
-        search_params::SearchParams,
-        tm::TimeManager,
+        eval::evaluate, history, movegen::gen_legal_moves, movepicker::MovePicker,
+        search_params::SearchParams, tm::TimeManager,
     },
     tools::tui,
     weave::Vu64x4,
@@ -502,25 +498,10 @@ impl Worker {
             searcher.sel_depth = u8::try_from(ply).unwrap_or(u8::MAX);
         }
 
-        // ── Lazy evaluation with uncertainty bounds ──
-        //
-        // Full positional eval is expensive:
-        // A quick material tally is almost free.
-        // If material alone — even with the worst possible positional swing
-        // already causes a cutoff, we skip the heavy evaluation entirely.
-        // Only pay for precision when it matters.
-        if depth == 0 || ply >= MAX_PLY {
-            let phase = extract_phase(&self.accumulator);
-            let material = evaluate_fast(&self.pos, &self.accumulator, phase);
-            let margin = lazy_eval_margin(&self.pos, phase, &searcher.cfg.search_params);
-
-            if material - margin >= beta {
-                return Ok(beta);
-            }
-            if material + margin <= alpha {
-                return Ok(alpha);
-            }
-
+        if depth == 0 {
+            return self.qsearch(searcher, alpha, beta, ply);
+        }
+        if ply >= MAX_PLY {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
 
@@ -749,6 +730,93 @@ impl Worker {
         } else {
             Ok(scout)
         }
+    }
+
+    /// ── Quiescence Search ──
+    /// Evaluates positions only after all "noisy" (tactical/forcing) moves are resolved,
+    /// preventing the horizon effect where a search stops right before a massive blunder.
+    fn qsearch(
+        &mut self,
+        searcher: &mut Searcher,
+        mut alpha: i32,
+        beta: i32,
+        ply: usize,
+    ) -> Result<i32, SearchAborted> {
+        self.stack[ply].pv.len = 0;
+
+        if (searcher.nodes & (NODE_CHECK_INTERVAL - 1)) == 0 && searcher.check_signals() {
+            return Err(SearchAborted);
+        }
+
+        searcher.nodes += 1;
+
+        if self.is_draw(ply, &searcher.history) {
+            return Ok(0);
+        }
+
+        if ply > searcher.sel_depth as usize {
+            searcher.sel_depth = u8::try_from(ply).unwrap_or(u8::MAX);
+        }
+
+        if ply >= MAX_PLY {
+            return Ok(evaluate(&self.pos, &self.accumulator));
+        }
+
+        let checkers = self.pos.checkers();
+        let in_check = checkers.is_not_empty();
+
+        let mut best_eval = if in_check {
+            -INF
+        } else {
+            let eval = evaluate(&self.pos, &self.accumulator);
+            if eval >= beta {
+                return Ok(eval);
+            }
+            alpha = alpha.max(eval);
+            eval
+        };
+
+        let mut moves_made = 0;
+        let stm = self.pos.stm;
+        let opp = stm.opposite();
+        let ksq = self.pos.pieces(PieceType::King, stm).lsb();
+        let pinned = self.pos.king_blockers();
+
+        let mut picker = MovePicker::new_qsearch(None, searcher.cfg, in_check);
+
+        while let Some(mv) = picker.next(&self.pos, &self.history) {
+            if !crate::engine::movegen::is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                continue;
+            }
+
+            let saved_acc = self.accumulator;
+            let undo = self.pos.make_move(mv, &mut self.accumulator);
+
+            moves_made += 1;
+            searcher.history.push(self.pos.hash);
+
+            let score = -self.qsearch(searcher, -beta, -alpha, ply + 1)?;
+
+            searcher.history.pop();
+            self.pos.unmake_move(mv, &undo);
+            self.accumulator = saved_acc;
+
+            if score > best_eval {
+                best_eval = score;
+                if score > alpha {
+                    if score >= beta {
+                        return Ok(score);
+                    }
+                    alpha = score;
+                }
+            }
+        }
+
+        if in_check && moves_made == 0 {
+            return Ok(-MATE + ply as i32);
+        }
+
+        Ok(best_eval)
     }
 
     // ──────── Heuristics & State Queries ────────
