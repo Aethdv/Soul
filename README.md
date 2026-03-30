@@ -77,7 +77,7 @@ Soul exposes the following options via both protocols:
 | `Hash`             | 16      | Transposition Table size in MB (reserved; TT not yet implemented) |
 | `Threads`          | 1       | Number of search threads                     |
 | `Overhead`         | 10      | Move time overhead buffer in ms              |
-| `UCI_ShowCurrLine` | true    | Show current line being searched             |
+| `UCI_ShowCurrMove` | true    | Show current move being searched             |
 | `UCI_ShowWDL`      | false   | Show Win/Draw/Loss estimates (uses Stockfish coefficients; inaccurate on Soul's scale) |
 | `UCI_Chess960`     | false   | Enable Fischer Random Chess mode             |
 

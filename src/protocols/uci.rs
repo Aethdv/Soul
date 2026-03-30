@@ -55,7 +55,7 @@ pub fn run_cli_go(args: &[String]) {
     let show_wdl = state.show_wdl;
     let go_pretty = state.go_pretty;
     let pretty_print = state.pretty_print;
-    let show_currline = state.show_currline;
+    let show_currmove = state.show_currmove;
 
     let mut iter = args.iter().map(String::as_str).peekable();
     let limits = parse_go_limits(&board, &mut iter);
@@ -63,7 +63,7 @@ pub fn run_cli_go(args: &[String]) {
         show_wdl,
         go_pretty,
         pretty_print,
-        show_currline,
+        show_currmove,
         use_ansi: state.stdout_isatty.unwrap_or(true),
     };
 
@@ -124,7 +124,7 @@ pub struct UciState {
     show_wdl:           bool,
     go_pretty:          bool,
     pretty_print:       bool,
-    show_currline:      bool,
+    show_currmove:      bool,
     stdout_isatty:      Option<bool>,
     stderr_isatty:      Option<bool>,
     is_frc:             bool,
@@ -172,7 +172,7 @@ impl UciState {
             show_wdl: false,
             go_pretty: false,
             pretty_print: false,
-            show_currline: true,
+            show_currmove: true,
             stdout_isatty: None,
             stderr_isatty: None,
             is_frc: false,
@@ -332,7 +332,7 @@ fn print_options() {
     println!("option name Overhead type spin default 10 min 0 max 1000");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
-    println!("option name UCI_ShowCurrLine type check default true");
+    println!("option name UCI_ShowCurrMove type check default true");
 }
 
 fn cmd_position<'a, I>(state: &mut UciState, tokens: &mut std::iter::Peekable<I>)
@@ -407,7 +407,7 @@ where I: Iterator<Item = &'a str> {
     let show_wdl = state.show_wdl;
     let go_pretty = state.go_pretty;
     let pretty_print = state.pretty_print;
-    let show_currline = state.show_currline;
+    let show_currmove = state.show_currmove;
 
     let start_time = Instant::now();
 
@@ -416,7 +416,7 @@ where I: Iterator<Item = &'a str> {
         show_wdl,
         go_pretty,
         pretty_print,
-        show_currline,
+        show_currmove,
         use_ansi: state.stdout_isatty.unwrap_or(true),
     };
 
@@ -531,8 +531,8 @@ where I: Iterator<Item = &'a str> {
             }
         },
         "uci_chess960" => state.is_frc = parse_bool(&value),
-        "uci_showcurrline" => {
-            state.show_currline = parse_bool(&value);
+        "uci_showcurrmove" => {
+            state.show_currmove = parse_bool(&value);
         },
         "prettyprint" => {
             state.pretty_print = parse_bool(&value);
@@ -661,7 +661,7 @@ pub fn print_help(use_ansi: bool) {
     h.command_default("Overhead", "Move overhead in ms (0-1000)", "10");
     h.command_default("UCI_ShowWDL", "Show win/draw/loss stats", "false");
     h.command_default("UCI_Chess960", "Enable Chess960/FRC mode", "false");
-    h.command_default("UCI_ShowCurrLine", "Show current line being searched", "true");
+    h.command_default("UCI_ShowCurrMove", "Show current move being searched", "true");
     h.separator();
 
     h.header("Custom Commands");

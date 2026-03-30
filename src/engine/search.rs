@@ -422,7 +422,7 @@ impl<'cfg> Searcher<'cfg> {
         if self.cfg.limits.silent
             || self.cfg.display.go_pretty
             || self.cfg.limits.protocol != Protocol::Uci
-            || !self.cfg.display.show_currline
+            || !self.cfg.display.show_currmove
             || self.nodes < CURRMOVE_NODE_THRESHOLD
         {
             return;
@@ -896,7 +896,7 @@ pub struct SearchDisplay {
     pub show_wdl:      bool,
     pub go_pretty:     bool,
     pub pretty_print:  bool,
-    pub show_currline: bool,
+    pub show_currmove: bool,
     pub use_ansi:      bool,
 }
 
@@ -905,11 +905,11 @@ impl SearchDisplay {
         show_wdl:      false,
         go_pretty:     false,
         pretty_print:  false,
-        show_currline: false,
+        show_currmove: false,
         use_ansi:      false,
     };
     pub const DEFAULT: Self = Self {
-        show_currline: true,
+        show_currmove: true,
         use_ansi: true,
         ..Self::SILENT
     };

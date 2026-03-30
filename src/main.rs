@@ -75,7 +75,7 @@ fn main() {
                     show_wdl:      true,
                     go_pretty:     true,
                     pretty_print:  false,
-                    show_currline: true,
+                    show_currmove: true,
                     use_ansi:      true,
                 };
                 let cfg = engine::search::SearchConfig::new_full(
