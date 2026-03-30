@@ -1,6 +1,11 @@
 EXE_NAME := soul
 DEPTH    ?= 8
 
+VERSION := $(shell awk -F'"' '/^version/ {print $$2; exit}' Cargo.toml)
+ifeq ($(VERSION),)
+    VERSION := unknown
+endif
+
 ifeq ($(OS),Windows_NT)
     EXE_EXT := .exe
 else
@@ -17,7 +22,8 @@ else
 endif
 
 .PHONY: all help debug release native v3 v4 pgo openbench clean \
-        evaltune searchtune test seeformat format clippy profile
+        evaltune searchtune test seeformat format clippy profile \
+        releases avx2 avx2-bmi2 avx512
 
 all: help
 
@@ -27,9 +33,32 @@ debug: ## Build for development
 	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
 	@echo "Done: ./$(DEBUG_EXE)"
 
-v3: ## AVX2, BMI2
-	@echo "Building x86-64-v3..."
+releases: avx2 avx2-bmi2 avx512 ## Build all release binaries at once
+
+avx2: ## build AVX2 + FMA (pre Zen-3)	
+	@echo "Building $(EXE_NAME)-v$(VERSION)-avx2..."
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=x86-64-v2 -C target-feature=+avx2,+fma" \
+		cargo build --release --quiet
+	@cp target/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx2$(EXE_EXT)
+	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx2$(EXE_EXT)"
+
+avx2-bmi2: ## Build AVX2 + BMI2 (Intel 2013+ / Zen-3+)
+	@echo "Building $(EXE_NAME)-v$(VERSION)-avx2-bmi2..."
 	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=x86-64-v3" \
+		cargo build --release --quiet
+	@cp target/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx2-bmi2$(EXE_EXT)
+	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx2-bmi2$(EXE_EXT)"
+
+avx512: ## Build AVX-512 (Intel Rocket Lake/Server / Zen-4+)
+	@echo "Building $(EXE_NAME)-v$(VERSION)-avx512..."
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=x86-64-v4" \
+		cargo build --release --quiet
+	@cp target/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx512$(EXE_EXT)
+	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx512$(EXE_EXT)"
+
+native: ## Build optimized for your CPU
+	@echo "Building native..."
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
 		cargo build --release --quiet
 	@cp target/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
@@ -41,9 +70,9 @@ v4: ## AVX512
 	@cp target/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
 
-native: ## Build optimized for your CPU
-	@echo "Building native..."
-	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
+v3: ## AVX2 + BMI2
+	@echo "Building x86-64-v3..."
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=x86-64-v3" \
 		cargo build --release --quiet
 	@cp target/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
@@ -115,6 +144,7 @@ clean: ## Remove all build artifacts
 	@echo "Cleaning..."
 	@cargo clean
 	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval
+	@rm -f $(EXE_NAME)-v*-avx2* $(EXE_NAME)-v*-avx512*
 	@rm -rf target/pgo-profiles
 	@echo "Done"
 
