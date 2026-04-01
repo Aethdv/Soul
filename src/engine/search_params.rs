@@ -212,6 +212,44 @@ search_params! {
             step:     1,
         },
 
+        /// NMP base reduction (plies).
+        pub nmp_base_r: i32 {
+            default:   3,
+            min:       2,
+            max:       5,
+            step:      1,
+        },
+        /// NMP depth divisor for scaling reduction.
+        pub nmp_depth_divisor: i32 {
+            default:   3,
+            min:       2,
+            max:       6,
+            step:      1,
+        },
+        /// NMP eval-over-beta divisor (cp per ply of extra reduction).
+        pub nmp_eval_divisor: i32 {
+            default: 200,
+            min:      50,
+            max:     400,
+            step:     10,
+        },
+        /// NMP max eval-based extra reduction (plies).
+        pub nmp_eval_max: i32 {
+            default:   3,
+            min:       1,
+            max:       5,
+            step:      1,
+        },
+
+        /// Delta pruning margin for qsearch (cp).
+        /// If stand_pat + best_capturable + margin < alpha, prune.
+        pub delta_margin: i32 {
+            default: 200,
+            min:      50,
+            max:     400,
+            step:     10,
+        },
+
         // MVV-LVA capture ordering:
         //   score = V[victim] - A[attacker] (+ V[promo] for promotions)
         //

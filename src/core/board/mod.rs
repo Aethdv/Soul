@@ -178,6 +178,49 @@ impl Position {
         make::unmake_move(self, mv, info);
     }
 
+    /// Pass the turn without moving. Returns the undo packet.
+    /// Used by null move pruning — the opponent gets a free move.
+    #[inline]
+    pub fn make_null_move(&mut self) -> StateInfo {
+        let info = StateInfo {
+            hash:            self.hash,
+            en_passant:      self.en_passant,
+            castling_rights: self.castling_rights,
+            captured:        PieceType::None,
+            halfmove_clock:  self.halfmove_clock,
+        };
+
+        // Clear en passant
+        if let Some(ep) = self.en_passant.take() {
+            self.hash ^= zobrist::key_ep(ep);
+        }
+
+        // Flip side
+        self.stm = self.stm.opposite();
+        self.hash ^= zobrist::key_side();
+        self.halfmove_clock += 1;
+
+        info
+    }
+
+    /// Undo a null move.
+    #[inline]
+    pub fn unmake_null_move(&mut self, info: &StateInfo) {
+        self.stm = self.stm.opposite();
+        self.hash = info.hash;
+        self.en_passant = info.en_passant;
+        self.halfmove_clock = info.halfmove_clock;
+    }
+
+    /// Does the given side have any pieces beyond pawns and king?
+    /// Used by NMP to avoid null-moving in pure pawn endings (zugzwang).
+    #[inline]
+    pub fn has_non_pawn_material(&self, side: Color) -> bool {
+        let dominated = self.side_bb[side as usize]
+            & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
+        dominated.is_not_empty()
+    }
+
     /// Incrementally update the SIMD accumulator for `mv`.
     ///
     /// Must be called before the move is applied to the board — it

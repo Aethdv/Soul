@@ -25,7 +25,7 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::Position,
-        defs::{INF, MATE, MAX_DEPTH, MAX_PLY, PieceType},
+        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType},
         moves::Move,
     },
     engine::{
@@ -404,6 +404,7 @@ impl<'cfg> Searcher<'cfg> {
             nodes: self.nodes,
             nps: u64::try_from(nps).unwrap_or(u64::MAX),
             time_ms: ms,
+            hashfull: self.tt.hashfull(),
             show_wdl: self.cfg.display.show_wdl,
             material: self.root_pos.material_count(),
             stm: self.root_pos.stm.as_usize(),
@@ -454,6 +455,7 @@ impl<'cfg> Searcher<'cfg> {
             nodes:     self.nodes,
             nps:       u64::try_from(nps).unwrap_or(u64::MAX),
             time_ms:   ms,
+            hashfull:  self.tt.hashfull(),
             pv:        &best.pv,
             show_wdl:  self.cfg.display.show_wdl,
             material:  self.root_pos.material_count(),
@@ -503,7 +505,7 @@ impl Worker {
         }
 
         if depth == 0 {
-            return self.qsearch(searcher, alpha, beta, ply);
+            return self.qsearch::<N>(searcher, alpha, beta, ply);
         }
         if ply >= MAX_PLY {
             return Ok(evaluate(&self.pos, &self.accumulator));
@@ -513,24 +515,58 @@ impl Worker {
 
         // ── TT probe (~128 Elo) ──
         let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
-            if !N::PV && depth_stored >= depth {
-                if bound == tt::BOUND_EXACT {
-                    return Ok(score);
-                }
-                if bound == tt::BOUND_LOWER && score >= beta {
-                    return Ok(score);
-                }
-                if bound == tt::BOUND_UPPER && score <= alpha {
-                    return Ok(score);
-                }
+            if !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
+                return Ok(score);
             }
-            Some(mv)
+            if mv.is_null() { None } else { Some(mv) }
         } else {
             None
         };
 
         // ── TT move ordering (~56 Elo) ──
         let hash_move = tt_move.or(pv_move);
+
+        let checkers = self.pos.checkers();
+        let in_check = checkers.is_not_empty();
+
+        // ── Static eval ──
+        let static_eval = if in_check {
+            tt::SCORE_NONE
+        } else {
+            evaluate(&self.pos, &self.accumulator)
+        };
+        self.stack[ply].static_eval = static_eval;
+
+        // ── Null Move Pruning (~85 Elo) ──
+        if !in_check
+            && !N::PV
+            && !self.stack[ply].is_null
+            && static_eval >= beta
+            && self.pos.has_non_pawn_material(self.pos.stm)
+        {
+            let sp = &searcher.cfg.search_params;
+            let eval_r = ((static_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max) as u8;
+            let r = sp.nmp_base_r as u8 + depth / sp.nmp_depth_divisor as u8 + eval_r;
+
+            self.stack[ply + 1].is_null = true;
+            let undo = self.pos.make_null_move();
+            searcher.history.push(self.pos.hash);
+            let score = -self.negamax::<NonPvNode>(
+                searcher,
+                depth.saturating_sub(r + 1),
+                -beta,
+                -beta + 1,
+                ply + 1,
+                None,
+            )?;
+            searcher.history.pop();
+            self.pos.unmake_null_move(&undo);
+            self.stack[ply + 1].is_null = false;
+
+            if score >= beta {
+                return Ok(if score > MATE_BOUND { beta } else { score });
+            }
+        }
 
         // ──────── Move loop ────────
 
@@ -540,9 +576,6 @@ impl Worker {
             alpha,
             best_move: Move::null(),
         };
-
-        let checkers = self.pos.checkers();
-        let in_check = checkers.is_not_empty();
 
         if N::ROOT {
             // Iterate the pre-sorted root move list.
@@ -779,7 +812,7 @@ impl Worker {
     /// ── Quiescence Search (~655 Elo) ──
     /// Evaluates positions only after all "noisy" (tactical/forcing) moves are resolved,
     /// preventing the horizon effect where a search stops right before a massive blunder.
-    fn qsearch(
+    fn qsearch<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
         mut alpha: i32,
@@ -808,6 +841,8 @@ impl Worker {
 
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
+        let stm = self.pos.stm;
+        let opp = stm.opposite();
 
         // ── QSearch Evaluations & Evasions ──
         // If we are in check, the position is forced and static evaluation is meaningless.
@@ -820,13 +855,23 @@ impl Worker {
             if eval >= beta {
                 return Ok(eval);
             }
+
+            // ── Delta pruning (revisit after NMP+LMR+aspiration) ──
+            // Tested: 0.00 Elo with bare search. Needs tighter windows and deeper
+            // search to be effective. Code kept for when we revisit.
+            // let best_capturable = [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn]
+            //     .into_iter()
+            //     .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
+            //     .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
+            // if eval + best_capturable + searcher.cfg.search_params.delta_margin < alpha {
+            //     return Ok(alpha);
+            // }
+
             alpha = alpha.max(eval);
             eval
         };
 
         let mut moves_made = 0;
-        let stm = self.pos.stm;
-        let opp = stm.opposite();
         let ksq = self.pos.pieces(PieceType::King, stm).lsb();
         let pinned = self.pos.king_blockers();
 
@@ -843,7 +888,7 @@ impl Worker {
             moves_made += 1;
             searcher.history.push(self.pos.hash);
 
-            let score = -self.qsearch(searcher, -beta, -alpha, ply + 1)?;
+            let score = -self.qsearch::<N>(searcher, -beta, -alpha, ply + 1)?;
 
             searcher.history.pop();
             self.pos.unmake_move(mv, &undo);
@@ -1135,6 +1180,8 @@ pub struct Stack {
     pub pv:          Line,
     pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
     pub quiet_count: usize,
+    pub static_eval: i32,
+    pub is_null:     bool,
 }
 
 impl Default for Stack {
@@ -1143,6 +1190,8 @@ impl Default for Stack {
             pv:          Line::new(),
             quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
             quiet_count: 0,
+            static_eval: tt::SCORE_NONE,
+            is_null:     false,
         }
     }
 }

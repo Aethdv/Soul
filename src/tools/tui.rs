@@ -54,6 +54,7 @@ pub struct SearchInfoData<'a> {
     pub nodes:     u64,
     pub nps:       u64,
     pub time_ms:   u128,
+    pub hashfull:  usize,
     pub pv:        &'a Line,
     pub show_wdl:  bool,
     pub material:  u32,
@@ -458,7 +459,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
     if pretty {
         let t = data.time_ms.try_into().unwrap_or(u64::MAX);
         print!(
-            "info depth {:>2} seldepth {:>2} score {}{} nodes {:>7} {:>11} time {:>9} pv",
+            "info depth {:>2} seldepth {:>2} score {}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
             data.depth,
             data.sel_depth,
             fmt_score_white_pov(data.score, data.stm, data.use_ansi),
@@ -466,10 +467,11 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             fmt_nodes(data.nodes),
             fmt_nps(data.nps),
             fmt_time(t),
+            data.hashfull,
         );
     } else {
         print!(
-            "info depth {} seldepth {} score {}{} nodes {} nps {} time {} pv",
+            "info depth {} seldepth {} score {}{} nodes {} nps {} time {} hashfull {} pv",
             data.depth,
             data.sel_depth,
             fmt_score_uci(data.score),
@@ -477,6 +479,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             data.nodes,
             data.nps,
             data.time_ms,
+            data.hashfull,
         );
     }
 
