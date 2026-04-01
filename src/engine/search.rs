@@ -511,20 +511,26 @@ impl Worker {
 
         let alpha_orig = alpha;
 
-        if let Some((_mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply)
-            && !N::PV
-            && depth_stored >= depth
-        {
-            if bound == tt::BOUND_EXACT {
-                return Ok(score);
+        // ── TT probe (~128 Elo) ──
+        let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
+            if !N::PV && depth_stored >= depth {
+                if bound == tt::BOUND_EXACT {
+                    return Ok(score);
+                }
+                if bound == tt::BOUND_LOWER && score >= beta {
+                    return Ok(score);
+                }
+                if bound == tt::BOUND_UPPER && score <= alpha {
+                    return Ok(score);
+                }
             }
-            if bound == tt::BOUND_LOWER && score >= beta {
-                return Ok(score);
-            }
-            if bound == tt::BOUND_UPPER && score <= alpha {
-                return Ok(score);
-            }
-        }
+            Some(mv)
+        } else {
+            None
+        };
+
+        // ── TT move ordering (~56 Elo) ──
+        let hash_move = tt_move.or(pv_move);
 
         // ──────── Move loop ────────
 
@@ -567,7 +573,7 @@ impl Worker {
             self.stack[ply].quiet_count = 0;
 
             // Interior: staged move generation via MovePicker.
-            let mut picker = MovePicker::new(pv_move, searcher.cfg);
+            let mut picker = MovePicker::new(hash_move, searcher.cfg);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
                 if !crate::engine::movegen::is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -645,7 +651,7 @@ impl Worker {
             tt::BOUND_UPPER
         };
 
-        // Store result in Transposition Table
+        // ── TT store ──
         searcher
             .tt
             .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
@@ -770,7 +776,7 @@ impl Worker {
         }
     }
 
-    /// ── Quiescence Search ──
+    /// ── Quiescence Search (~655 Elo) ──
     /// Evaluates positions only after all "noisy" (tactical/forcing) moves are resolved,
     /// preventing the horizon effect where a search stops right before a massive blunder.
     fn qsearch(
