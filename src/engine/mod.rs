@@ -11,4 +11,5 @@ pub mod movepicker;
 pub mod search;
 pub mod search_params;
 pub mod tm;
+pub mod tt;
 pub mod wdl;

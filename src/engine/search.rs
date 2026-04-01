@@ -30,7 +30,7 @@ use crate::{
     },
     engine::{
         eval::evaluate, history, movegen::gen_legal_moves, movepicker::MovePicker,
-        search_params::SearchParams, tm::TimeManager,
+        search_params::SearchParams, tm::TimeManager, tt,
     },
     tools::tui,
     weave::Vu64x4,
@@ -88,6 +88,7 @@ pub struct MoveResult {
     pub move_count: usize,
     pub best_eval:  i32,
     pub alpha:      i32,
+    pub best_move:  Move,
 }
 
 // ──────── Searcher & Worker ────────
@@ -115,6 +116,7 @@ pub struct Searcher<'cfg> {
     pub last_print:    u128,
     pub pv_history:    VecDeque<(u128, Line, i32)>,
     pub history_table: history::History,
+    pub tt:            Arc<tt::TranspositionTable>,
 }
 
 #[repr(align(32))]
@@ -268,6 +270,7 @@ impl<'cfg> Searcher<'cfg> {
         pos: &Position,
         history: &[u64],
         history_table: history::History,
+        tt: Arc<tt::TranspositionTable>,
     ) -> Self {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         let tm =
@@ -305,6 +308,7 @@ impl<'cfg> Searcher<'cfg> {
             iter_depth: 0,
             last_print: 0,
             history_table,
+            tt,
         }
     }
 
@@ -505,12 +509,30 @@ impl Worker {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
 
+        let alpha_orig = alpha;
+
+        if let Some((_mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply)
+            && !N::PV
+            && depth_stored >= depth
+        {
+            if bound == tt::BOUND_EXACT {
+                return Ok(score);
+            }
+            if bound == tt::BOUND_LOWER && score >= beta {
+                return Ok(score);
+            }
+            if bound == tt::BOUND_UPPER && score <= alpha {
+                return Ok(score);
+            }
+        }
+
         // ──────── Move loop ────────
 
         let mut res = MoveResult {
             move_count: 0,
             best_eval: -INF,
             alpha,
+            best_move: Move::null(),
         };
 
         let checkers = self.pos.checkers();
@@ -614,6 +636,20 @@ impl Worker {
                 Ok(0)
             };
         }
+
+        let bound = if res.best_eval >= beta {
+            tt::BOUND_LOWER
+        } else if res.best_eval > alpha_orig {
+            tt::BOUND_EXACT
+        } else {
+            tt::BOUND_UPPER
+        };
+
+        // Store result in Transposition Table
+        searcher
+            .tt
+            .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
+
         Ok(res.best_eval)
     }
 
@@ -637,6 +673,7 @@ impl Worker {
     ) -> Result<(), SearchAborted> {
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
+        searcher.tt.prefetch(self.pos.hash);
 
         res.move_count += 1;
         searcher.history.push(self.pos.hash);
@@ -668,6 +705,7 @@ impl Worker {
 
         if eval > res.best_eval {
             res.best_eval = eval;
+            res.best_move = mv;
 
             if N::ROOT
                 && let Some(i) = root_idx
@@ -765,6 +803,10 @@ impl Worker {
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
 
+        // ── QSearch Evaluations & Evasions ──
+        // If we are in check, the position is forced and static evaluation is meaningless.
+        // We drop the stand-pat evaluation (-INF) and the MovePicker will generate
+        // all legal evasions instead of just captures/queen promotions.
         let mut best_eval = if in_check {
             -INF
         } else {
@@ -805,7 +847,7 @@ impl Worker {
                 best_eval = score;
                 if score > alpha {
                     if score >= beta {
-                        return Ok(score);
+                        break;
                     }
                     alpha = score;
                 }

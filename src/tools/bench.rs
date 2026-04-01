@@ -15,6 +15,7 @@ use crate::{
         history,
         search::{Limits, SearchConfig, Searcher},
         search_params::SearchParams,
+        tt,
     },
 };
 
@@ -52,7 +53,13 @@ pub fn run(depth: u8) {
             0,
             SearchParams::default(),
         );
-        let mut searcher = Searcher::new(&cfg, &board, &history, history::History::new());
+        let mut searcher = Searcher::new(
+            &cfg,
+            &board,
+            &history,
+            history::History::new(),
+            Arc::new(tt::TranspositionTable::new(16)),
+        );
         searcher.iterative_deepening();
 
         let nodes = searcher.nodes;

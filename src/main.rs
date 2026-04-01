@@ -3,7 +3,10 @@
 //! Dispatches commands to development tools (bench, perft, dataset)
 //! or enters an interactive protocol loop (UCI/XBoard) on stdin.
 
-use std::io::{self, BufRead};
+use std::{
+    io::{self, BufRead},
+    sync::Arc,
+};
 
 use soul::{
     core::board::{Position, STARTPOS},
@@ -86,8 +89,13 @@ fn main() {
                     display,
                     engine::search_params::SearchParams::default(),
                 );
-                let mut searcher =
-                    engine::search::Searcher::new(&cfg, &board, &[], engine::history::History::new());
+                let mut searcher = engine::search::Searcher::new(
+                    &cfg,
+                    &board,
+                    &[],
+                    engine::history::History::new(),
+                    Arc::new(engine::tt::TranspositionTable::new(16)),
+                );
                 searcher.iterative_deepening();
                 if let Some(best_move) = searcher.best_move() {
                     println!("bestmove {}", best_move.to_uci(board.is_frc));

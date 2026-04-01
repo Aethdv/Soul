@@ -14,7 +14,10 @@ use std::{
 
 use crate::{
     core::{board::Position, defs::Protocol, error::EngineError},
-    engine::search::{Limits, Searcher},
+    engine::{
+        search::{Limits, Searcher},
+        tt,
+    },
 };
 
 pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
@@ -52,6 +55,7 @@ struct XBoardState {
     accumulator:        crate::weave::Vi16x8,
     history:            Vec<u64>,
     persistent_history: Arc<parking_lot::Mutex<crate::engine::history::History>>,
+    tt:                 Arc<tt::TranspositionTable>,
     mode:               Mode,
     stop_signal:        Arc<AtomicBool>,
     search_thread:      Option<JoinHandle<()>>,
@@ -74,6 +78,7 @@ impl XBoardState {
             board,
             history,
             persistent_history: Arc::new(parking_lot::Mutex::new(crate::engine::history::History::new())),
+            tt: Arc::new(tt::TranspositionTable::new(16)),
             mode: Mode::Normal,
             stop_signal: Arc::new(AtomicBool::new(false)),
             search_thread: None,
@@ -126,6 +131,8 @@ impl XBoardState {
         let history_arc = Arc::clone(&self.persistent_history);
         let persistent_history = *history_arc.lock();
 
+        let tt = self.tt.clone();
+
         self.search_thread = Some(thread::spawn(move || {
             use crate::engine::{
                 search::{SearchConfig, SearchDisplay},
@@ -143,7 +150,7 @@ impl XBoardState {
                 display,
                 SearchParams::default(),
             );
-            let mut ctx = Searcher::new(&cfg, &board, &history, persistent_history);
+            let mut ctx = Searcher::new(&cfg, &board, &history, persistent_history, tt);
             let final_history = ctx.iterative_deepening();
             *history_arc.lock() = final_history;
         }));
@@ -167,6 +174,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             state.accumulator = state.board.get_initial_accumulator();
             state.history.clear();
             state.history.push(state.board.hash);
+            state.tt.clear();
             state.mode = Mode::Normal;
             state.engine_side = Some(crate::core::defs::Color::Black);
             state.limits = Limits {
@@ -241,7 +249,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 && let Ok(mb) = arg.parse::<usize>()
             {
                 state.hash_size = mb;
-                // NOTE: TT not implemented yet, so this is "dry storage".
+                state.tt = Arc::new(tt::TranspositionTable::new(mb));
             }
         },
         "cores" => {
@@ -398,25 +406,22 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
         return;
     }
 
-    let name = parts[0].trim();
+    let name = parts[0].trim().to_lowercase();
     let value = parts[1].trim();
 
-    match name {
-        "Hash" => {
-            if let Ok(v) = value.parse() {
-                state.hash_size = v;
-                // TODO: we don't have a TT at all yet lol
-                println!(
-                    "telluser note: Hash option accepted but transposition table is not yet implemented"
-                );
+    match name.as_str() {
+        "hash" => {
+            if let Ok(mb) = value.parse::<usize>() {
+                state.hash_size = mb;
+                state.tt = Arc::new(tt::TranspositionTable::new(mb));
             }
         },
-        "Overhead" => {
+        "overhead" => {
             if let Ok(v) = value.parse() {
                 state.overhead = v;
             }
         },
-        "ShowWDL" => {
+        "showwdl" => {
             if let Ok(v) = value.parse::<u8>() {
                 state.show_wdl = v != 0;
             }

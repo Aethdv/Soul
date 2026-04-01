@@ -22,6 +22,7 @@ use crate::{
         movegen::gen_legal_moves,
         search::{Limits, SearchConfig as EngineSearchConfig, Searcher},
         search_params::SearchParams,
+        tt,
     },
     tools::dataset::SoulEntry,
 };
@@ -328,7 +329,13 @@ impl WorkerState {
             SearchParams::default(),
         );
 
-        let mut searcher = Searcher::new(&cfg, &self.board, &self.search_history, history::History::new());
+        let mut searcher = Searcher::new(
+            &cfg,
+            &self.board,
+            &self.search_history,
+            history::History::new(),
+            Arc::new(tt::TranspositionTable::new(16)),
+        );
         searcher.iterative_deepening();
 
         (static_eval, searcher.best_score().unwrap_or(0), searcher.best_move())

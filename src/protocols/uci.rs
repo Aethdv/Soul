@@ -21,7 +21,7 @@ use crate::{
         error::MoveError,
         moves::Move,
     },
-    engine::{search::Limits, search_params::SearchParams},
+    engine::{search::Limits, search_params::SearchParams, tt},
     tools,
 };
 
@@ -84,6 +84,7 @@ pub fn run_cli_go(args: &[String]) {
             board,
             state.history.clone(),
             state.persistent_history,
+            state.tt.clone(),
             state.history_tx.clone(),
         ))
         .unwrap();
@@ -104,6 +105,7 @@ enum SearchCommand {
         Position,
         Vec<u64>,
         history::History,
+        Arc<tt::TranspositionTable>,
         Sender<history::History>,
     ),
     Quit,
@@ -114,6 +116,7 @@ pub struct UciState {
     accumulator:        crate::weave::Vi16x8,
     history:            Vec<u64>,
     persistent_history: history::History,
+    tt:                 Arc<tt::TranspositionTable>,
     stop:               Arc<AtomicBool>,
     search_tx:          Sender<SearchCommand>,
     history_tx:         mpsc::Sender<history::History>,
@@ -145,9 +148,9 @@ impl UciState {
         thread::spawn(move || {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    SearchCommand::Go(cfg, board, history, history_table, result_tx) => {
+                    SearchCommand::Go(cfg, board, history, history_table, tt, result_tx) => {
                         let mut ctx =
-                            crate::engine::search::Searcher::new(&cfg, &board, &history, history_table);
+                            crate::engine::search::Searcher::new(&cfg, &board, &history, history_table, tt);
                         let final_history = ctx.iterative_deepening();
                         is_searching_worker.store(false, Ordering::Release);
                         let _ = result_tx.send(final_history);
@@ -162,6 +165,7 @@ impl UciState {
             board,
             history,
             persistent_history: history::History::new(),
+            tt: Arc::new(tt::TranspositionTable::new(16)),
             stop,
             search_tx: tx,
             history_tx: h_tx,
@@ -272,6 +276,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.is_searching.store(false, Ordering::Release);
             state.history.clear();
             state.persistent_history.clear();
+            state.tt.clear();
             state.board = Position::from_fen(STARTPOS);
             state.board.is_frc = state.is_frc;
             state.accumulator = state.board.get_initial_accumulator();
@@ -433,6 +438,7 @@ where I: Iterator<Item = &'a str> {
             board,
             history,
             state.persistent_history,
+            state.tt.clone(),
             state.history_tx.clone(),
         ))
         .unwrap();
@@ -507,12 +513,9 @@ where I: Iterator<Item = &'a str> {
 
     match name.as_str() {
         "hash" => {
-            if let Ok(v) = value.parse() {
-                state.hash_size = v;
-                // TODO: we don't have a TT at all yet lol
-                println!(
-                    "info string note: Hash option accepted but transposition table is not yet implemented"
-                );
+            if let Ok(mb) = value.parse::<usize>() {
+                state.hash_size = mb;
+                state.tt = Arc::new(tt::TranspositionTable::new(mb));
             }
         },
 
