@@ -1,6 +1,6 @@
 [package]
 name = "soul"
-version = "0.2.0"
+version = "0.3.0"
 license = "AGPL-3.0"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
