@@ -1,5 +1,5 @@
 EXE_NAME := soul
-DEPTH    ?= 8
+DEPTH    ?= 16
 
 VERSION := $(shell awk -F'"' '/^version/ {print $$2; exit}' Cargo.toml)
 ifeq ($(VERSION),)
@@ -111,8 +111,12 @@ profile: ## Generate CPU performance profile
 	@echo "\nThe profiling report has been generated in profile_data.txt"
 	@echo "Done: profile_data.txt"
 
-openbench: check-pgo ## OpenBench PGO build
-	@$(call pgo_build,OpenBench,@echo "Binary size: $$(ls -lh $(EXE) | awk '{print $$5}')")
+openbench: ## OpenBench native build
+	@echo "Building for OpenBench..."
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
+		cargo build --release --quiet
+	@cp target/release/$(EXE_NAME) $(EXE)
+	@echo "Done: ./$(EXE)"
 
 evaltune:
 	@echo "Building evaltune..."
