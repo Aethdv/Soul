@@ -547,10 +547,14 @@ impl Worker {
 
         // ── TT probe (~128 Elo) ──
         let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
-            if !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
+            // Validate the TT move belongs to the side to move.
+            // Hash collisions can store moves from unrelated positions.
+            let valid = mv.is_null() || self.pos.side_bb[self.pos.stm].check_bit(mv.from());
+
+            if valid && !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if mv.is_null() { None } else { Some(mv) }
+            if valid && !mv.is_null() { Some(mv) } else { None }
         } else {
             None
         };
