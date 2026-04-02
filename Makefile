@@ -1,6 +1,10 @@
 EXE_NAME := soul
 DEPTH    ?= 12
 
+# OpenBench passes CC=cargo (for C/C++ engines). Override it so cc-rs
+# (used by zstd-sys) finds a real C compiler instead of cargo.
+override CC := cc
+
 VERSION := $(shell awk -F'"' '/^version/ {print $$2; exit}' Cargo.toml)
 ifeq ($(VERSION),)
     VERSION := unknown
