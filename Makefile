@@ -117,7 +117,7 @@ profile: ## Generate CPU performance profile
 
 openbench: ## OpenBench native build
 	@echo "Building for OpenBench..."
-	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
+	@CC=cc RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
 		cargo build --release --quiet
 	@cp target/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
