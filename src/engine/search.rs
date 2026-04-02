@@ -213,7 +213,7 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            // reuse worker — just update the position and accumulator from root
+            // Reuse worker — reset to root state.
             worker.pos = self.root_pos;
             worker.accumulator = self.root_pos.get_initial_accumulator();
 
@@ -590,6 +590,7 @@ impl Worker {
                     ply,
                     Some(i),
                     Some(mv) == pv_move,
+                    0,
                 )?;
                 if likely(res.alpha >= beta) {
                     break;
@@ -620,7 +621,27 @@ impl Worker {
                     appended_quiet = true;
                 }
 
-                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move)?;
+                // ── Late Move Reductions (~90 Elo) ──
+                // Moves late in the list are unlikely to beat alpha.
+                // Search them at reduced depth; re-search fully on surprise.
+                let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
+                    let r = i32::from(searcher.cfg.lmr_table[depth as usize][res.move_count + 1]);
+                    r.clamp(0, depth as i32 - 1) as u8
+                } else {
+                    0
+                };
+
+                self.search_move::<N>(
+                    searcher,
+                    mv,
+                    depth,
+                    &mut res,
+                    beta,
+                    ply,
+                    None,
+                    Some(mv) == pv_move,
+                    reduction,
+                )?;
 
                 if likely(res.alpha >= beta) {
                     // ── History Gravity Heuristic ──
@@ -709,6 +730,7 @@ impl Worker {
         ply: usize,
         root_idx: Option<usize>,
         is_pv_move: bool,
+        reduction: u8,
     ) -> Result<(), SearchAborted> {
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
@@ -721,8 +743,16 @@ impl Worker {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval = match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move)
-        {
+        let eval = match self.pvs::<N>(
+            searcher,
+            depth,
+            res.alpha,
+            beta,
+            ply,
+            res.move_count == 1,
+            is_pv_move,
+            reduction,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 searcher.history.pop();
@@ -784,6 +814,7 @@ impl Worker {
         ply: usize,
         is_first: bool,
         is_pv_move: bool,
+        reduction: u8,
     ) -> Result<i32, SearchAborted> {
         // Retrieve the expected PV move for the NEXT ply (ply + 1 is the child node's level).
         // If we are on the PV line AND we just played the PV move, we expect the child to also have a PV move.
@@ -798,15 +829,24 @@ impl Worker {
             return Ok(-self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?);
         }
 
-        // Narrow scout: "can anything beat alpha?"
-        let scout = -self.negamax::<NonPvNode>(searcher, depth - 1, -alpha - 1, -alpha, ply + 1, None)?;
+        // ── LMR scout ──
+        // Late quiet moves get a shallower scout. If the reduced search
+        // still beats alpha, the move earned a full-depth re-search.
+        let reduced_depth = depth - 1 - reduction;
+        let mut score =
+            -self.negamax::<NonPvNode>(searcher, reduced_depth, -alpha - 1, -alpha, ply + 1, None)?;
 
-        if scout > alpha && scout < beta {
-            // Surprise — this move is genuinely better. Re-search properly.
-            Ok(-self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?)
-        } else {
-            Ok(scout)
+        // Re-search at full depth if the reduced scout found something.
+        if score > alpha && reduction > 0 {
+            score = -self.negamax::<NonPvNode>(searcher, depth - 1, -alpha - 1, -alpha, ply + 1, None)?;
         }
+
+        if score > alpha && score < beta {
+            // Genuine improvement — search with full window on the PV.
+            score = -self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?;
+        }
+
+        Ok(score)
     }
 
     /// ── Quiescence Search (~655 Elo) ──
@@ -1018,6 +1058,7 @@ pub struct SearchConfig {
     pub overhead:      u64,
     pub mvvlva_v:      [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a:      [i32; 8], // attacker penalties, indexed by PieceType
+    pub lmr_table:     Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
 }
 
 impl SearchConfig {
@@ -1042,6 +1083,7 @@ impl SearchConfig {
         search_params: SearchParams,
     ) -> Self {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
+        let lmr_table = Self::build_lmr_table(&search_params);
 
         Self {
             limits,
@@ -1052,6 +1094,7 @@ impl SearchConfig {
             search_params,
             mvvlva_v,
             mvvlva_a,
+            lmr_table,
         }
     }
 
@@ -1079,6 +1122,26 @@ impl SearchConfig {
         map!(King, sp.mvvlva_v_king, sp.mvvlva_a_king);
 
         (v, a)
+    }
+
+    /// LMR reduction table from tunable base/divisor.
+    ///
+    /// R(d, m) = base + ln(d) · ln(m) / divisor
+    ///
+    /// Logarithmic in both depth and move index: deeper searches tolerate
+    /// larger reductions, and later moves deserve them. Precomputed so the
+    /// inner loop never touches a float.
+    fn build_lmr_table(sp: &SearchParams) -> Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
+        let base = sp.lmr_base as f64 / 100.0;
+        let divisor = sp.lmr_divisor as f64 / 100.0;
+
+        let mut table = Box::new([[0i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
+        for d in 1..=MAX_DEPTH as usize {
+            for m in 1..=MAX_PLY {
+                table[d][m] = (base + (d as f64).ln() * (m as f64).ln() / divisor).floor() as i8;
+            }
+        }
+        table
     }
 }
 

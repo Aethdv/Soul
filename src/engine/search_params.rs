@@ -241,6 +241,21 @@ search_params! {
             step:      1,
         },
 
+        /// LMR base constant (scaled by 100).
+        pub lmr_base: i32 {
+            default: 100,
+            min:      50,
+            max:     200,
+            step:      5,
+        },
+        /// LMR divisor (scaled by 100).
+        pub lmr_divisor: i32 {
+            default: 225,
+            min:     150,
+            max:     350,
+            step:      5,
+        },
+
         /// Delta pruning margin for qsearch (cp).
         /// If stand_pat + best_capturable + margin < alpha, prune.
         pub delta_margin: i32 {
