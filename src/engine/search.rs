@@ -29,7 +29,10 @@ use crate::{
         moves::Move,
     },
     engine::{
-        eval::evaluate, history, movegen::gen_legal_moves, movepicker::MovePicker,
+        eval::evaluate,
+        history,
+        movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
+        movepicker::MovePicker,
         search_params::SearchParams, tm::TimeManager, tt,
     },
     tools::tui,
@@ -547,9 +550,10 @@ impl Worker {
 
         // ── TT probe (~128 Elo) ──
         let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
-            // Validate the TT move belongs to the side to move.
-            // Hash collisions can store moves from unrelated positions.
-            let valid = mv.is_null() || self.pos.side_bb[self.pos.stm].check_bit(mv.from());
+            // Hash collisions can inject moves from unrelated positions.
+            // Full pseudo-legality check rejects garbage before it reaches
+            // the move picker or triggers a cutoff with a bogus score.
+            let valid = mv.is_null() || is_pseudo_legal(&self.pos, mv);
 
             if valid && !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
@@ -654,7 +658,7 @@ impl Worker {
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
-                if !crate::engine::movegen::is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
 
@@ -963,7 +967,7 @@ impl Worker {
         let mut picker = MovePicker::new_qsearch(None, searcher.cfg, in_check);
 
         while let Some(mv) = picker.next(&self.pos, &self.history) {
-            if !crate::engine::movegen::is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+            if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                 continue;
             }
 
