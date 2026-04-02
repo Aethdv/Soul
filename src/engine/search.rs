@@ -600,6 +600,15 @@ impl Worker {
             }
         }
 
+        // ── Reverse Futility Pruning ──
+        if !in_check
+            && !N::PV
+            && depth <= searcher.cfg.search_params.rfp_depth
+            && static_eval - searcher.cfg.search_params.rfp_margin * depth >= beta
+        {
+            return Ok(static_eval);
+        }
+
         // ──────── Move loop ────────
 
         let mut res = MoveResult {

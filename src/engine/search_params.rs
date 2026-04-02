@@ -264,6 +264,21 @@ search_params! {
             step:      1,
         },
 
+        /// RFP per-depth margin (cp/ply).
+        pub rfp_margin: i32 {
+            default:  45,
+            min:      30,
+            max:     150,
+            step:      5,
+        },
+        /// RFP maximum depth (plies).
+        pub rfp_depth: i32 {
+            default:   8,
+            min:       3,
+            max:      10,
+            step:      1,
+        },
+
         /// Delta pruning margin for qsearch (cp).
         /// If stand_pat + best_capturable + margin < alpha, prune.
         pub delta_margin: i32 {
