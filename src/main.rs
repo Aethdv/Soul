@@ -30,7 +30,7 @@ fn main() {
                 println!("soul {}", env!("CARGO_PKG_VERSION"));
             },
             "bench" => {
-                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(16);
+                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(12);
                 tools::bench::run(depth);
             },
             "perft" => {
