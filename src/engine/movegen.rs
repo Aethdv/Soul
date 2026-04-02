@@ -70,6 +70,14 @@ pub fn is_legal(
     let from = mv.from();
     let to = mv.to();
 
+    // ── Ownership guard (TT collision defence) ──
+    // The hash move may come from a TT collision and reference an
+    // opponent's piece or an empty square. Reject it before any
+    // pin/check logic, which assumes a friendly piece on `from`.
+    if !board.side_bb[board.stm].check_bit(from) {
+        return false;
+    }
+
     // ── King moves ──
     if from == ksq {
         if mv.is_castling() {
