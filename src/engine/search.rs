@@ -213,14 +213,46 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            // Reuse worker — reset to root state.
-            worker.pos = self.root_pos;
-            worker.accumulator = self.root_pos.get_initial_accumulator();
+            // ── Aspiration windows (~42 Elo) ──
+            let mut delta = self.cfg.search_params.asp_initial;
+            let mut alpha = if depth >= 4 {
+                (self.prev_score - delta).max(-INF)
+            } else {
+                -INF
+            };
+            let mut beta = if depth >= 4 {
+                (self.prev_score + delta).min(INF)
+            } else {
+                INF
+            };
 
-            if worker
-                .negamax::<RootNode>(self, depth, -INF, INF, 0, None)
-                .is_err()
-            {
+            let mut aborted = false;
+            loop {
+                worker.pos = self.root_pos;
+                worker.accumulator = self.root_pos.get_initial_accumulator();
+
+                if worker
+                    .negamax::<RootNode>(self, depth, alpha, beta, 0, None)
+                    .is_err()
+                {
+                    aborted = true;
+                    break;
+                }
+
+                let score = self.root_moves[0].score;
+
+                if score <= alpha {
+                    alpha = (score - delta).max(-INF);
+                } else if score >= beta {
+                    beta = (score + delta).min(INF);
+                } else {
+                    break;
+                }
+
+                delta += delta / 3;
+            }
+
+            if aborted {
                 // On abort, we explicitly DO NOT sort. The array is already correctly sorted
                 // from the last fully completed iteration context. Sorting a partially aborted
                 // iteration would corrupt the strict root ordering with cross-depth horizon nodes.

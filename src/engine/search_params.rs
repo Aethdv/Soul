@@ -256,6 +256,14 @@ search_params! {
             step:      5,
         },
 
+        /// Aspiration window initial delta (cp).
+        pub asp_initial: i32 {
+            default:  15,
+            min:       8,
+            max:      50,
+            step:      1,
+        },
+
         /// Delta pruning margin for qsearch (cp).
         /// If stand_pat + best_capturable + margin < alpha, prune.
         pub delta_margin: i32 {
