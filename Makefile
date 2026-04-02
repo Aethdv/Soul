@@ -25,7 +25,7 @@ endif
         evaltune searchtune test seeformat format clippy profile \
         releases avx2 avx2-bmi2 avx512
 
-all: help
+all: openbench
 
 debug: ## Build for development
 	@echo "Building debug..."
