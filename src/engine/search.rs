@@ -577,7 +577,7 @@ impl Worker {
         {
             return Ok(static_eval);
         }
-        
+
         // ── Null Move Pruning (~85 Elo) ──
         if !in_check
             && !N::PV
