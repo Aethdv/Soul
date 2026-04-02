@@ -356,7 +356,7 @@ fn cmd_st<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>)
 
 fn cmd_sd<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
     if let Some(arg) = args.next()
-        && let Ok(depth) = arg.parse::<u8>()
+        && let Ok(depth) = arg.parse::<i32>()
     {
         state.limits.depth = depth;
     }

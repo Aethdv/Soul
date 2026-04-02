@@ -9,7 +9,7 @@ pub use crate::core::primitives::*;
 
 pub type Score = i32; // Centipawn evaluation
 pub type MoveScore = i16; // Move-ordering heuristic value
-pub type Depth = u8; // Search depth
+pub type Depth = i32; // Search depth
 pub type Ply = usize; // Half-move distance from the root
 
 // ──────── Search limits ────────
@@ -18,7 +18,7 @@ pub type Ply = usize; // Half-move distance from the root
 pub const MAX_MOVES: usize = 256;
 /// Absolute deepest ply the engine will ever explore.
 pub const MAX_PLY: usize = 246;
-pub const MAX_DEPTH: u8 = MAX_PLY as u8;
+pub const MAX_DEPTH: i32 = MAX_PLY as i32;
 /// Stands in for +∞ in alpha-beta windows. Beats every evaluation but not mate.
 pub const INF: i32 = 32_000;
 /// Checkmate at the root. Actual mates are scored `MATE - ply_distance`.

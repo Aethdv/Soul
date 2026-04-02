@@ -64,7 +64,7 @@ fn main() {
                 let depth = args
                     .get(2)
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| <u8>::try_from(soul::core::defs::MAX_PLY).unwrap());
+                    .unwrap_or(soul::core::defs::MAX_DEPTH);
 
                 let board = Position::from_fen(STARTPOS);
                 let limits = engine::search::Limits {

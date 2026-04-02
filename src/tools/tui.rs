@@ -48,8 +48,8 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
 pub struct SearchInfoData<'a> {
-    pub depth:     u8,
-    pub sel_depth: u8,
+    pub depth:     i32,
+    pub sel_depth: i32,
     pub score:     i32,
     pub nodes:     u64,
     pub nps:       u64,

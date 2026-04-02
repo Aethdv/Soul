@@ -111,8 +111,8 @@ pub struct Searcher<'cfg> {
     pub prev_pv:       Line,
     pub prev_score:    i32,
     pub nodes:         u64,
-    pub sel_depth:     u8,
-    pub iter_depth:    u8,
+    pub sel_depth:     i32,
+    pub iter_depth:    i32,
     pub last_print:    u128,
     pub pv_history:    VecDeque<(u128, Line, i32)>,
     pub history_table: history::History,
@@ -173,7 +173,7 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         let depth_limit = match (self.cfg.limits.mate, self.cfg.limits.depth) {
-            (Some(mate_d), _) => (mate_d as u16 * 2).min(MAX_DEPTH as u16) as u8,
+            (Some(mate_d), _) => (mate_d * 2).min(MAX_DEPTH),
             (_, d) if d > 0 => d,
             _ => MAX_DEPTH,
         };
@@ -419,7 +419,7 @@ impl<'cfg> Searcher<'cfg> {
     }
 
     #[cold]
-    fn print_info(&self, depth: u8, score: i32, pv: &Line) {
+    fn print_info(&self, depth: i32, score: i32, pv: &Line) {
         if self.cfg.limits.silent {
             return;
         }
@@ -455,7 +455,7 @@ impl<'cfg> Searcher<'cfg> {
     /// UCI `currmove` — tells the GUI which root move is being searched.
     #[cold]
     #[inline]
-    fn print_currmove(&self, depth: u8, mv: Move, move_number: usize) {
+    fn print_currmove(&self, depth: i32, mv: Move, move_number: usize) {
         if self.cfg.limits.silent
             || self.cfg.display.go_pretty
             || self.cfg.limits.protocol != Protocol::Uci
@@ -514,7 +514,7 @@ impl Worker {
     fn negamax<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
-        depth: u8,
+        depth: i32,
         alpha: i32,
         beta: i32,
         ply: usize,
@@ -532,11 +532,11 @@ impl Worker {
             return Ok(0);
         }
 
-        if ply > searcher.sel_depth as usize {
-            searcher.sel_depth = u8::try_from(ply).unwrap_or(u8::MAX);
+        if ply as i32 > searcher.sel_depth {
+            searcher.sel_depth = ply as i32;
         }
 
-        if depth == 0 {
+        if depth <= 0 {
             return self.qsearch::<N>(searcher, alpha, beta, ply);
         }
         if ply >= MAX_PLY {
@@ -577,15 +577,15 @@ impl Worker {
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
             let sp = &searcher.cfg.search_params;
-            let eval_r = ((static_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max) as u8;
-            let r = sp.nmp_base_r as u8 + depth / sp.nmp_depth_divisor as u8 + eval_r;
+            let eval_r = ((static_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
+            let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
 
             self.stack[ply + 1].is_null = true;
             let undo = self.pos.make_null_move();
             searcher.history.push(self.pos.hash);
             let score = -self.negamax::<NonPvNode>(
                 searcher,
-                depth.saturating_sub(r + 1),
+                (depth - r - 1).max(0),
                 -beta,
                 -beta + 1,
                 ply + 1,
@@ -657,8 +657,8 @@ impl Worker {
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
-                    let r = i32::from(searcher.cfg.lmr_table[depth as usize][res.move_count + 1]);
-                    r.clamp(0, depth as i32 - 1) as u8
+                    let r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
+                    r.clamp(0, depth - 1)
                 } else {
                     0
                 };
@@ -684,7 +684,7 @@ impl Worker {
                     // Bonus is quadratic with depth to prioritize deep heuristics,
                     // capped at 400 to prevent a single deep search
                     // from permanently dominating the history table.
-                    let bonus = (depth as i32).pow(2).min(400);
+                    let bonus = depth.pow(2).min(400);
 
                     // Only reward if the cutoff itself was caused by a quiet move.
                     // Captures and structural moves (castling) are handled differently.
@@ -756,13 +756,13 @@ impl Worker {
         &mut self,
         searcher: &mut Searcher,
         mv: Move,
-        depth: u8,
+        depth: i32,
         res: &mut MoveResult,
         beta: i32,
         ply: usize,
         root_idx: Option<usize>,
         is_pv_move: bool,
-        reduction: u8,
+        reduction: i32,
     ) -> Result<(), SearchAborted> {
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
@@ -840,13 +840,13 @@ impl Worker {
     fn pvs<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
-        depth: u8,
+        depth: i32,
         alpha: i32,
         beta: i32,
         ply: usize,
         is_first: bool,
         is_pv_move: bool,
-        reduction: u8,
+        reduction: i32,
     ) -> Result<i32, SearchAborted> {
         // Retrieve the expected PV move for the NEXT ply (ply + 1 is the child node's level).
         // If we are on the PV line AND we just played the PV move, we expect the child to also have a PV move.
@@ -903,8 +903,8 @@ impl Worker {
             return Ok(0);
         }
 
-        if ply > searcher.sel_depth as usize {
-            searcher.sel_depth = u8::try_from(ply).unwrap_or(u8::MAX);
+        if ply as i32 > searcher.sel_depth {
+            searcher.sel_depth = ply as i32;
         }
 
         if ply >= MAX_PLY {
@@ -1185,13 +1185,13 @@ pub struct Limits {
     pub binc:        u64,
     pub movestogo:   u64,
     pub movetime:    u64,
-    pub depth:       u8,
+    pub depth:       i32,
     pub nodes:       u64,
     pub softnodes:   u64,
     pub infinite:    bool,
     pub silent:      bool,
     pub protocol:    Protocol,
-    pub mate:        Option<u8>,
+    pub mate:        Option<i32>,
     pub perft:       Option<u8>,
     pub searchmoves: Vec<Move>,
 }

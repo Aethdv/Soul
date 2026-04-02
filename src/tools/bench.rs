@@ -21,7 +21,7 @@ use crate::{
 
 const FENS: &str = include_str!("../data/bench.fens");
 
-pub fn run(depth: u8) {
+pub fn run(depth: i32) {
     let start = Instant::now();
     let mut total_nodes = 0;
 

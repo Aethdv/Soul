@@ -103,7 +103,7 @@ impl TranspositionTable {
 
     /// Retrieves an entry for the given position if it exists.
     #[inline(always)]
-    pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, u8, u8)> {
+    pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -115,7 +115,7 @@ impl TranspositionTable {
         if entry.key == hash && entry.bound != BOUND_NONE {
             let score = Self::score_from_tt(entry.score as i32, ply);
             let mv = Move::from_u16(entry.mv);
-            return Some((mv, score, entry.depth, entry.bound));
+            return Some((mv, score, entry.depth as i32, entry.bound));
         }
 
         None
@@ -123,7 +123,7 @@ impl TranspositionTable {
 
     /// Stores a new entry in the table.
     #[inline(always)]
-    pub fn store(&self, hash: u64, ply: usize, depth: u8, score: i32, mv: Move, bound: u8) {
+    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8) {
         if self.entries.is_empty() {
             return;
         }
@@ -136,7 +136,7 @@ impl TranspositionTable {
         // Fundamental Replacement Scheme: Depth-Preferred + Exact Position Upgrade
         // We overwrite if the new entry searched deeper, or if it's the exact same position
         // and we simply want to upgrade the bound or move.
-        if entry.key != hash || depth >= entry.depth || entry.bound == BOUND_NONE {
+        if entry.key != hash || depth >= entry.depth as i32 || entry.bound == BOUND_NONE {
             let is_exact_match = entry.key == hash;
             entry.key = hash;
 
@@ -149,7 +149,7 @@ impl TranspositionTable {
 
             entry.mv = store_mv;
             entry.score = Self::score_to_tt(score, ply) as i16;
-            entry.depth = depth;
+            entry.depth = depth as u8;
             entry.bound = bound;
         }
     }
