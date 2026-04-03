@@ -58,7 +58,6 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
 /// Does NOT check legality (pins, checks) — that's `is_legal`'s job.
 #[inline]
 pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
-
     let from = mv.from();
     let to = mv.to();
     let stm = board.stm;
@@ -107,9 +106,7 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
 
             if mv.is_double_push() {
                 let mid = Square((from.0 as i8 + fwd) as u8);
-                return to.0 as i8 == from.0 as i8 + fwd * 2
-                    && !occ.check_bit(mid)
-                    && !occ.check_bit(to);
+                return to.0 as i8 == from.0 as i8 + fwd * 2 && !occ.check_bit(mid) && !occ.check_bit(to);
             }
 
             if mv.is_capture() {

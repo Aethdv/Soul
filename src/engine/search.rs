@@ -33,7 +33,9 @@ use crate::{
         history,
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
-        search_params::SearchParams, tm::TimeManager, tt,
+        search_params::SearchParams,
+        tm::TimeManager,
+        tt,
     },
     tools::tui,
     weave::Vu64x4,
@@ -558,12 +560,17 @@ impl Worker {
             if valid && !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if valid && !mv.is_null() { Some(mv) } else { None }
+            if valid && !mv.is_null() {
+                Some(mv)
+            } else {
+                None
+            }
         } else {
             None
         };
 
         // ── TT move ordering (~56 Elo) ──
+        let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
         let checkers = self.pos.checkers();
