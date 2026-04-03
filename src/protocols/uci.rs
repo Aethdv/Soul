@@ -28,7 +28,7 @@ use crate::{
 pub fn main_loop(initial_command: Option<String>) {
     let mut state = UciState::new();
 
-    let rx = spawn_stdin_listener(state.stop.clone(), state.is_searching.clone());
+    let rx = spawn_stdin_listener(state.stop.clone());
 
     if let Some(cmd) = initial_command {
         process_command(&mut state, cmd.trim());
@@ -200,10 +200,7 @@ impl UciState {
 ///
 /// This is required by UCI spec:
 /// "the engine must always be able to process input from stdin, even while thinking."
-fn spawn_stdin_listener(
-    stop: Arc<AtomicBool>,
-    is_searching: Arc<AtomicBool>,
-) -> std::sync::mpsc::Receiver<String> {
+fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
 
     thread::spawn(move || {
@@ -234,9 +231,7 @@ fn spawn_stdin_listener(
 
                 "stop" => {
                     stop.store(true, Ordering::Release);
-                    if is_searching.load(Ordering::Acquire) {
-                        let _ = tx.send(line);
-                    }
+                    let _ = tx.send(line);
                 },
                 _ => {
                     // Always forward to the main thread's command channel.
