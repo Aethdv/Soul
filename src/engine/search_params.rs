@@ -279,6 +279,21 @@ search_params! {
             step:      1,
         },
 
+        /// Razoring per-depth margin (cp/ply).
+        pub razoring_margin: i32 {
+            default: 300,
+            min:     100,
+            max:     600,
+            step:     10,
+        },
+        /// Razoring maximum depth (plies).
+        pub razoring_depth: i32 {
+            default:   3,
+            min:       1,
+            max:       5,
+            step:      1,
+        },
+
         /// Delta pruning margin for qsearch (cp).
         /// If stand_pat + best_capturable + margin < alpha, prune.
         pub delta_margin: i32 {

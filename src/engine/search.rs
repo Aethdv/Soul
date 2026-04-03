@@ -583,7 +583,7 @@ impl Worker {
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
 
-        // ── Check extension ──
+        // ── Check extension (~11 Elo) ──
         // Being in check is forcing — don't let the horizon cut us off
         // mid-tactic. Extend by one ply so the reply is always searched.
         let depth = if in_check { depth + 1 } else { depth };
@@ -596,13 +596,27 @@ impl Worker {
         };
         self.stack[ply].static_eval = static_eval;
 
-        // ── Reverse Futility Pruning ──
+        // ── Reverse Futility Pruning (~67 Elo) ──
         if !in_check
             && !N::PV
             && depth <= searcher.cfg.search_params.rfp_depth
             && static_eval - searcher.cfg.search_params.rfp_margin * depth >= beta
         {
             return Ok(static_eval);
+        }
+
+        // ── Razoring (~17 Elo) ──
+        // Position is so far below alpha that a full-depth search is unlikely
+        // to recover. Drop straight into qsearch to confirm.
+        if !in_check
+            && !N::PV
+            && depth <= searcher.cfg.search_params.razoring_depth
+            && static_eval + searcher.cfg.search_params.razoring_margin * depth < alpha
+        {
+            let score = self.qsearch::<N>(searcher, alpha, beta, ply)?;
+            if score <= alpha {
+                return Ok(score);
+            }
         }
 
         // ── Null Move Pruning (~85 Elo) ──
