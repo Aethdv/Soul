@@ -605,7 +605,7 @@ impl Worker {
             return Ok(static_eval);
         }
 
-        // ── Razoring ──
+        // ── Razoring (~17 Elo) ──
         // Position is so far below alpha that a full-depth search is unlikely
         // to recover. Drop straight into qsearch to confirm.
         if !in_check
