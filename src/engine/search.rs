@@ -711,7 +711,7 @@ impl Worker {
                     appended_quiet = true;
                 }
 
-                // ── Futility Pruning ──
+                // ── Futility Pruning (~10 Elo) ──
                 // At shallow depth, if static eval is already so far below alpha
                 // that a quiet move is unlikely to raise it, skip the move.
                 if !in_check
