@@ -72,9 +72,15 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
 
     let piece = board.piece_at(from);
 
-    // Castling — trust the flag; full validation happens in gen_castling / is_legal.
+    // Castling: the 'to' square encodes the rook's home square.
+    // A TT collision with the CASTLE flag but a garbage 'to' would make
+    // apply_castling lift a non-rook piece and place a phantom rook,
+    // permanently corrupting the board after unmake.
     if mv.is_castling() {
-        return piece == PieceType::King;
+        return piece == PieceType::King
+            && board.piece_at(to) == PieceType::Rook
+            && us.check_bit(to)
+            && board.castling_rooks.contains(&to);
     }
 
     // Destination must not hold a friendly piece.
