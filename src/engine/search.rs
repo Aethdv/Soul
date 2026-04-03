@@ -711,6 +711,18 @@ impl Worker {
                     appended_quiet = true;
                 }
 
+                // ── Futility Pruning ──
+                // At shallow depth, if static eval is already so far below alpha
+                // that a quiet move is unlikely to raise it, skip the move.
+                if !in_check
+                    && mv.is_quiet()
+                    && res.move_count >= 1
+                    && depth <= searcher.cfg.search_params.fp_depth
+                    && static_eval + searcher.cfg.search_params.fp_margin * depth <= res.alpha
+                {
+                    continue;
+                }
+
                 // ── Late Move Reductions (~90 Elo) ──
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.

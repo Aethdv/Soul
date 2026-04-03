@@ -279,6 +279,21 @@ search_params! {
             step:      1,
         },
 
+        /// Futility pruning per-depth margin (cp/ply).
+        pub fp_margin: i32 {
+            default: 100,
+            min:      50,
+            max:     300,
+            step:      5,
+        },
+        /// Futility pruning maximum depth (plies).
+        pub fp_depth: i32 {
+            default:   6,
+            min:       1,
+            max:       8,
+            step:      1,
+        },
+
         /// Razoring per-depth margin (cp/ply).
         pub razoring_margin: i32 {
             default: 300,
