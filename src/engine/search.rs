@@ -596,7 +596,7 @@ impl Worker {
         };
         self.stack[ply].static_eval = static_eval;
 
-        // ── Reverse Futility Pruning (~67 Elo) ──
+        // ── Reverse Futility Pruning (~52 Elo) ──
         if !in_check
             && !N::PV
             && depth <= searcher.cfg.search_params.rfp_depth
