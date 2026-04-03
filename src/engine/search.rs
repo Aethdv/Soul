@@ -29,8 +29,13 @@ use crate::{
         moves::Move,
     },
     engine::{
-        eval::evaluate, history, movegen::gen_legal_moves, movepicker::MovePicker,
-        search_params::SearchParams, tm::TimeManager, tt,
+        eval::evaluate,
+        history,
+        movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
+        movepicker::MovePicker,
+        search_params::SearchParams,
+        tm::TimeManager,
+        tt,
     },
     tools::tui,
     weave::Vu64x4,
@@ -285,7 +290,14 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         if !self.cfg.limits.silent {
-            let best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
+            let mut best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
+
+            // Guard: if the PV move is somehow not legal for the root position
+            // fall back to root_moves[0] which was generated legally.
+            if !is_pseudo_legal(&self.root_pos, best) {
+                best = self.root_moves[0].mv;
+            }
+
             match self.cfg.limits.protocol {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
                 Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
@@ -547,15 +559,25 @@ impl Worker {
 
         // ── TT probe (~128 Elo) ──
         let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
-            if !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
+            // Hash collisions can inject moves from unrelated positions.
+            // Full pseudo-legality check rejects garbage before it reaches
+            // the move picker or triggers a cutoff with a bogus score.
+            let valid = mv.is_null() || is_pseudo_legal(&self.pos, mv);
+
+            if valid && !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if mv.is_null() { None } else { Some(mv) }
+            if valid && !mv.is_null() {
+                Some(mv)
+            } else {
+                None
+            }
         } else {
             None
         };
 
         // ── TT move ordering (~56 Elo) ──
+        let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
         let checkers = self.pos.checkers();
@@ -650,7 +672,7 @@ impl Worker {
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
-                if !crate::engine::movegen::is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
 
@@ -959,7 +981,7 @@ impl Worker {
         let mut picker = MovePicker::new_qsearch(None, searcher.cfg, in_check);
 
         while let Some(mv) = picker.next(&self.pos, &self.history) {
-            if !crate::engine::movegen::is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+            if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                 continue;
             }
 

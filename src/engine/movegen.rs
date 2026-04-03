@@ -8,7 +8,7 @@ use crate::core::{
         B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS,
         CASTLE_B_QS_CHECK, CASTLE_W_KS, CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position,
         W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
-        bitboard::{atk_bishop, atk_king, atk_knight, atk_rook, between_bb, line_bb},
+        bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb, line_bb},
     },
     defs::{Bitboard, Color, Direction, FILE_A, FILE_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
     moves::{Move, MoveList},
@@ -48,6 +48,87 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
     }
 
     legal
+}
+
+/// Validates that a TT move is pseudo-legal for the current position.
+///
+/// TT hash collisions can produce moves from completely unrelated positions.
+/// This checks: friendly piece on `from`, correct attack pattern for that
+/// piece, and flag consistency (captures, promotions, castling, EP, double push).
+/// Does NOT check legality (pins, checks) — that's `is_legal`'s job.
+#[inline]
+pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
+    let from = mv.from();
+    let to = mv.to();
+    let stm = board.stm;
+    let us = board.side_bb[stm];
+    let them = board.side_bb[stm.opposite()];
+    let occ = board.occ;
+
+    // Must have a friendly piece on the origin square.
+    if !us.check_bit(from) {
+        return false;
+    }
+
+    let piece = board.piece_at(from);
+
+    // Castling: the 'to' square encodes the rook's home square.
+    // A TT collision with the CASTLE flag but a garbage 'to' would make
+    // apply_castling lift a non-rook piece and place a phantom rook,
+    // permanently corrupting the board after unmake.
+    if mv.is_castling() {
+        return piece == PieceType::King
+            && board.piece_at(to) == PieceType::Rook
+            && us.check_bit(to)
+            && board.castling_rooks.contains(&to);
+    }
+
+    // Destination must not hold a friendly piece.
+    if us.check_bit(to) {
+        return false;
+    }
+
+    // Capture flag consistency.
+    let enemy_on_to = them.check_bit(to);
+    if mv.is_capture() && !mv.is_en_passant() && !enemy_on_to {
+        return false;
+    }
+    if !mv.is_capture() && enemy_on_to {
+        return false;
+    }
+
+    // Promotions must come from a pawn.
+    if mv.is_promotion() && piece != PieceType::Pawn {
+        return false;
+    }
+
+    match piece {
+        PieceType::Pawn => {
+            let fwd = stm.forward_dir().delta();
+
+            if mv.is_en_passant() {
+                return board.en_passant == Some(to) && atk_pawn(from, stm).check_bit(to);
+            }
+
+            if mv.is_double_push() {
+                let mid = Square((from.0 as i8 + fwd) as u8);
+                return to.0 as i8 == from.0 as i8 + fwd * 2 && !occ.check_bit(mid) && !occ.check_bit(to);
+            }
+
+            if mv.is_capture() {
+                return atk_pawn(from, stm).check_bit(to);
+            }
+
+            // Single push.
+            to.0 as i8 == from.0 as i8 + fwd && !occ.check_bit(to)
+        },
+        PieceType::Knight => atk_knight(from).check_bit(to),
+        PieceType::Bishop => atk_bishop(from, occ).check_bit(to),
+        PieceType::Rook => atk_rook(from, occ).check_bit(to),
+        PieceType::Queen => (atk_bishop(from, occ) | atk_rook(from, occ)).check_bit(to),
+        PieceType::King => atk_king(from).check_bit(to),
+        _ => false,
+    }
 }
 
 /// Legality — does this move leave our king safe?
