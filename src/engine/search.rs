@@ -614,14 +614,22 @@ impl Worker {
             self.stack[ply + 1].is_null = true;
             let undo = self.pos.make_null_move();
             searcher.history.push(self.pos.hash);
-            let score = -self.negamax::<NonPvNode>(
+            let score = match self.negamax::<NonPvNode>(
                 searcher,
                 (depth - r - 1).max(0),
                 -beta,
                 -beta + 1,
                 ply + 1,
                 None,
-            )?;
+            ) {
+                Ok(v) => -v,
+                Err(e) => {
+                    searcher.history.pop();
+                    self.pos.unmake_null_move(&undo);
+                    self.stack[ply + 1].is_null = false;
+                    return Err(e);
+                },
+            };
             searcher.history.pop();
             self.pos.unmake_null_move(&undo);
             self.stack[ply + 1].is_null = false;
@@ -991,7 +999,15 @@ impl Worker {
             moves_made += 1;
             searcher.history.push(self.pos.hash);
 
-            let score = -self.qsearch::<N>(searcher, -beta, -alpha, ply + 1)?;
+            let score = match self.qsearch::<N>(searcher, -beta, -alpha, ply + 1) {
+                Ok(v) => -v,
+                Err(e) => {
+                    searcher.history.pop();
+                    self.pos.unmake_move(mv, &undo);
+                    self.accumulator = saved_acc;
+                    return Err(e);
+                },
+            };
 
             searcher.history.pop();
             self.pos.unmake_move(mv, &undo);
