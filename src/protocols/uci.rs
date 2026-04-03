@@ -5,6 +5,7 @@
 
 use std::{
     io::{self, Write},
+    panic,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -149,11 +150,31 @@ impl UciState {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, history_table, tt, result_tx) => {
-                        let mut ctx =
-                            crate::engine::search::Searcher::new(&cfg, &board, &history, history_table, tt);
-                        let final_history = ctx.iterative_deepening();
-                        is_searching_worker.store(false, Ordering::Release);
-                        let _ = result_tx.send(final_history);
+                        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                            let mut ctx =
+                                crate::engine::search::Searcher::new(&cfg, &board, &history, history_table, tt);
+                            ctx.iterative_deepening()
+                        }));
+
+                        match result {
+                            Ok(final_history) => {
+                                is_searching_worker.store(false, Ordering::Release);
+                                let _ = result_tx.send(final_history);
+                            },
+                            Err(payload) => {
+                                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                                    s.to_string()
+                                } else if let Some(s) = payload.downcast_ref::<String>() {
+                                    s.clone()
+                                } else {
+                                    "unknown panic".to_string()
+                                };
+                                eprintln!("info string search panic: {msg}");
+                                println!("bestmove 0000");
+                                let _ = io::stdout().flush();
+                                is_searching_worker.store(false, Ordering::Release);
+                            },
+                        }
                     },
                     SearchCommand::Quit => break,
                 }
