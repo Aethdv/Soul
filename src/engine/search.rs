@@ -583,6 +583,11 @@ impl Worker {
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
 
+        // ── Check extension ──
+        // Being in check is forcing — don't let the horizon cut us off
+        // mid-tactic. Extend by one ply so the reply is always searched.
+        let depth = if in_check { depth + 1 } else { depth };
+
         // ── Static eval ──
         let static_eval = if in_check {
             tt::SCORE_NONE
