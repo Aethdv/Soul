@@ -239,9 +239,12 @@ fn spawn_stdin_listener(
                     }
                 },
                 _ => {
-                    // Only forward commands when not searching.
-                    // UCI spec says to silently ignore unexpected commands during search.
-                    if !is_searching.load(Ordering::Acquire) && tx.send(line).is_err() {
+                    // Always forward to the main thread's command channel.
+                    // Commands queue up and are processed in order after any
+                    // pending stop_search() completes. Dropping commands here
+                    // causes a race: cutechess-cli gets readyok before the
+                    // search thread stops, sends position/go, and we lose them.
+                    if tx.send(line).is_err() {
                         break; // Main thread died
                     }
                 },
