@@ -1096,7 +1096,6 @@ impl Worker {
         let window = self.pos.halfmove_clock as usize;
         let start = history.len().saturating_sub(window + 1);
 
-        // ── Implementation coupling ──
         // We exclude the current position using saturating_sub(2).
         // This works because the caller (search_move) has already pushed the current
         // hash into searcher.history before descending, placing it at len - 1.
@@ -1111,10 +1110,9 @@ impl Worker {
         let chunks = slice.rchunks_exact(4);
         let remainder = chunks.remainder();
 
-        // ── Performance Note ──
         // We vector-scan the full slice, including opponent-ply hashes.
-        // Zobrist already encodes side-to-move, so cross-ply hashes can never match —
-        // the STM bit differs for every other entry, making false positives impossible.
+        // Zobrist already encodes side-to-move, so cross-ply hashes can never match.
+        // The STM bit differs for every other entry, making false positives impossible.
         // The false-check cost is zero, and contiguous SIMD loads are cheaper than strided.
         //
         // Vu64x4::load uses _mm256_loadu_si256 internally (unaligned), which is correct
