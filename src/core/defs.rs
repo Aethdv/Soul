@@ -7,7 +7,7 @@ use std::ops::{Index, IndexMut, Not};
 
 pub use crate::core::primitives::*;
 
-/// Centipawn evaluationW
+/// Centipawn evaluation
 pub type Score = i32;
 /// Move-ordering heuristic value
 pub type MoveScore = i16;
