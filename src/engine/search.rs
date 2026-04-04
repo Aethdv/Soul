@@ -1017,12 +1017,14 @@ impl Worker {
         // Read TT entries stored by negamax or prior qsearch visits.
         // Cutoffs gated on non-PV nodes — PV nodes need the full capture
         // sequence for accurate PV reporting.
-        if let Some((_mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply)
-            && !N::PV
-            && tt::can_cutoff(bound, score, alpha, beta)
-        {
-            return Ok(score);
-        }
+        let qs_tt_move = if let Some((mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply) {
+            if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
+                return Ok(score);
+            }
+            if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None }
+        } else {
+            None
+        };
 
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
@@ -1071,7 +1073,7 @@ impl Worker {
         let ksq = self.pos.pieces(PieceType::King, stm).lsb();
         let pinned = self.pos.king_blockers();
 
-        let mut picker = MovePicker::new_qsearch(None, searcher.cfg, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, in_check);
 
         while let Some(mv) = picker.next(&self.pos, &self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
