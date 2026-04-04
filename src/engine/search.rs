@@ -1017,10 +1017,11 @@ impl Worker {
         // Read TT entries stored by negamax or prior qsearch visits.
         // Cutoffs gated on non-PV nodes — PV nodes need the full capture
         // sequence for accurate PV reporting.
-        if let Some((_mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply) {
-            if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
-                return Ok(score);
-            }
+        if let Some((_mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply)
+            && !N::PV
+            && tt::can_cutoff(bound, score, alpha, beta)
+        {
+            return Ok(score);
         }
 
         let checkers = self.pos.checkers();
