@@ -716,6 +716,7 @@ impl Worker {
                 // that a quiet move is unlikely to raise it, skip the move.
                 if !in_check
                     && mv.is_quiet()
+                    && !N::PV
                     && res.move_count >= 1
                     && depth <= searcher.cfg.search_params.fp_depth
                     && static_eval + searcher.cfg.search_params.fp_margin * depth <= res.alpha
