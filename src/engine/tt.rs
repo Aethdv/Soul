@@ -153,6 +153,31 @@ impl TranspositionTable {
         }
     }
 
+    /// Stores a qsearch result (depth = 0). Conservative replacement policy:
+    /// only overwrites empty slots or existing depth-0 entries so that deeper
+    /// negamax entries are never evicted by high-volume qsearch stores.
+    #[inline(always)]
+    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8) {
+        if self.entries.is_empty() {
+            return;
+        }
+
+        let idx = self.index(hash);
+        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
+        // Standard high-performance lockless TT approach.
+        let entry = unsafe { &mut *(self.entries.as_ptr().add(idx) as *mut TtEntry) };
+
+        // Only overwrite empty slots or existing depth-0 (qsearch) entries.
+        // Depth-preferred negamax entries must not be evicted.
+        if entry.bound == BOUND_NONE || entry.depth == 0 {
+            entry.key = hash;
+            entry.mv = mv.inner();
+            entry.score = Self::score_to_tt(score, ply) as i16;
+            entry.depth = 0;
+            entry.bound = bound;
+        }
+    }
+
     /// Maps 64-bit hash to [0, count).
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {

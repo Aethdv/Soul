@@ -558,6 +558,10 @@ impl Worker {
         let alpha_orig = alpha;
 
         // ── TT Probe (~128 Elo) ──
+        // Have we seen this position before?
+        // If a previous search already explored it to sufficient depth,
+        // we can reuse its result and skip the entire subtree.
+        // This is what makes iterative deepening fast — earlier iterations populate the table for later ones.
         let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
             // Hash collisions can inject moves from unrelated positions.
             // Full pseudo-legality check rejects garbage before it reaches
@@ -577,6 +581,9 @@ impl Worker {
         };
 
         // ── TT Move Ordering (~56 Elo) ──
+        // Even when the TT score didn't produce a cutoff, the move it stored
+        // is still our best guess at what's good here. Searching it first makes
+        // beta cutoffs happen earlier, which lets alpha-beta prune far more of the tree.
         let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
@@ -589,6 +596,10 @@ impl Worker {
         let depth = if in_check { depth + 1 } else { depth };
 
         // ── Static Eval ──
+        // Our best guess at how good this position is without searching deeper.
+        // Used as a baseline for pruning decisions — if the position looks
+        // overwhelmingly good or hopeless, we can take shortcuts.
+        // Meaningless when in check (we're forced to respond, not evaluate).
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
@@ -597,6 +608,9 @@ impl Worker {
         self.stack[ply].static_eval = static_eval;
 
         // ── Reverse Futility Pruning (~52 Elo) ──
+        // Position is already so good that even after subtracting a generous
+        // margin, we're still above beta. The opponent wouldn't have let us
+        // get here — just return the eval and move on.
         if !in_check
             && !N::PV
             && depth <= searcher.cfg.search_params.rfp_depth
@@ -620,6 +634,9 @@ impl Worker {
         }
 
         // ── Null Move Pruning (~85 Elo) ──
+        // If our position is so good that we can pass the turn (do nothing)
+        // and still beat beta after a reduced search, the opponent would
+        // never allow this line. Skip it. The "null move" is the pass.
         if !in_check
             && !N::PV
             && !self.stack[ply].is_null
@@ -994,6 +1011,19 @@ impl Worker {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
 
+        let alpha_orig = alpha;
+
+        // ── QSearch TT Probe (~22 elo) ──
+        // Read TT entries stored by negamax or prior qsearch visits.
+        // Cutoffs gated on non-PV nodes — PV nodes need the full capture
+        // sequence for accurate PV reporting.
+        if let Some((_mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply)
+            && !N::PV
+            && tt::can_cutoff(bound, score, alpha, beta)
+        {
+            return Ok(score);
+        }
+
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
         let stm = self.pos.stm;
@@ -1037,6 +1067,7 @@ impl Worker {
         };
 
         let mut moves_made = 0;
+        let mut best_move = Move::null();
         let ksq = self.pos.pieces(PieceType::King, stm).lsb();
         let pinned = self.pos.king_blockers();
 
@@ -1069,6 +1100,7 @@ impl Worker {
 
             if score > best_eval {
                 best_eval = score;
+                best_move = mv;
                 if score > alpha {
                     if score >= beta {
                         break;
@@ -1081,6 +1113,18 @@ impl Worker {
         if in_check && moves_made == 0 {
             return Ok(-MATE + ply as i32);
         }
+
+        // ── QSearch TT Store ──
+        let bound = if best_eval >= beta {
+            tt::BOUND_LOWER
+        } else if best_eval > alpha_orig {
+            tt::BOUND_EXACT
+        } else {
+            tt::BOUND_UPPER
+        };
+        searcher
+            .tt
+            .store_qs(self.pos.hash, ply, best_eval, best_move, bound);
 
         Ok(best_eval)
     }
