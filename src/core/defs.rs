@@ -7,10 +7,14 @@ use std::ops::{Index, IndexMut, Not};
 
 pub use crate::core::primitives::*;
 
-pub type Score = i32; // Centipawn evaluation
-pub type MoveScore = i16; // Move-ordering heuristic value
-pub type Depth = i32; // Search depth
-pub type Ply = usize; // Half-move distance from the root
+/// Centipawn evaluation
+pub type Score = i32;
+/// Move-ordering heuristic value
+pub type MoveScore = i16;
+/// Search depth
+pub type Depth = i32;
+/// Half-move distance from the root
+pub type Ply = usize;
 
 // ──────── Search limits ────────
 
@@ -28,17 +32,17 @@ pub const MATE_BOUND: i32 = MATE - 100;
 
 // ──────── Adjudication thresholds ────────
 
-/// |score| < this for N plies ⇒ Draw
+/// |score| < this for N plies → Draw
 pub const ADJ_DRAW_SCORE: i32 = 10;
 pub const ADJ_DRAW_PLIES: usize = 16;
 /// Only start draw adjudication after this many plies (40 moves)
 pub const ADJ_DRAW_START_PLY: usize = 80;
 
-/// |score| > this for N plies ⇒ Win
+/// |score| > this for N plies → Win
 pub const ADJ_WIN_SCORE: i32 = 2500;
 pub const ADJ_WIN_PLIES: usize = 8;
 
-/// |score| > this ⇒ Instant Resignation
+/// |score| > this → Instant Resignation
 pub const ADJ_RESIGN_SCORE: i32 = 3000;
 
 // ──────── Color — the two sides of the board ────────

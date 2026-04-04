@@ -133,7 +133,7 @@ pub struct Worker {
 }
 
 impl<'cfg> Searcher<'cfg> {
-    /// ── Iterative deepening ──
+    /// ── Iterative Deepening ──
     /// Search depth 1, then 2, then 3, ...
     ///
     /// Seems wasteful — why redo shallow work? Two reasons:
@@ -218,7 +218,7 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            // ── Aspiration windows (~42 Elo) ──
+            // ── Aspiration Windows (~42 Elo) ──
             let mut delta = self.cfg.search_params.asp_initial;
             let mut alpha = if depth >= 4 {
                 (self.prev_score - delta).max(-INF)
@@ -402,7 +402,7 @@ impl<'cfg> Searcher<'cfg> {
         self.root_moves.first().map(|rm| rm.score)
     }
 
-    /// Periodic heartbeat:
+    /// Periodic Heartbeat:
     /// Check stop flag, hard time limit, node limit.
     /// Also drives realtime TUI updates — piggybacks on the same interval.
     #[inline]
@@ -557,7 +557,7 @@ impl Worker {
 
         let alpha_orig = alpha;
 
-        // ── TT probe (~128 Elo) ──
+        // ── TT Probe (~128 Elo) ──
         let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
             // Hash collisions can inject moves from unrelated positions.
             // Full pseudo-legality check rejects garbage before it reaches
@@ -576,19 +576,19 @@ impl Worker {
             None
         };
 
-        // ── TT move ordering (~56 Elo) ──
+        // ── TT Move Ordering (~56 Elo) ──
         let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
 
-        // ── Check extension (~11 Elo) ──
+        // ── Check Extension (~11 Elo) ──
         // Being in check is forcing — don't let the horizon cut us off
         // mid-tactic. Extend by one ply so the reply is always searched.
         let depth = if in_check { depth + 1 } else { depth };
 
-        // ── Static eval ──
+        // ── Static Eval ──
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
@@ -724,7 +724,7 @@ impl Worker {
                     continue;
                 }
 
-                // ── Late Move Pruning ──
+                // ── Late Move Pruning (~14 Elo) ──
                 // At shallow depth, quiet moves beyond a fixed count threshold
                 // are unlikely to be the best move — skip them entirely.
                 if !in_check
@@ -944,7 +944,7 @@ impl Worker {
             return Ok(-self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?);
         }
 
-        // ── LMR scout ──
+        // ── LMR Scout ──
         // Late quiet moves get a shallower scout. If the reduced search
         // still beats alpha, the move earned a full-depth re-search.
         let reduced_depth = depth - 1 - reduction;
@@ -1011,16 +1011,26 @@ impl Worker {
                 return Ok(eval);
             }
 
-            // ── Delta pruning (revisit after NMP+LMR+aspiration) ──
-            // Tested: 0.00 Elo with bare search. Needs tighter windows and deeper
-            // search to be effective. Code kept for when we revisit.
-            // let best_capturable = [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn]
-            //     .into_iter()
-            //     .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
-            //     .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
-            // if eval + best_capturable + searcher.cfg.search_params.delta_margin < alpha {
-            //     return Ok(alpha);
-            // }
+            // ── Delta Pruning (~20 Elo) ──
+            // Stand-pat already failed to beat alpha.
+            // Even if we capture the most valuable piece on the board, can we reach alpha?
+            // If not, no capture in this position can raise us high enough — bail early.
+            //
+            // best_capturable is just the highest MVV-LVA value among opponent pieces
+            // still on the board; delta_margin covers promotion/positional upside.
+            let best_capturable = [
+                PieceType::Queen,
+                PieceType::Rook,
+                PieceType::Bishop,
+                PieceType::Knight,
+                PieceType::Pawn,
+            ]
+            .into_iter()
+            .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
+            .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
+            if eval + best_capturable + searcher.cfg.search_params.delta_margin < alpha {
+                return Ok(alpha);
+            }
 
             alpha = alpha.max(eval);
             eval
@@ -1285,7 +1295,7 @@ pub struct Limits {
     pub searchmoves: Vec<Move>,
 }
 
-/// ── Root move ──
+/// ── Root Move ──
 /// A legal move at ply 0 paired with its best known score.
 /// After each iteration these are sorted by score so the strongest move
 /// is searched first next time — the single most important factor for
@@ -1307,7 +1317,7 @@ impl RootMove {
     }
 }
 
-/// ── Principal Variation line ──
+/// ── Principal Variation Line ──
 ///
 /// The PV is the engine's predicted best play for both sides.
 /// When a new best move is found at any ply, we compose the line:
