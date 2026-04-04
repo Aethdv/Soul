@@ -141,9 +141,9 @@ impl SpatialTensor {
         // The algorithm treats squares where direct attacks hit friendly pieces as
         // NEW generators, then flood-fills from those points in the same direction.
         //
-        // This is highly efficient in SIMD because the first pass `gen_n` etc.
-        // already contains the occupancy-masked rays. Bitwise ANDing with `us_pcs`
-        // identifies all points where a friendly piece was hit, and `fill_n(gen_n & us)`
+        // This is highly efficient in SIMD because the first pass gen_n etc.
+        // already contains the occupancy-masked rays. Bitwise ANDing with us_pcs
+        // identifies all points where a friendly piece was hit, and fill_n(gen_n & us)
         // continues the ray from those hit-points.
         let ortho_xray = {
             let (n, s, e, w) = (

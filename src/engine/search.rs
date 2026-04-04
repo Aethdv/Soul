@@ -1011,7 +1011,7 @@ impl Worker {
                 return Ok(eval);
             }
 
-            // ── Delta Pruning ──
+            // ── Delta Pruning (~20 Elo) ──
             // Stand-pat already failed to beat alpha.
             // Even if we capture the most valuable piece on the board, can we reach alpha?
             // If not, no capture in this position can raise us high enough — bail early.
