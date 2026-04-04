@@ -994,6 +994,18 @@ impl Worker {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
 
+        let alpha_orig = alpha;
+
+        // ── QSearch TT Probe ──
+        // Read TT entries stored by negamax or prior qsearch visits.
+        // Cutoffs gated on non-PV nodes — PV nodes need the full capture
+        // sequence for accurate PV reporting.
+        if let Some((_mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply) {
+            if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
+                return Ok(score);
+            }
+        }
+
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
         let stm = self.pos.stm;
@@ -1037,6 +1049,7 @@ impl Worker {
         };
 
         let mut moves_made = 0;
+        let mut best_move = Move::null();
         let ksq = self.pos.pieces(PieceType::King, stm).lsb();
         let pinned = self.pos.king_blockers();
 
@@ -1069,6 +1082,7 @@ impl Worker {
 
             if score > best_eval {
                 best_eval = score;
+                best_move = mv;
                 if score > alpha {
                     if score >= beta {
                         break;
@@ -1081,6 +1095,18 @@ impl Worker {
         if in_check && moves_made == 0 {
             return Ok(-MATE + ply as i32);
         }
+
+        // ── QSearch TT Store ──
+        let bound = if best_eval >= beta {
+            tt::BOUND_LOWER
+        } else if best_eval > alpha_orig {
+            tt::BOUND_EXACT
+        } else {
+            tt::BOUND_UPPER
+        };
+        searcher
+            .tt
+            .store_qs(self.pos.hash, ply, best_eval, best_move, bound);
 
         Ok(best_eval)
     }
