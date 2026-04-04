@@ -716,9 +716,22 @@ impl Worker {
                 // that a quiet move is unlikely to raise it, skip the move.
                 if !in_check
                     && mv.is_quiet()
+                    && !N::PV
                     && res.move_count >= 1
                     && depth <= searcher.cfg.search_params.fp_depth
                     && static_eval + searcher.cfg.search_params.fp_margin * depth <= res.alpha
+                {
+                    continue;
+                }
+
+                // ── Late Move Pruning ──
+                // At shallow depth, quiet moves beyond a fixed count threshold
+                // are unlikely to be the best move — skip them entirely.
+                if !in_check
+                    && mv.is_quiet()
+                    && !N::PV
+                    && depth <= searcher.cfg.search_params.lmp_depth
+                    && res.move_count as i32 >= searcher.cfg.search_params.lmp_base + depth * depth
                 {
                     continue;
                 }

@@ -279,6 +279,21 @@ search_params! {
             step:      1,
         },
 
+        /// LMP base move count before pruning kicks in.
+        pub lmp_base: i32 {
+            default:   2,
+            min:       1,
+            max:       6,
+            step:      1,
+        },
+        /// LMP maximum depth (plies).
+        pub lmp_depth: i32 {
+            default:   5,
+            min:       2,
+            max:       8,
+            step:      1,
+        },
+
         /// Futility pruning per-depth margin (cp/ply).
         pub fp_margin: i32 {
             default: 100,
