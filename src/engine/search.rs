@@ -724,6 +724,18 @@ impl Worker {
                     continue;
                 }
 
+                // ── Late Move Pruning ──
+                // At shallow depth, quiet moves beyond a fixed count threshold
+                // are unlikely to be the best move — skip them entirely.
+                if !in_check
+                    && mv.is_quiet()
+                    && !N::PV
+                    && depth <= searcher.cfg.search_params.lmp_depth
+                    && res.move_count as i32 >= searcher.cfg.search_params.lmp_base + depth * depth
+                {
+                    continue;
+                }
+
                 // ── Late Move Reductions (~90 Elo) ──
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
