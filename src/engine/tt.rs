@@ -40,8 +40,8 @@ pub struct TranspositionTable {
     entries: Box<[TtEntry]>,
 }
 
-// SAFETY: The TT bypasses Rust's safety borrow rules via raw pointers during `probe` and `store`,
-// which mutate fields through a `&self` shared reference. This is mathematically safe for single
+// SAFETY: The TT bypasses Rust's safety borrow rules via raw pointers during probe and store,
+// which mutate fields through a &self shared reference. This is mathematically safe for single
 // threaded execution.
 unsafe impl Send for TranspositionTable {}
 unsafe impl Sync for TranspositionTable {}
@@ -88,7 +88,6 @@ impl TranspositionTable {
     /// Prefetches the memory for the given Zobrist key into the CPU cache.
     #[inline(always)]
     pub fn prefetch(&self, hash: u64) {
-        // RE-TEST: 0 elo, seems to not help much currently, not meaningful enough.
         if self.entries.is_empty() {
             return;
         }
@@ -129,7 +128,7 @@ impl TranspositionTable {
         }
 
         let idx = self.index(hash);
-        // SAFETY: Obtaining mutable reference to a slot via an immutable `&self`.
+        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
         // Standard high-performance lockless TT approach.
         let entry = unsafe { &mut *(self.entries.as_ptr().add(idx) as *mut TtEntry) };
 
