@@ -680,7 +680,7 @@ impl Worker {
         // that, guesses. Reduce by one ply to acknowledge the uncertainty
         // and avoid investing full depth into an unguided search.
         // The next iteration will have a TT move and do it properly.
-        let depth = if depth >= 4 && N::PV && tt_move.is_none() {
+        let depth = if depth >= 4 && tt_move.is_none() {
             depth - 1
         } else {
             depth
