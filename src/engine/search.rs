@@ -675,7 +675,7 @@ impl Worker {
             }
         }
 
-        // ── Internal Iterative Reduction ──
+        // ── Internal Iterative Reduction (~14 Elo) ──
         // No TT move means we're searching blind — our first guesses are just
         // that, guesses. Reduce by one ply to acknowledge the uncertainty
         // and avoid investing full depth into an unguided search.
