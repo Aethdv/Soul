@@ -1017,11 +1017,17 @@ impl Worker {
         // Read TT entries stored by negamax or prior qsearch visits.
         // Cutoffs gated on non-PV nodes — PV nodes need the full capture
         // sequence for accurate PV reporting.
+        //
+        // Quiescence TT Move (~9 Elo)
         let qs_tt_move = if let Some((mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply) {
             if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None }
+            if !mv.is_null() && is_pseudo_legal(&self.pos, mv) {
+                Some(mv)
+            } else {
+                None
+            }
         } else {
             None
         };
