@@ -881,7 +881,7 @@ impl Worker {
         let undo = self.pos.make_move(mv, &mut self.accumulator);
         searcher.tt.prefetch(self.pos.hash);
 
-        // ── Gives-Check LMR Adjustment ──
+        // ── Gives-Check LMR Adjustment (~4 Elo) ──
         // A move that delivers check is forcing — the opponent has no choice
         // but to respond. Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
