@@ -58,7 +58,7 @@ pub struct History {
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
     butterfly: [[i16; 4096]; 2], // ~20 Elo
     /// `[side][prev_piece][prev_to][piece][to]`
-    cont:      ContinuationHistory,
+    cont:      ContinuationHistory, // ~13 Elo
 }
 
 impl History {
