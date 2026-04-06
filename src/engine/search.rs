@@ -699,6 +699,17 @@ impl Worker {
             // Iterate the pre-sorted root move list.
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
+
+                // ── Root LMR ──
+                // Root moves are pre-sorted by the previous iteration's scores,
+                // so late moves in the list are already the engine's worst guesses.
+                // Scout them at reduced depth; a fail-high triggers a full re-search.
+                let reduction = if depth >= 2 && i >= 1 && mv.is_quiet() && !in_check {
+                    searcher.cfg.lmr_table[depth as usize][i + 1] as i32
+                } else {
+                    0
+                };
+
                 self.search_move::<N>(
                     searcher,
                     mv,
@@ -708,7 +719,7 @@ impl Worker {
                     ply,
                     Some(i),
                     Some(mv) == pv_move,
-                    0,
+                    reduction,
                 )?;
                 if likely(res.alpha >= beta) {
                     break;
