@@ -413,7 +413,7 @@ impl MovePicker {
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
-        let score = history.score_quiet(stm, pt, mv.to());
+        let score = history.score_quiet(stm, pt, mv.from(), mv.to());
 
         // ──────── Move Ordering Heuristics ────────
 
