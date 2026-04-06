@@ -15,7 +15,7 @@ pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
     table:     [[[i16; 64]; 6]; 2],
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
-    butterfly: [[i16; 4096]; 2],
+    butterfly: [[i16; 4096]; 2], // ~20 Elo
 }
 
 impl History {
