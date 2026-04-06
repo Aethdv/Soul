@@ -8,6 +8,21 @@
 
 use crate::core::defs::{Color, PieceType, Square};
 
+#[derive(Clone, Copy)]
+pub struct ContContext {
+    pub pt: PieceType,
+    pub to: Square,
+}
+
+impl Default for ContContext {
+    fn default() -> Self {
+        Self {
+            pt: PieceType::None,
+            to: Square(0),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ContinuationHistory {
     data: Box<[i16]>,
@@ -93,14 +108,13 @@ impl History {
         pt: PieceType,
         from: Square,
         to: Square,
-        prev_pt: PieceType,
-        prev_to: Square,
+        cont1: ContContext,
     ) -> i32 {
         let mut score = i32::from(self.table[stm][pt][to])
             + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
 
-        if prev_pt != PieceType::None {
-            score += i32::from(self.cont.get(stm, prev_pt, prev_to, pt, to));
+        if cont1.pt != PieceType::None {
+            score += i32::from(self.cont.get(stm, cont1.pt, cont1.to, pt, to));
         }
         score
     }
@@ -125,15 +139,14 @@ impl History {
         pt: PieceType,
         from: Square,
         to: Square,
-        prev_pt: PieceType,
-        prev_to: Square,
+        cont1: ContContext,
         bonus: i32,
     ) {
         Self::update_entry(&mut self.table[stm][pt][to], bonus);
         Self::update_entry(&mut self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
 
-        if prev_pt != PieceType::None {
-            Self::update_entry(self.cont.get_mut(stm, prev_pt, prev_to, pt, to), bonus);
+        if cont1.pt != PieceType::None {
+            Self::update_entry(self.cont.get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
         }
     }
 
