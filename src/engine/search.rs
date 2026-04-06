@@ -824,7 +824,7 @@ impl Worker {
                         let pt = self.pos.expect_piece_at(mv.from());
                         self.history.update(stm, pt, mv.from(), mv.to(), bonus);
 
-                        // ── Killer Moves (???) ──
+                        // ── Killer Moves (~35 Elo) ──
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
                         // If the move isn't already the primary killer, shift the old primary to slot 1
                         // and promote the new move to slot 0. If it was slot 1, this natively swaps them.
