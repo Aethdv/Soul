@@ -13,6 +13,12 @@ pub struct ContinuationHistory {
     data: Box<[i16]>,
 }
 
+impl Default for ContinuationHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContinuationHistory {
     pub fn new() -> Self {
         Self {
