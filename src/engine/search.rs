@@ -736,7 +736,7 @@ impl Worker {
             self.stack[ply].quiet_count = 0;
 
             // Interior: staged move generation via MovePicker.
-            let mut picker = MovePicker::new(hash_move, searcher.cfg);
+            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -779,12 +779,17 @@ impl Worker {
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
-                    let r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
+                    let mut r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
                     let pt = self.pos.expect_piece_at(mv.from());
                     // ~13 Elo
                     let hist = self
                         .history
                         .score_quiet(self.pos.stm, pt, mv.from(), mv.to());
+
+                    if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
+                        r -= 1;
+                    }
+
                     (r - hist / 8192).clamp(0, depth - 1)
                 } else {
                     0
@@ -818,6 +823,15 @@ impl Worker {
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
                         self.history.update(stm, pt, mv.from(), mv.to(), bonus);
+
+                        // ── Killer Moves (~35 Elo) ──
+                        // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
+                        // If the move isn't already the primary killer, shift the old primary to slot 1
+                        // and promote the new move to slot 0. If it was slot 1, this natively swaps them.
+                        if mv != self.stack[ply].killers[0] {
+                            self.stack[ply].killers[1] = self.stack[ply].killers[0];
+                            self.stack[ply].killers[0] = mv;
+                        }
                     }
 
                     // ── Asymmetric Penalty (~25 Elo) ──
@@ -1459,6 +1473,7 @@ pub struct Stack {
     pub pv:          Line,
     pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
     pub quiet_count: usize,
+    pub killers:     [Move; 2],
     pub static_eval: i32,
     pub is_null:     bool,
 }
@@ -1469,6 +1484,7 @@ impl Default for Stack {
             pv:          Line::new(),
             quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
             quiet_count: 0,
+            killers:     [Move::null(); 2],
             static_eval: tt::SCORE_NONE,
             is_null:     false,
         }
