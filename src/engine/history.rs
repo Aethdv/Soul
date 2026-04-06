@@ -8,19 +8,22 @@
 
 use crate::core::defs::{Color, PieceType, Square};
 
-/// History table indexed by `[side][piece][to_square]`.
+/// Combined history tables for quiet move ordering.
+/// Queries return the sum of all components, bounded to `[-32768, 32768]`.
 #[derive(Clone, Copy)]
 pub struct History {
-    /// Scores are soft-gravity bounded to `[-16384, 16384]` by `update()`.
-    /// Stored as `i16` to halve cache footprint; widened to `i32` on reads.
-    pub table: [[[i16; 64]; 6]; 2],
+    /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
+    table:     [[[i16; 64]; 6]; 2],
+    /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
+    butterfly: [[i16; 4096]; 2],
 }
 
 impl History {
     /// Create a zeroed history table.
     pub fn new() -> Self {
         Self {
-            table: [[[0; 64]; 6]; 2],
+            table:     [[[0; 64]; 6]; 2],
+            butterfly: [[0; 4096]; 2],
         }
     }
 
@@ -34,8 +37,9 @@ impl History {
     /// Used in `MovePicker` to prioritize moves that previously caused beta cutoffs.
     /// The scores are updated in `Searcher` using the soft-gravity mechanism.
     #[inline(always)]
-    pub fn score_quiet(&self, stm: Color, pt: PieceType, to: Square) -> i32 {
+    pub fn score_quiet(&self, stm: Color, pt: PieceType, from: Square, to: Square) -> i32 {
         i32::from(self.table[stm][pt][to])
+            + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)])
     }
 
     /// Update a history entry with soft gravity.
@@ -52,11 +56,16 @@ impl History {
     /// ensures the table stays within `i16` bounds without hard-clipping
     /// destroying the relative ordering of values near the attractor limit.
     #[inline(always)]
-    pub fn update(&mut self, stm: Color, pt: PieceType, to: Square, bonus: i32) {
-        let entry = &mut self.table[stm][pt][to];
+    pub fn update(&mut self, stm: Color, pt: PieceType, from: Square, to: Square, bonus: i32) {
+        Self::update_entry(&mut self.table[stm][pt][to], bonus);
+        Self::update_entry(&mut self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
+    }
+
+    /// Single soft-gravity update step. Extracted to keep updates DRY.
+    #[inline(always)]
+    fn update_entry(entry: &mut i16, bonus: i32) {
         let e = i32::from(*entry);
-        let new_val = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384);
-        *entry = new_val as i16;
+        *entry = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384) as i16;
     }
 }
 
