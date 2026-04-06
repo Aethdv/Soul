@@ -700,7 +700,7 @@ impl Worker {
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
 
-                // ── Root LMR ──
+                // ── Root LMR (~21 Elo) ──
                 // Root moves are pre-sorted by the previous iteration's scores,
                 // so late moves in the list are already the engine's worst guesses.
                 // Scout them at reduced depth; a fail-high triggers a full re-search.
