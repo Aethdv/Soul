@@ -471,9 +471,9 @@ fn history_gravity_bounds() {
 
     // Slam it with huge bonuses — should converge toward +16384 without overflow.
     for _ in 0..10_000 {
-        hist.update(stm, pt, Square(0), to, 400);
+        hist.update(stm, pt, Square(0), to, PieceType::None, Square(0), 400);
     }
-    let score = hist.score_quiet(stm, pt, Square(0), to);
+    let score = hist.score_quiet(stm, pt, Square(0), to, PieceType::None, Square(0));
     assert!(score > 0, "After massive positive bonus, score should be positive: {score}");
     assert!(
         score <= 32768,
@@ -482,9 +482,9 @@ fn history_gravity_bounds() {
 
     // Now slam it negative — should converge toward -16384.
     for _ in 0..20_000 {
-        hist.update(stm, pt, Square(0), to, -400);
+        hist.update(stm, pt, Square(0), to, PieceType::None, Square(0), -400);
     }
-    let score = hist.score_quiet(stm, pt, Square(0), to);
+    let score = hist.score_quiet(stm, pt, Square(0), to, PieceType::None, Square(0));
     assert!(score < 0, "After massive negative bonus, score should be negative: {score}");
     assert!(score >= -32768, "Score should not go below -32768: {score}");
 }
@@ -494,12 +494,36 @@ fn history_clear() {
     use crate::engine::history::History;
 
     let mut hist = History::new();
-    hist.update(Color::White, PieceType::Knight, Square(0), Square(28), 400);
-    assert!(hist.score_quiet(Color::White, PieceType::Knight, Square(0), Square(28)) > 0);
+    hist.update(
+        Color::White,
+        PieceType::Knight,
+        Square(0),
+        Square(28),
+        PieceType::None,
+        Square(0),
+        400,
+    );
+    assert!(
+        hist.score_quiet(
+            Color::White,
+            PieceType::Knight,
+            Square(0),
+            Square(28),
+            PieceType::None,
+            Square(0)
+        ) > 0
+    );
 
     hist.clear();
     assert_eq!(
-        hist.score_quiet(Color::White, PieceType::Knight, Square(0), Square(28)),
+        hist.score_quiet(
+            Color::White,
+            PieceType::Knight,
+            Square(0),
+            Square(28),
+            PieceType::None,
+            Square(0)
+        ),
         0,
         "Clear should zero out"
     );

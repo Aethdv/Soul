@@ -72,6 +72,8 @@ pub struct MovePicker {
     mvvlva_a:   [i32; 8],
     mvvlva_ep:  i32,
     killers:    [Move; 2],
+    prev_pt:    PieceType,
+    prev_to:    Square,
     is_qsearch: bool,
     in_check:   bool,
 }
@@ -81,7 +83,13 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
 impl MovePicker {
     #[inline]
-    pub fn new(hash_move: Option<Move>, cfg: &SearchConfig, killers: [Move; 2]) -> Self {
+    pub fn new(
+        hash_move: Option<Move>,
+        cfg: &SearchConfig,
+        killers: [Move; 2],
+        prev_pt: PieceType,
+        prev_to: Square,
+    ) -> Self {
         Self {
             stage: Stage::Hash,
             hash_move,
@@ -91,6 +99,8 @@ impl MovePicker {
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             killers,
+            prev_pt,
+            prev_to,
             is_qsearch: false,
             in_check: false,
         }
@@ -107,6 +117,8 @@ impl MovePicker {
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             killers: [Move::null(); 2],
+            prev_pt: PieceType::None,
+            prev_to: Square(0),
             is_qsearch: true,
             in_check,
         }
@@ -416,7 +428,7 @@ impl MovePicker {
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
-        let score = history.score_quiet(stm, pt, mv.from(), mv.to());
+        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.prev_pt, self.prev_to);
 
         // ──────── Move Ordering Heuristics ────────
 

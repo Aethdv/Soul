@@ -129,7 +129,7 @@ impl XBoardState {
         let overhead = self.overhead;
         let show_wdl = self.show_wdl;
         let history_arc = Arc::clone(&self.persistent_history);
-        let persistent_history = *history_arc.lock();
+        let persistent_history = history_arc.lock().clone();
 
         let tt = self.tt.clone();
 

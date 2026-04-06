@@ -83,7 +83,7 @@ pub fn run_cli_go(args: &[String]) {
             Box::new(cfg),
             board,
             state.history.clone(),
-            state.persistent_history,
+            state.persistent_history.clone(),
             state.tt.clone(),
             state.history_tx.clone(),
         ))
@@ -435,7 +435,7 @@ where I: Iterator<Item = &'a str> {
             Box::new(cfg),
             board,
             history,
-            state.persistent_history,
+            state.persistent_history.clone(),
             state.tt.clone(),
             state.history_tx.clone(),
         ))
