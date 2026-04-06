@@ -875,11 +875,19 @@ impl Worker {
         ply: usize,
         root_idx: Option<usize>,
         is_pv_move: bool,
-        reduction: i32,
+        mut reduction: i32,
     ) -> Result<(), SearchAborted> {
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
         searcher.tt.prefetch(self.pos.hash);
+
+        // ── Gives-Check LMR Adjustment (~4 Elo) ──
+        // A move that delivers check is forcing — the opponent has no choice
+        // but to respond. Don't reduce it as aggressively; give it a bit more
+        // depth so the resulting tactics are properly resolved.
+        if self.pos.checkers().is_not_empty() {
+            reduction = (reduction - 1).max(0);
+        }
 
         res.move_count += 1;
         searcher.history.push(self.pos.hash);
