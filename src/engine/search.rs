@@ -25,7 +25,7 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::Position,
-        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType},
+        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square},
         moves::Move,
     },
     engine::{
@@ -155,14 +155,14 @@ impl<'cfg> Searcher<'cfg> {
             let mut board = self.root_pos;
             let mut acc = board.get_initial_accumulator();
             println!("Nodes searched: {}", perft(&mut board, perft_depth, &mut acc));
-            return self.history_table;
+            return self.history_table.clone();
         }
 
         if self.root_moves.is_empty() {
             if !self.cfg.limits.silent {
                 println!("bestmove 0000");
             }
-            return self.history_table;
+            return self.history_table.clone();
         }
 
         if !self.cfg.limits.searchmoves.is_empty() {
@@ -173,7 +173,7 @@ impl<'cfg> Searcher<'cfg> {
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
-                return self.history_table;
+                return self.history_table.clone();
             }
         }
 
@@ -191,7 +191,7 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
-            history:     self.history_table,
+            history:     self.history_table.clone(),
         };
 
         let mut last_iter_elapsed = 0;
@@ -647,6 +647,7 @@ impl Worker {
             let eval_r = ((static_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
             let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
 
+            self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
             let undo = self.pos.make_null_move();
             searcher.history.push(self.pos.hash);
@@ -735,8 +736,15 @@ impl Worker {
             // We reset the pre-allocated counter in the ply stack.
             self.stack[ply].quiet_count = 0;
 
+            let (prev_pt, prev_to) = if ply > 0 {
+                (self.stack[ply - 1].moved_pt, self.stack[ply - 1].moved_to)
+            } else {
+                (PieceType::None, Square(0))
+            };
+
             // Interior: staged move generation via MovePicker.
-            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers);
+            let mut picker =
+                MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, prev_pt, prev_to);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -782,9 +790,9 @@ impl Worker {
                     let mut r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
                     let pt = self.pos.expect_piece_at(mv.from());
                     // ~13 Elo
-                    let hist = self
-                        .history
-                        .score_quiet(self.pos.stm, pt, mv.from(), mv.to());
+                    let hist =
+                        self.history
+                            .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), prev_pt, prev_to);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                         r -= 1;
@@ -794,6 +802,10 @@ impl Worker {
                 } else {
                     0
                 };
+
+                // Context for child node's cont-hist lookup
+                self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
+                self.stack[ply].moved_to = mv.to();
 
                 self.search_move::<N>(
                     searcher,
@@ -822,7 +834,8 @@ impl Worker {
                     // Captures and structural moves (castling) are handled differently.
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
-                        self.history.update(stm, pt, mv.from(), mv.to(), bonus);
+                        self.history
+                            .update(stm, pt, mv.from(), mv.to(), prev_pt, prev_to, bonus);
 
                         // ── Killer Moves (~35 Elo) ──
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
@@ -851,7 +864,8 @@ impl Worker {
                         let q_pt = self.pos.expect_piece_at(qm.from());
 
                         // Over time, this "anti-history" pushes bad moves deeper into the list.
-                        self.history.update(stm, q_pt, qm.from(), qm.to(), -bonus);
+                        self.history
+                            .update(stm, q_pt, qm.from(), qm.to(), prev_pt, prev_to, -bonus);
                     }
 
                     break;
@@ -1474,6 +1488,8 @@ pub struct Stack {
     pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
     pub quiet_count: usize,
     pub killers:     [Move; 2],
+    pub moved_pt:    PieceType,
+    pub moved_to:    Square,
     pub static_eval: i32,
     pub is_null:     bool,
 }
@@ -1485,6 +1501,8 @@ impl Default for Stack {
             quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
             quiet_count: 0,
             killers:     [Move::null(); 2],
+            moved_pt:    PieceType::None,
+            moved_to:    Square(0),
             static_eval: tt::SCORE_NONE,
             is_null:     false,
         }

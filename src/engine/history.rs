@@ -8,14 +8,57 @@
 
 use crate::core::defs::{Color, PieceType, Square};
 
+#[derive(Clone)]
+pub struct ContinuationHistory {
+    data: Box<[i16]>,
+}
+
+impl ContinuationHistory {
+    pub fn new() -> Self {
+        Self {
+            data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn get(&self, stm: Color, prev_pt: PieceType, prev_to: Square, pt: PieceType, to: Square) -> i16 {
+        self.data[Self::idx(stm, prev_pt, prev_to, pt, to)]
+    }
+
+    #[inline(always)]
+    pub fn get_mut(
+        &mut self,
+        stm: Color,
+        prev_pt: PieceType,
+        prev_to: Square,
+        pt: PieceType,
+        to: Square,
+    ) -> &mut i16 {
+        let idx = Self::idx(stm, prev_pt, prev_to, pt, to);
+        &mut self.data[idx]
+    }
+
+    #[inline(always)]
+    fn idx(stm: Color, prev_pt: PieceType, prev_to: Square, pt: PieceType, to: Square) -> usize {
+        let mut i = stm as usize;
+        i = i * 6 + prev_pt as usize;
+        i = i * 64 + prev_to.0 as usize;
+        i = i * 6 + pt as usize;
+        i = i * 64 + to.0 as usize;
+        i
+    }
+}
+
 /// Combined history tables for quiet move ordering.
 /// Queries return the sum of all components, bounded to `[-32768, 32768]`.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
     table:     [[[i16; 64]; 6]; 2],
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
     butterfly: [[i16; 4096]; 2], // ~20 Elo
+    /// `[side][prev_piece][prev_to][piece][to]`
+    cont:      ContinuationHistory,
 }
 
 impl History {
@@ -24,6 +67,7 @@ impl History {
         Self {
             table:     [[[0; 64]; 6]; 2],
             butterfly: [[0; 4096]; 2],
+            cont:      ContinuationHistory::new(),
         }
     }
 
@@ -37,9 +81,22 @@ impl History {
     /// Used in `MovePicker` to prioritize moves that previously caused beta cutoffs.
     /// The scores are updated in `Searcher` using the soft-gravity mechanism.
     #[inline(always)]
-    pub fn score_quiet(&self, stm: Color, pt: PieceType, from: Square, to: Square) -> i32 {
-        i32::from(self.table[stm][pt][to])
-            + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)])
+    pub fn score_quiet(
+        &self,
+        stm: Color,
+        pt: PieceType,
+        from: Square,
+        to: Square,
+        prev_pt: PieceType,
+        prev_to: Square,
+    ) -> i32 {
+        let mut score = i32::from(self.table[stm][pt][to])
+            + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
+
+        if prev_pt != PieceType::None {
+            score += i32::from(self.cont.get(stm, prev_pt, prev_to, pt, to));
+        }
+        score
     }
 
     /// Update a history entry with soft gravity.
@@ -56,9 +113,22 @@ impl History {
     /// ensures the table stays within `i16` bounds without hard-clipping
     /// destroying the relative ordering of values near the attractor limit.
     #[inline(always)]
-    pub fn update(&mut self, stm: Color, pt: PieceType, from: Square, to: Square, bonus: i32) {
+    pub fn update(
+        &mut self,
+        stm: Color,
+        pt: PieceType,
+        from: Square,
+        to: Square,
+        prev_pt: PieceType,
+        prev_to: Square,
+        bonus: i32,
+    ) {
         Self::update_entry(&mut self.table[stm][pt][to], bonus);
         Self::update_entry(&mut self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
+
+        if prev_pt != PieceType::None {
+            Self::update_entry(self.cont.get_mut(stm, prev_pt, prev_to, pt, to), bonus);
+        }
     }
 
     /// Single soft-gravity update step. Extracted to keep updates DRY.
