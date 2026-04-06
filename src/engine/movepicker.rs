@@ -71,6 +71,7 @@ pub struct MovePicker {
     mvvlva_v:   [i32; 8],
     mvvlva_a:   [i32; 8],
     mvvlva_ep:  i32,
+    killers:    [Move; 2],
     is_qsearch: bool,
     in_check:   bool,
 }
@@ -80,7 +81,7 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
 impl MovePicker {
     #[inline]
-    pub fn new(hash_move: Option<Move>, cfg: &SearchConfig) -> Self {
+    pub fn new(hash_move: Option<Move>, cfg: &SearchConfig, killers: [Move; 2]) -> Self {
         Self {
             stage: Stage::Hash,
             hash_move,
@@ -89,6 +90,7 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            killers,
             is_qsearch: false,
             in_check: false,
         }
@@ -104,6 +106,7 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            killers: [Move::null(); 2],
             is_qsearch: true,
             in_check,
         }
@@ -417,14 +420,10 @@ impl MovePicker {
 
         // ──────── Move Ordering Heuristics ────────
 
-        // History values are mathematically bounded to [-16384, 16384] by the
-        // update gravity. If this ever breaches 32767, the bitpacked sort
-        // key will overflow and destroy move ordering.
-        debug_assert!(score.abs() <= 16384, "History score overflow: {score}");
-
+        // History values are mathematically bounded to `[-32768, 32768]` combined.
         // Added 32768 guarantees a positive value without overflow.
-        // History ranges from [-16384, 16384], so logic natively boundaries at [16384, 49152].
-        let mut sort_score = (score + 32768).clamp(0, 65535) as u32;
+        // We safely clamp at 63000 to keep the highest `[64000, 65535]` band exclusive for killers and promotions.
+        let mut sort_score = (score + 32768).clamp(0, 63000) as u32;
 
         // Quiet promotions outrank all other quiet moves.
         // Queen first (almost always best), then knight (fork potential),
@@ -436,6 +435,10 @@ impl MovePicker {
                 Some(PieceType::Rook) => 65533,
                 _ => 65532,
             };
+        } else if mv == self.killers[0] {
+            sort_score = 65000;
+        } else if mv == self.killers[1] {
+            sort_score = 64000;
         }
 
         let packed = (sort_score << 16) | (mv.inner() as u32);
