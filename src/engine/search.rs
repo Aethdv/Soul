@@ -786,7 +786,7 @@ impl Worker {
                     continue;
                 }
 
-                // ── SEE Pruning (???) ──
+                // ── SEE Pruning (~20 Elo) ──
                 // Skip moves whose destination-square exchange clearly
                 // loses material.
                 //
