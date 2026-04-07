@@ -1,6 +1,7 @@
 [toolchain]
 channel = "nightly-2026-02-10"
 components = ["clippy", "rustfmt"]
+profile = "minimal"
 
 [alias]
 pgo = "cargo pgo"
