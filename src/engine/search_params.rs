@@ -333,6 +333,28 @@ search_params! {
             step:     10,
         },
 
+        /// SEE pruning capture margin (cp/ply) — linear depth scaling.
+        /// Prune noisy moves with `see < -margin · depth`. Captures have
+        /// rigid material bounds, so the tolerance grows linearly with
+        /// depth: deeper searches trust the tree to refute apparent
+        /// material losses.
+        pub see_capture_margin: i32 {
+            default:  80,
+            min:      20,
+            max:     200,
+            step:      2,
+        },
+        /// SEE pruning quiet margin (cp/ply²) — quadratic depth scaling.
+        /// Prune quiet moves with `see < -margin · depth²`. Quiet moves
+        /// are speculative at depth (tempi matter) so the tolerance grows
+        /// quadratically — very lenient at high depth, strict at low.
+        pub see_quiet_margin: i32 {
+            default:  60,
+            min:      15,
+            max:     150,
+            step:      2,
+        },
+
         // MVV-LVA capture ordering:
         //   score = V[victim] - A[attacker] (+ V[promo] for promotions)
         //

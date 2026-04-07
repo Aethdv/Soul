@@ -786,6 +786,34 @@ impl Worker {
                     continue;
                 }
 
+                // ── SEE Pruning (???) ──
+                // Skip moves whose destination-square exchange clearly
+                // loses material.
+                //
+                // Captures scale linearly: SEE is an accurate verdict on
+                // a capture (the value is realised right there at the
+                // destination square) so the tolerance grows modestly
+                // with depth — we just give deeper searches some slack
+                // in case the tree refutes an apparent loss.
+                //
+                // Quiets scale quadratically: for a quiet move, SEE is a
+                // crude proxy — the move's real value usually lives
+                // elsewhere in the tree (threats, structure, follow-ups
+                // several plies out). Deeper searches will find it
+                // themselves, so we loosen aggressively with depth and
+                // only prune "this is obviously moving into a trap" cases
+                // at shallow depth.
+                if !in_check && !N::PV && res.move_count >= 1 {
+                    let margin = if mv.is_capture() {
+                        -searcher.cfg.search_params.see_capture_margin * depth
+                    } else {
+                        -searcher.cfg.search_params.see_quiet_margin * depth * depth
+                    };
+                    if !see_ge(&self.pos, mv, margin) {
+                        continue;
+                    }
+                }
+
                 // ── Late Move Reductions (~90 Elo) ──
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
