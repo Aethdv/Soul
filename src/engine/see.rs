@@ -99,14 +99,14 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     // Resolve the initial exchange into two scalars:
     //   gain      — material that moves into our column this ply
     //               (captured piece + promotion upgrade, if any)
-    //   attacker  — piece sitting on `to` after our move, whose value
+    //   attacker  — piece sitting on to after our move, whose value
     //               will be lost if the opponent recaptures
     let (gain, attacker) = if mv.is_en_passant() {
         // Victim is always a pawn; our mover stays a pawn.
         (val(PieceType::Pawn), PieceType::Pawn)
     } else if let Some(promo) = mv.promo() {
-        // The mover becomes `promo`; we earn the upgrade on top of
-        // whatever (if anything) was captured on `to`.
+        // The mover becomes promo; we earn the upgrade on top of
+        // whatever (if anything) was captured on to.
         let captured = val(pos.piece_at(to));
         let upgrade = val(promo) - val(PieceType::Pawn);
         (captured + upgrade, promo)
@@ -118,26 +118,26 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     //
     // `balance` is the amount the side to move still needs to gain to
     // beat the previous player's outcome. After the first assignment
-    // it represents our caller's deficit relative to `threshold`; after
-    // every loop iteration the sign flips via `balance = val(lva) -
-    // balance`, so the same variable tracks both sides.
+    // it represents our caller's deficit relative to threshold; after
+    // every loop iteration the sign flips via balance = val(lva) - balance,
+    // so the same variable tracks both sides.
     let mut balance = gain - threshold;
     if balance < 0 {
-        // Even with the free gift, the move doesn't reach `threshold`.
+        // Even with the free gift, the move doesn't reach threshold.
         return false;
     }
 
     balance = val(attacker) - balance;
     if balance <= 0 {
         // Even after an optimal recapture, the move still meets
-        // `threshold` — no deeper search needed.
+        // threshold — no deeper search needed.
         return true;
     }
 
     // ──────── Full exchange ────────
     //
-    // Rebuild occupancy with our attacker removed from `from`
-    // (and for en passant also the victim pawn on `to ^ 8`),
+    // Rebuild occupancy with our attacker removed from from
+    // (and for en passant also the victim pawn on to ^ 8),
     // then recompute the full attacker set from scratch — this picks
     // up any slider that was previously blocked by our attacker.
     let mut occ = pos.occ ^ from.bitboard();
@@ -160,8 +160,8 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         if mine.is_empty() {
             // The side to move has no attacker left — the trade ends
             // with the previous mover keeping their net. That side is
-            // the caller iff `us` has been flipped an even number of
-            // times, i.e. iff `us == false`.
+            // the caller if us has been flipped an even number of
+            // times, i.e. if us == false.
             return !us;
         }
 
@@ -181,7 +181,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
             (PieceType::Queen, sq)
         } else {
             // Only the king is left to capture. If the opposing side
-            // still has any attacker on `to`, the king capture would
+            // still has any attacker on to, the king capture would
             // move the king into check — illegal, so the chain stops
             // here and the previous side's net stands.
             let opp = attackers & pos.side_bb[stm.opposite()];
