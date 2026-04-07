@@ -23,7 +23,7 @@ use crate::{
     weave::Vi16x8,
 };
 
-mod attacks;
+pub mod attacks;
 pub mod bitboard;
 mod fen;
 mod make;
