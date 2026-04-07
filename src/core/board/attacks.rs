@@ -83,6 +83,30 @@ pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
         | (atk_bishop(sq, occ) & (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]) & them)
 }
 
+/// All pieces of either color attacking `sq`, computed against an explicit
+/// occupancy mask.
+///
+/// Unlike `attackers_of` (which takes `pos.occ` implicitly and filters by
+/// one color), this accepts an arbitrary `occ` so the caller can simulate
+/// mid-exchange board states — the primary use case is SEE, where the set
+/// of revealed attackers changes as each capture removes a blocker.
+///
+/// Pawn attacks are symmetric: `atk_pawn(sq, color.opposite())` returns the
+/// squares from which a pawn of `color` would attack `sq`.
+#[inline(always)]
+pub fn all_attackers_to(pos: &Position, sq: Square, occ: Bitboard) -> Bitboard {
+    let pawns = pos.role_bb[PieceType::Pawn];
+    let white_pawns = pawns & pos.side_bb[Color::White];
+    let black_pawns = pawns & pos.side_bb[Color::Black];
+
+    (atk_pawn(sq, Color::Black) & white_pawns)
+        | (atk_pawn(sq, Color::White) & black_pawns)
+        | (atk_knight(sq) & pos.role_bb[PieceType::Knight])
+        | (atk_king(sq) & pos.role_bb[PieceType::King])
+        | (atk_rook(sq, occ) & (pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen]))
+        | (atk_bishop(sq, occ) & (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]))
+}
+
 // ──────── En Passant Legality ────────
 
 /// Can any pawn of `color` legally reach `ep_sq`?

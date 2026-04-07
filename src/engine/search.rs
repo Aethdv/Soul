@@ -34,6 +34,7 @@ use crate::{
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
         search_params::SearchParams,
+        see::see_ge,
         tm::TimeManager,
         tt,
     },
@@ -1146,6 +1147,14 @@ impl Worker {
 
         while let Some(mv) = picker.next(&self.pos, &self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                continue;
+            }
+
+            // ── QSearch SEE Pruning (~65 Elo) ──
+            // Skip captures whose destination-square trade loses material
+            // for us. Disabled in check because evasions are forced and
+            // the only legal reply is often a losing defensive capture.
+            if !in_check && !see_ge(&self.pos, mv, 0) {
                 continue;
             }
 
