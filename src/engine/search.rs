@@ -1150,7 +1150,7 @@ impl Worker {
                 continue;
             }
 
-            // ── QSearch SEE Pruning (???) ──
+            // ── QSearch SEE Pruning (~65 Elo) ──
             // Skip captures whose destination-square trade loses material
             // for us. Disabled in check because evasions are forced and
             // the only legal reply is often a losing defensive capture.

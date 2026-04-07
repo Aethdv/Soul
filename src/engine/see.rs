@@ -30,9 +30,8 @@
 //!   dominate every real trade.
 //!
 //! * **Hardcoded piece values.** SEE is a correctness boundary, not an
-//!   evaluation signal. A wrong SEE is worse than no SEE (per the
-//!   searchpasta notes), so these values are intentionally independent of
-//!   `eval_params` and untouchable by the tuner.
+//!   evaluation signal. A wrong SEE is worse than no SEE, so these values
+//!   are intentionally independent of `eval_params` and untouchable by the tuner.
 //!
 //! * **`us` flip-bool.** Rather than tracking perspective through parity
 //!   counts, a single bool flipped at the end of every iteration encodes
@@ -160,7 +159,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
 
         if mine.is_empty() {
             // The side to move has no attacker left — the trade ends
-            // with the *previous* mover keeping their net. That side is
+            // with the previous mover keeping their net. That side is
             // the caller iff `us` has been flipped an even number of
             // times, i.e. iff `us == false`.
             return !us;
