@@ -462,7 +462,7 @@ fn eval_strict_symmetry() {
 
 #[test]
 fn history_gravity_bounds() {
-    use crate::engine::history::History;
+    use crate::engine::history::{ContContext, History};
 
     let mut hist = History::new();
     let stm = Color::White;
@@ -471,9 +471,9 @@ fn history_gravity_bounds() {
 
     // Slam it with huge bonuses — should converge toward +16384 without overflow.
     for _ in 0..10_000 {
-        hist.update(stm, pt, Square(0), to, PieceType::None, Square(0), 400);
+        hist.update(stm, pt, Square(0), to, ContContext::default(), 400);
     }
-    let score = hist.score_quiet(stm, pt, Square(0), to, PieceType::None, Square(0));
+    let score = hist.score_quiet(stm, pt, Square(0), to, ContContext::default());
     assert!(score > 0, "After massive positive bonus, score should be positive: {score}");
     assert!(
         score <= 32768,
@@ -482,16 +482,16 @@ fn history_gravity_bounds() {
 
     // Now slam it negative — should converge toward -16384.
     for _ in 0..20_000 {
-        hist.update(stm, pt, Square(0), to, PieceType::None, Square(0), -400);
+        hist.update(stm, pt, Square(0), to, ContContext::default(), -400);
     }
-    let score = hist.score_quiet(stm, pt, Square(0), to, PieceType::None, Square(0));
+    let score = hist.score_quiet(stm, pt, Square(0), to, ContContext::default());
     assert!(score < 0, "After massive negative bonus, score should be negative: {score}");
     assert!(score >= -32768, "Score should not go below -32768: {score}");
 }
 
 #[test]
 fn history_clear() {
-    use crate::engine::history::History;
+    use crate::engine::history::{ContContext, History};
 
     let mut hist = History::new();
     hist.update(
@@ -499,31 +499,16 @@ fn history_clear() {
         PieceType::Knight,
         Square(0),
         Square(28),
-        PieceType::None,
-        Square(0),
+        ContContext::default(),
         400,
     );
     assert!(
-        hist.score_quiet(
-            Color::White,
-            PieceType::Knight,
-            Square(0),
-            Square(28),
-            PieceType::None,
-            Square(0)
-        ) > 0
+        hist.score_quiet(Color::White, PieceType::Knight, Square(0), Square(28), ContContext::default()) > 0
     );
 
     hist.clear();
     assert_eq!(
-        hist.score_quiet(
-            Color::White,
-            PieceType::Knight,
-            Square(0),
-            Square(28),
-            PieceType::None,
-            Square(0)
-        ),
+        hist.score_quiet(Color::White, PieceType::Knight, Square(0), Square(28), ContContext::default()),
         0,
         "Clear should zero out"
     );
