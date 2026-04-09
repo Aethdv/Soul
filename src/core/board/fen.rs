@@ -115,6 +115,7 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     }
 
     pos.hash = pos.calc_zobrist();
+    pos.pawn_hash = pos.calc_pawn_hash();
     Ok(pos)
 }
 

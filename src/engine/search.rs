@@ -601,10 +601,23 @@ impl Worker {
         // Used as a baseline for pruning decisions — if the position looks
         // overwhelmingly good or hopeless, we can take shortcuts.
         // Meaningless when in check (we're forced to respond, not evaluate).
-        let static_eval = if in_check {
+        let raw_static_eval = if in_check {
             tt::SCORE_NONE
         } else {
             evaluate(&self.pos, &self.accumulator)
+        };
+
+        // ── Correction History ──
+        // The evaluator has systematic biases for certain pawn structures.
+        // Correction history observes the delta between static eval and search
+        // result, then nudges future evals for the same pawn structure toward
+        // the truth. raw_static_eval stays untouched for the update later.
+        let static_eval = if in_check {
+            tt::SCORE_NONE
+        } else {
+            let correction =
+                self.history.correction(self.pos.stm, self.pos.pawn_hash) / history::CORRECTION_SCALE;
+            (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
 
@@ -925,6 +938,15 @@ impl Worker {
         searcher
             .tt
             .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
+
+        // ── Correction History Update ──
+        // When the search result disagrees with the raw evaluator, record
+        // the bias so future evals for this pawn structure are corrected.
+        if !in_check && bound != tt::BOUND_NONE && res.best_eval.abs() < MATE_BOUND {
+            let diff = res.best_eval - raw_static_eval;
+            self.history
+                .update_correction(self.pos.stm, self.pos.pawn_hash, diff, depth);
+        }
 
         Ok(res.best_eval)
     }
