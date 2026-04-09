@@ -100,7 +100,7 @@ pub struct MoveResult {
 // ──────── Searcher & Worker ────────
 //
 // Searcher owns the global search state — root moves, node counter,
-// time management, zobrist history. One per go command.
+// time management, zobrist trail. One per go command.
 //
 // Worker owns the mutable board that changes as we descend the tree:
 // position, accumulator, per-ply stack.
@@ -112,7 +112,7 @@ pub struct Searcher<'cfg> {
     pub cfg:           &'cfg SearchConfig,
     pub tm:            TimeManager,
     pub root_moves:    Vec<RootMove>,
-    pub history:       Vec<u64>,
+    pub zobrist_trail: Vec<u64>,
     pub root_pos:      Position,
     pub prev_pv:       Line,
     pub prev_score:    i32,
@@ -328,22 +328,22 @@ impl<'cfg> Searcher<'cfg> {
 
         // Game history limited by the 50-move rule horizon.
         // Positions older than the last capture or pawn push can never repeat.
-        let mut hist_vec = Vec::with_capacity(1024);
+        let mut trail = Vec::with_capacity(1024);
         let keep = history.len().min(pos.halfmove_clock as usize);
         if keep > 0 {
             let start = history.len() - keep;
-            hist_vec.extend_from_slice(&history[start..]);
+            trail.extend_from_slice(&history[start..]);
         }
 
-        // Always include the current root position in history.
+        // Always include the current root position in the trail.
         // This ensures repetitions of the root are detected at ply 2, 4, etc.
-        hist_vec.push(pos.hash);
+        trail.push(pos.hash);
 
         Self {
             cfg,
             tm,
             root_moves,
-            history: hist_vec,
+            zobrist_trail: trail,
             root_pos: *pos,
             prev_pv: Line::new(),
             pv_history: VecDeque::new(),
@@ -367,15 +367,15 @@ impl<'cfg> Searcher<'cfg> {
     ) {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
 
-        self.history.clear();
+        self.zobrist_trail.clear();
         let keep = history.len().min(pos.halfmove_clock as usize);
         if keep > 0 {
             let start = history.len() - keep;
-            self.history.extend_from_slice(&history[start..]);
+            self.zobrist_trail.extend_from_slice(&history[start..]);
         }
 
-        // Always include the current root position in history.
-        self.history.push(pos.hash);
+        // Always include the current root position in the trail.
+        self.zobrist_trail.push(pos.hash);
 
         self.cfg = cfg;
         self.tm =
@@ -541,7 +541,7 @@ impl Worker {
 
         searcher.nodes += 1;
 
-        if self.is_draw(ply, &searcher.history) {
+        if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(0);
         }
 
@@ -651,7 +651,7 @@ impl Worker {
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
             let undo = self.pos.make_null_move();
-            searcher.history.push(self.pos.hash);
+            searcher.zobrist_trail.push(self.pos.hash);
             let score = match self.negamax::<NonPvNode>(
                 searcher,
                 (depth - r - 1).max(0),
@@ -662,13 +662,13 @@ impl Worker {
             ) {
                 Ok(v) => -v,
                 Err(e) => {
-                    searcher.history.pop();
+                    searcher.zobrist_trail.pop();
                     self.pos.unmake_null_move(&undo);
                     self.stack[ply + 1].is_null = false;
                     return Err(e);
                 },
             };
-            searcher.history.pop();
+            searcher.zobrist_trail.pop();
             self.pos.unmake_null_move(&undo);
             self.stack[ply + 1].is_null = false;
 
@@ -961,7 +961,7 @@ impl Worker {
         }
 
         res.move_count += 1;
-        searcher.history.push(self.pos.hash);
+        searcher.zobrist_trail.push(self.pos.hash);
 
         if N::ROOT {
             searcher.print_currmove(depth, mv, res.move_count);
@@ -979,14 +979,14 @@ impl Worker {
         ) {
             Ok(v) => v,
             Err(e) => {
-                searcher.history.pop();
+                searcher.zobrist_trail.pop();
                 self.pos.unmake_move(mv, &undo);
                 self.accumulator = saved_acc;
                 return Err(e);
             },
         };
 
-        searcher.history.pop();
+        searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
         self.accumulator = saved_acc;
 
@@ -1091,7 +1091,7 @@ impl Worker {
 
         searcher.nodes += 1;
 
-        if self.is_draw(ply, &searcher.history) {
+        if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(0);
         }
 
@@ -1190,19 +1190,19 @@ impl Worker {
             let undo = self.pos.make_move(mv, &mut self.accumulator);
 
             moves_made += 1;
-            searcher.history.push(self.pos.hash);
+            searcher.zobrist_trail.push(self.pos.hash);
 
             let score = match self.qsearch::<N>(searcher, -beta, -alpha, ply + 1) {
                 Ok(v) => -v,
                 Err(e) => {
-                    searcher.history.pop();
+                    searcher.zobrist_trail.pop();
                     self.pos.unmake_move(mv, &undo);
                     self.accumulator = saved_acc;
                     return Err(e);
                 },
             };
 
-            searcher.history.pop();
+            searcher.zobrist_trail.pop();
             self.pos.unmake_move(mv, &undo);
             self.accumulator = saved_acc;
 
@@ -1273,7 +1273,7 @@ impl Worker {
 
         // We exclude the current position using saturating_sub(2).
         // This works because the caller (search_move) has already pushed the current
-        // hash into searcher.history before descending, placing it at len - 1.
+        // hash into the zobrist trail before descending, placing it at len - 1.
         let end = history.len().saturating_sub(2);
 
         if start > end {
