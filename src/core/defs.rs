@@ -34,12 +34,12 @@ pub const MATE_BOUND: i32 = MATE - 100;
 
 /// |score| < this for N plies → Draw
 pub const ADJ_DRAW_SCORE: i32 = 10;
-pub const ADJ_DRAW_PLIES: usize = 16;
+pub const ADJ_DRAW_PLIES: usize = 24;
 /// Only start draw adjudication after this many plies (40 moves)
 pub const ADJ_DRAW_START_PLY: usize = 80;
 
 /// |score| > this for N plies → Win
-pub const ADJ_WIN_SCORE: i32 = 2500;
+pub const ADJ_WIN_SCORE: i32 = 1200;
 pub const ADJ_WIN_PLIES: usize = 8;
 
 /// |score| > this → Instant Resignation

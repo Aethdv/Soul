@@ -41,6 +41,10 @@ impl ContinuationHistory {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+    }
+
     #[inline(always)]
     pub fn get(&self, stm: Color, prev_pt: PieceType, prev_to: Square, pt: PieceType, to: Square) -> i16 {
         self.data[Self::idx(stm, prev_pt, prev_to, pt, to)]
@@ -94,7 +98,9 @@ impl History {
 
     /// Clear all history scores.
     pub fn clear(&mut self) {
-        *self = Self::new();
+        self.table = [[[0; 64]; 6]; 2];
+        self.butterfly = [[0; 4096]; 2];
+        self.cont.clear();
     }
 
     /// Retrieve the history score for a move.
@@ -159,7 +165,13 @@ impl History {
 }
 
 impl Default for History {
+    /// Returns a zero-cost sentinel. The cont table is an empty Box (0 bytes).
+    /// Only use as a placeholder for `std::mem::take` — never score moves against this.
     fn default() -> Self {
-        Self::new()
+        Self {
+            table:     [[[0; 64]; 6]; 2],
+            butterfly: [[0; 4096]; 2],
+            cont:      ContinuationHistory { data: Box::new([]) },
+        }
     }
 }

@@ -49,6 +49,10 @@ pub struct WorkerState {
     pub config:                 GenfensConfig,
     pub rng:                    fastrand::Rng,
     pub global:                 Arc<GlobalStats>,
+    pub tt:                     Arc<tt::TranspositionTable>,
+    /// Persistent history table — reused across positions within a game,
+    /// cleared between games. Avoids per-position heap allocation.
+    pub history_table:          history::History,
     /// Track if the last move made was a capture or promotion to filter out
     /// tactically "hot" positions reached via a trade.
     pub last_move_was_tactical: bool,
@@ -78,6 +82,8 @@ impl Clone for WorkerState {
             config:                 self.config.clone(),
             rng:                    fastrand::Rng::new(),
             global:                 Arc::clone(&self.global),
+            tt:                     Arc::new(tt::TranspositionTable::new(16)),
+            history_table:          history::History::new(),
             last_move_was_tactical: false,
             win_adj_counter:        0,
             draw_adj_counter:       0,
@@ -103,6 +109,8 @@ impl WorkerState {
             pending: Vec::with_capacity(config.buffer_size),
             confirmed: Vec::with_capacity(config.buffer_size),
             book,
+            tt: Arc::new(tt::TranspositionTable::new(16)),
+            history_table: history::History::new(),
             config,
             rng: fastrand::Rng::new(),
             global,
@@ -128,8 +136,10 @@ impl WorkerState {
 
         self.pending.clear();
         self.confirmed.clear();
+        self.history_table.clear();
         self.win_adj_counter = 0;
         self.draw_adj_counter = 0;
+        self.last_eval = 0;
         self.last_move_was_tactical = false;
     }
 
@@ -300,17 +310,18 @@ impl WorkerState {
         self.local_attempted = 0;
         self.local_plies = 0;
 
-        self.confirmed.clone()
+        let mut out = Vec::new();
+        std::mem::swap(&mut self.confirmed, &mut out);
+        out
     }
 
     /// Evaluates the current position with both a static eval and a fixed-depth search.
     ///
     /// Returns `(static_eval, search_eval, best_move)`, all from the side-to-move's
     /// perspective.
-    fn search_position(&self) -> (i32, i32, Option<Move>) {
-        let acc = self.board.get_initial_accumulator();
-        let phase = extract_phase(&acc);
-        let static_eval = evaluate_fast(&self.board, &acc, phase);
+    fn search_position(&mut self) -> (i32, i32, Option<Move>) {
+        let phase = extract_phase(&self.accumulator);
+        let static_eval = evaluate_fast(&self.board, &self.accumulator, phase);
 
         let limits = Limits {
             depth: self.config.depth,
@@ -329,15 +340,21 @@ impl WorkerState {
             SearchParams::default(),
         );
 
+        // Move history out with a zero-cost default (empty cont Box).
+        // The history accumulates across positions within a game for better ordering.
         let mut searcher = Searcher::new(
             &cfg,
             &self.board,
             &self.search_history,
-            history::History::new(),
-            Arc::new(tt::TranspositionTable::new(16)),
+            std::mem::take(&mut self.history_table),
+            Arc::clone(&self.tt),
         );
         searcher.iterative_deepening();
+        let best_score = searcher.best_score().unwrap_or(0);
+        let best_move = searcher.best_move();
+        // Move the enriched history back; the empty sentinel gets dropped (0 bytes freed).
+        self.history_table = searcher.history_table;
 
-        (static_eval, searcher.best_score().unwrap_or(0), searcher.best_move())
+        (static_eval, best_score, best_move)
     }
 }

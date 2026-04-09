@@ -1,8 +1,8 @@
 //! Orchestrator for self-play data generation ("genfens").
 //!
-//! Spins up a rayon thread pool where each thread plays complete games
-//! from book openings, filters positions by search verification
-//! and quiet-move heuristics, then batches results to disk in .soul.zst format.
+//! Spawns N persistent worker threads, each playing complete games
+//! from book openings, filtering positions by search verification
+//! and quiet-move heuristics, then flushing results to disk in .soul.zst format.
 //!
 //! The hot path lives in `WorkerState::play_game()` — this module is just
 //! the conductor: load books, dispatch work, flush to disk, print stats.
@@ -14,8 +14,6 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
-
-use rayon::prelude::*;
 
 use super::{
     config::{GenfensArgs, GenfensConfig},
@@ -32,11 +30,6 @@ const RESET: &str = "\x1b[0m";
 const BADGE_OK: &str = "\x1b[92m[OK]\x1b[0m";
 const BADGE_LOW: &str = "\x1b[93m[LOW]\x1b[0m";
 const BADGE_BAD: &str = "\x1b[91m[BAD]\x1b[0m";
-
-/// How many games each rayon work-item plays.
-/// Small = better load balancing,
-/// large = less scheduling overhead.
-const GAMES_PER_WORK_ITEM: usize = 4;
 
 /// Dashboard refresh interval.
 /// 10 Hz is smooth enough without burning CPU on terminal writes.
@@ -94,64 +87,77 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let mut total_generated = start_count;
     let mut pending: Vec<SoulEntry> = Vec::with_capacity(save_interval * 2);
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .unwrap()
-        .install(|| {
-            // Shared counter visible to the dashboard thread.
-            let shared_generated = Arc::new(AtomicUsize::new(total_generated));
-            let finished = Arc::new(AtomicBool::new(false));
+    // Shared counter visible to the dashboard thread.
+    let shared_generated = Arc::new(AtomicUsize::new(total_generated));
+    let finished = Arc::new(AtomicBool::new(false));
 
-            // ── Dashboard thread ──
-            {
-                let global_mon = global.clone();
-                let gen_mon = shared_generated.clone();
-                let stop_mon = stop.clone();
-                let finish_mon = finished.clone();
+    // ── Dashboard thread ──
+    {
+        let global_mon = global.clone();
+        let gen_mon = shared_generated.clone();
+        let stop_mon = stop.clone();
+        let finish_mon = finished.clone();
 
-                std::thread::spawn(move || {
-                    let mut first_frame = true;
-                    while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
-                        let snap = Snapshot::capture(&global_mon, &gen_mon, target);
-                        render_dashboard(&snap, &mut first_frame);
-                        std::thread::sleep(DASHBOARD_INTERVAL);
-                    }
-                });
+        std::thread::spawn(move || {
+            let mut first_frame = true;
+            while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
+                let snap = Snapshot::capture(&global_mon, &gen_mon, target);
+                render_dashboard(&snap, &mut first_frame);
+                std::thread::sleep(DASHBOARD_INTERVAL);
             }
+        });
+    }
 
-            // ── Main generation loop ──
-            while total_generated < target as usize && !stop.load(Ordering::Relaxed) {
-                let remaining = (target as usize).saturating_sub(total_generated);
-                let batch_size = remaining.min(GAMES_PER_WORK_ITEM * num_threads);
+    // ── Persistent worker threads ──
+    // Each worker owns its TT and history table for the entire run.
+    // One allocation per worker, no churn between games.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<SoulEntry>>();
+    let mut handles = Vec::with_capacity(num_threads);
 
-                // Each rayon thread gets a thread local WorkerState via map_with.
-                // The state holds its own RNG, search stack, and board — no cross-thread contention
-                // except the global atomic counters.
-                let batch: Vec<SoulEntry> = (0..batch_size)
-                    .into_par_iter()
-                    .map_with(WorkerState::new(book.clone(), config.clone(), global.clone()), |state, _| {
-                        state.play_game()
-                    })
-                    .flatten()
-                    .collect();
-
-                if !batch.is_empty() {
-                    total_generated += batch.len();
-                    shared_generated.store(total_generated, Ordering::Relaxed);
-                    config.generated_count = total_generated as u64;
-                    pending.extend(batch);
-
-                    if pending.len() >= save_interval {
-                        flush_to_disk(&output_path, &mut pending, &config);
-                    }
+    for _ in 0..num_threads {
+        let mut worker = WorkerState::new(book.clone(), config.clone(), global.clone());
+        let tx = tx.clone();
+        let stop_w = stop.clone();
+        let target_u = target as u64;
+        handles.push(std::thread::spawn(move || {
+            loop {
+                if stop_w.load(Ordering::Relaxed) || worker.global.saved.load(Ordering::Relaxed) >= target_u {
+                    break;
+                }
+                let entries = worker.play_game();
+                if !entries.is_empty() && tx.send(entries).is_err() {
+                    break;
                 }
             }
+        }));
+    }
+    drop(tx); // channel closes when all senders drop
 
-            // Final flush — don't lose the tail end of a long run.
+    // ── Collection loop: flush results to disk periodically ──
+    for entries in rx {
+        total_generated += entries.len();
+        shared_generated.store(total_generated, Ordering::Relaxed);
+        config.generated_count = total_generated as u64;
+        pending.extend(entries);
+
+        if pending.len() >= save_interval {
             flush_to_disk(&output_path, &mut pending, &config);
-            finished.store(true, Ordering::Relaxed);
-        });
+        }
+
+        if total_generated >= target as usize {
+            stop.store(true, Ordering::SeqCst);
+            break;
+        }
+    }
+
+    // Wait for workers to finish their current game.
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Final flush — don't lose the tail end of a long run.
+    flush_to_disk(&output_path, &mut pending, &config);
+    finished.store(true, Ordering::Relaxed);
 
     // Final report
     println!();
