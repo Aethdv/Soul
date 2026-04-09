@@ -163,8 +163,12 @@ fn play_match_pair<F: Fn()>(
     // Thread local heap-allocated stacks
     let dummy_board = Board::default();
     let dummy_hist = vec![dummy_board.hash];
-    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, history::History::new()));
-    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, history::History::new()));
+    let tt_a = std::sync::Arc::new(soul::engine::tt::TranspositionTable::new(16));
+    let tt_b = std::sync::Arc::new(soul::engine::tt::TranspositionTable::new(16));
+    let mut searcher_a =
+        Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, history::History::new(), tt_a));
+    let mut searcher_b =
+        Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, history::History::new(), tt_b));
 
     // Round 1: A (White) vs B (Black)
     let (result_as_white, nodes_a_1, nodes_b_1) =
