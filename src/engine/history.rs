@@ -149,7 +149,7 @@ pub struct History {
     /// `[side][prev_piece][prev_to][piece][to]`
     cont:       ContinuationHistory, // ~13 Elo
     /// `[side][pawn_hash & 0x3FFF]`
-    correction: CorrectionHistory,
+    correction: CorrectionHistory, // ~53 Elo
 }
 
 impl History {
