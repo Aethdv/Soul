@@ -944,9 +944,18 @@ impl Worker {
             .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
 
         // ── Correction History Update ──
-        // When the search result disagrees with the raw evaluator, record
-        // the bias so future evals for this pawn structure are corrected.
-        if !in_check && bound != tt::BOUND_NONE && res.best_eval.abs() < MATE_BOUND {
+        // Only learn from positions resolved by quiet moves — tactical
+        // resolutions (captures/promotions) reflect tactics, not evaluator bias.
+        // Skip when the bound direction contradicts the diff: a fail-high with
+        // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
+        // carries no useful structural signal.
+        if !in_check
+            && !res.best_move.is_null()
+            && !res.best_move.is_tactical()
+            && res.best_eval.abs() < MATE_BOUND
+            && !((bound == tt::BOUND_LOWER && res.best_eval <= static_eval)
+                || (bound == tt::BOUND_UPPER && res.best_eval >= static_eval))
+        {
             let diff = res.best_eval - raw_static_eval;
             self.history
                 .update_correction(self.pos.stm, pawn_hash, diff, depth);

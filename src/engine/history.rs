@@ -119,13 +119,13 @@ impl CorrectionHistory {
 
     /// Weighted moving average update.
     ///
-    /// `weight = min(2 * (1 + depth), 16)`, so shallow searches nudge gently
+    /// `weight = min(1 + depth, 16)`, so shallow searches nudge gently
     /// and deep searches carry more authority — but never so much that
     /// a single outlier dominates.
     #[inline(always)]
     pub fn update(&mut self, stm: Color, pawn_hash: u64, raw_diff: i32, depth: i32) {
         let entry = &mut self.data[Self::idx(stm, pawn_hash)];
-        let weight = (2 * (1 + depth)).min(16);
+        let weight = (1 + depth).min(16);
         let scaled = raw_diff * CORRECTION_SCALE;
         *entry =
             ((*entry * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT);
