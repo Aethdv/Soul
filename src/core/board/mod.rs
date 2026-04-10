@@ -539,6 +539,15 @@ impl Position {
 
         key
     }
+
+    pub fn calc_pawn_hash(&self) -> u64 {
+        let mut key = 0u64;
+        let pawns = self.role_bb[PieceType::Pawn];
+        for sq in pawns {
+            key ^= zobrist::key_piece(PieceType::Pawn, self.color_at(sq), sq);
+        }
+        key
+    }
 }
 
 impl Default for Position {

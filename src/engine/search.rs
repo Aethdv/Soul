@@ -601,10 +601,27 @@ impl Worker {
         // Used as a baseline for pruning decisions — if the position looks
         // overwhelmingly good or hopeless, we can take shortcuts.
         // Meaningless when in check (we're forced to respond, not evaluate).
-        let static_eval = if in_check {
+        let raw_static_eval = if in_check {
             tt::SCORE_NONE
         } else {
             evaluate(&self.pos, &self.accumulator)
+        };
+
+        // ── Correction History ──
+        // The evaluator has systematic biases for certain pawn structures.
+        // Correction history observes the delta between static eval and search
+        // result, then nudges future evals for the same pawn structure toward
+        // the truth. raw_static_eval stays untouched for the update later.
+        let pawn_hash = if in_check {
+            0
+        } else {
+            self.pos.calc_pawn_hash()
+        };
+        let static_eval = if in_check {
+            tt::SCORE_NONE
+        } else {
+            let correction = self.history.correction(self.pos.stm, pawn_hash) / history::CORRECTION_SCALE;
+            (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
 
@@ -926,6 +943,24 @@ impl Worker {
             .tt
             .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
 
+        // ── Correction History Update ──
+        // Only learn from positions resolved by quiet moves — tactical
+        // resolutions (captures/promotions) reflect tactics, not evaluator bias.
+        // Skip when the bound direction contradicts the diff: a fail-high with
+        // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
+        // carries no useful structural signal.
+        if !in_check
+            && !res.best_move.is_null()
+            && !res.best_move.is_tactical()
+            && res.best_eval.abs() < MATE_BOUND
+            && !((bound == tt::BOUND_LOWER && res.best_eval <= static_eval)
+                || (bound == tt::BOUND_UPPER && res.best_eval >= static_eval))
+        {
+            let diff = res.best_eval - raw_static_eval;
+            self.history
+                .update_correction(self.pos.stm, pawn_hash, diff, depth);
+        }
+
         Ok(res.best_eval)
     }
 
@@ -1136,7 +1171,12 @@ impl Worker {
         let mut best_eval = if in_check {
             -INF
         } else {
-            let eval = evaluate(&self.pos, &self.accumulator);
+            let raw_eval = evaluate(&self.pos, &self.accumulator);
+            let correction = self
+                .history
+                .correction(self.pos.stm, self.pos.calc_pawn_hash())
+                / history::CORRECTION_SCALE;
+            let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 return Ok(eval);
             }
