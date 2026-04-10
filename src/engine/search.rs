@@ -1162,7 +1162,12 @@ impl Worker {
         let mut best_eval = if in_check {
             -INF
         } else {
-            let eval = evaluate(&self.pos, &self.accumulator);
+            let raw_eval = evaluate(&self.pos, &self.accumulator);
+            let correction = self
+                .history
+                .correction(self.pos.stm, self.pos.calc_pawn_hash())
+                / history::CORRECTION_SCALE;
+            let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 return Ok(eval);
             }
