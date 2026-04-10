@@ -119,7 +119,7 @@ impl CorrectionHistory {
 
     /// Weighted moving average update.
     ///
-    /// `weight = min(1 + depth, 16)`, so shallow searches nudge gently
+    /// `weight = min(2 * (1 + depth), 16)`, so shallow searches nudge gently
     /// and deep searches carry more authority — but never so much that
     /// a single outlier dominates.
     #[inline(always)]

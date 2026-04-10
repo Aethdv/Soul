@@ -862,54 +862,6 @@ fn castling_legality_checks() {
 
 // ──────── Helpers ────────
 
-// ──────── Pawn Hash ────────
-
-#[test]
-fn pawn_hash_incremental_consistency() {
-    // Exercises all four pawn-hash mutation paths:
-    // pawn push, pawn capture, en passant, and promotion.
-    let sequences: &[(&str, &[&str])] = &[
-        // Pawn pushes and a capture
-        (STARTPOS, &["e2e4", "d7d5", "e4d5"]),
-        // En passant
-        ("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1", &["d5e6"]),
-        // Promotion (quiet + capture)
-        ("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", &["a7a8q"]),
-        ("2r1k3/1P6/8/8/8/8/8/4K3 w - - 0 1", &["b7c8q"]),
-        // Non-pawn moves should not disturb the pawn hash
-        (STARTPOS, &["g1f3", "b8c6", "f3g1"]),
-    ];
-
-    for &(fen, moves) in sequences {
-        let mut pos = Position::from_fen(fen);
-        let mut acc = pos.get_initial_accumulator();
-        let mut undos = Vec::new();
-
-        for &uci in moves {
-            let mv = find_uci_move(&pos, uci);
-            undos.push((mv, pos.make_move(mv, &mut acc)));
-
-            assert_eq!(
-                pos.pawn_hash,
-                pos.calc_pawn_hash(),
-                "pawn_hash mismatch after {uci} in \"{fen}\""
-            );
-        }
-
-        for (mv, undo) in undos.into_iter().rev() {
-            acc = pos.get_initial_accumulator(); // bulk restore
-            pos.unmake_move(mv, &undo);
-
-            assert_eq!(
-                pos.pawn_hash,
-                pos.calc_pawn_hash(),
-                "pawn_hash mismatch after unmake of {} in \"{fen}\"",
-                mv.to_uci(false)
-            );
-        }
-    }
-}
-
 fn find_uci_move(pos: &Position, uci: &str) -> Move {
     let moves = gen_legal_moves(pos);
     for mv in &moves {

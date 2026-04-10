@@ -44,7 +44,7 @@ impl fmt::Display for Position {
 
 // ──────── Position — the complete board state ────────
 //
-//  192 bytes — exactly three cache lines.
+//  160 bytes — spans up to three cache lines.
 //
 //  ┌──────────────────┬────────┬───────┐
 //  │ Field            │ Offset │ Bytes │
@@ -53,16 +53,15 @@ impl fmt::Display for Position {
 //  │ role_bb          │     16 │    48 │
 //  │ occ              │     64 │     8 │
 //  │ hash             │     72 │     8 │
-//  │ pawn_hash        │     80 │     8 │
-//  │ pieces           │     88 │    64 │
-//  │ castling_rooks   │    152 │     4 │
-//  │ castling_rights  │    156 │     1 │
-//  │ stm              │    157 │     1 │
-//  │ halfmove_clock   │    158 │     1 │
-//  │ en_passant       │    159 │     2 │
-//  │ is_frc           │    161 │     1 │
-//  │ fullmove_number  │    162 │     2 │
-//  │ (tail padding)   │    164 │    28 │
+//  │ pieces           │     80 │    64 │
+//  │ castling_rooks   │    144 │     4 │
+//  │ castling_rights  │    148 │     1 │
+//  │ stm              │    149 │     1 │
+//  │ halfmove_clock   │    150 │     1 │
+//  │ en_passant       │    151 │     2 │
+//  │ is_frc           │    153 │     1 │
+//  │ fullmove_number  │    154 │     2 │
+//  │ (tail padding)   │    156 │     4 │
 //  └──────────────────┴────────┴───────┘
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(32))]
@@ -75,8 +74,6 @@ pub struct Position {
     pub occ:             Bitboard,
     /// Incrementally maintained Zobrist hash.
     pub hash:            u64,
-    /// Pawn-only Zobrist hash, used for correction history indexing.
-    pub pawn_hash:       u64,
     /// Mailbox: `pos.piece_at(sq)` gives the piece type (or `None` if empty).
     pub pieces:          [PieceType; 64],
     /// Rook home squares for castling, indexed by rights bit position.
@@ -102,12 +99,11 @@ pub struct Position {
 // We snapshot these irreversible fields before each move so unmake_move
 // can restore them perfectly — no costly recalculation, just a memcpy.
 
-/// The irreversible state needed to undo a move. 24 bytes, stack-allocated.
+/// The irreversible state needed to undo a move. 16 bytes, stack-allocated.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StateInfo {
     pub hash:            u64,
-    pub pawn_hash:       u64,
     pub en_passant:      Option<Square>,
     pub castling_rights: u8,
     pub captured:        PieceType,
@@ -118,7 +114,6 @@ impl Default for StateInfo {
     fn default() -> Self {
         Self {
             hash:            0,
-            pawn_hash:       0,
             en_passant:      None,
             castling_rights: 0,
             captured:        PieceType::None,
@@ -137,7 +132,6 @@ impl Position {
             role_bb:         [Bitboard(0); 6],
             occ:             Bitboard(0),
             hash:            0,
-            pawn_hash:       0,
             pieces:          [PieceType::None; 64],
             castling_rooks:  [Square(0); 4],
             castling_rights: 0,
@@ -148,7 +142,6 @@ impl Position {
             fullmove_number: 1,
         };
         pos.hash = pos.calc_zobrist();
-        pos.pawn_hash = pos.calc_pawn_hash();
         pos
     }
 
@@ -191,7 +184,6 @@ impl Position {
     pub fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
             hash:            self.hash,
-            pawn_hash:       self.pawn_hash,
             en_passant:      self.en_passant,
             castling_rights: self.castling_rights,
             captured:        PieceType::None,
@@ -216,7 +208,6 @@ impl Position {
     pub fn unmake_null_move(&mut self, info: &StateInfo) {
         self.stm = self.stm.opposite();
         self.hash = info.hash;
-        self.pawn_hash = info.pawn_hash;
         self.en_passant = info.en_passant;
         self.halfmove_clock = info.halfmove_clock;
     }
@@ -636,7 +627,7 @@ pub const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58];
 const _: () = {
     use std::mem::{align_of, offset_of, size_of};
 
-    assert!(size_of::<Position>() == 192, "Position must be exactly 192 bytes");
+    assert!(size_of::<Position>() == 160, "Position must be exactly 160 bytes");
     assert!(align_of::<Position>() == 32, "Position must be 32-byte aligned");
 
     // Hot fields packed at the front for cache locality during move gen.
@@ -644,8 +635,7 @@ const _: () = {
     assert!(offset_of!(Position, role_bb) == 16);
     assert!(offset_of!(Position, occ) == 64);
     assert!(offset_of!(Position, hash) == 72);
-    assert!(offset_of!(Position, pawn_hash) == 80);
 
-    assert!(size_of::<StateInfo>() == 24, "StateInfo must be exactly 24 bytes");
+    assert!(size_of::<StateInfo>() == 16, "StateInfo must be exactly 16 bytes");
     assert!(align_of::<StateInfo>() == 8);
 };

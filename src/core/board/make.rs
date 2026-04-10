@@ -41,7 +41,6 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
     let state = StateInfo {
         castling_rights: pos.castling_rights,
         hash: pos.hash,
-        pawn_hash: pos.pawn_hash,
         captured,
         halfmove_clock: pos.halfmove_clock,
         en_passant: pos.en_passant,
@@ -63,14 +62,10 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
 
     if captured != PieceType::None {
         pos.hash ^= zobrist::key_piece(captured, opp, to);
-        if captured == PieceType::Pawn {
-            pos.pawn_hash ^= zobrist::key_piece(PieceType::Pawn, opp, to);
-        }
         pos.remove_piece(to, captured, opp);
     } else if mv.is_en_passant() {
         let victim_sq = to ^ 8;
         pos.hash ^= zobrist::key_piece(PieceType::Pawn, opp, victim_sq);
-        pos.pawn_hash ^= zobrist::key_piece(PieceType::Pawn, opp, victim_sq);
         pos.remove_piece(victim_sq, PieceType::Pawn, opp);
     }
 
@@ -82,13 +77,6 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
 
         pos.add_piece(to, placed, stm);
         pos.hash ^= zobrist::key_piece(placed, stm, to);
-
-        if pt == PieceType::Pawn {
-            pos.pawn_hash ^= zobrist::key_piece(PieceType::Pawn, stm, from);
-            if placed == PieceType::Pawn {
-                pos.pawn_hash ^= zobrist::key_piece(PieceType::Pawn, stm, to);
-            }
-        }
     }
 
     pos.stm = opp;
@@ -124,7 +112,6 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.en_passant = info.en_passant;
     pos.halfmove_clock = info.halfmove_clock;
     pos.hash = info.hash;
-    pos.pawn_hash = info.pawn_hash;
 
     if mv.is_castling() {
         revert_castling(pos, from, to);
