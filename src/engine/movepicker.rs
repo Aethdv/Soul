@@ -76,6 +76,7 @@ pub struct MovePicker {
     mvvlva_ep:  i32,
     killers:    [Move; 2],
     cont1:      ContContext,
+    cont2:      ContContext,
     is_qsearch: bool,
     in_check:   bool,
 }
@@ -85,7 +86,13 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
 impl MovePicker {
     #[inline]
-    pub fn new(hash_move: Option<Move>, cfg: &SearchConfig, killers: [Move; 2], cont1: ContContext) -> Self {
+    pub fn new(
+        hash_move: Option<Move>,
+        cfg: &SearchConfig,
+        killers: [Move; 2],
+        cont1: ContContext,
+        cont2: ContContext,
+    ) -> Self {
         Self {
             stage: Stage::Hash,
             hash_move,
@@ -96,6 +103,7 @@ impl MovePicker {
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             killers,
             cont1,
+            cont2,
             is_qsearch: false,
             in_check: false,
         }
@@ -113,6 +121,7 @@ impl MovePicker {
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             killers: [Move::null(); 2],
             cont1: ContContext::default(),
+            cont2: ContContext::default(),
             is_qsearch: true,
             in_check,
         }
@@ -422,14 +431,15 @@ impl MovePicker {
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
-        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1);
+        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1, self.cont2);
 
         // ──────── Move Ordering Heuristics ────────
 
-        // History values are mathematically bounded to `[-32768, 32768]` combined.
-        // Added 32768 guarantees a positive value without overflow.
-        // We safely clamp at 63000 to keep the highest `[64000, 65535]` band exclusive for killers and promotions.
-        let mut sort_score = (score + 32768).clamp(0, 63000) as u32;
+        // History values can exceed [-32768, 32768] once multiple continuation
+        // tables contribute.  Halving before encoding keeps the full range inside
+        // [0, 63000] while preserving relative ordering.  The [64000, 65535] band
+        // stays exclusive for killers and promotions.
+        let mut sort_score = (score / 2 + 32768).clamp(0, 63000) as u32;
 
         // Quiet promotions outrank all other quiet moves.
         // Queen first (almost always best), then knight (fork potential),

@@ -763,8 +763,17 @@ impl Worker {
                 ContContext::default()
             };
 
+            let cont2 = if ply > 1 {
+                ContContext {
+                    pt: self.stack[ply - 2].moved_pt,
+                    to: self.stack[ply - 2].moved_to,
+                }
+            } else {
+                ContContext::default()
+            };
+
             // Interior: staged move generation via MovePicker.
-            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, cont1);
+            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, cont1, cont2);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -840,7 +849,7 @@ impl Worker {
                     // ~13 Elo
                     let hist = self
                         .history
-                        .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1);
+                        .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                         r -= 1;
@@ -884,7 +893,7 @@ impl Worker {
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
                         self.history
-                            .update(stm, pt, mv.from(), mv.to(), cont1, bonus);
+                            .update(stm, pt, mv.from(), mv.to(), cont1, cont2, bonus);
 
                         // ── Killer Moves (~35 Elo) ──
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
@@ -914,7 +923,7 @@ impl Worker {
 
                         // Over time, this "anti-history" pushes bad moves deeper into the list.
                         self.history
-                            .update(stm, q_pt, qm.from(), qm.to(), cont1, -bonus);
+                            .update(stm, q_pt, qm.from(), qm.to(), cont1, cont2, -bonus);
                     }
 
                     break;
