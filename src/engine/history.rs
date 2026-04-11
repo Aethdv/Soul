@@ -139,15 +139,14 @@ impl Default for CorrectionHistory {
 }
 
 /// Combined history tables for quiet move ordering.
-/// Queries return the sum of all components, bounded to `[-32768, 32768]`.
 #[derive(Clone)]
 pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
     table:      [[[i16; 64]; 6]; 2],
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
     butterfly:  [[i16; 4096]; 2], // ~20 Elo
-    /// `[side][prev_piece][prev_to][piece][to]`
-    cont:       ContinuationHistory, // ~13 Elo
+    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
+    cont:       [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
 }
@@ -158,7 +157,7 @@ impl History {
         Self {
             table:      [[[0; 64]; 6]; 2],
             butterfly:  [[0; 4096]; 2],
-            cont:       ContinuationHistory::new(),
+            cont:       [ContinuationHistory::new(), ContinuationHistory::new()],
             correction: CorrectionHistory::new(),
         }
     }
@@ -167,7 +166,8 @@ impl History {
     pub fn clear(&mut self) {
         self.table = [[[0; 64]; 6]; 2];
         self.butterfly = [[0; 4096]; 2];
-        self.cont.clear();
+        self.cont[0].clear();
+        self.cont[1].clear();
         self.correction.clear();
     }
 
@@ -183,12 +183,16 @@ impl History {
         from: Square,
         to: Square,
         cont1: ContContext,
+        cont2: ContContext,
     ) -> i32 {
         let mut score = i32::from(self.table[stm][pt][to])
             + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
 
         if cont1.pt != PieceType::None {
-            score += i32::from(self.cont.get(stm, cont1.pt, cont1.to, pt, to));
+            score += i32::from(self.cont[0].get(stm, cont1.pt, cont1.to, pt, to));
+        }
+        if cont2.pt != PieceType::None {
+            score += i32::from(self.cont[1].get(stm, cont2.pt, cont2.to, pt, to));
         }
         score
     }
@@ -214,13 +218,17 @@ impl History {
         from: Square,
         to: Square,
         cont1: ContContext,
+        cont2: ContContext,
         bonus: i32,
     ) {
         Self::update_entry(&mut self.table[stm][pt][to], bonus);
         Self::update_entry(&mut self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
 
         if cont1.pt != PieceType::None {
-            Self::update_entry(self.cont.get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
+            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
+        }
+        if cont2.pt != PieceType::None {
+            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus);
         }
     }
 
@@ -249,7 +257,9 @@ impl Default for History {
         Self {
             table:      [[[0; 64]; 6]; 2],
             butterfly:  [[0; 4096]; 2],
-            cont:       ContinuationHistory { data: Box::new([]) },
+            cont:       [ContinuationHistory { data: Box::new([]) }, ContinuationHistory {
+                data: Box::new([]),
+            }],
             correction: CorrectionHistory { data: Box::new([]) },
         }
     }
