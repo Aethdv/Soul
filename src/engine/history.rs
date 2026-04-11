@@ -207,7 +207,7 @@ pub struct History {
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
     /// `[side][attacker][to][victim]`
-    capt:       CaptureHistory,
+    capt:       CaptureHistory, // ~8 Elo
 }
 
 impl History {
