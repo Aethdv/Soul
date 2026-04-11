@@ -868,15 +868,16 @@ impl Worker {
                 )?;
 
                 if likely(res.alpha >= beta) {
-                    // ── History Gravity Heuristic (~72 Elo) ──
+                    // ── History Gravity Heuristic (~95 Elo) ──
                     // When a move causes a beta-cutoff, its presumably a strong response.
                     // We reward it so it surfaces earlier in future sibling nodes,
                     // and we punish the preceding moves that failed to refute the branch.
                     //
                     // Bonus is quadratic with depth to prioritize deep heuristics,
-                    // capped at 400 to prevent a single deep search
-                    // from permanently dominating the history table.
-                    let bonus = depth.pow(2).min(400);
+                    // scaled 4x and capped at 1600 to push entries toward the
+                    // nominal ±16384 attractor without a single deep search
+                    // permanently dominating the history table.
+                    let bonus = (depth.pow(2) * 4).min(1600);
 
                     // Only reward if the cutoff itself was caused by a quiet move.
                     // Captures and structural moves (castling) are handled differently.
