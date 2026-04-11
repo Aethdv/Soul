@@ -471,9 +471,26 @@ fn history_gravity_bounds() {
 
     // Slam it with huge bonuses — should converge toward +16384 without overflow.
     for _ in 0..10_000 {
-        hist.update(stm, pt, Square(0), to, ContContext::default(), ContContext::default(), 400);
+        hist.update(
+            stm,
+            pt,
+            Square(0),
+            to,
+            ContContext::default(),
+            ContContext::default(),
+            ContContext::default(),
+            400,
+        );
     }
-    let score = hist.score_quiet(stm, pt, Square(0), to, ContContext::default(), ContContext::default());
+    let score = hist.score_quiet(
+        stm,
+        pt,
+        Square(0),
+        to,
+        ContContext::default(),
+        ContContext::default(),
+        ContContext::default(),
+    );
     assert!(score > 0, "After massive positive bonus, score should be positive: {score}");
     assert!(
         score <= 32768,
@@ -482,9 +499,26 @@ fn history_gravity_bounds() {
 
     // Now slam it negative — should converge toward -16384.
     for _ in 0..20_000 {
-        hist.update(stm, pt, Square(0), to, ContContext::default(), ContContext::default(), -400);
+        hist.update(
+            stm,
+            pt,
+            Square(0),
+            to,
+            ContContext::default(),
+            ContContext::default(),
+            ContContext::default(),
+            -400,
+        );
     }
-    let score = hist.score_quiet(stm, pt, Square(0), to, ContContext::default(), ContContext::default());
+    let score = hist.score_quiet(
+        stm,
+        pt,
+        Square(0),
+        to,
+        ContContext::default(),
+        ContContext::default(),
+        ContContext::default(),
+    );
     assert!(score < 0, "After massive negative bonus, score should be negative: {score}");
     assert!(score >= -32768, "Score should not go below -32768: {score}");
 }
@@ -501,6 +535,7 @@ fn history_clear() {
         Square(28),
         ContContext::default(),
         ContContext::default(),
+        ContContext::default(),
         400,
     );
     assert!(
@@ -509,6 +544,7 @@ fn history_clear() {
             PieceType::Knight,
             Square(0),
             Square(28),
+            ContContext::default(),
             ContContext::default(),
             ContContext::default()
         ) > 0
@@ -521,6 +557,7 @@ fn history_clear() {
             PieceType::Knight,
             Square(0),
             Square(28),
+            ContContext::default(),
             ContContext::default(),
             ContContext::default()
         ),
