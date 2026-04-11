@@ -74,6 +74,63 @@ impl ContinuationHistory {
     }
 }
 
+// ──────── Capture History ────────
+
+/// Capture history: `[side][attacker][to][victim] -> i16`.
+///
+/// Tracks which captures historically caused beta cutoffs, indexed by the
+/// attacker piece type, the destination square, and the victim piece type.
+/// Plain captures and en passant participate; promotion-captures do NOT
+/// (they bypass the normal MVV-LVA path in the picker and are already
+/// strongly ordered by promotion piece, so we keep both sides of the table
+/// consistent by skipping them entirely).
+#[derive(Clone)]
+pub struct CaptureHistory {
+    data: Box<[i16]>,
+}
+
+impl Default for CaptureHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CaptureHistory {
+    pub fn new() -> Self {
+        Self {
+            data: vec![0; 2 * 6 * 64 * 6].into_boxed_slice(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+    }
+
+    #[inline(always)]
+    pub fn get(&self, stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> i16 {
+        self.data[Self::idx(stm, attacker, to, victim)]
+    }
+
+    #[inline(always)]
+    pub fn get_mut(&mut self, stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> &mut i16 {
+        let idx = Self::idx(stm, attacker, to, victim);
+        &mut self.data[idx]
+    }
+
+    #[inline(always)]
+    fn idx(stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> usize {
+        // Victim must be a real piece (Pawn..Queen, optionally King) — never None.
+        // Captures only target opponent non-king squares; en passant hardcodes Pawn.
+        debug_assert!((attacker as usize) < 6, "attacker out of range");
+        debug_assert!((victim as usize) < 6, "victim out of range");
+        let mut i = stm as usize;
+        i = i * 6 + attacker as usize;
+        i = i * 64 + to.0 as usize;
+        i = i * 6 + victim as usize;
+        i
+    }
+}
+
 // ──────── Correction History ────────
 
 /// Pawn-structure-indexed evaluator bias correction.
@@ -138,7 +195,7 @@ impl Default for CorrectionHistory {
     }
 }
 
-/// Combined history tables for quiet move ordering.
+/// Combined history tables for move ordering.
 #[derive(Clone)]
 pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
@@ -149,6 +206,8 @@ pub struct History {
     cont:       [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-3 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
+    /// `[side][attacker][to][victim]`
+    capt:       CaptureHistory,
 }
 
 impl History {
@@ -159,6 +218,7 @@ impl History {
             butterfly:  [[0; 4096]; 2],
             cont:       [ContinuationHistory::new(), ContinuationHistory::new()],
             correction: CorrectionHistory::new(),
+            capt:       CaptureHistory::new(),
         }
     }
 
@@ -169,6 +229,7 @@ impl History {
         self.cont[0].clear();
         self.cont[1].clear();
         self.correction.clear();
+        self.capt.clear();
     }
 
     /// Retrieve the history score for a move.
@@ -256,6 +317,30 @@ impl History {
     pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, diff: i32, depth: i32) {
         self.correction.update(stm, pawn_hash, diff, depth);
     }
+
+    /// Retrieve the capture history score for a capture move.
+    ///
+    /// Indexed by `[stm][attacker][to][victim]`. For en passant, callers
+    /// must pass `victim = PieceType::Pawn`. Promotion-captures do not
+    /// participate (callers should not invoke this for them).
+    #[inline(always)]
+    pub fn score_capture(&self, stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> i32 {
+        i32::from(self.capt.get(stm, attacker, to, victim))
+    }
+
+    /// Update the capture history entry for a capture move using soft gravity.
+    /// Same indexing semantics as `score_capture`.
+    #[inline(always)]
+    pub fn update_capture(
+        &mut self,
+        stm: Color,
+        attacker: PieceType,
+        to: Square,
+        victim: PieceType,
+        bonus: i32,
+    ) {
+        Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus);
+    }
 }
 
 impl Default for History {
@@ -269,6 +354,7 @@ impl Default for History {
                 data: Box::new([]),
             }],
             correction: CorrectionHistory { data: Box::new([]) },
+            capt:       CaptureHistory { data: Box::new([]) },
         }
     }
 }

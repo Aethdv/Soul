@@ -750,9 +750,10 @@ impl Worker {
             let ksq = self.pos.pieces(PieceType::King, stm).lsb();
             let pinned = self.pos.king_blockers();
 
-            // Track searched quiets to penalize them if a later move causes a cutoff.
-            // We reset the pre-allocated counter in the ply stack.
+            // Track searched quiets and captures to penalize them if a later move causes a cutoff.
+            // We reset the pre-allocated counters in the ply stack.
             self.stack[ply].quiet_count = 0;
+            self.stack[ply].capture_count = 0;
 
             let cont1 = if ply > 0 {
                 ContContext {
@@ -795,6 +796,17 @@ impl Worker {
                     self.stack[ply].quiet_moves[count] = mv;
                     self.stack[ply].quiet_count += 1;
                     appended_quiet = true;
+                }
+
+                let mut appended_capture = false;
+                if mv.is_capture()
+                    && !mv.is_promotion()
+                    && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES
+                {
+                    let count = self.stack[ply].capture_count;
+                    self.stack[ply].capture_moves[count] = mv;
+                    self.stack[ply].capture_count += 1;
+                    appended_capture = true;
                 }
 
                 // ── Futility Pruning (~10 Elo) ──
@@ -913,14 +925,35 @@ impl Worker {
                             self.stack[ply].killers[1] = self.stack[ply].killers[0];
                             self.stack[ply].killers[0] = mv;
                         }
+                    } else if mv.is_capture() && !mv.is_promotion() {
+                        // ── Capture History Update ──
+                        // Promotion-captures are deliberately excluded — they bypass
+                        // the normal MVV-LVA + capture-history blend in the picker
+                        // (see add_promo_caps), so updating their entries here would
+                        // train a table that nothing reads.
+                        //
+                        // self.pos is the parent position: search_move has already
+                        // unmade the move, so the captured piece is back on `to`
+                        // (or it's en passant, where the victim is a pawn by definition).
+                        let attacker = self.pos.expect_piece_at(mv.from());
+                        let victim = if mv.is_en_passant() {
+                            PieceType::Pawn
+                        } else {
+                            self.pos.piece_at(mv.to())
+                        };
+                        self.history
+                            .update_capture(stm, attacker, mv.to(), victim, bonus);
                     }
 
                     // ── Asymmetric Penalty (~25 Elo) ──
-                    // If a quiet move caused the cutoff, we penalize all PRECEDING
-                    // quiets searched at this ply (the losers).
+                    // When a move causes a beta-cutoff, all moves searched before it
+                    // at this ply are "losers" — they failed to refute the branch.
+                    // We drive their history scores down so they surface later in
+                    // future sibling nodes.
                     //
-                    // If the cutoff was a capture, quiet_count is 0 because
-                    // captures precede quiets in our picker.
+                    // Quiets: penalize all preceding quiets. If the cutoff was a
+                    // capture, quiet_count is 0 (captures precede quiets in the
+                    // picker), so the loop is a no-op.
                     let penalty_limit = if appended_quiet {
                         self.stack[ply].quiet_count.saturating_sub(1)
                     } else {
@@ -934,6 +967,28 @@ impl Worker {
                         // Over time, this "anti-history" pushes bad moves deeper into the list.
                         self.history
                             .update(stm, q_pt, qm.from(), qm.to(), cont1, cont2, cont4, -bonus);
+                    }
+
+                    // Captures: penalize all preceding captures that were searched
+                    // and failed to cut. Without this, capture history only drifts
+                    // positive — it can reward good captures but never push bad
+                    // ones down.
+                    let cap_penalty_limit = if appended_capture {
+                        self.stack[ply].capture_count.saturating_sub(1)
+                    } else {
+                        self.stack[ply].capture_count
+                    };
+
+                    for i in 0..cap_penalty_limit {
+                        let cm = self.stack[ply].capture_moves[i];
+                        let attacker = self.pos.expect_piece_at(cm.from());
+                        let victim = if cm.is_en_passant() {
+                            PieceType::Pawn
+                        } else {
+                            self.pos.piece_at(cm.to())
+                        };
+                        self.history
+                            .update_capture(stm, attacker, cm.to(), victim, -bonus);
                     }
 
                     break;
@@ -1580,30 +1635,38 @@ impl Line {
 // quiets searched before a cutoff, not all possible quiets in a position.
 pub const MAX_TRACKED_QUIETS: usize = 256;
 
+// Captures are far fewer per position than quiets. 64 covers all realistic
+// legal capture counts with headroom.
+pub const MAX_TRACKED_CAPTURES: usize = 64;
+
 /// Per-ply scratch data.
 #[derive(Clone, Copy)]
 pub struct Stack {
-    pub pv:          Line,
-    pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
-    pub quiet_count: usize,
-    pub killers:     [Move; 2],
-    pub moved_pt:    PieceType,
-    pub moved_to:    Square,
-    pub static_eval: i32,
-    pub is_null:     bool,
+    pub pv:            Line,
+    pub quiet_moves:   [Move; MAX_TRACKED_QUIETS],
+    pub quiet_count:   usize,
+    pub capture_moves: [Move; MAX_TRACKED_CAPTURES],
+    pub capture_count: usize,
+    pub killers:       [Move; 2],
+    pub moved_pt:      PieceType,
+    pub moved_to:      Square,
+    pub static_eval:   i32,
+    pub is_null:       bool,
 }
 
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            pv:          Line::new(),
-            quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
-            quiet_count: 0,
-            killers:     [Move::null(); 2],
-            moved_pt:    PieceType::None,
-            moved_to:    Square(0),
-            static_eval: tt::SCORE_NONE,
-            is_null:     false,
+            pv:            Line::new(),
+            quiet_moves:   [Move::null(); MAX_TRACKED_QUIETS],
+            quiet_count:   0,
+            capture_moves: [Move::null(); MAX_TRACKED_CAPTURES],
+            capture_count: 0,
+            killers:       [Move::null(); 2],
+            moved_pt:      PieceType::None,
+            moved_to:      Square(0),
+            static_eval:   tt::SCORE_NONE,
+            is_null:       false,
         }
     }
 }
