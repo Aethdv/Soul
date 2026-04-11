@@ -876,7 +876,7 @@ impl Worker {
                     // Bonus is quadratic with depth to prioritize deep heuristics,
                     // capped at 400 to prevent a single deep search
                     // from permanently dominating the history table.
-                    let bonus = depth.pow(2).min(400);
+                    let bonus = (depth.pow(2) * 4).min(1600);
 
                     // Only reward if the cutoff itself was caused by a quiet move.
                     // Captures and structural moves (castling) are handled differently.
