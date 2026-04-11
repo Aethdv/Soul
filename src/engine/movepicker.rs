@@ -298,11 +298,15 @@ impl MovePicker {
         }
     }
 
+    /// Blend MVV-LVA with capture history into a single sort score.
+    /// Single source of truth for the capture ordering formula.
+    #[inline(always)]
+    fn cap_score(&self, mvv: i32, chist: i32) -> i32 {
+        mvv + chist / self.capt_hist_divisor
+    }
+
     /// Generic piece capture generator.
     /// Const-monomorphized by `PT` (PieceType) to eliminate dynamic dispatch for attack lookups.
-    ///
-    /// The capture score blends MVV-LVA with capture history:
-    ///   `(v_val - a_pen) + capture_history / capt_hist_divisor`
     #[inline]
     fn gen_piece_caps<const PT: PieceType>(
         &mut self,
@@ -319,7 +323,7 @@ impl MovePicker {
                 let victim = board.piece_at(to);
                 let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
                 let chist = history.score_capture(stm, PT, to, victim);
-                let score = (v_val - a_pen) + chist / self.capt_hist_divisor;
+                let score = self.cap_score(v_val - a_pen, chist);
                 self.add_move_packed(Move::new(from, to, Move::CAPTURE), score as MoveScore);
             }
         }
@@ -349,8 +353,7 @@ impl MovePicker {
             board.piece_at(mv.to())
         };
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
-        let score = mvv as i32 + chist / self.capt_hist_divisor;
-        self.add_move_packed(mv, score as MoveScore);
+        self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
     }
 
     /// Emit all four promotion-captures for one pawn diagonal.
