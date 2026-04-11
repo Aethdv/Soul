@@ -77,6 +77,7 @@ pub struct MovePicker {
     killers:    [Move; 2],
     cont1:      ContContext,
     cont2:      ContContext,
+    cont4:      ContContext,
     is_qsearch: bool,
     in_check:   bool,
 }
@@ -92,6 +93,7 @@ impl MovePicker {
         killers: [Move; 2],
         cont1: ContContext,
         cont2: ContContext,
+        cont4: ContContext,
     ) -> Self {
         Self {
             stage: Stage::Hash,
@@ -104,6 +106,7 @@ impl MovePicker {
             killers,
             cont1,
             cont2,
+            cont4,
             is_qsearch: false,
             in_check: false,
         }
@@ -122,6 +125,7 @@ impl MovePicker {
             killers: [Move::null(); 2],
             cont1: ContContext::default(),
             cont2: ContContext::default(),
+            cont4: ContContext::default(),
             is_qsearch: true,
             in_check,
         }
@@ -431,7 +435,7 @@ impl MovePicker {
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
-        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1, self.cont2);
+        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1, self.cont2, self.cont4);
 
         // ──────── Move Ordering Heuristics ────────
 

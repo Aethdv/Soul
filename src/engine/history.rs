@@ -184,6 +184,7 @@ impl History {
         to: Square,
         cont1: ContContext,
         cont2: ContContext,
+        cont4: ContContext,
     ) -> i32 {
         let mut score = i32::from(self.table[stm][pt][to])
             + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
@@ -193,6 +194,9 @@ impl History {
         }
         if cont2.pt != PieceType::None {
             score += i32::from(self.cont[1].get(stm, cont2.pt, cont2.to, pt, to));
+        }
+        if cont4.pt != PieceType::None {
+            score += i32::from(self.cont[1].get(stm, cont4.pt, cont4.to, pt, to));
         }
         score
     }
@@ -219,6 +223,7 @@ impl History {
         to: Square,
         cont1: ContContext,
         cont2: ContContext,
+        cont4: ContContext,
         bonus: i32,
     ) {
         Self::update_entry(&mut self.table[stm][pt][to], bonus);
@@ -229,6 +234,9 @@ impl History {
         }
         if cont2.pt != PieceType::None {
             Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus);
+        }
+        if cont4.pt != PieceType::None {
+            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus);
         }
     }
 
