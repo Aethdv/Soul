@@ -67,19 +67,20 @@ enum Stage {
 }
 
 pub struct MovePicker {
-    stage:      Stage,
-    hash_move:  Option<Move>,
-    candidates: [MaybeUninit<u32>; MAX_MOVES],
-    count:      usize,
-    mvvlva_v:   [i32; 8],
-    mvvlva_a:   [i32; 8],
-    mvvlva_ep:  i32,
-    killers:    [Move; 2],
-    cont1:      ContContext,
-    cont2:      ContContext,
-    cont4:      ContContext,
-    is_qsearch: bool,
-    in_check:   bool,
+    stage:             Stage,
+    hash_move:         Option<Move>,
+    candidates:        [MaybeUninit<u32>; MAX_MOVES],
+    count:             usize,
+    mvvlva_v:          [i32; 8],
+    mvvlva_a:          [i32; 8],
+    mvvlva_ep:         i32,
+    capt_hist_divisor: i32,
+    killers:           [Move; 2],
+    cont1:             ContContext,
+    cont2:             ContContext,
+    cont4:             ContContext,
+    is_qsearch:        bool,
+    in_check:          bool,
 }
 
 // Ensure move bit-packing assumes correctly.
@@ -103,6 +104,7 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             killers,
             cont1,
             cont2,
@@ -122,6 +124,7 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             killers: [Move::null(); 2],
             cont1: ContContext::default(),
             cont2: ContContext::default(),
@@ -144,7 +147,7 @@ impl MovePicker {
                 },
 
                 Stage::GenCaptures => {
-                    self.gen_captures(board);
+                    self.gen_captures(board, history);
                     // ── Stage Segregation ──
                     // We sort captures independently of quiet moves.
                     // Even if a strong quiet move has a high history score,
@@ -234,25 +237,25 @@ impl MovePicker {
 
     /// Generate all pseudo-legal captures and promotions for the side to move.
     /// Defers to specific piece generators.
-    fn gen_captures(&mut self, board: &Position) {
+    fn gen_captures(&mut self, board: &Position, history: &History) {
         let stm = board.stm;
         let us = board.side_bb[stm];
         // king captures are never legal
         let them = board.side_bb[stm.opposite()] & !board.role_bb[PieceType::King];
         let occ = board.occ;
 
-        self.gen_pawn_caps(board, us, them);
-        self.gen_piece_caps::<{ PieceType::Knight }>(board, us, them, occ);
-        self.gen_piece_caps::<{ PieceType::Bishop }>(board, us, them, occ);
-        self.gen_piece_caps::<{ PieceType::Rook }>(board, us, them, occ);
-        self.gen_piece_caps::<{ PieceType::Queen }>(board, us, them, occ);
-        self.gen_piece_caps::<{ PieceType::King }>(board, us, them, occ);
+        self.gen_pawn_caps(board, us, them, history);
+        self.gen_piece_caps::<{ PieceType::Knight }>(board, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Bishop }>(board, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Rook }>(board, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Queen }>(board, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::King }>(board, us, them, occ, history);
     }
 
     /// Generates pawn captures (diagonal) and promotion captures.
     /// Handles en passant explicitly.
     #[inline(always)]
-    fn gen_pawn_caps(&mut self, board: &Position, us: Bitboard, them: Bitboard) {
+    fn gen_pawn_caps(&mut self, board: &Position, us: Bitboard, them: Bitboard, history: &History) {
         let stm = board.stm;
         let pawns = board.role_bb[PieceType::Pawn] & us;
 
@@ -274,6 +277,7 @@ impl MovePicker {
             let promo = victims & prom_mask;
             let standard = victims & !prom_mask;
 
+            // Promotion-captures bypass capture history entirely (see add_promo_caps).
             for to in promo {
                 let from = Square((to.0 as i8 - delta) as u8);
                 self.add_promo_caps(board, from, to);
@@ -281,20 +285,24 @@ impl MovePicker {
 
             for to in standard {
                 let from = Square((to.0 as i8 - delta) as u8);
-                self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn);
+                self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn, history);
             }
         }
 
-        // En passant.
+        // En passant. Victim is always a pawn — captured pawn is on the
+        // adjacent square, not on `to`.
         if let Some(ep_sq) = board.en_passant {
             for from in atk_pawn(ep_sq, stm.opposite()) & pawns {
-                self.add_cap(board, Move::new(from, ep_sq, Move::EP_CAPTURE), PieceType::Pawn);
+                self.add_cap(board, Move::new(from, ep_sq, Move::EP_CAPTURE), PieceType::Pawn, history);
             }
         }
     }
 
     /// Generic piece capture generator.
     /// Const-monomorphized by `PT` (PieceType) to eliminate dynamic dispatch for attack lookups.
+    ///
+    /// The capture score blends MVV-LVA with capture history:
+    ///   `(v_val - a_pen) + capture_history / capt_hist_divisor`
     #[inline]
     fn gen_piece_caps<const PT: PieceType>(
         &mut self,
@@ -302,13 +310,16 @@ impl MovePicker {
         us: Bitboard,
         them: Bitboard,
         occ: Bitboard,
+        history: &History,
     ) {
         let a_pen = *crate::debug_index!(self.mvvlva_a, PT as usize);
+        let stm = board.stm;
         for from in board.role_bb[PT as usize] & us {
             for to in Self::attacks::<PT>(from, occ) & them {
                 let victim = board.piece_at(to);
                 let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
-                let score = v_val - a_pen;
+                let chist = history.score_capture(stm, PT, to, victim);
+                let score = (v_val - a_pen) + chist / self.capt_hist_divisor;
                 self.add_move_packed(Move::new(from, to, Move::CAPTURE), score as MoveScore);
             }
         }
@@ -325,11 +336,21 @@ impl MovePicker {
         self.count += 1;
     }
 
-    /// Append a capture, tagged with its MVV-LVA score for selection sort.
+    /// Append a capture, scored as `MVV-LVA + capture_history / divisor`.
+    /// Promotion-captures bypass this path entirely; they go through `add_promo_caps`.
     #[inline]
-    fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType) {
-        let score = self.mvv_lva(board, mv, attacker);
-        self.add_move_packed(mv, score);
+    fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
+        let mvv = self.mvv_lva(board, mv, attacker);
+        // En passant: victim is always pawn (the captured pawn sits on an
+        // adjacent square, not on `mv.to()`).
+        let victim = if mv.is_en_passant() {
+            PieceType::Pawn
+        } else {
+            board.piece_at(mv.to())
+        };
+        let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
+        let score = mvv as i32 + chist / self.capt_hist_divisor;
+        self.add_move_packed(mv, score as MoveScore);
     }
 
     /// Emit all four promotion-captures for one pawn diagonal.
