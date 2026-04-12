@@ -203,7 +203,7 @@ pub struct History {
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
     butterfly:     [[i16; 4096]; 2], // ~20 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
-    cont:          [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-3 (~3 Elo)
+    cont:          [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction:    CorrectionHistory, // ~53 Elo
     /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
