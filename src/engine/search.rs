@@ -620,7 +620,8 @@ impl Worker {
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
-            let correction = self.history.correction(self.pos.stm, pawn_hash) / history::CORRECTION_SCALE;
+            let correction =
+                self.history.correction(self.pos.stm, pawn_hash, &self.pos) / history::CORRECTION_SCALE;
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
@@ -1033,7 +1034,7 @@ impl Worker {
         {
             let diff = res.best_eval - raw_static_eval;
             self.history
-                .update_correction(self.pos.stm, pawn_hash, diff, depth);
+                .update_correction(self.pos.stm, pawn_hash, &self.pos, diff, depth);
         }
 
         Ok(res.best_eval)
@@ -1249,7 +1250,7 @@ impl Worker {
             let raw_eval = evaluate(&self.pos, &self.accumulator);
             let correction = self
                 .history
-                .correction(self.pos.stm, self.pos.calc_pawn_hash())
+                .correction(self.pos.stm, self.pos.calc_pawn_hash(), &self.pos)
                 / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {

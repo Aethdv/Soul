@@ -6,7 +6,10 @@
 //! High-scoring moves are sorted to the front of the move list, maximizing
 //! the probability of early cutoffs in subsequent searches.
 
-use crate::core::defs::{Color, PieceType, Square};
+use crate::core::{
+    board::Position,
+    defs::{Color, PieceType, Square},
+};
 
 #[derive(Clone, Copy)]
 pub struct ContContext {
@@ -206,6 +209,8 @@ pub struct History {
     cont:       [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-3 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
+    /// `[side][piece][square]`
+    np_corr:    [[[i16; 64]; 6]; 2],
     /// `[side][attacker][to][victim]`
     capt:       CaptureHistory, // ~8 Elo
 }
@@ -218,6 +223,7 @@ impl History {
             butterfly:  [[0; 4096]; 2],
             cont:       [ContinuationHistory::new(), ContinuationHistory::new()],
             correction: CorrectionHistory::new(),
+            np_corr:    [[[0; 64]; 6]; 2],
             capt:       CaptureHistory::new(),
         }
     }
@@ -229,6 +235,7 @@ impl History {
         self.cont[0].clear();
         self.cont[1].clear();
         self.correction.clear();
+        self.np_corr = [[[0; 64]; 6]; 2];
         self.capt.clear();
     }
 
@@ -309,13 +316,31 @@ impl History {
     }
 
     #[inline(always)]
-    pub fn correction(&self, stm: Color, pawn_hash: u64) -> i32 {
-        self.correction.get(stm, pawn_hash)
+    pub fn correction(&self, stm: Color, pawn_hash: u64, pos: &Position) -> i32 {
+        let mut np_bias = 0;
+        let stm_non_pawns = pos.side_bb[stm as usize] & !pos.role_bb[PieceType::Pawn];
+        for sq in stm_non_pawns {
+            let pt = pos.piece_at(sq);
+            np_bias += i32::from(self.np_corr[stm as usize][pt as usize][sq.0 as usize]);
+        }
+        self.correction.get(stm, pawn_hash) + np_bias / stm_non_pawns.popcount().max(1) as i32
     }
 
     #[inline(always)]
-    pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, diff: i32, depth: i32) {
+    pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, pos: &Position, diff: i32, depth: i32) {
         self.correction.update(stm, pawn_hash, diff, depth);
+
+        let stm_non_pawns = pos.side_bb[stm as usize] & !pos.role_bb[PieceType::Pawn];
+        let weight = (1 + depth).min(16);
+        let scaled = diff * CORRECTION_SCALE;
+
+        for sq in stm_non_pawns {
+            let pt = pos.piece_at(sq);
+            let entry = &mut self.np_corr[stm as usize][pt as usize][sq.0 as usize];
+            let e = i32::from(*entry);
+            *entry = ((e * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT)
+                as i16;
+        }
     }
 
     /// Retrieve the capture history score for a capture move.
@@ -354,6 +379,7 @@ impl Default for History {
                 data: Box::new([]),
             }],
             correction: CorrectionHistory { data: Box::new([]) },
+            np_corr:    [[[0; 64]; 6]; 2],
             capt:       CaptureHistory { data: Box::new([]) },
         }
     }
