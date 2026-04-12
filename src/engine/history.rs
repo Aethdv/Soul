@@ -207,7 +207,7 @@ pub struct History {
     /// `[side][pawn_hash & 0x3FFF]`
     correction:    CorrectionHistory, // ~53 Elo
     /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
-    np_correction: CorrectionHistory,
+    np_correction: CorrectionHistory, // ~18 Elo
     /// `[side][attacker][to][victim]`
     capt:          CaptureHistory, // ~8 Elo
 }
