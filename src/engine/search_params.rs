@@ -458,9 +458,9 @@ search_params! {
         /// the contribution to a range comparable to MVV-LVA. Higher values
         /// give MVV-LVA more weight; lower values give history more influence.
         pub capt_hist_divisor: i32 {
-            default: 256,
-            min:      64,
-            max:    1024,
+            default:  32,
+            min:       8,
+            max:     256,
             step:      8,
         },
     }
