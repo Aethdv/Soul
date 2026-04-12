@@ -6,10 +6,7 @@
 //! High-scoring moves are sorted to the front of the move list, maximizing
 //! the probability of early cutoffs in subsequent searches.
 
-use crate::core::{
-    board::Position,
-    defs::{Color, PieceType, Square},
-};
+use crate::core::defs::{Color, PieceType, Square};
 
 #[derive(Clone, Copy)]
 pub struct ContContext {
@@ -202,29 +199,29 @@ impl Default for CorrectionHistory {
 #[derive(Clone)]
 pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
-    table:      [[[i16; 64]; 6]; 2],
+    table:         [[[i16; 64]; 6]; 2],
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
-    butterfly:  [[i16; 4096]; 2], // ~20 Elo
+    butterfly:     [[i16; 4096]; 2], // ~20 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
-    cont:       [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-3 (~3 Elo)
+    cont:          [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-3 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
-    correction: CorrectionHistory, // ~53 Elo
-    /// `[side][piece][square]`
-    np_corr:    [[[i16; 64]; 6]; 2],
+    correction:    CorrectionHistory, // ~53 Elo
+    /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
+    np_correction: CorrectionHistory,
     /// `[side][attacker][to][victim]`
-    capt:       CaptureHistory, // ~8 Elo
+    capt:          CaptureHistory, // ~8 Elo
 }
 
 impl History {
     /// Create a zeroed history table.
     pub fn new() -> Self {
         Self {
-            table:      [[[0; 64]; 6]; 2],
-            butterfly:  [[0; 4096]; 2],
-            cont:       [ContinuationHistory::new(), ContinuationHistory::new()],
-            correction: CorrectionHistory::new(),
-            np_corr:    [[[0; 64]; 6]; 2],
-            capt:       CaptureHistory::new(),
+            table:         [[[0; 64]; 6]; 2],
+            butterfly:     [[0; 4096]; 2],
+            cont:          [ContinuationHistory::new(), ContinuationHistory::new()],
+            correction:    CorrectionHistory::new(),
+            np_correction: CorrectionHistory::new(),
+            capt:          CaptureHistory::new(),
         }
     }
 
@@ -235,7 +232,7 @@ impl History {
         self.cont[0].clear();
         self.cont[1].clear();
         self.correction.clear();
-        self.np_corr = [[[0; 64]; 6]; 2];
+        self.np_correction.clear();
         self.capt.clear();
     }
 
@@ -315,32 +312,39 @@ impl History {
         *entry = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384) as i16;
     }
 
+    /// Blended correction: pawn structure + white non-pawn config + black non-pawn config.
+    ///
+    /// Pawn correction is at full weight; NP corrections are scaled by `np_weight / 256`
+    /// so the tuner can dial their contribution independently.
     #[inline(always)]
-    pub fn correction(&self, stm: Color, pawn_hash: u64, pos: &Position) -> i32 {
-        let mut np_bias = 0;
-        let stm_non_pawns = pos.side_bb[stm as usize] & !pos.role_bb[PieceType::Pawn];
-        for sq in stm_non_pawns {
-            let pt = pos.piece_at(sq);
-            np_bias += i32::from(self.np_corr[stm as usize][pt as usize][sq.0 as usize]);
-        }
-        self.correction.get(stm, pawn_hash) + np_bias / stm_non_pawns.popcount().max(1) as i32
+    pub fn correction(
+        &self,
+        stm: Color,
+        pawn_hash: u64,
+        w_np_hash: u64,
+        b_np_hash: u64,
+        np_weight: i32,
+    ) -> i32 {
+        self.correction.get(stm, pawn_hash)
+            + self.np_correction.get(Color::White, w_np_hash) * np_weight / 256
+            + self.np_correction.get(Color::Black, b_np_hash) * np_weight / 256
     }
 
     #[inline(always)]
-    pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, pos: &Position, diff: i32, depth: i32) {
+    pub fn update_correction(
+        &mut self,
+        stm: Color,
+        pawn_hash: u64,
+        w_np_hash: u64,
+        b_np_hash: u64,
+        diff: i32,
+        depth: i32,
+    ) {
         self.correction.update(stm, pawn_hash, diff, depth);
-
-        let stm_non_pawns = pos.side_bb[stm as usize] & !pos.role_bb[PieceType::Pawn];
-        let weight = (1 + depth).min(16);
-        let scaled = diff * CORRECTION_SCALE;
-
-        for sq in stm_non_pawns {
-            let pt = pos.piece_at(sq);
-            let entry = &mut self.np_corr[stm as usize][pt as usize][sq.0 as usize];
-            let e = i32::from(*entry);
-            *entry = ((e * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT)
-                as i16;
-        }
+        self.np_correction
+            .update(Color::White, w_np_hash, diff, depth);
+        self.np_correction
+            .update(Color::Black, b_np_hash, diff, depth);
     }
 
     /// Retrieve the capture history score for a capture move.
@@ -373,14 +377,14 @@ impl Default for History {
     /// Only use as a placeholder for `std::mem::take` — never score moves against this.
     fn default() -> Self {
         Self {
-            table:      [[[0; 64]; 6]; 2],
-            butterfly:  [[0; 4096]; 2],
-            cont:       [ContinuationHistory { data: Box::new([]) }, ContinuationHistory {
+            table:         [[[0; 64]; 6]; 2],
+            butterfly:     [[0; 4096]; 2],
+            cont:          [ContinuationHistory { data: Box::new([]) }, ContinuationHistory {
                 data: Box::new([]),
             }],
-            correction: CorrectionHistory { data: Box::new([]) },
-            np_corr:    [[[0; 64]; 6]; 2],
-            capt:       CaptureHistory { data: Box::new([]) },
+            correction:    CorrectionHistory { data: Box::new([]) },
+            np_correction: CorrectionHistory { data: Box::new([]) },
+            capt:          CaptureHistory { data: Box::new([]) },
         }
     }
 }

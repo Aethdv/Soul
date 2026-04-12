@@ -463,5 +463,16 @@ search_params! {
             max:     256,
             step:      8,
         },
+
+        /// Non-pawn correction history weight (fixed-point, /256 scaling).
+        /// Controls how strongly each non-pawn material configuration
+        /// correction contributes to the static eval adjustment.
+        /// 256 = full weight (same as pawn correction), 128 = half.
+        pub np_corr_weight: i32 {
+            default: 128,
+            min:       0,
+            max:     512,
+            step:      8,
+        },
     }
 }
