@@ -312,39 +312,19 @@ impl History {
         *entry = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384) as i16;
     }
 
-    /// Blended correction: pawn structure + white non-pawn config + black non-pawn config.
+    /// Blended correction: pawn structure + side-to-move's non-pawn configuration.
     ///
-    /// Pawn correction is at full weight; NP corrections are scaled by `np_weight / 256`
-    /// so the tuner can dial their contribution independently.
+    /// Pawn correction is at full weight; NP correction is scaled by `np_weight / 256`
+    /// so the tuner can dial its contribution independently.
     #[inline(always)]
-    pub fn correction(
-        &self,
-        stm: Color,
-        pawn_hash: u64,
-        w_np_hash: u64,
-        b_np_hash: u64,
-        np_weight: i32,
-    ) -> i32 {
-        self.correction.get(stm, pawn_hash)
-            + self.np_correction.get(Color::White, w_np_hash) * np_weight / 256
-            + self.np_correction.get(Color::Black, b_np_hash) * np_weight / 256
+    pub fn correction(&self, stm: Color, pawn_hash: u64, stm_np_hash: u64, np_weight: i32) -> i32 {
+        self.correction.get(stm, pawn_hash) + self.np_correction.get(stm, stm_np_hash) * np_weight / 256
     }
 
     #[inline(always)]
-    pub fn update_correction(
-        &mut self,
-        stm: Color,
-        pawn_hash: u64,
-        w_np_hash: u64,
-        b_np_hash: u64,
-        diff: i32,
-        depth: i32,
-    ) {
+    pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, stm_np_hash: u64, diff: i32, depth: i32) {
         self.correction.update(stm, pawn_hash, diff, depth);
-        self.np_correction
-            .update(Color::White, w_np_hash, diff, depth);
-        self.np_correction
-            .update(Color::Black, b_np_hash, diff, depth);
+        self.np_correction.update(stm, stm_np_hash, diff, depth);
     }
 
     /// Retrieve the capture history score for a capture move.
