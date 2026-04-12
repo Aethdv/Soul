@@ -617,10 +617,20 @@ impl Worker {
         } else {
             self.pos.calc_pawn_hash()
         };
+        let stm_np_hash = if in_check {
+            0
+        } else {
+            self.pos.calc_non_pawn_hash(self.pos.stm)
+        };
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
-            let correction = self.history.correction(self.pos.stm, pawn_hash) / history::CORRECTION_SCALE;
+            let correction = self.history.correction(
+                self.pos.stm,
+                pawn_hash,
+                stm_np_hash,
+                searcher.cfg.search_params.np_corr_weight,
+            ) / history::CORRECTION_SCALE;
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
@@ -1033,7 +1043,7 @@ impl Worker {
         {
             let diff = res.best_eval - raw_static_eval;
             self.history
-                .update_correction(self.pos.stm, pawn_hash, diff, depth);
+                .update_correction(self.pos.stm, pawn_hash, stm_np_hash, diff, depth);
         }
 
         Ok(res.best_eval)
@@ -1247,10 +1257,14 @@ impl Worker {
             -INF
         } else {
             let raw_eval = evaluate(&self.pos, &self.accumulator);
-            let correction = self
-                .history
-                .correction(self.pos.stm, self.pos.calc_pawn_hash())
-                / history::CORRECTION_SCALE;
+            let pawn_hash = self.pos.calc_pawn_hash();
+            let stm_np_hash = self.pos.calc_non_pawn_hash(self.pos.stm);
+            let correction = self.history.correction(
+                self.pos.stm,
+                pawn_hash,
+                stm_np_hash,
+                searcher.cfg.search_params.np_corr_weight,
+            ) / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 return Ok(eval);

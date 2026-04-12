@@ -548,6 +548,18 @@ impl Position {
         }
         key
     }
+
+    /// Compute a Zobrist hash of non-pawn, non-king pieces for a given color.
+    /// Used by non-pawn correction history to index by material configuration.
+    pub fn calc_non_pawn_hash(&self, color: Color) -> u64 {
+        let mut key = 0u64;
+        let pieces = self.side_bb[color as usize]
+            & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
+        for sq in pieces {
+            key ^= zobrist::key_piece(self.piece_at(sq), color, sq);
+        }
+        key
+    }
 }
 
 impl Default for Position {
