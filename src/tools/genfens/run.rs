@@ -118,7 +118,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         let mut worker = WorkerState::new(book.clone(), config.clone(), global.clone());
         let tx = tx.clone();
         let stop_w = stop.clone();
-        let target_u = target as u64;
+        let target_u = target;
         handles.push(std::thread::spawn(move || {
             loop {
                 if stop_w.load(Ordering::Relaxed) || worker.global.saved.load(Ordering::Relaxed) >= target_u {
