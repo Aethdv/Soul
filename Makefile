@@ -33,7 +33,7 @@ all: openbench
 
 debug: ## Build for development
 	@echo "Building debug..."
-	@RUSTFLAGS="$(LINKER_FLAGS)" cargo build
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" cargo build
 	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
 	@echo "Done: ./$(DEBUG_EXE)"
 
