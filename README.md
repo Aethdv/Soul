@@ -19,10 +19,11 @@ installed automatically by `rustup` on first build.
 
 ```bash
 make pgo     # Profile-Guided Optimization (Recommended)
-
 make native  # Optimized specifically for your host CPU
-make v4      # AVX512
-make v3      # AVX2, BMI2
+
+make avx512
+make avx2-bmi2
+make avx2
 ```
 
 ### Development
