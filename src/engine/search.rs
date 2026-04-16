@@ -848,6 +848,27 @@ impl Worker {
                     continue;
                 }
 
+                // ── History Pruning (? Elo) ──
+                // A quiet with deeply negative history has been punished
+                // repeatedly by the gravity update. Trust that signal at
+                // shallow depth and skip the full search. Linear threshold
+                // keeps it reachable against the ±16384 soft clamp; deeper
+                // plies get full verification instead.
+                if !in_check
+                    && !N::PV
+                    && mv.is_quiet()
+                    && res.move_count >= 1
+                    && depth <= searcher.cfg.search_params.hist_prune_depth
+                {
+                    let pt = self.pos.expect_piece_at(mv.from());
+                    let hist =
+                        self.history
+                            .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+                    if hist < -searcher.cfg.search_params.hist_prune_margin * depth {
+                        continue;
+                    }
+                }
+
                 // ── SEE Pruning (~20 Elo) ──
                 // Skip moves whose destination-square exchange clearly
                 // loses material.
