@@ -133,15 +133,21 @@ impl CaptureHistory {
 
 // ──────── Correction History ────────
 
-/// Pawn-structure-indexed evaluator bias correction.
+/// Hash-keyed evaluator bias correction.
 ///
 /// Observes the delta between static eval and search result, then applies
-/// a weighted moving average so future evals for the same pawn structure
-/// are nudged toward the truth. Especially impactful for HCE where the
-/// evaluator can't learn its own biases.
+/// a weighted moving average so future evals of positions sharing the same
+/// key are nudged toward the truth. Especially valuable for HCE,
+/// where the evaluator has no mechanism to learn its own systematic errors.
 ///
-/// `[side][pawn_hash % N]`, entries are raw centipawn corrections scaled
-/// by `CORRECTION_SCALE` for fixed-point precision.
+/// The key is caller-supplied — any Zobrist slice that isolates a bias
+/// worth tracking (pawn structure, non-pawn material, etc.).
+/// A single table instance is tied to one key schema; `History` composes several
+/// and blends their corrections at lookup time.
+///
+/// Layout: `[side][key & (N-1)]`. Entries are centipawn corrections
+/// scaled by `CORRECTION_SCALE` for fixed-point precision, bounded by
+/// `CORRECTION_LIMIT` so no single outlier can dominate.
 #[derive(Clone)]
 pub struct CorrectionHistory {
     data: Box<[i32]>,

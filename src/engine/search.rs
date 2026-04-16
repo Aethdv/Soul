@@ -608,10 +608,14 @@ impl Worker {
         };
 
         // ── Correction History ──
-        // The evaluator has systematic biases for certain pawn structures.
-        // Correction history observes the delta between static eval and search
-        // result, then nudges future evals for the same pawn structure toward
-        // the truth. raw_static_eval stays untouched for the update later.
+        // The evaluator has systematic biases tied to structural features
+        // it can't see directly. Correction tables observe (search - eval)
+        // deltas keyed by such features — pawn structure, non-pawn material,
+        // and whatever else we add — then nudge future evals of positions
+        // sharing those keys toward the truth.
+        // raw_static_eval stays untouched so the update at the end of this
+        // frame learns from the unshifted baseline, not the already-corrected
+        // value we use for pruning.
         let pawn_hash = if in_check {
             0
         } else {
