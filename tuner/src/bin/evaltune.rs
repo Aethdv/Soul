@@ -1,5 +1,3 @@
-#![feature(custom_inner_attributes)]
-
 use clap::{Parser, Subcommand};
 use tuner::evaltune;
 
