@@ -851,13 +851,20 @@ impl Worker {
                 // ── History Pruning (? Elo) ──
                 // A quiet with deeply negative history has been punished
                 // repeatedly by the gravity update. Trust that signal at
-                // shallow depth and skip the full search. Linear threshold
-                // keeps it reachable against the ±16384 soft clamp; deeper
-                // plies get full verification instead.
+                // shallow depth and skip the full search.
+                //
+                // Killers are exempt; a killer is a per-ply tactical
+                // refutation whose global history is often deeply negative
+                // (terrible in most positions, saving in this one).
+                // The picker's ordering already says "this move works here",
+                // pruning it on global stats would nuke the exact move
+                // MovePicker promoted.
                 if !in_check
                     && !N::PV
                     && mv.is_quiet()
                     && res.move_count >= 1
+                    && mv != self.stack[ply].killers[0]
+                    && mv != self.stack[ply].killers[1]
                     && depth <= searcher.cfg.search_params.hist_prune_depth
                 {
                     let pt = self.pos.expect_piece_at(mv.from());
