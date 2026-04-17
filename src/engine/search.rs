@@ -556,6 +556,27 @@ impl Worker {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
 
+        // ── Mate Distance Pruning (? Elo) ──
+        // Scores are bounded; no line from here can find mate faster than
+        // MATE - ply plies, and we can't be mated before -MATE + ply.
+        // Tighten the search window to those limits. If the tightened
+        // window collapses (a >= b), every achievable score in this
+        // subtree already satisfies the bound — return a, the tightest
+        // value provable without searching a single move.
+        //
+        // Skipped at the root so iterative_deepening always has a scored
+        // move list to sort; the cutoff path bypasses root_moves updates.
+        let (alpha, beta) = if N::ROOT {
+            (alpha, beta)
+        } else {
+            let a = alpha.max(-MATE + ply as i32);
+            let b = beta.min(MATE - ply as i32 - 1);
+            if a >= b {
+                return Ok(a);
+            }
+            (a, b)
+        };
+
         let alpha_orig = alpha;
 
         // ── TT Probe (~128 Elo) ──
