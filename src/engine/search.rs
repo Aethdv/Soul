@@ -848,7 +848,7 @@ impl Worker {
                     continue;
                 }
 
-                // ── History Pruning (? Elo) ──
+                // ── History Pruning (~7 Elo) ──
                 // A quiet with deeply negative history has been punished
                 // repeatedly by the gravity update. Trust that signal at
                 // shallow depth and skip the full search.
