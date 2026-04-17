@@ -853,6 +853,11 @@ impl Worker {
                 // repeatedly by the gravity update. Trust that signal at
                 // shallow depth and skip the full search.
                 //
+                // Gate uses `!is_tactical()` rather than `is_quiet()` so
+                // non-capture promotions are excluded; `is_quiet` only
+                // filters captures, and pruning a queen promotion on
+                // global history would be absurd.
+                //
                 // Killers are exempt; a killer is a per-ply tactical
                 // refutation whose global history is often deeply negative
                 // (terrible in most positions, saving in this one).
@@ -861,7 +866,7 @@ impl Worker {
                 // MovePicker promoted.
                 if !in_check
                     && !N::PV
-                    && mv.is_quiet()
+                    && !mv.is_tactical()
                     && res.move_count >= 1
                     && mv != self.stack[ply].killers[0]
                     && mv != self.stack[ply].killers[1]
