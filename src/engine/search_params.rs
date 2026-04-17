@@ -311,10 +311,10 @@ search_params! {
         /// range in practice. Linear scaling keeps the threshold reachable
         /// across the full depth window.
         pub hist_prune_margin: i32 {
-            default: 2000,
+            default: 3000,
             min:      500,
-            max:    4000,
-            step:    100,
+            max:     4000,
+            step:     100,
         },
 
         /// Futility pruning per-depth margin (cp/ply).
