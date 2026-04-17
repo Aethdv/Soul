@@ -848,6 +848,39 @@ impl Worker {
                     continue;
                 }
 
+                // ── History Pruning (~7 Elo) ──
+                // A quiet with deeply negative history has been punished
+                // repeatedly by the gravity update. Trust that signal at
+                // shallow depth and skip the full search.
+                //
+                // Gate uses `!is_tactical()` rather than `is_quiet()` so
+                // non-capture promotions are excluded; `is_quiet` only
+                // filters captures, and pruning a queen promotion on
+                // global history would be absurd.
+                //
+                // Killers are exempt; a killer is a per-ply tactical
+                // refutation whose global history is often deeply negative
+                // (terrible in most positions, saving in this one).
+                // The picker's ordering already says "this move works here",
+                // pruning it on global stats would nuke the exact move
+                // MovePicker promoted.
+                if !in_check
+                    && !N::PV
+                    && !mv.is_tactical()
+                    && res.move_count >= 1
+                    && mv != self.stack[ply].killers[0]
+                    && mv != self.stack[ply].killers[1]
+                    && depth <= searcher.cfg.search_params.hist_prune_depth
+                {
+                    let pt = self.pos.expect_piece_at(mv.from());
+                    let hist =
+                        self.history
+                            .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+                    if hist < -searcher.cfg.search_params.hist_prune_margin * depth {
+                        continue;
+                    }
+                }
+
                 // ── SEE Pruning (~20 Elo) ──
                 // Skip moves whose destination-square exchange clearly
                 // loses material.

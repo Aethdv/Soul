@@ -294,6 +294,29 @@ search_params! {
             step:      1,
         },
 
+        /// History pruning maximum depth (plies).
+        /// Beyond this depth, deeply-negative-history quiets still get full
+        /// search — the heuristic stops being a reliable refuter once the
+        /// tree has real verification budget.
+        pub hist_prune_depth: i32 {
+            default:   6,
+            min:       2,
+            max:      10,
+            step:      1,
+        },
+        /// History pruning per-depth margin (hist units/ply).
+        /// Prune quiet moves with `hist < -margin · depth`. Soul's combined
+        /// hist_quiet sums main + butterfly + 3× cont tables, each soft-
+        /// clamped to ±16384, so the sum reaches well past a single table's
+        /// range in practice. Linear scaling keeps the threshold reachable
+        /// across the full depth window.
+        pub hist_prune_margin: i32 {
+            default: 3000,
+            min:      500,
+            max:     4000,
+            step:     100,
+        },
+
         /// Futility pruning per-depth margin (cp/ply).
         pub fp_margin: i32 {
             default: 100,
