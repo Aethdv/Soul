@@ -279,7 +279,7 @@ impl<'cfg> Searcher<'cfg> {
             let sp = &self.cfg.search_params;
             let new_score = self.root_moves[0].score;
 
-            // ── Best-Move Stability TM ──
+            // ── Best-Move Stability TM (~20 Elo) ──
             // Scale the soft budget by the best move's share
             // of total search effort. A large share means the search keeps
             // confirming one move — shrink the budget. A small share means

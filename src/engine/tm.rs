@@ -63,7 +63,12 @@ impl TimeManager {
         params: &SearchParams,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, params);
-        Self { start, soft, hard, base_soft: soft }
+        Self {
+            start,
+            soft,
+            hard,
+            base_soft: soft,
+        }
     }
 
     #[inline]
@@ -105,7 +110,8 @@ impl TimeManager {
 
     /// Rescale the soft budget relative to the original baseline.
     ///
-    /// `soft = min(base_soft · percent / 100, hard)`.
+    ///   `soft = min(base_soft · percent / 100, hard)`
+    ///
     /// Called once per ID iteration with a factor derived from per-root-move node effort:
     /// concentrated effort shrinks the budget, scattered effort stretches it.
     /// Anchoring on `base_soft` (not current `soft`) keeps the factor
