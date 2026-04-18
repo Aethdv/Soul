@@ -550,7 +550,7 @@ impl Worker {
         }
 
         if depth <= 0 {
-            return self.qsearch::<N>(searcher, alpha, beta, ply);
+            return self.qsearch::<N>(searcher, alpha, beta, ply, None, 0);
         }
         if ply >= MAX_PLY {
             return Ok(evaluate(&self.pos, &self.accumulator));
@@ -680,7 +680,7 @@ impl Worker {
             && depth <= searcher.cfg.search_params.razoring_depth
             && static_eval + searcher.cfg.search_params.razoring_margin * depth < alpha
         {
-            let score = self.qsearch::<N>(searcher, alpha, beta, ply)?;
+            let score = self.qsearch::<N>(searcher, alpha, beta, ply, None, 0)?;
             if score <= alpha {
                 return Ok(score);
             }
@@ -1260,6 +1260,8 @@ impl Worker {
         mut alpha: i32,
         beta: i32,
         ply: usize,
+        prev_to: Option<Square>,
+        qs_ply: i32,
     ) -> Result<i32, SearchAborted> {
         self.stack[ply].pv.len = 0;
 
@@ -1360,8 +1362,23 @@ impl Worker {
 
         let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, in_check);
 
+        let recapture_only = !in_check && qs_ply >= searcher.cfg.search_params.qs_recapture_ply;
+
         while let Some(mv) = picker.next(&self.pos, &self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                continue;
+            }
+
+            // ── Recapture-only Deep QS ──
+            // Past `qs_recapture_ply`, captures only matter if they continue
+            // the forcing exchange on the square the opponent just moved to.
+            // Speculative off-square captures are what explodes in mutual-
+            // attack soup (e.g. 30-bishop pathologicals). Tactics are
+            // preserved because real combinations are recapture chains.
+            if recapture_only
+                && let Some(prev) = prev_to
+                && mv.to() != prev
+            {
                 continue;
             }
 
@@ -1379,7 +1396,7 @@ impl Worker {
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.qsearch::<N>(searcher, -beta, -alpha, ply + 1) {
+            let score = match self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1) {
                 Ok(v) => -v,
                 Err(e) => {
                     searcher.zobrist_trail.pop();

@@ -356,6 +356,18 @@ search_params! {
             step:     10,
         },
 
+        /// QSearch recapture-only threshold (plies since QS entry).
+        /// Past this ply, non-evasion nodes restrict captures to the square
+        /// the opponent's last move landed on. Keeps forcing recapture
+        /// chains intact; prunes off-square captures that cause branching
+        /// to blow up in mutual-attack positions.
+        pub qs_recapture_ply: i32 {
+            default:   4,
+            min:       2,
+            max:      10,
+            step:      1,
+        },
+
         /// SEE pruning capture margin (cp/ply) — linear depth scaling.
         /// Prune noisy moves with `see < -margin · depth`. Captures have
         /// rigid material bounds, so the tolerance grows linearly with
