@@ -37,9 +37,14 @@ pub const TIME_HARD_CAP: f64 = 0.5;
 /// to decide when to stop iterating (`soft`) and when to bail mid-search
 /// regardless of progress (`hard`).
 pub struct TimeManager {
-    start: Instant,
-    hard:  Duration,
-    soft:  Duration,
+    start:     Instant,
+    hard:      Duration,
+    soft:      Duration,
+    /// Immutable baseline from the initial budget computation.
+    /// Dynamic scalers are always applied relative to this,
+    /// never to an already-scaled `soft` — so factors don't compound
+    /// across iterations.
+    base_soft: Duration,
 }
 
 impl TimeManager {
@@ -58,7 +63,12 @@ impl TimeManager {
         params: &SearchParams,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, params);
-        Self { start, soft, hard }
+        Self {
+            start,
+            soft,
+            hard,
+            base_soft: soft,
+        }
     }
 
     #[inline]
@@ -86,17 +96,31 @@ impl TimeManager {
         self.start.elapsed()
     }
 
-    /// Stretch the soft budget by `factor_num / 100`, never past the hard cap.
+    /// Stretch the current soft budget by `percent / 100`, clamped to hard.
     ///
-    /// Used when iterative deepening detects instability that warrants more
-    /// time on this move (e.g. the root score just dropped sharply). The hard
-    /// clamp is the invariant: soft may grow, but we still refuse to exceed
-    /// what the clock allows.
+    /// Called when iterative deepening detects instability that warrants more
+    /// time on this move — e.g. the root score just dropped sharply. The hard
+    /// clamp is the invariant: soft may grow, but never past the clock cap.
     #[inline]
-    pub fn extend_soft_limit(&mut self, factor_num: u32) {
-        let ms = self.soft.as_millis() as u64;
-        let extended = Duration::from_millis(ms.saturating_mul(factor_num as u64) / 100);
+    pub fn extend_soft_limit(&mut self, percent: u32) {
+        let current_ms = self.soft.as_millis() as u64;
+        let extended = Duration::from_millis(current_ms.saturating_mul(percent as u64) / 100);
         self.soft = extended.min(self.hard);
+    }
+
+    /// Rescale the soft budget relative to the original baseline.
+    ///
+    ///   `soft = min(base_soft · percent / 100, hard)`
+    ///
+    /// Called once per ID iteration with a factor derived from per-root-move node effort:
+    /// concentrated effort shrinks the budget, scattered effort stretches it.
+    /// Anchoring on `base_soft` (not current `soft`) keeps the factor
+    /// from compounding across iterations.
+    #[inline]
+    pub fn apply_stability_factor(&mut self, percent: u32) {
+        let base_ms = self.base_soft.as_millis() as u64;
+        let scaled = Duration::from_millis(base_ms.saturating_mul(percent as u64) / 100);
+        self.soft = scaled.min(self.hard);
     }
 }
 

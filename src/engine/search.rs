@@ -276,13 +276,35 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
+            let sp = &self.cfg.search_params;
+            let new_score = self.root_moves[0].score;
+
+            // ── Best-Move Stability TM (~20 Elo) ──
+            // Scale the soft budget by the best move's share
+            // of total search effort. A large share means the search keeps
+            // confirming one move — shrink the budget. A small share means
+            // effort is scattered across candidates — stretch it.
+            //
+            //   percent = clamp(floor, base − scale · best_nodes / total_nodes)
+            //
+            // Gated below `bm_stab_depth` — early iterations haven't
+            // accumulated enough node signal for the ratio to be meaningful.
+            if depth >= sp.bm_stab_depth {
+                let best_nodes = self.root_moves[0].nodes;
+                let total_nodes = self.nodes.max(1);
+                let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
+                let percent = (sp.bm_stab_base as u64)
+                    .saturating_sub(effort_discount)
+                    .max(sp.bm_stab_floor as u64);
+                self.tm.apply_stability_factor(percent as u32);
+            }
+
             // ── Score Drop Extension (~27 Elo) ──
             // A sharp drop from the previous iteration signals instability:
             // a refutation just surfaced, or the best move changed.
             // Stretch the soft budget so this iteration (and possibly one more)
-            // can resolve the swing before we commit. Hard cap still bounds us.
-            let sp = &self.cfg.search_params;
-            let new_score = self.root_moves[0].score;
+            // can resolve the swing before we commit. Applied on top of the
+            // stability factor; hard cap still bounds the result.
             if depth >= sp.score_drop_depth && new_score < self.prev_score - sp.score_drop_cp {
                 self.tm.extend_soft_limit(sp.score_drop_factor as u32);
             }
@@ -775,6 +797,10 @@ impl Worker {
                     0
                 };
 
+                // Per-root-move node accounting for best-move stability TM.
+                // Aspiration re-searches accumulate into the same slot,
+                // all that work belongs to this move.
+                let nodes_before = searcher.nodes;
                 self.search_move::<N>(
                     searcher,
                     mv,
@@ -786,6 +812,7 @@ impl Worker {
                     Some(mv) == pv_move,
                     reduction,
                 )?;
+                searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
                 if likely(res.alpha >= beta) {
                     break;
                 }
@@ -1671,6 +1698,9 @@ pub struct RootMove {
     pub mv:    Move,
     pub score: i32,
     pub pv:    Box<Line>,
+    /// Cumulative subtree nodes across all ID iterations.The best move's
+    /// share of total nodes feeds the stability factor in time management.
+    pub nodes: u64,
 }
 
 impl RootMove {
@@ -1680,6 +1710,7 @@ impl RootMove {
             mv,
             score: -INF,
             pv: Box::new(Line::new()),
+            nodes: 0,
         }
     }
 }
