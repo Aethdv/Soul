@@ -440,10 +440,14 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     println!("Output: {}", config.output_path);
     println!("Book: {} ({book_count} openings)", config.book_paths.join(", "),);
 
-    if let Some(soft) = config.soft_nodes {
-        println!("Search: softnodes={soft}, hardnodes={:?}", config.hard_nodes);
-    } else {
-        println!("Search: depth={}", config.depth);
+    match (config.soft_nodes, config.hard_nodes) {
+        (None, None) => println!("Search: depth={}", config.depth),
+        (soft, hard) => println!(
+            "Search: depth={}, softnodes={}, hardnodes={}",
+            config.depth,
+            soft.map_or("-".into(), |n| n.to_string()),
+            hard.map_or("-".into(), |n| n.to_string()),
+        ),
     }
 
     println!("Resign: ±{}cp, Score filter: ±{}cp", config.resign_cp, config.score_filter,);
@@ -522,7 +526,12 @@ fn print_help() {
     h.option_default("-n, --count", "<N>", "Target number of positions to generate", "8,000,000");
     h.option_default("-o, --output", "<PATH>", "Output file path", "data.soul.zst");
     h.option_default("-b, --book", "<PATH>", "Opening book path", "UHO_Lichess_4852_v1.epd");
-    h.option_default("-d, --depth", "<N>", "Search depth", "6");
+    h.option_default(
+        "-d, --depth",
+        "<N>",
+        "Search depth (default 6; MAX when --soft/--nodes set without --depth)",
+        "6",
+    );
     h.option("--soft", "<N>", "Soft node limit");
     h.option("--nodes", "<N>", "Hard node limit");
     h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
@@ -541,7 +550,7 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
     let mut output_path = String::from("data.soul.zst");
     let mut book_paths = Vec::new();
     let mut target_count = 8_000_000;
-    let mut depth = 6;
+    let mut depth: Option<i32> = None;
     let mut soft_nodes = None;
     let mut hard_nodes = None;
     let mut resign_cp = 800;
@@ -574,7 +583,7 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
             },
             "-d" | "--depth" => {
                 if let Some(v) = it.next() {
-                    depth = v.parse().unwrap_or(depth);
+                    depth = v.parse().ok().or(depth);
                 }
             },
             "--soft" => {

@@ -79,7 +79,8 @@ pub struct GenfensArgs {
     pub target_count:  u64,
     pub output_path:   String,
     pub book_paths:    Vec<String>,
-    pub depth:         i32,
+    /// `None` = unspecified by the user; resolved at config construction time.
+    pub depth:         Option<i32>,
     pub soft_nodes:    Option<u64>,
     pub hard_nodes:    Option<u64>,
     pub resign_cp:     i32,
@@ -95,23 +96,29 @@ pub struct GenfensArgs {
 
 impl From<GenfensArgs> for GenfensConfig {
     fn from(args: GenfensArgs) -> Self {
+        let depth = match args.depth {
+            Some(d) => d,
+            None if args.soft_nodes.is_some() || args.hard_nodes.is_some() => crate::core::defs::MAX_DEPTH,
+            None => 6,
+        };
+
         Self {
-            target_count:    args.target_count,
-            output_path:     args.output_path,
-            book_paths:      args.book_paths,
-            depth:           args.depth,
-            soft_nodes:      args.soft_nodes,
-            hard_nodes:      args.hard_nodes,
-            resign_cp:       args.resign_cp,
-            score_filter:    args.score_filter,
-            max_plies:       args.max_plies,
-            buffer_size:     args.buffer_size,
-            thread_count:    args.thread_count,
-            save_interval:   args.save_interval,
-            filter_quiet:    args.filter_quiet,
-            sample_rate:     args.sample_rate,
+            target_count: args.target_count,
+            output_path: args.output_path,
+            book_paths: args.book_paths,
+            depth,
+            soft_nodes: args.soft_nodes,
+            hard_nodes: args.hard_nodes,
+            resign_cp: args.resign_cp,
+            score_filter: args.score_filter,
+            max_plies: args.max_plies,
+            buffer_size: args.buffer_size,
+            thread_count: args.thread_count,
+            save_interval: args.save_interval,
+            filter_quiet: args.filter_quiet,
+            sample_rate: args.sample_rate,
             generated_count: 0,
-            last_update:     0,
+            last_update: 0,
         }
     }
 }
