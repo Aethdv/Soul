@@ -556,7 +556,7 @@ impl Worker {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
 
-        // ── Mate Distance Pruning (? Elo) ──
+        // ── Mate Distance Pruning ──
         // Scores are bounded; no line from here can find mate faster than
         // MATE - ply plies, and we can't be mated before -MATE + ply.
         // Tighten the search window to those limits. If the tightened
