@@ -526,6 +526,43 @@ search_params! {
             step:      5,
         },
 
+        /// Best-move stability minimum depth (plies).
+        /// Below this, per-move node accounting hasn't accumulated enough
+        /// signal for the ratio to be meaningful — leave the soft budget alone.
+        pub bm_stab_depth: i32 {
+            default:   5,
+            min:       3,
+            max:      10,
+            step:      1,
+        },
+        /// Best-move stability factor base term (×100 fixed-point).
+        /// Intercept of `factor = base − scale · best_nodes/total_nodes`.
+        /// Higher = more generous baseline when effort is scattered.
+        pub bm_stab_base: i32 {
+            default: 270,
+            min:     150,
+            max:     400,
+            step:      5,
+        },
+        /// Best-move stability factor slope (×100 fixed-point).
+        /// Coefficient on best/total ratio.
+        /// Higher = faster shrink as search consolidates on one move.
+        pub bm_stab_scale: i32 {
+            default: 220,
+            min:     100,
+            max:     350,
+            step:      5,
+        },
+        /// Best-move stability factor floor (×100 fixed-point).
+        /// Lower bound so an overwhelmingly confirmed best move can't shrink
+        /// the budget to near-zero and cut off mid-move.
+        pub bm_stab_floor: i32 {
+            default:  56,
+            min:      30,
+            max:      96,
+            step:      2,
+        },
+
         /// Non-pawn correction history weight (fixed-point, /256 scaling).
         /// Controls how strongly each non-pawn material configuration
         /// correction contributes to the static eval adjustment.
