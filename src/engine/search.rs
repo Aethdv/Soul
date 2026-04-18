@@ -1369,7 +1369,7 @@ impl Worker {
                 continue;
             }
 
-            // ── Recapture-only Deep QS ──
+            // ── Recapture-only Deep QS (~1 Elo) ──
             // Past `qs_recapture_ply`, captures only matter if they continue
             // the forcing exchange on the square the opponent just moved to.
             // Speculative off-square captures are what explodes in mutual-
