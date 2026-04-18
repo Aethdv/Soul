@@ -276,6 +276,17 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
+            // ── Score Drop Extension ──
+            // A sharp drop from the previous iteration signals instability:
+            // a refutation just surfaced, or the best move changed.
+            // Stretch the soft budget so this iteration (and possibly one more)
+            // can resolve the swing before we commit. Hard cap still bounds us.
+            let sp = &self.cfg.search_params;
+            let new_score = self.root_moves[0].score;
+            if depth >= sp.score_drop_depth && new_score < self.prev_score - sp.score_drop_cp {
+                self.tm.extend_soft_limit(sp.score_drop_factor as u32);
+            }
+
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
             self.print_info(depth, self.prev_score, &self.prev_pv);
