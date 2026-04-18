@@ -255,6 +255,15 @@ search_params! {
             max:     350,
             step:      5,
         },
+        /// LMR sibling-count divisor.
+        /// Each increment of `quiet_count / divisor` adds one ply of reduction.
+        /// Higher divisor = gentler scaling with sibling density.
+        pub lmr_quiet_count_divisor: i32 {
+            default:   8,
+            min:       4,
+            max:      16,
+            step:      1,
+        },
 
         /// Aspiration window initial delta (cp).
         pub asp_initial: i32 {

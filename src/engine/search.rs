@@ -974,7 +974,6 @@ impl Worker {
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
                     let mut r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
                     let pt = self.pos.expect_piece_at(mv.from());
-                    // ~13 Elo
                     let hist =
                         self.history
                             .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
@@ -982,6 +981,12 @@ impl Worker {
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                         r -= 1;
                     }
+
+                    // Sibling-density scaling; many quiets already searched at
+                    // this ply without a cutoff means the picker's strong
+                    // candidates are behind us — reduce later ones proportionally.
+                    r += self.stack[ply].quiet_count as i32
+                        / searcher.cfg.search_params.lmr_quiet_count_divisor;
 
                     (r - hist / 8192).clamp(0, depth - 1)
                 } else {
