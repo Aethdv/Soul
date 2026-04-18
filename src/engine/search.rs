@@ -127,10 +127,14 @@ pub struct Searcher<'cfg> {
 
 #[repr(align(32))]
 pub struct Worker {
-    pub pos:         Position,
-    pub accumulator: crate::weave::Vi16x8,
-    pub stack:       Box<[Stack; MAX_PLY + 1]>,
-    pub history:     history::History,
+    pub pos:          Position,
+    pub accumulator:  crate::weave::Vi16x8,
+    pub stack:        Box<[Stack; MAX_PLY + 1]>,
+    pub history:      history::History,
+    /// Set while a null-move verification search is on the stack.
+    /// Suppresses nested NMP, which would otherwise recurse forever on
+    /// the same position at ever-shrinking depth.
+    pub is_nmp_verif: bool,
 }
 
 impl<'cfg> Searcher<'cfg> {
@@ -186,13 +190,14 @@ impl<'cfg> Searcher<'cfg> {
 
         // fresh worker initialized ONCE — prevents 123KB stack memset per iteration.
         let mut worker = Worker {
-            pos:         self.root_pos,
-            accumulator: self.root_pos.get_initial_accumulator(),
-            stack:       vec![Stack::default(); MAX_PLY + 1]
+            pos:          self.root_pos,
+            accumulator:  self.root_pos.get_initial_accumulator(),
+            stack:        vec![Stack::default(); MAX_PLY + 1]
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
-            history:     self.history_table.clone(),
+            history:      self.history_table.clone(),
+            is_nmp_verif: false,
         };
 
         let mut last_iter_elapsed = 0;
@@ -726,6 +731,7 @@ impl Worker {
         if !in_check
             && !N::PV
             && !self.stack[ply].is_null
+            && !self.is_nmp_verif
             && static_eval >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
@@ -758,7 +764,27 @@ impl Worker {
             self.stack[ply + 1].is_null = false;
 
             if score >= beta {
-                return Ok(if score > MATE_BOUND { beta } else { score });
+                let null_score = if score > MATE_BOUND { beta } else { score };
+
+                // ── Verification Search ──
+                // Below the threshold, trust the cutoff outright — cheap and
+                // almost always correct. Above it, re-search the same position
+                // without null-move at reduced depth. If that also fails high,
+                // the cutoff is real; if it fails low, we were about to prune
+                // a zugzwang or a tactic the null search couldn't see — let
+                // the regular move loop handle it.
+                if depth <= sp.nmp_verif_min_depth {
+                    return Ok(null_score);
+                }
+
+                self.is_nmp_verif = true;
+                let verif =
+                    self.negamax::<NonPvNode>(searcher, (depth - r - 1).max(0), beta - 1, beta, ply, None);
+                self.is_nmp_verif = false;
+
+                if verif? >= beta {
+                    return Ok(null_score);
+                }
             }
         }
 

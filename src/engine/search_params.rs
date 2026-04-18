@@ -240,6 +240,17 @@ search_params! {
             max:       5,
             step:      1,
         },
+        /// NMP verification minimum depth (plies).
+        /// Below this, a null-move cutoff is trusted outright. At or above it,
+        /// re-search the same position (no null move) at reduced depth — if
+        /// that also fails high, the cutoff stands; otherwise fall through to
+        /// the regular move loop. Catches zugzwangs NMP would otherwise miss.
+        pub nmp_verif_min_depth: i32 {
+            default:  14,
+            min:       6,
+            max:      20,
+            step:      1,
+        },
 
         /// LMR base constant (scaled by 100).
         pub lmr_base: i32 {
