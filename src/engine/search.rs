@@ -276,7 +276,7 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            // ── Score Drop Extension ──
+            // ── Score Drop Extension (~27 Elo) ──
             // A sharp drop from the previous iteration signals instability:
             // a refutation just surfaced, or the best move changed.
             // Stretch the soft budget so this iteration (and possibly one more)
