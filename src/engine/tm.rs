@@ -85,6 +85,19 @@ impl TimeManager {
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
+
+    /// Stretch the soft budget by `factor_num / 100`, never past the hard cap.
+    ///
+    /// Used when iterative deepening detects instability that warrants more
+    /// time on this move (e.g. the root score just dropped sharply). The hard
+    /// clamp is the invariant: soft may grow, but we still refuse to exceed
+    /// what the clock allows.
+    #[inline]
+    pub fn extend_soft_limit(&mut self, factor_num: u32) {
+        let ms = self.soft.as_millis() as u64;
+        let extended = Duration::from_millis(ms.saturating_mul(factor_num as u64) / 100);
+        self.soft = extended.min(self.hard);
+    }
 }
 
 // ──────── Private ────────

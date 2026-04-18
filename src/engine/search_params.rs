@@ -499,6 +499,33 @@ search_params! {
             step:      8,
         },
 
+        /// Score-drop extension minimum depth (plies).
+        /// Below this, aspiration-window wobble dominates the signal, so a
+        /// drop is as likely to be noise as real instability.
+        pub score_drop_depth: i32 {
+            default:   5,
+            min:       3,
+            max:      10,
+            step:      1,
+        },
+        /// Score-drop extension trigger threshold (cp).
+        /// Extend the soft time limit when this iteration's root score falls
+        /// more than this many cp below the previous iteration's score.
+        pub score_drop_cp: i32 {
+            default:  30,
+            min:      10,
+            max:      80,
+            step:      2,
+        },
+        /// Score-drop extension factor (×100 fixed-point).
+        /// 135 = stretch the soft limit by 1.35×, clamped to the hard cap.
+        pub score_drop_factor: i32 {
+            default: 135,
+            min:     110,
+            max:     200,
+            step:      5,
+        },
+
         /// Non-pawn correction history weight (fixed-point, /256 scaling).
         /// Controls how strongly each non-pawn material configuration
         /// correction contributes to the static eval adjustment.
