@@ -30,6 +30,20 @@ pub const MATE: i32 = 30_000;
 /// Any |score| above this threshold is a forced mate, not merely a large eval.
 pub const MATE_BOUND: i32 = MATE - 100;
 
+/// Deterministic ±8 cp jitter for draw scores, keyed by the node counter.
+///
+/// Returning exactly 0 for every draw makes the search indifferent between
+/// drawing lines — it picks whichever comes first in move order and sticks.
+/// In positions with multiple drawish paths, that can mean repeating the
+/// same sequence when a slightly-less-drawn alternative exists. A small
+/// node-keyed jitter breaks the tie without perturbing non-draw scores,
+/// so the search naturally explores alternate draw routes where the
+/// opponent has a chance to stray.
+#[inline]
+pub fn draw_score(nodes: u64) -> i32 {
+    (nodes & 0xF) as i32 - 8
+}
+
 // ──────── Adjudication thresholds ────────
 
 /// |score| < this for N plies → Draw
