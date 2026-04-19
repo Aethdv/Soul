@@ -25,7 +25,7 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::Position,
-        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square},
+        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score},
         moves::Move,
     },
     engine::{
@@ -580,7 +580,7 @@ impl Worker {
         searcher.nodes += 1;
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
-            return Ok(0);
+            return Ok(draw_score(searcher.nodes));
         }
 
         if ply as i32 > searcher.sel_depth {
@@ -1336,7 +1336,7 @@ impl Worker {
         searcher.nodes += 1;
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
-            return Ok(0);
+            return Ok(draw_score(searcher.nodes));
         }
 
         if ply as i32 > searcher.sel_depth {
