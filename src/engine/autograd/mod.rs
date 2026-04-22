@@ -23,5 +23,4 @@ pub type TraceNode = DualNode;
 #[cfg(not(feature = "searchtune"))]
 pub type TraceNode = i32;
 
-#[cfg(test)]
-mod tests;
+#[cfg(test)] mod tests;

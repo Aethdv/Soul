@@ -29,8 +29,7 @@ mod fen;
 mod make;
 pub mod spatial;
 
-#[cfg(test)]
-mod tests;
+#[cfg(test)] mod tests;
 
 pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
