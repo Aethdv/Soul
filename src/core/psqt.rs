@@ -7,8 +7,8 @@ pub use crate::engine::eval_params::LAYOUT;
 use crate::{
     core::defs::{Color, PieceType, Square},
     engine::eval_params::{
-        EG_BISHOP, EG_KING, EG_KNIGHT, EG_MATERIAL, EG_PAWN, EG_QUEEN, EG_ROOK, MG_BISHOP, MG_KING,
-        MG_KNIGHT, MG_MATERIAL, MG_PAWN, MG_QUEEN, MG_ROOK, PHASE_WEIGHTS,
+        EG_BISHOP, EG_KING, EG_KNIGHT, EG_MATERIAL, EG_PAWN, EG_QUEEN, EG_ROOK, MG_BISHOP, MG_KING, MG_KNIGHT, MG_MATERIAL,
+        MG_PAWN, MG_QUEEN, MG_ROOK, PHASE_WEIGHTS,
     },
     weave::Vi16x8,
 };
@@ -21,10 +21,7 @@ use crate::{
 #[derive(Clone, Copy)]
 pub struct AlignedTable(pub [[i16; 8]; 64]);
 
-const _: () = assert!(
-    std::mem::size_of::<[i16; 8]>().is_multiple_of(16),
-    "SIMD accumulator must be 16-byte aligned"
-);
+const _: () = assert!(std::mem::size_of::<[i16; 8]>().is_multiple_of(16), "SIMD accumulator must be 16-byte aligned");
 
 pub static PSQT: [AlignedTable; 14] = init_psqt();
 

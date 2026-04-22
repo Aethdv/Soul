@@ -6,13 +6,11 @@ use std::{
 };
 
 use soul::core::board::Position as Board;
-pub use soul::tools::dataset::{
-    MAGIC_V5, SoulEntry, accumulate_gradient, eval_soul, load_encoded, save_encoded,
-};
+pub use soul::tools::dataset::{MAGIC_V5, SoulEntry, accumulate_gradient, eval_soul, load_encoded, save_encoded};
 
 /// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).
 pub struct Entry {
-    pub board:  Board,
+    pub board: Board,
     pub result: f64,
 }
 
@@ -55,11 +53,7 @@ pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
         };
 
         // Result is white-relative in EPD, we need STM-relative.
-        let stm_result = if board.stm == soul::core::defs::Color::Black {
-            1.0 - result
-        } else {
-            result
-        };
+        let stm_result = if board.stm == soul::core::defs::Color::Black { 1.0 - result } else { result };
         encoded.push(SoulEntry::from_board(&board, stm_result, None, None));
 
         if last_print.elapsed().as_millis() > 500 {
@@ -70,11 +64,7 @@ pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
     }
     println!();
 
-    let path = if output.ends_with(".zst") {
-        output.to_string()
-    } else {
-        format!("{output}.zst")
-    };
+    let path = if output.ends_with(".zst") { output.to_string() } else { format!("{output}.zst") };
 
     println!("Writing encoded file: {path}");
     save_encoded(&path, &encoded)?;
@@ -83,10 +73,7 @@ pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
     let comp_size = std::fs::metadata(&path)?.len();
     let ratio = orig_size as f64 / comp_size as f64;
 
-    println!(
-        "Done! {} entries ({orig_size} bytes → {comp_size} bytes, {ratio:.1}x compression)",
-        encoded.len()
-    );
+    println!("Done! {} entries ({orig_size} bytes → {comp_size} bytes, {ratio:.1}x compression)", encoded.len());
     println!("Entry size: {} bytes", std::mem::size_of::<SoulEntry>());
 
     Ok(())

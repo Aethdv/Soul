@@ -31,11 +31,7 @@ const SPEEDTEST_FENS: &str = include_str!("../data/speedtest.fens");
 pub fn run(limit: usize) {
     use crate::engine::{search::SearchConfig, search_params::SearchParams};
 
-    let fens: Vec<&str> = if limit > 0 {
-        SPEEDTEST_FENS.lines().take(limit).collect()
-    } else {
-        SPEEDTEST_FENS.lines().collect()
-    };
+    let fens: Vec<&str> = if limit > 0 { SPEEDTEST_FENS.lines().take(limit).collect() } else { SPEEDTEST_FENS.lines().collect() };
     let mut total_nodes: u64 = 0;
     let total = fens.len();
     let start = Instant::now();
@@ -57,30 +53,14 @@ pub fn run(limit: usize) {
 
         let move_time = 50000 / (ply + 15);
 
-        let limits = Limits {
-            movetime: move_time,
-            silent: true,
-            protocol: Protocol::Uci,
-            ..Default::default()
-        };
+        let limits = Limits { movetime: move_time, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
         let history = vec![board.hash];
         stop_signal.store(false, std::sync::atomic::Ordering::Release);
 
-        let cfg = SearchConfig::new(
-            limits.clone(),
-            Instant::now(),
-            stop_signal.clone(),
-            0,
-            SearchParams::default(),
-        );
-        let mut searcher = Searcher::new(
-            &cfg,
-            &board,
-            &history,
-            history::History::new(),
-            Arc::new(tt::TranspositionTable::new(16)),
-        );
+        let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
+        let mut searcher =
+            Searcher::new(&cfg, &board, &history, history::History::new(), Arc::new(tt::TranspositionTable::new(16)));
 
         searcher.iterative_deepening();
         total_nodes += searcher.nodes;
@@ -111,22 +91,14 @@ pub fn run(limit: usize) {
     println!("\n");
     println!("  {DIM}────────────────────────────────────────────────{RESET}");
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Binary", binary_name);
-    println!(
-        "   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}",
-        "Version",
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Version", env!("CARGO_PKG_VERSION"));
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Rust", rustc_version);
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Arch", arch);
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Features", features);
     println!("  {DIM}────────────────────────────────────────────────{RESET}");
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Positions", total);
     println!("   {LAVENDER}{:<15}{RESET} {BOLD}{TEXT}{}{RESET}", "Nodes", nodes_formatted);
-    println!(
-        "   {LAVENDER}{:<15}{RESET} {BOLD}{TEXT}{:.3} s{RESET}",
-        "Time",
-        elapsed.as_secs_f64()
-    );
+    println!("   {LAVENDER}{:<15}{RESET} {BOLD}{TEXT}{:.3} s{RESET}", "Time", elapsed.as_secs_f64());
     println!("   {PEACH}{:<15}{RESET} {BOLD}{PEACH}{}{RESET}", "NPS", nps_formatted);
     println!("  {DIM}────────────────────────────────────────────────{RESET}");
     println!();
@@ -184,11 +156,7 @@ fn get_feature_flags() -> String {
     #[cfg(target_feature = "popcnt")]
     parts.push("POPCNT");
 
-    if parts.is_empty() {
-        "none".to_string()
-    } else {
-        parts.join(" ")
-    }
+    if parts.is_empty() { "none".to_string() } else { parts.join(" ") }
 }
 
 fn format_with_separators(n: u64) -> String {

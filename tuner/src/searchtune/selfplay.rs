@@ -151,32 +151,22 @@ fn play_match_pair<F: Fn()>(
         soul::engine::search::SearchDisplay::SILENT,
         params_a,
     );
-    let cfg_b = SearchConfig::new_full(
-        limits.clone(),
-        Instant::now(),
-        stop,
-        0,
-        soul::engine::search::SearchDisplay::SILENT,
-        params_b,
-    );
+    let cfg_b =
+        SearchConfig::new_full(limits.clone(), Instant::now(), stop, 0, soul::engine::search::SearchDisplay::SILENT, params_b);
 
     // Thread local heap-allocated stacks
     let dummy_board = Board::default();
     let dummy_hist = vec![dummy_board.hash];
     let tt_a = std::sync::Arc::new(soul::engine::tt::TranspositionTable::new(16));
     let tt_b = std::sync::Arc::new(soul::engine::tt::TranspositionTable::new(16));
-    let mut searcher_a =
-        Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, history::History::new(), tt_a));
-    let mut searcher_b =
-        Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, history::History::new(), tt_b));
+    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, history::History::new(), tt_a));
+    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, history::History::new(), tt_b));
 
     // Round 1: A (White) vs B (Black)
-    let (result_as_white, nodes_a_1, nodes_b_1) =
-        play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b);
+    let (result_as_white, nodes_a_1, nodes_b_1) = play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b);
 
     // Round 2: B (White) vs A (Black)
-    let (result_for_b, nodes_b_2, nodes_a_2) =
-        play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a);
+    let (result_for_b, nodes_b_2, nodes_a_2) = play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a);
 
     // Invert result (B's POV → A's POV)
     let result_as_black_perspective = match result_for_b {
@@ -206,10 +196,8 @@ fn play_game<'a>(
     searcher_white: &mut Searcher<'a>,
     searcher_black: &mut Searcher<'a>,
 ) -> (GameResult, u64, u64) {
-    let uses_clock = cfg_white.limits.wtime > 0
-        && cfg_white.limits.movetime == 0
-        && cfg_white.limits.depth == 0
-        && cfg_white.limits.nodes == 0;
+    let uses_clock =
+        cfg_white.limits.wtime > 0 && cfg_white.limits.movetime == 0 && cfg_white.limits.depth == 0 && cfg_white.limits.nodes == 0;
 
     const MAX_GAME_PLIES: usize = 300;
 
@@ -234,15 +222,7 @@ fn play_game<'a>(
         if moves.is_empty() {
             let in_check = board.checkers().is_not_empty();
             if in_check {
-                return (
-                    if board.stm == Color::White {
-                        GameResult::Loss
-                    } else {
-                        GameResult::Win
-                    },
-                    white_nodes,
-                    black_nodes,
-                );
+                return (if board.stm == Color::White { GameResult::Loss } else { GameResult::Win }, white_nodes, black_nodes);
             }
             return (GameResult::Draw, white_nodes, black_nodes);
         }
@@ -252,11 +232,8 @@ fn play_game<'a>(
 
         let move_start = std::time::Instant::now();
 
-        let (searcher, cfg) = if board.stm == Color::White {
-            (&mut *searcher_white, cfg_white)
-        } else {
-            (&mut *searcher_black, cfg_black)
-        };
+        let (searcher, cfg) =
+            if board.stm == Color::White { (&mut *searcher_white, cfg_white) } else { (&mut *searcher_black, cfg_black) };
 
         searcher.reset(cfg, &board, &history, history::History::new());
 
@@ -266,8 +243,7 @@ fn play_game<'a>(
             limits.wtime = white_time_ms;
             limits.btime = black_time_ms;
             let phase = i32::from(board.get_initial_accumulator().to_array()[2]);
-            searcher.tm =
-                TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, &cfg.search_params);
+            searcher.tm = TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, &cfg.search_params);
         }
 
         cfg.stop.store(false, std::sync::atomic::Ordering::Release);
@@ -275,9 +251,7 @@ fn play_game<'a>(
 
         let score = searcher.best_score().unwrap_or(0);
         let ply = (board.fullmove_number as usize - 1) * 2 + (board.stm as usize);
-        if let Some(res) =
-            check_adjudication(score, last_score, &mut win_adj_counter, &mut draw_adj_counter, board.stm, ply)
-        {
+        if let Some(res) = check_adjudication(score, last_score, &mut win_adj_counter, &mut draw_adj_counter, board.stm, ply) {
             let result = match res {
                 GameOutcome::WhiteWins => GameResult::Win,
                 GameOutcome::BlackWins => GameResult::Loss,
@@ -309,9 +283,7 @@ fn play_game<'a>(
             }
         }
 
-        let best_move = searcher
-            .best_move()
-            .unwrap_or_else(|| *moves.iter().next().unwrap());
+        let best_move = searcher.best_move().unwrap_or_else(|| *moves.iter().next().unwrap());
 
         board.make_move(best_move, &mut accumulator);
         history.push(board.hash);
@@ -332,11 +304,7 @@ fn is_draw(pos: &Board, history: &[u64]) -> bool {
 /// - `4+0.04`: 4 seconds base + 0.04s increment
 /// - `5.0`: bare float as total time for the game (in seconds)
 fn parse_tc(tc: &str) -> Limits {
-    let mut limits = Limits {
-        silent: true,
-        protocol: Protocol::Uci,
-        ..Default::default()
-    };
+    let mut limits = Limits { silent: true, protocol: Protocol::Uci, ..Default::default() };
 
     if let Some(val) = tc.strip_prefix("movetime=") {
         // Fixed time per move (in milliseconds)

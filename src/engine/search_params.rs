@@ -6,10 +6,10 @@
 /// Definition of a single tunable parameter.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamDef {
-    pub name:    &'static str,
-    pub min:     f64,
-    pub max:     f64,
-    pub step:    f64,
+    pub name: &'static str,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
     pub default: f64,
 }
 
@@ -30,11 +30,7 @@ impl ParamDef {
     pub fn denormalize(&self, normalized: f64) -> f64 {
         let val = normalized.mul_add(self.max - self.min, self.min);
         // Snap to step
-        if self.step > 1e-9 {
-            (val / self.step).round() * self.step
-        } else {
-            val
-        }
+        if self.step > 1e-9 { (val / self.step).round() * self.step } else { val }
     }
 }
 

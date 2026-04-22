@@ -28,8 +28,8 @@ pub const DUAL_N: usize = 32;
 #[derive(Clone, Copy)]
 #[repr(C, align(32))]
 pub struct DualNode {
-    pub grad:   [f32; DUAL_N],
-    pub val:    f64,
+    pub grad: [f32; DUAL_N],
+    pub val: f64,
     pub active: u32,
 }
 
@@ -38,21 +38,13 @@ impl DualNode {
     pub fn floor(self) -> Self {
         // Straight-Through Estimator (STE): passes gradient through unmodified
         // to traverse quantization operations during training.
-        Self {
-            val:    self.val.floor(),
-            grad:   self.grad,
-            active: self.active,
-        }
+        Self { val: self.val.floor(), grad: self.grad, active: self.active }
     }
 
     /// Constant — zero gradient, no active slots.
     #[inline(always)]
     pub fn constant(val: f64) -> Self {
-        Self {
-            grad: [0.0; DUAL_N],
-            val,
-            active: 0,
-        }
+        Self { grad: [0.0; DUAL_N], val, active: 0 }
     }
 
     /// Seed a dual variable: `grad[idx] = 1.0`, active bit set.
@@ -60,21 +52,13 @@ impl DualNode {
     pub fn seed(val: f64, idx: usize) -> Self {
         let mut grad = [0.0f32; DUAL_N];
         grad[idx] = 1.0;
-        Self {
-            grad,
-            val,
-            active: 1 << idx,
-        }
+        Self { grad, val, active: 1 << idx }
     }
 
     /// Zero value, zero gradient.
     #[inline(always)]
     pub fn zero() -> Self {
-        Self {
-            grad:   [0.0; DUAL_N],
-            val:    0.0,
-            active: 0,
-        }
+        Self { grad: [0.0; DUAL_N], val: 0.0, active: 0 }
     }
 }
 
@@ -101,11 +85,7 @@ impl Add for DualNode {
         let active = self.active | rhs.active;
 
         if active == 0 {
-            return Self {
-                grad: self.grad,
-                val,
-                active,
-            };
+            return Self { grad: self.grad, val, active };
         }
 
         let mut grad = [0.0f32; DUAL_N];
@@ -149,11 +129,7 @@ impl Sub for DualNode {
         let active = self.active | rhs.active;
 
         if active == 0 {
-            return Self {
-                grad: self.grad,
-                val,
-                active,
-            };
+            return Self { grad: self.grad, val, active };
         }
 
         let mut grad = [0.0f32; DUAL_N];
@@ -203,11 +179,7 @@ impl Mul for DualNode {
         let active = self.active | rhs.active;
 
         if active == 0 {
-            return Self {
-                grad: self.grad,
-                val,
-                active,
-            };
+            return Self { grad: self.grad, val, active };
         }
 
         let a = self.val as f32;
@@ -265,11 +237,7 @@ impl Div for DualNode {
         let active = self.active | rhs.active;
 
         if active == 0 {
-            return Self {
-                grad: self.grad,
-                val,
-                active,
-            };
+            return Self { grad: self.grad, val, active };
         }
 
         let b = rhs.val as f32;
@@ -329,11 +297,7 @@ impl Neg for DualNode {
     #[inline(always)]
     fn neg(self) -> Self {
         if self.active == 0 {
-            return Self {
-                grad:   self.grad,
-                val:    -self.val,
-                active: 0,
-            };
+            return Self { grad: self.grad, val: -self.val, active: 0 };
         }
 
         let mut grad = [0.0f32; DUAL_N];
@@ -348,11 +312,7 @@ impl Neg for DualNode {
                 (z - ga).storeu(po.add(off));
             }
         }
-        Self {
-            grad,
-            val: -self.val,
-            active: self.active,
-        }
+        Self { grad, val: -self.val, active: self.active }
     }
 }
 
@@ -433,28 +393,16 @@ impl EvalMath for DualNode {
 
     #[inline(always)]
     fn trunc(self) -> Self {
-        Self {
-            val:    self.val.trunc(),
-            grad:   self.grad,
-            active: self.active,
-        }
+        Self { val: self.val.trunc(), grad: self.grad, active: self.active }
     }
 
     #[inline(always)]
     fn math_clamp(self, min: Self, max: Self) -> Self {
         if self.val <= min.val {
-            return Self {
-                val:    min.val,
-                grad:   [0.0; DUAL_N],
-                active: 0,
-            };
+            return Self { val: min.val, grad: [0.0; DUAL_N], active: 0 };
         }
         if self.val >= max.val {
-            return Self {
-                val:    max.val,
-                grad:   [0.0; DUAL_N],
-                active: 0,
-            };
+            return Self { val: max.val, grad: [0.0; DUAL_N], active: 0 };
         }
         self
     }
@@ -472,22 +420,12 @@ impl EvalMath for DualNode {
     #[inline(always)]
     fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4 {
         let arr = v.to_array();
-        DualVec4([
-            Self::from_i32(arr[0]),
-            Self::from_i32(arr[1]),
-            Self::from_i32(arr[2]),
-            Self::from_i32(arr[3]),
-        ])
+        DualVec4([Self::from_i32(arr[0]), Self::from_i32(arr[1]), Self::from_i32(arr[2]), Self::from_i32(arr[3])])
     }
 
     #[inline(always)]
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 {
-        DualVec4([
-            Self::from_i32(arr[0]),
-            Self::from_i32(arr[1]),
-            Self::from_i32(arr[2]),
-            Self::from_i32(arr[3]),
-        ])
+        DualVec4([Self::from_i32(arr[0]), Self::from_i32(arr[1]), Self::from_i32(arr[2]), Self::from_i32(arr[3])])
     }
 }
 
@@ -500,12 +438,7 @@ impl Add for DualVec4 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
-        DualVec4([
-            self.0[0] + rhs.0[0],
-            self.0[1] + rhs.0[1],
-            self.0[2] + rhs.0[2],
-            self.0[3] + rhs.0[3],
-        ])
+        DualVec4([self.0[0] + rhs.0[0], self.0[1] + rhs.0[1], self.0[2] + rhs.0[2], self.0[3] + rhs.0[3]])
     }
 }
 
@@ -513,12 +446,7 @@ impl Sub for DualVec4 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
-        DualVec4([
-            self.0[0] - rhs.0[0],
-            self.0[1] - rhs.0[1],
-            self.0[2] - rhs.0[2],
-            self.0[3] - rhs.0[3],
-        ])
+        DualVec4([self.0[0] - rhs.0[0], self.0[1] - rhs.0[1], self.0[2] - rhs.0[2], self.0[3] - rhs.0[3]])
     }
 }
 
@@ -526,12 +454,7 @@ impl Mul for DualVec4 {
     type Output = Self;
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
-        DualVec4([
-            self.0[0] * rhs.0[0],
-            self.0[1] * rhs.0[1],
-            self.0[2] * rhs.0[2],
-            self.0[3] * rhs.0[3],
-        ])
+        DualVec4([self.0[0] * rhs.0[0], self.0[1] * rhs.0[1], self.0[2] * rhs.0[2], self.0[3] * rhs.0[3]])
     }
 }
 

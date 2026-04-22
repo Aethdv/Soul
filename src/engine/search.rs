@@ -92,9 +92,9 @@ impl NodeType for NonPvNode {
 /// Move execution result: encapsulates value, PV, and move stats.
 pub struct MoveResult {
     pub move_count: usize,
-    pub best_eval:  i32,
-    pub alpha:      i32,
-    pub best_move:  Move,
+    pub best_eval: i32,
+    pub alpha: i32,
+    pub best_move: Move,
 }
 
 // ──────── Searcher & Worker ────────
@@ -109,28 +109,28 @@ pub struct MoveResult {
 // one Searcher, N Workers, each exploring a different subtree.
 
 pub struct Searcher<'cfg> {
-    pub cfg:           &'cfg SearchConfig,
-    pub tm:            TimeManager,
-    pub root_moves:    Vec<RootMove>,
+    pub cfg: &'cfg SearchConfig,
+    pub tm: TimeManager,
+    pub root_moves: Vec<RootMove>,
     pub zobrist_trail: Vec<u64>,
-    pub root_pos:      Position,
-    pub prev_pv:       Line,
-    pub prev_score:    i32,
-    pub nodes:         u64,
-    pub sel_depth:     i32,
-    pub iter_depth:    i32,
-    pub last_print:    u128,
-    pub pv_history:    VecDeque<(u128, Line, i32)>,
+    pub root_pos: Position,
+    pub prev_pv: Line,
+    pub prev_score: i32,
+    pub nodes: u64,
+    pub sel_depth: i32,
+    pub iter_depth: i32,
+    pub last_print: u128,
+    pub pv_history: VecDeque<(u128, Line, i32)>,
     pub history_table: history::History,
-    pub tt:            Arc<tt::TranspositionTable>,
+    pub tt: Arc<tt::TranspositionTable>,
 }
 
 #[repr(align(32))]
 pub struct Worker {
-    pub pos:          Position,
-    pub accumulator:  crate::weave::Vi16x8,
-    pub stack:        Box<[Stack; MAX_PLY + 1]>,
-    pub history:      history::History,
+    pub pos: Position,
+    pub accumulator: crate::weave::Vi16x8,
+    pub stack: Box<[Stack; MAX_PLY + 1]>,
+    pub history: history::History,
     /// Set while a null-move verification search is on the stack.
     /// Suppresses nested NMP, which would otherwise recurse forever on
     /// the same position at ever-shrinking depth.
@@ -171,8 +171,7 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         if !self.cfg.limits.searchmoves.is_empty() {
-            self.root_moves
-                .retain(|rm| self.cfg.limits.searchmoves.contains(&rm.mv));
+            self.root_moves.retain(|rm| self.cfg.limits.searchmoves.contains(&rm.mv));
             if self.root_moves.is_empty() {
                 eprintln!("info string error: no legal moves match searchmoves");
                 if !self.cfg.limits.silent {
@@ -190,13 +189,13 @@ impl<'cfg> Searcher<'cfg> {
 
         // fresh worker initialized ONCE — prevents 123KB stack memset per iteration.
         let mut worker = Worker {
-            pos:          self.root_pos,
-            accumulator:  self.root_pos.get_initial_accumulator(),
-            stack:        vec![Stack::default(); MAX_PLY + 1]
+            pos: self.root_pos,
+            accumulator: self.root_pos.get_initial_accumulator(),
+            stack: vec![Stack::default(); MAX_PLY + 1]
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
-            history:      self.history_table.clone(),
+            history: self.history_table.clone(),
             is_nmp_verif: false,
         };
 
@@ -226,26 +225,15 @@ impl<'cfg> Searcher<'cfg> {
 
             // ── Aspiration Windows (~42 Elo) ──
             let mut delta = self.cfg.search_params.asp_initial;
-            let mut alpha = if depth >= 4 {
-                (self.prev_score - delta).max(-INF)
-            } else {
-                -INF
-            };
-            let mut beta = if depth >= 4 {
-                (self.prev_score + delta).min(INF)
-            } else {
-                INF
-            };
+            let mut alpha = if depth >= 4 { (self.prev_score - delta).max(-INF) } else { -INF };
+            let mut beta = if depth >= 4 { (self.prev_score + delta).min(INF) } else { INF };
 
             let mut aborted = false;
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = self.root_pos.get_initial_accumulator();
 
-                if worker
-                    .negamax::<RootNode>(self, depth, alpha, beta, 0, None)
-                    .is_err()
-                {
+                if worker.negamax::<RootNode>(self, depth, alpha, beta, 0, None).is_err() {
                     aborted = true;
                     break;
                 }
@@ -298,9 +286,7 @@ impl<'cfg> Searcher<'cfg> {
                 let best_nodes = self.root_moves[0].nodes;
                 let total_nodes = self.nodes.max(1);
                 let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
-                let percent = (sp.bm_stab_base as u64)
-                    .saturating_sub(effort_discount)
-                    .max(sp.bm_stab_floor as u64);
+                let percent = (sp.bm_stab_base as u64).saturating_sub(effort_discount).max(sp.bm_stab_floor as u64);
                 self.tm.apply_stability_factor(percent as u32);
             }
 
@@ -319,8 +305,7 @@ impl<'cfg> Searcher<'cfg> {
             self.print_info(depth, self.prev_score, &self.prev_pv);
 
             let elapsed = self.tm.elapsed().as_millis().max(1);
-            self.pv_history
-                .push_back((elapsed, self.prev_pv, self.prev_score));
+            self.pv_history.push_back((elapsed, self.prev_pv, self.prev_score));
 
             // Bounded history: the TUI only needs the most recent points for the sparkline.
             if self.pv_history.len() > 30 {
@@ -356,13 +341,9 @@ impl<'cfg> Searcher<'cfg> {
         tt: Arc<tt::TranspositionTable>,
     ) -> Self {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
-        let tm =
-            TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
+        let tm = TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
 
-        let root_moves = gen_legal_moves(pos)
-            .iter()
-            .map(|&mv| RootMove::new(mv))
-            .collect();
+        let root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
 
         // Game history limited by the 50-move rule horizon.
         // Positions older than the last capture or pawn push can never repeat.
@@ -396,13 +377,7 @@ impl<'cfg> Searcher<'cfg> {
     }
 
     #[inline]
-    pub fn reset(
-        &mut self,
-        cfg: &'cfg SearchConfig,
-        pos: &Position,
-        history: &[u64],
-        history_table: history::History,
-    ) {
+    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], history_table: history::History) {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
 
         self.zobrist_trail.clear();
@@ -416,13 +391,9 @@ impl<'cfg> Searcher<'cfg> {
         self.zobrist_trail.push(pos.hash);
 
         self.cfg = cfg;
-        self.tm =
-            TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
+        self.tm = TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
         self.root_pos = *pos;
-        self.root_moves = gen_legal_moves(pos)
-            .iter()
-            .map(|&mv| RootMove::new(mv))
-            .collect();
+        self.root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
         self.nodes = 0;
         self.sel_depth = 0;
         self.iter_depth = 0;
@@ -515,10 +486,7 @@ impl<'cfg> Searcher<'cfg> {
         {
             return;
         }
-        println!(
-            "info depth {depth} currmove {} currmovenumber {move_number}",
-            mv.to_uci(self.root_pos.is_frc)
-        );
+        println!("info depth {depth} currmove {} currmovenumber {move_number}", mv.to_uci(self.root_pos.is_frc));
     }
 
     #[cold]
@@ -532,20 +500,20 @@ impl<'cfg> Searcher<'cfg> {
 
         let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
         let data = tui::SearchInfoData {
-            depth:     self.iter_depth,
+            depth: self.iter_depth,
             sel_depth: self.sel_depth,
-            score:     best.score,
-            nodes:     self.nodes,
-            nps:       u64::try_from(nps).unwrap_or(u64::MAX),
-            time_ms:   ms,
-            hashfull:  self.tt.hashfull(),
-            pv:        &best.pv,
-            show_wdl:  self.cfg.display.show_wdl,
-            material:  self.root_pos.material_count(),
-            stm:       self.root_pos.stm.as_usize(),
-            history:   &history_vec,
-            board:     &self.root_pos,
-            use_ansi:  self.cfg.display.use_ansi,
+            score: best.score,
+            nodes: self.nodes,
+            nps: u64::try_from(nps).unwrap_or(u64::MAX),
+            time_ms: ms,
+            hashfull: self.tt.hashfull(),
+            pv: &best.pv,
+            show_wdl: self.cfg.display.show_wdl,
+            material: self.root_pos.material_count(),
+            stm: self.root_pos.stm.as_usize(),
+            history: &history_vec,
+            board: &self.root_pos,
+            use_ansi: self.cfg.display.use_ansi,
         };
 
         tui::print_pretty_search_info(&data);
@@ -631,11 +599,7 @@ impl Worker {
             if valid && !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if valid && !mv.is_null() {
-                Some(mv)
-            } else {
-                None
-            }
+            if valid && !mv.is_null() { Some(mv) } else { None }
         } else {
             None
         };
@@ -660,11 +624,7 @@ impl Worker {
         // Used as a baseline for pruning decisions — if the position looks
         // overwhelmingly good or hopeless, we can take shortcuts.
         // Meaningless when in check (we're forced to respond, not evaluate).
-        let raw_static_eval = if in_check {
-            tt::SCORE_NONE
-        } else {
-            evaluate(&self.pos, &self.accumulator)
-        };
+        let raw_static_eval = if in_check { tt::SCORE_NONE } else { evaluate(&self.pos, &self.accumulator) };
 
         // ── Correction History ──
         // The evaluator has systematic biases tied to structural features
@@ -675,25 +635,15 @@ impl Worker {
         // raw_static_eval stays untouched so the update at the end of this
         // frame learns from the unshifted baseline, not the already-corrected
         // value we use for pruning.
-        let pawn_hash = if in_check {
-            0
-        } else {
-            self.pos.calc_pawn_hash()
-        };
-        let stm_np_hash = if in_check {
-            0
-        } else {
-            self.pos.calc_non_pawn_hash(self.pos.stm)
-        };
+        let pawn_hash = if in_check { 0 } else { self.pos.calc_pawn_hash() };
+        let stm_np_hash = if in_check { 0 } else { self.pos.calc_non_pawn_hash(self.pos.stm) };
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
-            let correction = self.history.correction(
-                self.pos.stm,
-                pawn_hash,
-                stm_np_hash,
-                searcher.cfg.search_params.np_corr_weight,
-            ) / history::CORRECTION_SCALE;
+            let correction =
+                self.history
+                    .correction(self.pos.stm, pawn_hash, stm_np_hash, searcher.cfg.search_params.np_corr_weight)
+                    / history::CORRECTION_SCALE;
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
@@ -743,14 +693,7 @@ impl Worker {
             self.stack[ply + 1].is_null = true;
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
-            let score = match self.negamax::<NonPvNode>(
-                searcher,
-                (depth - r - 1).max(0),
-                -beta,
-                -beta + 1,
-                ply + 1,
-                None,
-            ) {
+            let score = match self.negamax::<NonPvNode>(searcher, (depth - r - 1).max(0), -beta, -beta + 1, ply + 1, None) {
                 Ok(v) => -v,
                 Err(e) => {
                     searcher.zobrist_trail.pop();
@@ -778,8 +721,7 @@ impl Worker {
                 }
 
                 self.is_nmp_verif = true;
-                let verif =
-                    self.negamax::<NonPvNode>(searcher, (depth - r - 1).max(0), beta - 1, beta, ply, None);
+                let verif = self.negamax::<NonPvNode>(searcher, (depth - r - 1).max(0), beta - 1, beta, ply, None);
                 self.is_nmp_verif = false;
 
                 if verif? >= beta {
@@ -793,20 +735,11 @@ impl Worker {
         // that, guesses. Reduce by one ply to acknowledge the uncertainty
         // and avoid investing full depth into an unguided search.
         // The next iteration will have a TT move and do it properly.
-        let depth = if depth >= 4 && tt_move.is_none() {
-            depth - 1
-        } else {
-            depth
-        };
+        let depth = if depth >= 4 && tt_move.is_none() { depth - 1 } else { depth };
 
         // ──────── Move loop ────────
 
-        let mut res = MoveResult {
-            move_count: 0,
-            best_eval: -INF,
-            alpha,
-            best_move: Move::null(),
-        };
+        let mut res = MoveResult { move_count: 0, best_eval: -INF, alpha, best_move: Move::null() };
 
         if N::ROOT {
             // Iterate the pre-sorted root move list.
@@ -827,17 +760,7 @@ impl Worker {
                 // Aspiration re-searches accumulate into the same slot,
                 // all that work belongs to this move.
                 let nodes_before = searcher.nodes;
-                self.search_move::<N>(
-                    searcher,
-                    mv,
-                    depth,
-                    &mut res,
-                    beta,
-                    ply,
-                    Some(i),
-                    Some(mv) == pv_move,
-                    reduction,
-                )?;
+                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction)?;
                 searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
                 if likely(res.alpha >= beta) {
                     break;
@@ -855,35 +778,25 @@ impl Worker {
             self.stack[ply].capture_count = 0;
 
             let cont1 = if ply > 0 {
-                ContContext {
-                    pt: self.stack[ply - 1].moved_pt,
-                    to: self.stack[ply - 1].moved_to,
-                }
+                ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
             } else {
                 ContContext::default()
             };
 
             let cont2 = if ply > 1 {
-                ContContext {
-                    pt: self.stack[ply - 2].moved_pt,
-                    to: self.stack[ply - 2].moved_to,
-                }
+                ContContext { pt: self.stack[ply - 2].moved_pt, to: self.stack[ply - 2].moved_to }
             } else {
                 ContContext::default()
             };
 
             let cont4 = if ply > 3 {
-                ContContext {
-                    pt: self.stack[ply - 4].moved_pt,
-                    to: self.stack[ply - 4].moved_to,
-                }
+                ContContext { pt: self.stack[ply - 4].moved_pt, to: self.stack[ply - 4].moved_to }
             } else {
                 ContContext::default()
             };
 
             // Interior: staged move generation via MovePicker.
-            let mut picker =
-                MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, cont1, cont2, cont4);
+            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, cont1, cont2, cont4);
             while let Some(mv) = picker.next(&self.pos, &self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -898,10 +811,7 @@ impl Worker {
                 }
 
                 let mut appended_capture = false;
-                if mv.is_capture()
-                    && !mv.is_promotion()
-                    && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES
-                {
+                if mv.is_capture() && !mv.is_promotion() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
                     let count = self.stack[ply].capture_count;
                     self.stack[ply].capture_moves[count] = mv;
                     self.stack[ply].capture_count += 1;
@@ -958,9 +868,7 @@ impl Worker {
                     && depth <= searcher.cfg.search_params.hist_prune_depth
                 {
                     let pt = self.pos.expect_piece_at(mv.from());
-                    let hist =
-                        self.history
-                            .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+                    let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
                     if hist < -searcher.cfg.search_params.hist_prune_margin * depth {
                         continue;
                     }
@@ -1001,9 +909,7 @@ impl Worker {
                     let mut r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
                     let pt = self.pos.expect_piece_at(mv.from());
                     // ~13 Elo
-                    let hist =
-                        self.history
-                            .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+                    let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                         r -= 1;
@@ -1018,17 +924,7 @@ impl Worker {
                 self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
                 self.stack[ply].moved_to = mv.to();
 
-                self.search_move::<N>(
-                    searcher,
-                    mv,
-                    depth,
-                    &mut res,
-                    beta,
-                    ply,
-                    None,
-                    Some(mv) == pv_move,
-                    reduction,
-                )?;
+                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move, reduction)?;
 
                 if likely(res.alpha >= beta) {
                     // ── History Gravity Heuristic (~95 Elo) ──
@@ -1046,8 +942,7 @@ impl Worker {
                     // Captures and structural moves (castling) are handled differently.
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
-                        self.history
-                            .update(stm, pt, mv.from(), mv.to(), cont1, cont2, cont4, bonus);
+                        self.history.update(stm, pt, mv.from(), mv.to(), cont1, cont2, cont4, bonus);
 
                         // ── Killer Moves (~35 Elo) ──
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
@@ -1068,13 +963,8 @@ impl Worker {
                         // unmade the move, so the captured piece is back on `to`
                         // (or it's en passant, where the victim is a pawn by definition).
                         let attacker = self.pos.expect_piece_at(mv.from());
-                        let victim = if mv.is_en_passant() {
-                            PieceType::Pawn
-                        } else {
-                            self.pos.piece_at(mv.to())
-                        };
-                        self.history
-                            .update_capture(stm, attacker, mv.to(), victim, bonus);
+                        let victim = if mv.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(mv.to()) };
+                        self.history.update_capture(stm, attacker, mv.to(), victim, bonus);
                     }
 
                     // ── Asymmetric Penalty (~25 Elo) ──
@@ -1086,19 +976,15 @@ impl Worker {
                     // Quiets: penalize all preceding quiets. If the cutoff was a
                     // capture, quiet_count is 0 (captures precede quiets in the
                     // picker), so the loop is a no-op.
-                    let penalty_limit = if appended_quiet {
-                        self.stack[ply].quiet_count.saturating_sub(1)
-                    } else {
-                        self.stack[ply].quiet_count
-                    };
+                    let penalty_limit =
+                        if appended_quiet { self.stack[ply].quiet_count.saturating_sub(1) } else { self.stack[ply].quiet_count };
 
                     for i in 0..penalty_limit {
                         let qm = self.stack[ply].quiet_moves[i];
                         let q_pt = self.pos.expect_piece_at(qm.from());
 
                         // Over time, this "anti-history" pushes bad moves deeper into the list.
-                        self.history
-                            .update(stm, q_pt, qm.from(), qm.to(), cont1, cont2, cont4, -bonus);
+                        self.history.update(stm, q_pt, qm.from(), qm.to(), cont1, cont2, cont4, -bonus);
                     }
 
                     // Captures: penalize all preceding captures that were searched
@@ -1114,13 +1000,8 @@ impl Worker {
                     for i in 0..cap_penalty_limit {
                         let cm = self.stack[ply].capture_moves[i];
                         let attacker = self.pos.expect_piece_at(cm.from());
-                        let victim = if cm.is_en_passant() {
-                            PieceType::Pawn
-                        } else {
-                            self.pos.piece_at(cm.to())
-                        };
-                        self.history
-                            .update_capture(stm, attacker, cm.to(), victim, -bonus);
+                        let victim = if cm.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(cm.to()) };
+                        self.history.update_capture(stm, attacker, cm.to(), victim, -bonus);
                     }
 
                     break;
@@ -1130,11 +1011,7 @@ impl Worker {
 
         // No legal moves: checkmate (in check) or stalemate (not).
         if unlikely(res.move_count == 0) {
-            return if in_check {
-                Ok(-MATE + ply as i32)
-            } else {
-                Ok(0)
-            };
+            return if in_check { Ok(-MATE + ply as i32) } else { Ok(0) };
         }
 
         let bound = if res.best_eval >= beta {
@@ -1146,9 +1023,7 @@ impl Worker {
         };
 
         // ── TT store ──
-        searcher
-            .tt
-            .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
+        searcher.tt.store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
 
         // ── Correction History Update ──
         // Only learn from positions resolved by quiet moves — tactical
@@ -1164,8 +1039,7 @@ impl Worker {
                 || (bound == tt::BOUND_UPPER && res.best_eval >= static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
-            self.history
-                .update_correction(self.pos.stm, pawn_hash, stm_np_hash, diff, depth);
+            self.history.update_correction(self.pos.stm, pawn_hash, stm_np_hash, diff, depth);
         }
 
         Ok(res.best_eval)
@@ -1209,16 +1083,7 @@ impl Worker {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval = match self.pvs::<N>(
-            searcher,
-            depth,
-            res.alpha,
-            beta,
-            ply,
-            res.move_count == 1,
-            is_pv_move,
-            reduction,
-        ) {
+        let eval = match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction) {
             Ok(v) => v,
             Err(e) => {
                 searcher.zobrist_trail.pop();
@@ -1284,11 +1149,7 @@ impl Worker {
     ) -> Result<i32, SearchAborted> {
         // Retrieve the expected PV move for the NEXT ply (ply + 1 is the child node's level).
         // If we are on the PV line AND we just played the PV move, we expect the child to also have a PV move.
-        let next_pv = if (N::ROOT || N::PV) && is_pv_move {
-            searcher.prev_pv.get(ply + 1)
-        } else {
-            None
-        };
+        let next_pv = if (N::ROOT || N::PV) && is_pv_move { searcher.prev_pv.get(ply + 1) } else { None };
 
         if is_first {
             // No bound yet — search wide open.
@@ -1299,8 +1160,7 @@ impl Worker {
         // Late quiet moves get a shallower scout. If the reduced search
         // still beats alpha, the move earned a full-depth re-search.
         let reduced_depth = depth - 1 - reduction;
-        let mut score =
-            -self.negamax::<NonPvNode>(searcher, reduced_depth, -alpha - 1, -alpha, ply + 1, None)?;
+        let mut score = -self.negamax::<NonPvNode>(searcher, reduced_depth, -alpha - 1, -alpha, ply + 1, None)?;
 
         // Re-search at full depth if the reduced scout found something.
         if score > alpha && reduction > 0 {
@@ -1359,11 +1219,7 @@ impl Worker {
             if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if !mv.is_null() && is_pseudo_legal(&self.pos, mv) {
-                Some(mv)
-            } else {
-                None
-            }
+            if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None }
         } else {
             None
         };
@@ -1383,12 +1239,10 @@ impl Worker {
             let raw_eval = evaluate(&self.pos, &self.accumulator);
             let pawn_hash = self.pos.calc_pawn_hash();
             let stm_np_hash = self.pos.calc_non_pawn_hash(self.pos.stm);
-            let correction = self.history.correction(
-                self.pos.stm,
-                pawn_hash,
-                stm_np_hash,
-                searcher.cfg.search_params.np_corr_weight,
-            ) / history::CORRECTION_SCALE;
+            let correction =
+                self.history
+                    .correction(self.pos.stm, pawn_hash, stm_np_hash, searcher.cfg.search_params.np_corr_weight)
+                    / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 return Ok(eval);
@@ -1401,16 +1255,10 @@ impl Worker {
             //
             // best_capturable is just the highest MVV-LVA value among opponent pieces
             // still on the board; delta_margin covers promotion/positional upside.
-            let best_capturable = [
-                PieceType::Queen,
-                PieceType::Rook,
-                PieceType::Bishop,
-                PieceType::Knight,
-                PieceType::Pawn,
-            ]
-            .into_iter()
-            .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
-            .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
+            let best_capturable = [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn]
+                .into_iter()
+                .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
+                .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
             if eval + best_capturable + searcher.cfg.search_params.delta_margin < alpha {
                 return Ok(alpha);
             }
@@ -1498,9 +1346,7 @@ impl Worker {
         } else {
             tt::BOUND_UPPER
         };
-        searcher
-            .tt
-            .store_qs(self.pos.hash, ply, best_eval, best_move, bound);
+        searcher.tt.store_qs(self.pos.hash, ply, best_eval, best_move, bound);
 
         Ok(best_eval)
     }
@@ -1514,9 +1360,7 @@ impl Worker {
     /// standard compromise — every top engine accepts this edge case.
     #[inline]
     pub fn is_draw(&self, ply: usize, history: &[u64]) -> bool {
-        self.pos.is_fifty_move_draw()
-            || self.pos.is_draw_by_material()
-            || (ply > 0 && self.is_repetition(self.pos.hash, history))
+        self.pos.is_fifty_move_draw() || self.pos.is_draw_by_material() || (ply > 0 && self.is_repetition(self.pos.hash, history))
     }
 
     /// Scans the history for a previous occurrence of the current hash.
@@ -1577,50 +1421,34 @@ impl Worker {
 /// Display configuration for search output.
 #[derive(Clone, Copy, Default)]
 pub struct SearchDisplay {
-    pub show_wdl:      bool,
-    pub go_pretty:     bool,
-    pub pretty_print:  bool,
+    pub show_wdl: bool,
+    pub go_pretty: bool,
+    pub pretty_print: bool,
     pub show_currmove: bool,
-    pub use_ansi:      bool,
+    pub use_ansi: bool,
 }
 
 impl SearchDisplay {
-    pub const SILENT: Self = Self {
-        show_wdl:      false,
-        go_pretty:     false,
-        pretty_print:  false,
-        show_currmove: false,
-        use_ansi:      false,
-    };
-    pub const DEFAULT: Self = Self {
-        show_currmove: true,
-        use_ansi: true,
-        ..Self::SILENT
-    };
+    pub const SILENT: Self = Self { show_wdl: false, go_pretty: false, pretty_print: false, show_currmove: false, use_ansi: false };
+    pub const DEFAULT: Self = Self { show_currmove: true, use_ansi: true, ..Self::SILENT };
 }
 
 #[derive(Clone)]
 pub struct SearchConfig {
-    pub limits:        Limits,
-    pub start_time:    Instant,
-    pub stop:          Arc<AtomicBool>,
-    pub display:       SearchDisplay,
+    pub limits: Limits,
+    pub start_time: Instant,
+    pub stop: Arc<AtomicBool>,
+    pub display: SearchDisplay,
     pub search_params: SearchParams,
-    pub overhead:      u64,
-    pub mvvlva_v:      [i32; 8], // victim values, indexed by PieceType
-    pub mvvlva_a:      [i32; 8], // attacker penalties, indexed by PieceType
-    pub lmr_table:     Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
+    pub overhead: u64,
+    pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
+    pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
+    pub lmr_table: Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
 }
 
 impl SearchConfig {
     /// Creates a configuration with default display settings.
-    pub fn new(
-        limits: Limits,
-        start_time: Instant,
-        stop: Arc<AtomicBool>,
-        overhead: u64,
-        search_params: SearchParams,
-    ) -> Self {
+    pub fn new(limits: Limits, start_time: Instant, stop: Arc<AtomicBool>, overhead: u64, search_params: SearchParams) -> Self {
         Self::new_full(limits, start_time, stop, overhead, SearchDisplay::DEFAULT, search_params)
     }
 
@@ -1636,17 +1464,7 @@ impl SearchConfig {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
         let lmr_table = Self::build_lmr_table(&search_params);
 
-        Self {
-            limits,
-            start_time,
-            stop,
-            overhead,
-            display,
-            search_params,
-            mvvlva_v,
-            mvvlva_a,
-            lmr_table,
-        }
+        Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
     }
 
     /// MVV-LVA lookup table from tunable parameters.
@@ -1698,20 +1516,20 @@ impl SearchConfig {
 
 #[derive(Clone, Default, Debug)]
 pub struct Limits {
-    pub wtime:       u64,
-    pub btime:       u64,
-    pub winc:        u64,
-    pub binc:        u64,
-    pub movestogo:   u64,
-    pub movetime:    u64,
-    pub depth:       i32,
-    pub nodes:       u64,
-    pub softnodes:   u64,
-    pub infinite:    bool,
-    pub silent:      bool,
-    pub protocol:    Protocol,
-    pub mate:        Option<i32>,
-    pub perft:       Option<u8>,
+    pub wtime: u64,
+    pub btime: u64,
+    pub winc: u64,
+    pub binc: u64,
+    pub movestogo: u64,
+    pub movetime: u64,
+    pub depth: i32,
+    pub nodes: u64,
+    pub softnodes: u64,
+    pub infinite: bool,
+    pub silent: bool,
+    pub protocol: Protocol,
+    pub mate: Option<i32>,
+    pub perft: Option<u8>,
     pub searchmoves: Vec<Move>,
 }
 
@@ -1721,9 +1539,9 @@ pub struct Limits {
 /// is searched first next time — the single most important factor for
 /// alpha-beta efficiency.
 pub struct RootMove {
-    pub mv:    Move,
+    pub mv: Move,
     pub score: i32,
-    pub pv:    Box<Line>,
+    pub pv: Box<Line>,
     /// Cumulative subtree nodes across all ID iterations.The best move's
     /// share of total nodes feeds the stability factor in time management.
     pub nodes: u64,
@@ -1732,12 +1550,7 @@ pub struct RootMove {
 impl RootMove {
     #[inline]
     pub fn new(mv: Move) -> Self {
-        Self {
-            mv,
-            score: -INF,
-            pv: Box::new(Line::new()),
-            nodes: 0,
-        }
+        Self { mv, score: -INF, pv: Box::new(Line::new()), nodes: 0 }
     }
 }
 
@@ -1750,7 +1563,7 @@ impl RootMove {
 #[derive(Clone, Copy)]
 pub struct Line {
     pub moves: [Move; MAX_PLY],
-    pub len:   usize,
+    pub len: usize,
 }
 
 impl Default for Line {
@@ -1761,10 +1574,7 @@ impl Default for Line {
 
 impl Line {
     pub const fn new() -> Self {
-        Self {
-            moves: [Move::null(); MAX_PLY],
-            len:   0,
-        }
+        Self { moves: [Move::null(); MAX_PLY], len: 0 }
     }
 
     /// Prepend `mv` to `tail`, forming a complete PV line.
@@ -1778,11 +1588,7 @@ impl Line {
     /// Retrieve a move from the PV line if the index is within bounds.
     #[inline(always)]
     pub fn get(&self, idx: usize) -> Option<Move> {
-        if idx < self.len {
-            Some(self.moves[idx])
-        } else {
-            None
-        }
+        if idx < self.len { Some(self.moves[idx]) } else { None }
     }
 }
 
@@ -1799,31 +1605,31 @@ pub const MAX_TRACKED_CAPTURES: usize = 64;
 /// Per-ply scratch data.
 #[derive(Clone, Copy)]
 pub struct Stack {
-    pub pv:            Line,
-    pub quiet_moves:   [Move; MAX_TRACKED_QUIETS],
-    pub quiet_count:   usize,
+    pub pv: Line,
+    pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
+    pub quiet_count: usize,
     pub capture_moves: [Move; MAX_TRACKED_CAPTURES],
     pub capture_count: usize,
-    pub killers:       [Move; 2],
-    pub moved_pt:      PieceType,
-    pub moved_to:      Square,
-    pub static_eval:   i32,
-    pub is_null:       bool,
+    pub killers: [Move; 2],
+    pub moved_pt: PieceType,
+    pub moved_to: Square,
+    pub static_eval: i32,
+    pub is_null: bool,
 }
 
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            pv:            Line::new(),
-            quiet_moves:   [Move::null(); MAX_TRACKED_QUIETS],
-            quiet_count:   0,
+            pv: Line::new(),
+            quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
+            quiet_count: 0,
             capture_moves: [Move::null(); MAX_TRACKED_CAPTURES],
             capture_count: 0,
-            killers:       [Move::null(); 2],
-            moved_pt:      PieceType::None,
-            moved_to:      Square(0),
-            static_eval:   tt::SCORE_NONE,
-            is_null:       false,
+            killers: [Move::null(); 2],
+            moved_pt: PieceType::None,
+            moved_to: Square(0),
+            static_eval: tt::SCORE_NONE,
+            is_null: false,
         }
     }
 }

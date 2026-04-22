@@ -3,10 +3,7 @@
 use crate::core::{
     board::{
         Position,
-        bitboard::{
-            PSEUDO_BISHOP_ATTACKS, PSEUDO_ROOK_ATTACKS, atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook,
-            between_bb,
-        },
+        bitboard::{PSEUDO_BISHOP_ATTACKS, PSEUDO_ROOK_ATTACKS, atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb},
     },
     defs::{Bitboard, Color, PieceType, Square},
 };
@@ -18,17 +15,8 @@ use crate::core::{
 /// This is essential when checking if the king's destination is safe,
 /// slider rays must see through the king's departure square, not stop on it.
 #[inline(always)]
-pub fn is_attacked<const VIRTUAL: bool>(
-    pos: &Position,
-    sq: Square,
-    attacker: Color,
-    mask_out: Bitboard,
-) -> bool {
-    let occ = if VIRTUAL {
-        pos.occ & !mask_out
-    } else {
-        pos.occ
-    };
+pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Color, mask_out: Bitboard) -> bool {
+    let occ = if VIRTUAL { pos.occ & !mask_out } else { pos.occ };
     let them = pos.side_bb[attacker];
 
     // Leapers first — cheapest to test, no occupancy dependency.
@@ -151,8 +139,7 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     // Enemy sliders that would threaten the king on a completely empty board.
     let rq = pos.pieces(PieceType::Rook, opp) | pos.pieces(PieceType::Queen, opp);
     let bq = pos.pieces(PieceType::Bishop, opp) | pos.pieces(PieceType::Queen, opp);
-    let snipers =
-        (PSEUDO_ROOK_ATTACKS[usize::from(king_sq)] & rq) | (PSEUDO_BISHOP_ATTACKS[usize::from(king_sq)] & bq);
+    let snipers = (PSEUDO_ROOK_ATTACKS[usize::from(king_sq)] & rq) | (PSEUDO_BISHOP_ATTACKS[usize::from(king_sq)] & bq);
 
     let mut pinned = Bitboard(0);
 

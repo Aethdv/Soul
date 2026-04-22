@@ -43,11 +43,7 @@ pub fn evaluate_fast(board: &Position, acc: &Vi16x8, phase: i32) -> i32 {
     use crate::engine::autograd::EvalMath;
     let score = i32::tapered(acc, phase);
 
-    if board.stm == Color::White {
-        score
-    } else {
-        -score
-    }
+    if board.stm == Color::White { score } else { -score }
 }
 
 /// Uncertainty bounds — dynamically estimating the error of lazy evaluation.
@@ -113,31 +109,23 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
         let w_king_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
         let b_king_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
 
-        let xray_ortho = (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32
-            - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+        let xray_ortho =
+            (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-        features_store = MacroFeatures {
-            openness,
-            data,
-            xray_ortho,
-        };
+        features_store = MacroFeatures { openness, data, xray_ortho };
         &features_store
     };
 
     let score = compute_macro_eval(acc, phase, features, params);
 
-    if board.stm == Color::White {
-        score
-    } else {
-        -score
-    }
+    if board.stm == Color::White { score } else { -score }
 }
 
 pub struct DetailedEval {
-    pub psqt:     i32,
+    pub psqt: i32,
     pub mobility: i32,
-    pub safety:   i32,
-    pub total:    i32,
+    pub safety: i32,
+    pub total: i32,
 }
 
 /// A version of evaluate that returns individual components for debugging and visualization.
@@ -161,88 +149,57 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     let w_king_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
     let b_king_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
 
-    let xray_ortho_raw = (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32
-        - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+    let xray_ortho_raw =
+        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-    let features = MacroFeatures {
-        openness,
-        data,
-        xray_ortho: xray_ortho_raw,
-    };
+    let features = MacroFeatures { openness, data, xray_ortho: xray_ortho_raw };
 
     let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
     let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
 
-    let s_us_score = features
+    let s_us_score = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
+    let s_them_score = features
         .data
-        .safety_us
-        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-    let s_them_score =
-        features
-            .data
-            .safety_them
-            .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
+        .safety_them
+        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
 
     let xray_diff = params.w_xray_ortho * features.xray_ortho;
     let safety = (s_us_score - s_them_score + xray_diff) * phase / crate::core::defs::TOTAL_PHASE;
 
     let mobility = Mobility::evaluate_score_diff::<i32>(
-        &features.data.metrics_us,
-        &features.data.metrics_them,
-        features.openness,
-        phase,
-        params.mg_mob_open,
-        params.mg_mob_closed,
-        params.eg_mob_open,
-        params.eg_mob_closed,
+        &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open, params.mg_mob_closed,
+        params.eg_mob_open, params.eg_mob_closed,
     );
 
     let total = psqt + safety + mobility;
-    let (p, m, s, t) = if board.stm == Color::White {
-        (psqt, mobility, safety, total)
-    } else {
-        (-psqt, -mobility, -safety, -total)
-    };
+    let (p, m, s, t) =
+        if board.stm == Color::White { (psqt, mobility, safety, total) } else { (-psqt, -mobility, -safety, -total) };
 
-    DetailedEval {
-        psqt:     p,
-        mobility: m,
-        safety:   s,
-        total:    t,
-    }
+    DetailedEval { psqt: p, mobility: m, safety: s, total: t }
 }
 
 /// Macroscopic features extracted from the position.
 /// Used to bridge the engine's search eval and the tuner's gradient extraction.
 pub struct MacroFeatures {
-    pub openness:   i32,
-    pub data:       MobilityData,
+    pub openness: i32,
+    pub data: MobilityData,
     pub xray_ortho: i32,
 }
 
 /// The single source of truth for evaluation math.
 /// Generic over `EvalMath` to support both `i32` search and `DualNode` tuning.
 #[inline(always)]
-pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
-    acc: &T::Vec8,
-    phase: T,
-    features: &MacroFeatures,
-    params: &EvalParams<T>,
-) -> T {
+pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &MacroFeatures, params: &EvalParams<T>) -> T {
     let mut score = T::tapered(acc, phase);
 
     let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
     let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
 
-    let s_us_score = features
+    let s_us_score = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
+    let s_them_score = features
         .data
-        .safety_us
-        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-    let s_them_score =
-        features
-            .data
-            .safety_them
-            .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
+        .safety_them
+        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
 
     let xray_diff = params.w_xray_ortho * T::from_i32(features.xray_ortho);
 
@@ -252,14 +209,8 @@ pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
     score += ((safety_diff * phase) / T::from_i32(crate::core::defs::TOTAL_PHASE)).trunc();
 
     score += Mobility::evaluate_score_diff::<T>(
-        &features.data.metrics_us,
-        &features.data.metrics_them,
-        features.openness,
-        phase,
-        params.mg_mob_open,
-        params.mg_mob_closed,
-        params.eg_mob_open,
-        params.eg_mob_closed,
+        &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open, params.mg_mob_closed,
+        params.eg_mob_open, params.eg_mob_closed,
     );
 
     score
@@ -310,20 +261,20 @@ impl EvalParams<i32> {
     #[inline(always)]
     pub fn from_const() -> Self {
         use crate::engine::eval_params::{
-            ATTACKER_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED,
-            MG_MOBILITY_OPEN, XRAY_WEIGHTS,
+            ATTACKER_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
+            XRAY_WEIGHTS,
         };
 
         Self {
-            mg_mob_open:   MG_MOBILITY_OPEN,
+            mg_mob_open: MG_MOBILITY_OPEN,
             mg_mob_closed: MG_MOBILITY_CLOSED,
-            eg_mob_open:   EG_MOBILITY_OPEN,
+            eg_mob_open: EG_MOBILITY_OPEN,
             eg_mob_closed: EG_MOBILITY_CLOSED,
-            w_shield:      KING_SAFETY_WEIGHTS[0],
-            w_ortho:       KING_SAFETY_WEIGHTS[1],
-            w_diag:        KING_SAFETY_WEIGHTS[2],
-            atk_weights:   ATTACKER_WEIGHTS,
-            w_xray_ortho:  XRAY_WEIGHTS[0],
+            w_shield: KING_SAFETY_WEIGHTS[0],
+            w_ortho: KING_SAFETY_WEIGHTS[1],
+            w_diag: KING_SAFETY_WEIGHTS[2],
+            atk_weights: ATTACKER_WEIGHTS,
+            w_xray_ortho: XRAY_WEIGHTS[0],
         }
     }
 }

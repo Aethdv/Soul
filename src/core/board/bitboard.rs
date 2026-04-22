@@ -27,16 +27,16 @@ use crate::core::defs::{Bitboard, Color, FILE_A, FILE_H, FILE_MASKS, NOT_AB, NOT
 #[cfg(target_feature = "bmi2")]
 #[derive(Clone, Copy, Debug)]
 pub struct MagicEntry {
-    pub mask:   u64,
+    pub mask: u64,
     pub offset: u32,
 }
 
 #[cfg(not(target_feature = "bmi2"))]
 #[derive(Clone, Copy, Debug)]
 pub struct MagicEntry {
-    pub mask:   u64,
-    pub magic:  u64,
-    pub shift:  u8,
+    pub mask: u64,
+    pub magic: u64,
+    pub shift: u8,
     pub offset: u32,
 }
 

@@ -259,7 +259,7 @@ impl fmt::Debug for Move {
 /// In practice you'll rarely see more than 80, but this safely bounds all edge cases.
 pub struct MoveList {
     moves: [MaybeUninit<Move>; MAX_MOVES],
-    len:   usize,
+    len: usize,
 }
 
 impl Default for MoveList {
@@ -272,10 +272,7 @@ impl MoveList {
     /// Empty move list.
     #[inline(always)]
     pub const fn new() -> Self {
-        Self {
-            moves: [MaybeUninit::uninit(); MAX_MOVES],
-            len:   0,
-        }
+        Self { moves: [MaybeUninit::uninit(); MAX_MOVES], len: 0 }
     }
 
     /// Append a move to the list.
@@ -283,12 +280,7 @@ impl MoveList {
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES, "MoveList capacity exceeded");
         // SAFETY: Caller guarantees the list is not full; debug_assert above catches violations in debug builds.
-        unsafe {
-            self.moves
-                .as_mut_ptr()
-                .add(self.len)
-                .write(MaybeUninit::new(mv))
-        };
+        unsafe { self.moves.as_mut_ptr().add(self.len).write(MaybeUninit::new(mv)) };
         self.len += 1;
     }
 

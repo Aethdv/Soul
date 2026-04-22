@@ -5,9 +5,8 @@
 
 use crate::core::{
     board::{
-        B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS,
-        CASTLE_B_QS_CHECK, CASTLE_W_KS, CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position,
-        W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
+        B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS, CASTLE_B_QS_CHECK, CASTLE_W_KS,
+        CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position, W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
         bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb, line_bb},
     },
     defs::{Bitboard, Color, Direction, FILE_A, FILE_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
@@ -140,14 +139,7 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
 ///   • Pinned pieces — may only slide along the pin ray.
 ///   • Single check  — must capture the checker or interpose.
 #[inline(always)]
-pub fn is_legal(
-    board: &Position,
-    mv: Move,
-    ksq: Square,
-    pinned: Bitboard,
-    checkers: Bitboard,
-    opp: Color,
-) -> bool {
+pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checkers: Bitboard, opp: Color) -> bool {
     let from = mv.from();
     let to = mv.to();
 
@@ -201,14 +193,7 @@ pub fn is_legal(
 ///
 /// We simulate the resulting occupancy and check for sliding x-rays.
 #[inline]
-fn is_ep_legal(
-    board: &Position,
-    mv: Move,
-    ksq: Square,
-    pinned: Bitboard,
-    checkers: Bitboard,
-    opp: Color,
-) -> bool {
+fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checkers: Bitboard, opp: Color) -> bool {
     let from = mv.from();
     let to = mv.to();
 
@@ -314,12 +299,7 @@ fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut Mo
 /// Bitboard parallelism tames this complexity:
 /// one shift computes every single push simultaneously.
 #[inline]
-fn gen_pawns<const US: Color, const TACTICAL: bool>(
-    board: &Position,
-    acc: &mut MoveList,
-    them: Bitboard,
-    occ: Bitboard,
-) {
+fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList, them: Bitboard, occ: Bitboard) {
     let empty = !occ;
     let pawns = board.role_bb[PieceType::Pawn] & board.side_bb[US];
 
@@ -332,11 +312,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(
     let left_d = left.delta();
     let right_d = right.delta();
 
-    let (promo_rank, third_rank) = if US == Color::White {
-        (RANK_8, RANK_3)
-    } else {
-        (RANK_1, RANK_6)
-    };
+    let (promo_rank, third_rank) = if US == Color::White { (RANK_8, RANK_3) } else { (RANK_1, RANK_6) };
 
     // ── Single pushes (non-promoting) ──
     let all_pushes = pawns.shift(up) & empty;
@@ -364,11 +340,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(
     // NOTE: left and right directions are strictly relative to the
     // side-to-move's visual perspective (e.g. for Black, left shifts
     // toward the H-file).
-    let (mask_l, mask_r) = if US == Color::White {
-        (!FILE_A, !FILE_H)
-    } else {
-        (!FILE_H, !FILE_A)
-    };
+    let (mask_l, mask_r) = if US == Color::White { (!FILE_A, !FILE_H) } else { (!FILE_H, !FILE_A) };
 
     let cap_l = (pawns & mask_l).shift(left) & them;
     let cap_r = (pawns & mask_r).shift(right) & them;
@@ -433,13 +405,7 @@ fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: B
 /// to compute attack bitboards. MAGIC lookups are fast, but the real win is
 /// in the dense bitboard transformations that follow.
 #[inline]
-fn gen_sliders<const TACTICAL: bool>(
-    board: &Position,
-    acc: &mut MoveList,
-    occ: Bitboard,
-    us: Bitboard,
-    them: Bitboard,
-) {
+fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: Bitboard, us: Bitboard, them: Bitboard) {
     // Diagonal movers: bishops + queen's diagonal component.
     let mut diags = (board.role_bb[PieceType::Bishop] | board.role_bb[PieceType::Queen]) & us;
     while diags.is_not_empty() {
@@ -494,31 +460,14 @@ fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList, occ: Bitb
     let ksq = k_bb.lsb();
     let opp = US.opposite();
 
-    let (oo_mask, ooo_mask, oo_idx, ooo_idx) = if US == Color::White {
-        (WHITE_OO, WHITE_OOO, 0, 1)
-    } else {
-        (BLACK_OO, BLACK_OOO, 2, 3)
-    };
+    let (oo_mask, ooo_mask, oo_idx, ooo_idx) =
+        if US == Color::White { (WHITE_OO, WHITE_OOO, 0, 1) } else { (BLACK_OO, BLACK_OOO, 2, 3) };
 
     // Compute both castle data upfront, then check each right.
     let (oo_data, oo_checks, oo_empty, ooo_data, ooo_checks, ooo_empty) = if US == Color::White {
-        (
-            &CASTLE_W_KS,
-            &CASTLE_W_KS_CHECK,
-            W_OO_EMPTY,
-            &CASTLE_W_QS,
-            &CASTLE_W_QS_CHECK,
-            W_OOO_EMPTY,
-        )
+        (&CASTLE_W_KS, &CASTLE_W_KS_CHECK, W_OO_EMPTY, &CASTLE_W_QS, &CASTLE_W_QS_CHECK, W_OOO_EMPTY)
     } else {
-        (
-            &CASTLE_B_KS,
-            &CASTLE_B_KS_CHECK,
-            B_OO_EMPTY,
-            &CASTLE_B_QS,
-            &CASTLE_B_QS_CHECK,
-            B_OOO_EMPTY,
-        )
+        (&CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY, &CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY)
     };
 
     if (board.castling_rights & oo_mask) != 0 {
@@ -543,12 +492,7 @@ fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList, occ: Bitb
 const QUIET_PROMOS: [u16; 4] = [Move::PROM_Q, Move::PROM_R, Move::PROM_B, Move::PROM_N];
 
 /// Same priority ordering for promotion-captures.
-const CAPTURE_PROMOS: [u16; 4] = [
-    Move::PROM_Q_CAPTURE,
-    Move::PROM_R_CAPTURE,
-    Move::PROM_B_CAPTURE,
-    Move::PROM_N_CAPTURE,
-];
+const CAPTURE_PROMOS: [u16; 4] = [Move::PROM_Q_CAPTURE, Move::PROM_R_CAPTURE, Move::PROM_B_CAPTURE, Move::PROM_N_CAPTURE];
 
 /// Push all four promotion variants (Queen, Rook, Bishop, Knight) to the move list.
 ///
@@ -557,11 +501,7 @@ const CAPTURE_PROMOS: [u16; 4] = [
 /// rare, they are necessary for tactical completeness.
 #[inline]
 fn emit_promotions(acc: &mut MoveList, from: Square, to: Square, capture: bool) {
-    for &flag in if capture {
-        &CAPTURE_PROMOS
-    } else {
-        &QUIET_PROMOS
-    } {
+    for &flag in if capture { &CAPTURE_PROMOS } else { &QUIET_PROMOS } {
         acc.push(Move::new(from, to, flag));
     }
 }
@@ -570,11 +510,7 @@ fn emit_promotions(acc: &mut MoveList, from: Square, to: Square, capture: bool) 
 #[inline]
 fn emit_from_mask(acc: &mut MoveList, from: Square, targets: Bitboard, them: Bitboard) {
     for to in targets {
-        let flag = if them.check_bit(to) {
-            Move::CAPTURE
-        } else {
-            Move::QUIET
-        };
+        let flag = if them.check_bit(to) { Move::CAPTURE } else { Move::QUIET };
         acc.push(Move::new(from, to, flag));
     }
 }

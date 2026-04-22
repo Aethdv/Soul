@@ -51,21 +51,21 @@ enum Mode {
 }
 
 struct XBoardState {
-    board:              Position,
-    accumulator:        crate::weave::Vi16x8,
-    history:            Vec<u64>,
+    board: Position,
+    accumulator: crate::weave::Vi16x8,
+    history: Vec<u64>,
     persistent_history: Arc<parking_lot::Mutex<crate::engine::history::History>>,
-    tt:                 Arc<tt::TranspositionTable>,
-    mode:               Mode,
-    stop_signal:        Arc<AtomicBool>,
-    search_thread:      Option<JoinHandle<()>>,
-    limits:             Limits,
-    hash_size:          usize,
-    overhead:           u64,
-    show_wdl:           bool,
-    engine_side:        Option<crate::core::defs::Color>,
-    is_frc:             bool,
-    nps:                Option<u64>,
+    tt: Arc<tt::TranspositionTable>,
+    mode: Mode,
+    stop_signal: Arc<AtomicBool>,
+    search_thread: Option<JoinHandle<()>>,
+    limits: Limits,
+    hash_size: usize,
+    overhead: u64,
+    show_wdl: bool,
+    engine_side: Option<crate::core::defs::Color>,
+    is_frc: bool,
+    nps: Option<u64>,
 }
 
 impl XBoardState {
@@ -82,10 +82,7 @@ impl XBoardState {
             mode: Mode::Normal,
             stop_signal: Arc::new(AtomicBool::new(false)),
             search_thread: None,
-            limits: Limits {
-                protocol: Protocol::XBoard,
-                ..Default::default()
-            },
+            limits: Limits { protocol: Protocol::XBoard, ..Default::default() },
             hash_size: 16,
             overhead: 10,
             show_wdl: false,
@@ -138,18 +135,8 @@ impl XBoardState {
                 search::{SearchConfig, SearchDisplay},
                 search_params::SearchParams,
             };
-            let display = SearchDisplay {
-                show_wdl,
-                ..SearchDisplay::DEFAULT
-            };
-            let cfg = SearchConfig::new_full(
-                limits,
-                Instant::now(),
-                stop,
-                overhead,
-                display,
-                SearchParams::default(),
-            );
+            let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
+            let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             let mut ctx = Searcher::new(&cfg, &board, &history, persistent_history, tt);
             let final_history = ctx.iterative_deepening();
             *history_arc.lock() = final_history;
@@ -177,10 +164,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             state.tt.clear();
             state.mode = Mode::Normal;
             state.engine_side = Some(crate::core::defs::Color::Black);
-            state.limits = Limits {
-                protocol: Protocol::XBoard,
-                ..Default::default()
-            };
+            state.limits = Limits { protocol: Protocol::XBoard, ..Default::default() };
         },
         "force" => {
             state.stop_search();
@@ -293,9 +277,10 @@ fn print_features() {
 fn cmd_move(state: &mut XBoardState, move_str: &str) {
     let legal = crate::engine::movegen::gen_legal_moves(&state.board);
 
-    if let Some(mv) = legal.iter().find(|mv| {
-        mv.to_uci(state.board.is_frc) == move_str || mv.to_uci(state.board.is_frc) == move_str.to_lowercase()
-    }) {
+    if let Some(mv) = legal
+        .iter()
+        .find(|mv| mv.to_uci(state.board.is_frc) == move_str || mv.to_uci(state.board.is_frc) == move_str.to_lowercase())
+    {
         state.stop_search();
         state.board.make_move(*mv, &mut state.accumulator);
         state.history.push(state.board.hash);
@@ -328,11 +313,7 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
         // Can be 5 or 5:00
         let parts: Vec<&str> = base_str.split(':').collect();
         let mins = parts[0].parse::<u64>().unwrap_or(0);
-        let secs = if parts.len() > 1 {
-            parts[1].parse::<u64>().unwrap_or(0)
-        } else {
-            0
-        };
+        let secs = if parts.len() > 1 { parts[1].parse::<u64>().unwrap_or(0) } else { 0 };
 
         let total_ms = (mins * 60 + secs) * 1000;
         state.limits.wtime = total_ms;

@@ -91,31 +91,31 @@
 /// to activate adaptive scaling.
 #[derive(Clone)]
 pub struct CmaEs {
-    n:               usize,
-    lambda:          usize,
-    mu:              usize,
-    generation:      usize,
-    mean:            Vec<f64>,
-    sigma:           f64,
-    variances:       Vec<f64>,
-    p_sigma:         Vec<f64>,
-    p_c:             Vec<f64>,
-    weights:         Vec<f64>,
-    mu_eff:          f64,
-    c_sigma:         f64,
-    d_sigma:         f64,
-    c_c:             f64,
-    c_1:             f64,
-    c_mu:            f64,
-    chi_n:           f64,
-    mu_eff_neg:      f64,
+    n: usize,
+    lambda: usize,
+    mu: usize,
+    generation: usize,
+    mean: Vec<f64>,
+    sigma: f64,
+    variances: Vec<f64>,
+    p_sigma: Vec<f64>,
+    p_c: Vec<f64>,
+    weights: Vec<f64>,
+    mu_eff: f64,
+    c_sigma: f64,
+    d_sigma: f64,
+    c_c: f64,
+    c_1: f64,
+    c_mu: f64,
+    chi_n: f64,
+    mu_eff_neg: f64,
     active_softness: f64,
 
     // ── Adaptation State ──
-    eta:    f64,      // Global learning rate factor
-    lra_e:  Vec<f64>, // Moving average of updates (Signal)
-    lra_v:  f64,      // Moving average of update magnitudes (Noise)
-    g_norm: f64,      // Current natural gradient norm
+    eta: f64,        // Global learning rate factor
+    lra_e: Vec<f64>, // Moving average of updates (Signal)
+    lra_v: f64,      // Moving average of update magnitudes (Noise)
+    g_norm: f64,     // Current natural gradient norm
 }
 
 /// The smoothing factor for the SNR-adaptive learning rate moving averages.
@@ -194,8 +194,7 @@ impl CmaEs {
         let d_sigma = 2.0f64.mul_add((0.0_f64).max((mu_eff - 1.0) / (nf + 1.0)).sqrt(), 1.0) + c_sigma;
         let c_c = (4.0 + mu_eff / nf) / (nf + 4.0 + 2.0 * mu_eff / nf);
         let c_1 = 2.0 / ((nf + 1.3).mul_add(nf + 1.3, mu_eff));
-        let c_mu =
-            (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((nf + 2.0).mul_add(nf + 2.0, mu_eff))).min(1.0 - c_1);
+        let c_mu = (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((nf + 2.0).mul_add(nf + 2.0, mu_eff))).min(1.0 - c_1);
 
         // Scale negative weights
         let neg_sum_raw: f64 = weights[mu..].iter().map(|w| w.abs()).sum();
@@ -315,13 +314,7 @@ impl CmaEs {
     /// The elite subset (μ) tugs the mean toward victory. The entire population (λ) expands
     /// or shrinks our uncertainty (covariance) along their respective vectors.
     /// Crucially, negative update vectors are gated by Signal-to-Noise Ratio (SNR).
-    pub fn update(
-        &mut self,
-        population_normalized: &[Vec<f64>],
-        penalized_elo: &[f64],
-        raw_elo: &[f64],
-        avg_std_err: f64,
-    ) {
+    pub fn update(&mut self, population_normalized: &[Vec<f64>], penalized_elo: &[f64], raw_elo: &[f64], avg_std_err: f64) {
         let mut indices: Vec<usize> = (0..self.lambda).collect();
         indices.sort_unstable_by(|&a, &b| penalized_elo[b].total_cmp(&penalized_elo[a]));
 
@@ -335,8 +328,7 @@ impl CmaEs {
         // the fraction of variance that represents actual strength differences
         // rather than match noise.
         let mean_raw = raw_elo.iter().sum::<f64>() / self.lambda as f64;
-        let var_observed =
-            raw_elo.iter().map(|e| (e - mean_raw).powi(2)).sum::<f64>() / (self.lambda.max(2) - 1) as f64;
+        let var_observed = raw_elo.iter().map(|e| (e - mean_raw).powi(2)).sum::<f64>() / (self.lambda.max(2) - 1) as f64;
 
         let var_noise = avg_std_err.powi(2);
 
@@ -345,11 +337,7 @@ impl CmaEs {
         let var_signal = (var_observed - var_noise).max(0.0);
 
         // Reliability R = Var(True) / Var(Observed)
-        let reliability = if var_observed > 1e-6 {
-            (var_signal / var_observed).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let reliability = if var_observed > 1e-6 { (var_signal / var_observed).clamp(0.0, 1.0) } else { 0.0 };
 
         // Cubic smoothstep the reliability to gracefully fade out noise-driven negative updates
         let neg_scale = reliability * reliability * (3.0 - 2.0 * reliability);
@@ -371,17 +359,11 @@ impl CmaEs {
             *m = (1.0 - self.eta).mul_add(om, *m);
         }
 
-        let y: Vec<f64> = self
-            .mean
-            .iter()
-            .zip(&old_mean)
-            .map(|(&m, &om)| (m - om) / self.sigma)
-            .collect();
+        let y: Vec<f64> = self.mean.iter().zip(&old_mean).map(|(&m, &om)| (m - om) / self.sigma).collect();
         let z_mean: Vec<f64> = y.iter().zip(&std_devs).map(|(&yi, &si)| yi / si).collect();
 
         for (ps, &zi) in self.p_sigma.iter_mut().zip(&z_mean) {
-            *ps = (1.0 - self.c_sigma)
-                .mul_add(*ps, (self.c_sigma * (2.0 - self.c_sigma) * self.mu_eff).sqrt() * zi);
+            *ps = (1.0 - self.c_sigma).mul_add(*ps, (self.c_sigma * (2.0 - self.c_sigma) * self.mu_eff).sqrt() * zi);
         }
 
         let ps_norm: f64 = self.p_sigma.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -408,8 +390,7 @@ impl CmaEs {
         let delta_h_sigma = if h_sigma_cond { 1.0 } else { 0.0 };
 
         for (pc, &yi) in self.p_c.iter_mut().zip(&y) {
-            *pc = (1.0 - self.c_c)
-                .mul_add(*pc, delta_h_sigma * (self.c_c * (2.0 - self.c_c) * self.mu_eff).sqrt() * yi);
+            *pc = (1.0 - self.c_c).mul_add(*pc, delta_h_sigma * (self.c_c * (2.0 - self.c_c) * self.mu_eff).sqrt() * yi);
         }
 
         // Precalculate dynamic weights (SNR scaling + Mahalanobis normalization)
@@ -455,8 +436,8 @@ impl CmaEs {
         // Formula: (1 - c₁ - c_μ·Σw)·C + c₁·(p_c·p_cᵀ) + c_μ·Σ(w·y·yᵀ)
         // With h_σ correction: (1 - c₁ - c_μ·Σw + (1-h_σ)·c₁·c_c·(2-c_c))·C
         // Ref: Hansen (2016) Eq. 38.
-        let old_cov_weight = c_mu_eff.mul_add(-sum_w, 1.0 - c_1_eff)
-            + (1.0 - delta_h_sigma) * c_1_eff * self.c_c * (2.0 - self.c_c);
+        let old_cov_weight =
+            c_mu_eff.mul_add(-sum_w, 1.0 - c_1_eff) + (1.0 - delta_h_sigma) * c_1_eff * self.c_c * (2.0 - self.c_c);
 
         for i in 0..self.n {
             let rank_one = c_1_eff * self.p_c[i] * self.p_c[i];
@@ -613,10 +594,7 @@ impl CmaEs {
     /// giving the restart a "sensitivity hint" from the previous search.
     pub fn restart_from(&mut self, start: Vec<f64>, new_lambda: usize, new_sigma: f64) {
         let saved_variances = self.variances.clone();
-        let max_var = saved_variances
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let max_var = saved_variances.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
         let n = self.n;
         let softness = self.active_softness;

@@ -2,10 +2,7 @@
 
 use crate::{
     core::{
-        board::{
-            BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, StateInfo, WHITE_OO,
-            WHITE_OOO,
-        },
+        board::{BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, StateInfo, WHITE_OO, WHITE_OOO},
         defs::{Color, PieceType, Square},
         moves::Move,
         psqt, zobrist,
@@ -25,18 +22,9 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
     let to = mv.to();
     let pt = pos.expect_piece_at(from);
 
-    debug_assert!(
-        pt != PieceType::None,
-        "make_move: no piece on {from} (move: {})\n{}",
-        mv.to_uci(pos.is_frc),
-        pos.as_fen()
-    );
+    debug_assert!(pt != PieceType::None, "make_move: no piece on {from} (move: {})\n{}", mv.to_uci(pos.is_frc), pos.as_fen());
 
-    let captured = if mv.is_castling() {
-        PieceType::None
-    } else {
-        pos.piece_at(to)
-    };
+    let captured = if mv.is_castling() { PieceType::None } else { pos.piece_at(to) };
 
     let state = StateInfo {
         castling_rights: pos.castling_rights,
@@ -46,19 +34,12 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
         en_passant: pos.en_passant,
     };
 
-    let placed = if mv.is_promotion() {
-        mv.promo().unwrap_or(PieceType::Queen)
-    } else {
-        pt
-    };
+    let placed = if mv.is_promotion() { mv.promo().unwrap_or(PieceType::Queen) } else { pt };
 
     update_accumulator(pos, acc, mv, pt, captured, placed);
 
-    pos.halfmove_clock = if pt == PieceType::Pawn || captured != PieceType::None {
-        0
-    } else {
-        pos.halfmove_clock.saturating_add(1)
-    };
+    pos.halfmove_clock =
+        if pt == PieceType::Pawn || captured != PieceType::None { 0 } else { pos.halfmove_clock.saturating_add(1) };
 
     if captured != PieceType::None {
         pos.hash ^= zobrist::key_piece(captured, opp, to);
@@ -119,11 +100,7 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     }
 
     let placed = pos.expect_piece_at(to);
-    let original = if mv.is_promotion() {
-        PieceType::Pawn
-    } else {
-        placed
-    };
+    let original = if mv.is_promotion() { PieceType::Pawn } else { placed };
 
     pos.remove_piece(to, placed, stm);
     pos.add_piece(from, original, stm);
@@ -143,14 +120,7 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
 /// Castling is handled as a clean four-delta update rather than
 /// the add-then-undo pattern, since we know the exact geometry up front.
 #[inline]
-pub fn update_accumulator(
-    pos: &Position,
-    acc: &mut Vi16x8,
-    mv: Move,
-    pt: PieceType,
-    captured: PieceType,
-    placed: PieceType,
-) {
+pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
     let stm = pos.stm;
     let from = mv.from();
     let to = mv.to();
@@ -275,11 +245,7 @@ fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: 
     let mut rights = old;
 
     if pt == PieceType::King {
-        rights &= if stm == Color::White {
-            !(WHITE_OO | WHITE_OOO)
-        } else {
-            !(BLACK_OO | BLACK_OOO)
-        };
+        rights &= if stm == Color::White { !(WHITE_OO | WHITE_OOO) } else { !(BLACK_OO | BLACK_OOO) };
     }
 
     if from == pos.castling_rooks[ROOK_W_KS] || to == pos.castling_rooks[ROOK_W_KS] {

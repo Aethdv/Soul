@@ -38,10 +38,10 @@ fn hash_discrete_params(candidate_norm: &[f64], opponent_norm: &[f64], openings:
 
 #[derive(Clone)]
 struct CachedEntry {
-    penta:   Pentanomial,
+    penta: Pentanomial,
     c_nodes: u64,
     b_nodes: u64,
-    pairs:   usize,
+    pairs: usize,
 }
 
 /// Thread-safe memoization layer for self-play matches.
@@ -56,35 +56,28 @@ struct CachedEntry {
 /// within the same generation. It does not provide historical inter-epoch memoization.
 pub struct MatchCache {
     inner: Mutex<CacheInner>,
-    tc:    String,
+    tc: String,
 }
 
 struct CacheInner {
     entries: HashMap<u64, CachedEntry>,
-    hits:    usize,
-    misses:  usize,
+    hits: usize,
+    misses: usize,
 }
 
 pub struct MatchRequest<'a> {
-    pub params:              SearchParams,
-    pub normalized:          &'a [f64],
-    pub opponent_params:     SearchParams,
+    pub params: SearchParams,
+    pub normalized: &'a [f64],
+    pub opponent_params: SearchParams,
     pub opponent_normalized: &'a [f64],
-    pub openings:            &'a [String],
-    pub min_pairs:           usize,
+    pub openings: &'a [String],
+    pub min_pairs: usize,
 }
 
 impl MatchCache {
     #[must_use]
     pub fn new(tc: &str) -> Self {
-        Self {
-            inner: Mutex::new(CacheInner {
-                entries: HashMap::new(),
-                hits:    0,
-                misses:  0,
-            }),
-            tc:    tc.to_string(),
-        }
+        Self { inner: Mutex::new(CacheInner { entries: HashMap::new(), hits: 0, misses: 0 }), tc: tc.to_string() }
     }
 
     /// Peeks into the cache for a given key.
@@ -99,12 +92,7 @@ impl MatchCache {
     /// Insert or update cache entry.
     fn insert(&self, key: u64, penta: Pentanomial, c_nodes: u64, b_nodes: u64, pairs: usize) {
         let mut inner = self.inner.lock();
-        inner.entries.insert(key, CachedEntry {
-            penta,
-            c_nodes,
-            b_nodes,
-            pairs,
-        });
+        inner.entries.insert(key, CachedEntry { penta, c_nodes, b_nodes, pairs });
     }
 
     /// Fetches a match result from the cache or executes it.
@@ -133,8 +121,7 @@ impl MatchCache {
 
         self.inner.lock().misses += 1;
 
-        let (penta, c_nodes, b_nodes) =
-            selfplay::run_matches(req.params, req.opponent_params, subset, &self.tc, on_pair);
+        let (penta, c_nodes, b_nodes) = selfplay::run_matches(req.params, req.opponent_params, subset, &self.tc, on_pair);
 
         // Update cache (quick lock)
         self.insert(key, penta, c_nodes, b_nodes, req.min_pairs);

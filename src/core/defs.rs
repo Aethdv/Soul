@@ -152,13 +152,13 @@ impl const Not for Color {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, std::marker::ConstParamTy)]
 #[repr(u8)]
 pub enum PieceType {
-    Pawn   = 0,
+    Pawn = 0,
     Knight = 1,
     Bishop = 2,
-    Rook   = 3,
-    Queen  = 4,
-    King   = 5,
-    None   = 6,
+    Rook = 3,
+    Queen = 4,
+    King = 5,
+    None = 6,
 }
 
 const _: () = assert!(std::mem::size_of::<PieceType>() == 1);
@@ -173,14 +173,7 @@ const _: () = {
 
 impl PieceType {
     /// Every real piece type, excluding `None`.
-    pub const ALL: [Self; 6] = [
-        Self::Pawn,
-        Self::Knight,
-        Self::Bishop,
-        Self::Rook,
-        Self::Queen,
-        Self::King,
-    ];
+    pub const ALL: [Self; 6] = [Self::Pawn, Self::Knight, Self::Bishop, Self::Rook, Self::Queen, Self::King];
 
     #[inline(always)]
     pub const fn is_none(self) -> bool {
@@ -215,9 +208,7 @@ impl PieceType {
     /// FEN / SAN character — uppercase for White, lowercase for Black.
     #[inline(always)]
     pub const fn to_char(self, color: Color) -> char {
-        const CHARS: [[char; 7]; 2] = [['P', 'N', 'B', 'R', 'Q', 'K', '?'], [
-            'p', 'n', 'b', 'r', 'q', 'k', '?',
-        ]];
+        const CHARS: [[char; 7]; 2] = [['P', 'N', 'B', 'R', 'Q', 'K', '?'], ['p', 'n', 'b', 'r', 'q', 'k', '?']];
         CHARS[color as usize][self as usize]
     }
 
@@ -275,13 +266,13 @@ impl const From<PieceType> for usize {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Direction {
-    North     = 0,
+    North = 0,
     NorthEast = 1,
-    East      = 2,
+    East = 2,
     SouthEast = 3,
-    South     = 4,
+    South = 4,
     SouthWest = 5,
-    West      = 6,
+    West = 6,
     NorthWest = 7,
 }
 
@@ -370,10 +361,7 @@ pub const TOTAL_PHASE: i32 = 24;
 pub const LANE_MG: usize = 0; // Middlegame terms
 pub const LANE_EG: usize = 1; // Endgame terms
 
-const _: () = assert!(
-    LANE_MG == 0 && LANE_EG == 1,
-    "Tapered SIMD madd requires MG and EG at lanes 0 and 1 respectively."
-);
+const _: () = assert!(LANE_MG == 0 && LANE_EG == 1, "Tapered SIMD madd requires MG and EG at lanes 0 and 1 respectively.");
 
 pub const LANE_PHASE: usize = 2; // Tapered-eval phase counter
 

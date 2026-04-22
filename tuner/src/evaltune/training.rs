@@ -9,7 +9,7 @@ use crate::evaltune::{loader, tape, tape::eval_f64};
 /// The estimation happens in log-space to ensure the threshold remains positive and
 /// tracks the order-of-magnitude changes in norms as the learning rate decays.
 pub struct GradientStats {
-    p95:   f64,
+    p95: f64,
     alpha: f64,
     count: usize,
 }
@@ -17,11 +17,7 @@ pub struct GradientStats {
 impl GradientStats {
     #[must_use]
     pub fn new(window: usize) -> Self {
-        Self {
-            p95:   1.0,
-            alpha: 2.0 / (window as f64 + 1.0),
-            count: 0,
-        }
+        Self { p95: 1.0, alpha: 2.0 / (window as f64 + 1.0), count: 0 }
     }
 
     pub fn update(&mut self, norm: f64) {
@@ -147,11 +143,7 @@ impl TunableData for loader::Entry {
         // EPD results are from White's perspective.
         // The eval produces a score relative to the side-to-move,
         // so we flip for Black.
-        if self.board.stm == soul::core::defs::Color::Black {
-            1.0 - self.result
-        } else {
-            self.result
-        }
+        if self.board.stm == soul::core::defs::Color::Black { 1.0 - self.result } else { self.result }
     }
 }
 

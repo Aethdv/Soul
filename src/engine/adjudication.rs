@@ -10,8 +10,7 @@
 //! The sign-flip detection logic in [`check_adjudication`] accounts for this.
 
 use crate::core::defs::{
-    ADJ_DRAW_PLIES, ADJ_DRAW_SCORE, ADJ_DRAW_START_PLY, ADJ_RESIGN_SCORE, ADJ_WIN_PLIES, ADJ_WIN_SCORE,
-    Color, GameOutcome,
+    ADJ_DRAW_PLIES, ADJ_DRAW_SCORE, ADJ_DRAW_START_PLY, ADJ_RESIGN_SCORE, ADJ_WIN_PLIES, ADJ_WIN_SCORE, Color, GameOutcome,
 };
 
 /// Universal adjudication engine.

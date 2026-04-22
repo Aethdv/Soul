@@ -97,13 +97,7 @@ impl Pentanomial {
             let pd = nu / z;
 
             // Pair probabilities (convolution)
-            let p = [
-                pl * pl,
-                2.0 * pl * pd,
-                2.0f64.mul_add(pw * pl, pd * pd),
-                2.0 * pw * pd,
-                pw * pw,
-            ];
+            let p = [pl * pl, 2.0 * pl * pd, 2.0f64.mul_add(pw * pl, pd * pd), 2.0 * pw * pd, pw * pw];
 
             // Davidson model derivatives for Newton-Raphson
             let k = LN_10 / 800.0;
@@ -169,13 +163,7 @@ impl Pentanomial {
 
         // Pair probabilities (convolution)
         // P(pair) = [P_ll, P_ld, P_dd+wl, P_wd, P_ww]
-        let p = [
-            pl * pl,
-            2.0 * pl * pd,
-            2.0f64.mul_add(pw * pl, pd * pd),
-            2.0 * pw * pd,
-            pw * pw,
-        ];
+        let p = [pl * pl, 2.0 * pl * pd, 2.0f64.mul_add(pw * pl, pd * pd), 2.0 * pw * pd, pw * pw];
 
         // Davidson model derivatives for pairs
         let k = LN_10 / 800.0;
@@ -338,30 +326,21 @@ mod tests {
 
     #[test]
     fn test_perfect_score() {
-        let p = Pentanomial {
-            ww: 10,
-            ..Default::default()
-        };
+        let p = Pentanomial { ww: 10, ..Default::default() };
         assert!((p.score() - 1.0).abs() < 0.001);
         assert!(p.mle_elo() > 500.0);
     }
 
     #[test]
     fn test_zero_score() {
-        let p = Pentanomial {
-            ll: 10,
-            ..Default::default()
-        };
+        let p = Pentanomial { ll: 10, ..Default::default() };
         assert!(p.score() < 0.001);
         assert!(p.mle_elo() < -500.0);
     }
 
     #[test]
     fn test_even_score() {
-        let p = Pentanomial {
-            dd: 10,
-            ..Default::default()
-        };
+        let p = Pentanomial { dd: 10, ..Default::default() };
         assert!((p.score() - 0.5).abs() < 0.001);
         assert!(p.mle_elo().abs() < 10.0);
     }
@@ -369,14 +348,8 @@ mod tests {
     #[test]
     fn test_wl_distinct_from_dd() {
         // WL and DD are tracked separately even though they have same point value
-        let wl = Pentanomial {
-            wl: 10,
-            ..Default::default()
-        };
-        let dd = Pentanomial {
-            dd: 10,
-            ..Default::default()
-        };
+        let wl = Pentanomial { wl: 10, ..Default::default() };
+        let dd = Pentanomial { dd: 10, ..Default::default() };
 
         // Same MLE (same point total)
         assert!((wl.mle_elo() - dd.mle_elo()).abs() < 5.0);

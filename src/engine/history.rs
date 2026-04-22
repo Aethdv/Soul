@@ -16,10 +16,7 @@ pub struct ContContext {
 
 impl Default for ContContext {
     fn default() -> Self {
-        Self {
-            pt: PieceType::None,
-            to: Square(0),
-        }
+        Self { pt: PieceType::None, to: Square(0) }
     }
 }
 
@@ -36,9 +33,7 @@ impl Default for ContinuationHistory {
 
 impl ContinuationHistory {
     pub fn new() -> Self {
-        Self {
-            data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice(),
-        }
+        Self { data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice() }
     }
 
     pub fn clear(&mut self) {
@@ -51,14 +46,7 @@ impl ContinuationHistory {
     }
 
     #[inline(always)]
-    pub fn get_mut(
-        &mut self,
-        stm: Color,
-        prev_pt: PieceType,
-        prev_to: Square,
-        pt: PieceType,
-        to: Square,
-    ) -> &mut i16 {
+    pub fn get_mut(&mut self, stm: Color, prev_pt: PieceType, prev_to: Square, pt: PieceType, to: Square) -> &mut i16 {
         let idx = Self::idx(stm, prev_pt, prev_to, pt, to);
         &mut self.data[idx]
     }
@@ -97,9 +85,7 @@ impl Default for CaptureHistory {
 
 impl CaptureHistory {
     pub fn new() -> Self {
-        Self {
-            data: vec![0; 2 * 6 * 64 * 6].into_boxed_slice(),
-        }
+        Self { data: vec![0; 2 * 6 * 64 * 6].into_boxed_slice() }
     }
 
     pub fn clear(&mut self) {
@@ -161,9 +147,7 @@ const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 
 impl CorrectionHistory {
     pub fn new() -> Self {
-        Self {
-            data: vec![0; 2 * CORRECTION_SIZE].into_boxed_slice(),
-        }
+        Self { data: vec![0; 2 * CORRECTION_SIZE].into_boxed_slice() }
     }
 
     pub fn clear(&mut self) {
@@ -190,8 +174,7 @@ impl CorrectionHistory {
         let entry = &mut self.data[Self::idx(stm, pawn_hash)];
         let weight = (1 + depth).min(16);
         let scaled = raw_diff * CORRECTION_SCALE;
-        *entry =
-            ((*entry * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT);
+        *entry = ((*entry * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT);
     }
 }
 
@@ -205,29 +188,29 @@ impl Default for CorrectionHistory {
 #[derive(Clone)]
 pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
-    table:         [[[i16; 64]; 6]; 2],
+    table: [[[i16; 64]; 6]; 2],
     /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
-    butterfly:     [[i16; 4096]; 2], // ~20 Elo
+    butterfly: [[i16; 4096]; 2], // ~20 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
-    cont:          [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
+    cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
-    correction:    CorrectionHistory, // ~53 Elo
+    correction: CorrectionHistory, // ~53 Elo
     /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
     np_correction: CorrectionHistory, // ~18 Elo
     /// `[side][attacker][to][victim]`
-    capt:          CaptureHistory, // ~8 Elo
+    capt: CaptureHistory, // ~8 Elo
 }
 
 impl History {
     /// Create a zeroed history table.
     pub fn new() -> Self {
         Self {
-            table:         [[[0; 64]; 6]; 2],
-            butterfly:     [[0; 4096]; 2],
-            cont:          [ContinuationHistory::new(), ContinuationHistory::new()],
-            correction:    CorrectionHistory::new(),
+            table: [[[0; 64]; 6]; 2],
+            butterfly: [[0; 4096]; 2],
+            cont: [ContinuationHistory::new(), ContinuationHistory::new()],
+            correction: CorrectionHistory::new(),
             np_correction: CorrectionHistory::new(),
-            capt:          CaptureHistory::new(),
+            capt: CaptureHistory::new(),
         }
     }
 
@@ -257,8 +240,8 @@ impl History {
         cont2: ContContext,
         cont4: ContContext,
     ) -> i32 {
-        let mut score = i32::from(self.table[stm][pt][to])
-            + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
+        let mut score =
+            i32::from(self.table[stm][pt][to]) + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
 
         if cont1.pt != PieceType::None {
             score += i32::from(self.cont[0].get(stm, cont1.pt, cont1.to, pt, to));
@@ -346,14 +329,7 @@ impl History {
     /// Update the capture history entry for a capture move using soft gravity.
     /// Same indexing semantics as `score_capture`.
     #[inline(always)]
-    pub fn update_capture(
-        &mut self,
-        stm: Color,
-        attacker: PieceType,
-        to: Square,
-        victim: PieceType,
-        bonus: i32,
-    ) {
+    pub fn update_capture(&mut self, stm: Color, attacker: PieceType, to: Square, victim: PieceType, bonus: i32) {
         Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus);
     }
 }
@@ -363,14 +339,12 @@ impl Default for History {
     /// Only use as a placeholder for `std::mem::take` — never score moves against this.
     fn default() -> Self {
         Self {
-            table:         [[[0; 64]; 6]; 2],
-            butterfly:     [[0; 4096]; 2],
-            cont:          [ContinuationHistory { data: Box::new([]) }, ContinuationHistory {
-                data: Box::new([]),
-            }],
-            correction:    CorrectionHistory { data: Box::new([]) },
+            table: [[[0; 64]; 6]; 2],
+            butterfly: [[0; 4096]; 2],
+            cont: [ContinuationHistory { data: Box::new([]) }, ContinuationHistory { data: Box::new([]) }],
+            correction: CorrectionHistory { data: Box::new([]) },
             np_correction: CorrectionHistory { data: Box::new([]) },
-            capt:          CaptureHistory { data: Box::new([]) },
+            capt: CaptureHistory { data: Box::new([]) },
         }
     }
 }

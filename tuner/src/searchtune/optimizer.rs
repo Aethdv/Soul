@@ -55,11 +55,7 @@ fn approx_erf(x: f64) -> f64 {
     let x = x.abs();
 
     let t = P.mul_add(x, 1.0).recip();
-    let poly = A5
-        .mul_add(t, A4)
-        .mul_add(t, A3)
-        .mul_add(t, A2)
-        .mul_add(t, A1);
+    let poly = A5.mul_add(t, A4).mul_add(t, A3).mul_add(t, A2).mul_add(t, A1);
     let val = (poly * t).mul_add(-(-x * x).exp(), 1.0);
 
     sign * val

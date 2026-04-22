@@ -18,9 +18,7 @@ impl JsonLogger {
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
 
-        Ok(Self {
-            writer: Mutex::new(BufWriter::new(file)),
-        })
+        Ok(Self { writer: Mutex::new(BufWriter::new(file)) })
     }
 
     /// # Panics
@@ -29,21 +27,14 @@ impl JsonLogger {
         #[derive(Serialize)]
         struct LogEntry<'a, T> {
             timestamp: u64,
-            event:     &'a str,
+            event: &'a str,
             #[serde(flatten)]
-            data:      &'a T,
+            data: &'a T,
         }
 
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
-        let entry = LogEntry {
-            timestamp,
-            event,
-            data,
-        };
+        let entry = LogEntry { timestamp, event, data };
 
         if let Ok(json) = serde_json::to_string(&entry)
             && let Ok(mut writer) = self.writer.lock()

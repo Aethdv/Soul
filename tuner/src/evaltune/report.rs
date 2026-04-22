@@ -30,10 +30,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
     let best = best_snap.error;
     print_params(all_params, initial_values, &best_values);
 
-    if let Ok(log_file) = std::fs::OpenOptions::new()
-        .append(true)
-        .open("evaltune_log.txt")
-    {
+    if let Ok(log_file) = std::fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
         let mut w = BufWriter::new(log_file);
         writeln!(w, "\n=== Top {count} Snapshots ===").ok();
         for (i, snap) in snapshots.iter().enumerate() {
@@ -86,15 +83,10 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
                 let eg_val = values[eg_idx].round() as i32;
                 let fixed = params[mg_idx].is_fixed;
 
-                let s = if fixed {
-                    format!("CS({mg_val:>3}, {eg_val:>4}),")
-                } else {
-                    format!("S({mg_val:>4}, {eg_val:>4}),")
-                };
+                let s = if fixed { format!("CS({mg_val:>3}, {eg_val:>4}),") } else { format!("S({mg_val:>4}, {eg_val:>4}),") };
 
-                let changed = initial.is_some_and(|ini| {
-                    mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32
-                });
+                let changed =
+                    initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
                 write!(w, "{}", highlight(&format!("{s: <16}"), changed, initial)).ok();
             }
             writeln!(w).ok();
@@ -121,9 +113,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             let tag = if fixed { "CS" } else { "S" };
             let s = format!("{tag}({mg_val:>4}, {eg_val:>4}), // {name}");
 
-            let changed = initial.is_some_and(|ini| {
-                mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32
-            });
+            let changed = initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
             writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
         }
         writeln!(w, "    ],").ok();
@@ -222,9 +212,5 @@ pub fn write_weight_array<W: Write>(
 
 /// Wraps text in ANSI green if `changed` is true and `initial` is `Some`.
 fn highlight(s: &str, changed: bool, initial: Option<&[f64]>) -> String {
-    if initial.is_some() && changed {
-        format!("\x1b[32m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
+    if initial.is_some() && changed { format!("\x1b[32m{s}\x1b[0m") } else { s.to_string() }
 }

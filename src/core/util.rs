@@ -14,8 +14,8 @@ use std::{
 /// trading precision for reduced atomic operation overhead under high contention.
 #[derive(Debug)]
 pub struct BatchedAtomicCounter<'a> {
-    pending:     u64,
-    global:      &'a AtomicU64,
+    pending: u64,
+    global: &'a AtomicU64,
     contributed: u64,
 }
 
@@ -24,11 +24,7 @@ impl<'a> BatchedAtomicCounter<'a> {
 
     #[inline]
     pub const fn new(global: &'a AtomicU64) -> Self {
-        Self {
-            pending: 0,
-            global,
-            contributed: 0,
-        }
+        Self { pending: 0, global, contributed: 0 }
     }
 
     /// Increment the counter by 1.

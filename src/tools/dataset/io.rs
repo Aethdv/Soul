@@ -71,10 +71,7 @@ pub fn save_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
 /// Appends an independent compressed frame to a dataset file,
 /// creating it if necessary.
 pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     write_frame(file, entries)
 }
 
@@ -154,9 +151,7 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 
     // Strip trailing EPD opcodes (everything past the first ';').
     let fen = fen_raw.split(';').next().unwrap_or(&fen_raw).trim();
-    Position::try_from_fen(fen)
-        .ok()
-        .map(|board| (board, result))
+    Position::try_from_fen(fen).ok().map(|board| (board, result))
 }
 
 /// Converts an EPD line directly into a [`SoulEntry`].
@@ -165,10 +160,6 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 /// the training pipeline expects.
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
-    let stm_wdl = if board.stm == Color::White {
-        wdl
-    } else {
-        1.0 - wdl
-    };
+    let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
     Some(SoulEntry::from_board(&board, stm_wdl, None, None))
 }

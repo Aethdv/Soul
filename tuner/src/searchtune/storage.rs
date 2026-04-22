@@ -15,15 +15,15 @@ pub const CHECKPOINT_VERSION: u32 = 1;
 /// terminating the process are inevitable.
 #[derive(Serialize, Deserialize)]
 pub struct Checkpoint {
-    pub version:     u32,
-    pub epoch:       usize,
-    pub best_elo:    f64,
+    pub version: u32,
+    pub epoch: usize,
+    pub best_elo: f64,
     pub best_params: Vec<f64>,
-    pub mean:        Vec<f64>,
-    pub sigma:       f64,
-    pub variances:   Vec<f64>,
-    pub p_sigma:     Vec<f64>,
-    pub p_c:         Vec<f64>,
+    pub mean: Vec<f64>,
+    pub sigma: f64,
+    pub variances: Vec<f64>,
+    pub p_sigma: Vec<f64>,
+    pub p_c: Vec<f64>,
     /// Denormalized integer values.
     /// Intentionally redundant with `best_params` — derivable via `param.denormalize()`,
     /// but included for `jq`-friendliness without needing to rerun the engine.
@@ -52,10 +52,7 @@ impl Checkpoint {
         if cp.version != CHECKPOINT_VERSION {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "Checkpoint version mismatch! (Expected: {}, Found: {})",
-                    CHECKPOINT_VERSION, cp.version
-                ),
+                format!("Checkpoint version mismatch! (Expected: {}, Found: {})", CHECKPOINT_VERSION, cp.version),
             )
             .into());
         }

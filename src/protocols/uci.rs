@@ -112,25 +112,25 @@ enum SearchCommand {
 }
 
 pub struct UciState {
-    board:              Position,
-    accumulator:        crate::weave::Vi16x8,
-    history:            Vec<u64>,
+    board: Position,
+    accumulator: crate::weave::Vi16x8,
+    history: Vec<u64>,
     persistent_history: history::History,
-    tt:                 Arc<tt::TranspositionTable>,
-    stop:               Arc<AtomicBool>,
-    search_tx:          Sender<SearchCommand>,
-    history_tx:         mpsc::Sender<history::History>,
-    history_rx:         mpsc::Receiver<history::History>,
-    is_searching:       Arc<AtomicBool>,
-    hash_size:          usize,
-    overhead:           u64,
-    show_wdl:           bool,
-    go_pretty:          bool,
-    pretty_print:       bool,
-    show_currmove:      bool,
-    stdout_isatty:      Option<bool>,
-    stderr_isatty:      Option<bool>,
-    is_frc:             bool,
+    tt: Arc<tt::TranspositionTable>,
+    stop: Arc<AtomicBool>,
+    search_tx: Sender<SearchCommand>,
+    history_tx: mpsc::Sender<history::History>,
+    history_rx: mpsc::Receiver<history::History>,
+    is_searching: Arc<AtomicBool>,
+    hash_size: usize,
+    overhead: u64,
+    show_wdl: bool,
+    go_pretty: bool,
+    pretty_print: bool,
+    show_currmove: bool,
+    stdout_isatty: Option<bool>,
+    stderr_isatty: Option<bool>,
+    is_frc: bool,
 }
 
 impl UciState {
@@ -149,8 +149,7 @@ impl UciState {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, history_table, tt, result_tx) => {
-                        let mut ctx =
-                            crate::engine::search::Searcher::new(&cfg, &board, &history, history_table, tt);
+                        let mut ctx = crate::engine::search::Searcher::new(&cfg, &board, &history, history_table, tt);
                         let final_history = ctx.iterative_deepening();
                         is_searching_worker.store(false, Ordering::Release);
                         let _ = result_tx.send(final_history);
@@ -383,9 +382,7 @@ where I: Iterator<Item = &'a str> {
 
     for move_str in moves.by_ref() {
         let legal = gen_legal_moves(&state.board);
-        let mv = legal
-            .iter()
-            .find(|mv| mv.to_uci(state.board.is_frc) == move_str);
+        let mv = legal.iter().find(|mv| mv.to_uci(state.board.is_frc) == move_str);
 
         if let Some(&valid_move) = mv {
             state.board.make_move(valid_move, &mut state.accumulator);
@@ -415,13 +412,7 @@ where I: Iterator<Item = &'a str> {
     let start_time = Instant::now();
 
     use crate::engine::search::{SearchConfig, SearchDisplay};
-    let display = SearchDisplay {
-        show_wdl,
-        go_pretty,
-        pretty_print,
-        show_currmove,
-        use_ansi: state.stdout_isatty.unwrap_or(true),
-    };
+    let display = SearchDisplay { show_wdl, go_pretty, pretty_print, show_currmove, use_ansi: state.stdout_isatty.unwrap_or(true) };
 
     let cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
 
@@ -574,11 +565,7 @@ fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
     let from_sq = square_from_str(&uci[0..2])?;
     let to_sq = square_from_str(&uci[2..4])?;
 
-    let promo = if uci.len() == 5 {
-        Some(piece_from_char(uci.chars().nth(4).unwrap())?)
-    } else {
-        None
-    };
+    let promo = if uci.len() == 5 { Some(piece_from_char(uci.chars().nth(4).unwrap())?) } else { None };
 
     // Find matching legal move
     let legal = gen_legal_moves(board);

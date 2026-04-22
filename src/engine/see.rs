@@ -258,10 +258,7 @@ mod tests {
     fn assert_see(fen: &str, uci: &str, expected: i32) {
         let pos = Position::from_fen(fen);
         let mv = legal_move(&pos, uci);
-        assert!(
-            see_ge(&pos, mv, expected),
-            "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",
-        );
+        assert!(see_ge(&pos, mv, expected), "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",);
         assert!(
             !see_ge(&pos, mv, expected + 1),
             "SEE({uci}) ≥ {} should fail (claimed value: {expected})\n  fen: {fen}",

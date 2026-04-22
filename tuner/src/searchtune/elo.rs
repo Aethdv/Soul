@@ -13,9 +13,9 @@
 /// at the cost of a slight inertial drag toward the past.
 pub struct EloEntry {
     pub candidate: Vec<f64>,
-    pub opponent:  Vec<f64>,
-    pub elo:       f64,
-    pub weight:    f64,
+    pub opponent: Vec<f64>,
+    pub elo: f64,
+    pub weight: f64,
 }
 
 pub const PRIOR_WEIGHT: f64 = 0.05;
@@ -27,12 +27,7 @@ pub struct EloCache {
 
 impl EloCache {
     pub fn add(&mut self, params: Vec<f64>, opponent: Vec<f64>, elo: f64, weight: f64) {
-        self.entries.push(EloEntry {
-            candidate: params,
-            opponent,
-            elo,
-            weight,
-        });
+        self.entries.push(EloEntry { candidate: params, opponent, elo, weight });
     }
 
     pub fn clear(&mut self) {
@@ -164,11 +159,7 @@ impl EloCache {
     /// Euclidean distance in normalized space
     #[inline(always)]
     fn distance(a: &[f64], b: &[f64]) -> f64 {
-        a.iter()
-            .zip(b)
-            .map(|(x, y)| (x - y).powi(2))
-            .sum::<f64>()
-            .sqrt()
+        a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f64>().sqrt()
     }
 }
 

@@ -143,8 +143,7 @@ pub fn eval_soul(entry: &SoulEntry, values: &[f64]) -> f64 {
 
     for i in 0..4 {
         let diff = f64::from(entry.mobility[i]) - f64::from(entry.mobility[i + 4]);
-        let mob_w =
-            interpolate_weight(values, open_off + i, closed_off + i, mg_w, eg_w, openness_f, closedness_f);
+        let mob_w = interpolate_weight(values, open_off + i, closed_off + i, mg_w, eg_w, openness_f, closedness_f);
         score += diff * mob_w;
     }
 
@@ -169,25 +168,25 @@ fn pieces_ptr(entry: &SoulEntry) -> *const PackedPiece {
 }
 
 struct SpatialFeatures {
-    us_pawns:     u64,
-    them_pawns:   u64,
-    ksq_us:       Square,
-    ksq_them:     Square,
-    mat_diffs:    [f64; 6],
+    us_pawns: u64,
+    them_pawns: u64,
+    ksq_us: Square,
+    ksq_them: Square,
+    mat_diffs: [f64; 6],
     phase_counts: [f64; 6],
-    piece_data:   [(usize, usize, f64); 32],
+    piece_data: [(usize, usize, f64); 32],
 }
 
 #[inline(always)]
 fn extract_features(entry: &SoulEntry) -> SpatialFeatures {
     let mut f = SpatialFeatures {
-        us_pawns:     0,
-        them_pawns:   0,
-        ksq_us:       Square(0),
-        ksq_them:     Square(0),
-        mat_diffs:    [0.0; 6],
+        us_pawns: 0,
+        them_pawns: 0,
+        ksq_us: Square(0),
+        ksq_them: Square(0),
+        mat_diffs: [0.0; 6],
         phase_counts: [0.0; 6],
-        piece_data:   [(0, 0, 0.0); 32],
+        piece_data: [(0, 0, 0.0); 32],
     };
 
     let ptr = pieces_ptr(entry);
@@ -246,12 +245,8 @@ fn interpolate_weight(
     openness: f64,
     closedness: f64,
 ) -> f64 {
-    let w_mg_val =
-        ((values[open_off] * openness * 1024.0 + values[closed_off] * closedness * 1024.0 + 512.0) / 1024.0)
-            .floor();
+    let w_mg_val = ((values[open_off] * openness * 1024.0 + values[closed_off] * closedness * 1024.0 + 512.0) / 1024.0).floor();
     let w_eg_val =
-        ((values[open_off + 4] * openness * 1024.0 + values[closed_off + 4] * closedness * 1024.0 + 512.0)
-            / 1024.0)
-            .floor();
+        ((values[open_off + 4] * openness * 1024.0 + values[closed_off + 4] * closedness * 1024.0 + 512.0) / 1024.0).floor();
     w_mg_val * mg_w + w_eg_val * eg_w
 }

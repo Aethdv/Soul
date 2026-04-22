@@ -313,12 +313,7 @@ impl std::ops::Add for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
-        F64Vec4([
-            self.0[0] + rhs.0[0],
-            self.0[1] + rhs.0[1],
-            self.0[2] + rhs.0[2],
-            self.0[3] + rhs.0[3],
-        ])
+        F64Vec4([self.0[0] + rhs.0[0], self.0[1] + rhs.0[1], self.0[2] + rhs.0[2], self.0[3] + rhs.0[3]])
     }
 }
 
@@ -326,12 +321,7 @@ impl std::ops::Sub for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
-        F64Vec4([
-            self.0[0] - rhs.0[0],
-            self.0[1] - rhs.0[1],
-            self.0[2] - rhs.0[2],
-            self.0[3] - rhs.0[3],
-        ])
+        F64Vec4([self.0[0] - rhs.0[0], self.0[1] - rhs.0[1], self.0[2] - rhs.0[2], self.0[3] - rhs.0[3]])
     }
 }
 
@@ -339,12 +329,7 @@ impl std::ops::Mul for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self::Output {
-        F64Vec4([
-            self.0[0] * rhs.0[0],
-            self.0[1] * rhs.0[1],
-            self.0[2] * rhs.0[2],
-            self.0[3] * rhs.0[3],
-        ])
+        F64Vec4([self.0[0] * rhs.0[0], self.0[1] * rhs.0[1], self.0[2] * rhs.0[2], self.0[3] * rhs.0[3]])
     }
 }
 
@@ -373,19 +358,12 @@ impl EnvVec4 for F64Vec4 {
         // signed arithmetic right shift (SRAI) on integers, which truncates
         // toward negative infinity, rather than truncation toward zero.
         let div = f64::from(1 << SHIFT);
-        F64Vec4([
-            (self.0[0] / div).floor(),
-            (self.0[1] / div).floor(),
-            (self.0[2] / div).floor(),
-            (self.0[3] / div).floor(),
-        ])
+        F64Vec4([(self.0[0] / div).floor(), (self.0[1] / div).floor(), (self.0[2] / div).floor(), (self.0[3] / div).floor()])
     }
 
     #[inline(always)]
     fn pack_i16(self, other: Self) -> F64Vec8 {
-        F64Vec8([
-            self.0[0], self.0[1], self.0[2], self.0[3], other.0[0], other.0[1], other.0[2], other.0[3],
-        ])
+        F64Vec8([self.0[0], self.0[1], self.0[2], self.0[3], other.0[0], other.0[1], other.0[2], other.0[3]])
     }
 
     #[inline(always)]

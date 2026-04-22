@@ -20,15 +20,11 @@ use std::mem::MaybeUninit;
 use crate::{
     core::{
         board::{
-            B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS,
-            CASTLE_B_QS_CHECK, CASTLE_W_KS, CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position,
-            W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
+            B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS, CASTLE_B_QS_CHECK,
+            CASTLE_W_KS, CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position, W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook},
         },
-        defs::{
-            Bitboard, Color, MAX_MOVES, MoveScore, NOT_A, NOT_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8,
-            Square,
-        },
+        defs::{Bitboard, Color, MAX_MOVES, MoveScore, NOT_A, NOT_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
         moves::Move,
     },
     debug_index,
@@ -67,20 +63,20 @@ enum Stage {
 }
 
 pub struct MovePicker {
-    stage:             Stage,
-    hash_move:         Option<Move>,
-    candidates:        [MaybeUninit<u32>; MAX_MOVES],
-    count:             usize,
-    mvvlva_v:          [i32; 8],
-    mvvlva_a:          [i32; 8],
-    mvvlva_ep:         i32,
+    stage: Stage,
+    hash_move: Option<Move>,
+    candidates: [MaybeUninit<u32>; MAX_MOVES],
+    count: usize,
+    mvvlva_v: [i32; 8],
+    mvvlva_a: [i32; 8],
+    mvvlva_ep: i32,
     capt_hist_divisor: i32,
-    killers:           [Move; 2],
-    cont1:             ContContext,
-    cont2:             ContContext,
-    cont4:             ContContext,
-    is_qsearch:        bool,
-    in_check:          bool,
+    killers: [Move; 2],
+    cont1: ContContext,
+    cont2: ContContext,
+    cont4: ContContext,
+    is_qsearch: bool,
+    in_check: bool,
 }
 
 // Ensure move bit-packing assumes correctly.
@@ -260,15 +256,9 @@ impl MovePicker {
         let pawns = board.role_bb[PieceType::Pawn] & us;
 
         let targets = if stm == Color::White {
-            [
-                (9i8, (pawns & NOT_H) << 9 & them),
-                (7i8, (pawns & NOT_A) << 7 & them),
-            ]
+            [(9i8, (pawns & NOT_H) << 9 & them), (7i8, (pawns & NOT_A) << 7 & them)]
         } else {
-            [
-                (-7i8, (pawns & NOT_H) >> 7 & them),
-                (-9i8, (pawns & NOT_A) >> 9 & them),
-            ]
+            [(-7i8, (pawns & NOT_H) >> 7 & them), (-9i8, (pawns & NOT_A) >> 9 & them)]
         };
 
         let prom_mask = if stm == Color::White { RANK_8 } else { RANK_1 };
@@ -347,11 +337,7 @@ impl MovePicker {
         let mvv = self.mvv_lva(board, mv, attacker);
         // En passant: victim is always pawn (the captured pawn sits on an
         // adjacent square, not on `mv.to()`).
-        let victim = if mv.is_en_passant() {
-            PieceType::Pawn
-        } else {
-            board.piece_at(mv.to())
-        };
+        let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
         self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
     }
@@ -490,12 +476,7 @@ impl MovePicker {
         let packed = (sort_score << 16) | (mv.inner() as u32);
 
         // SAFETY: count < MAX_MOVES is guarded above.
-        unsafe {
-            self.candidates
-                .as_mut_ptr()
-                .add(self.count)
-                .write(MaybeUninit::new(packed))
-        };
+        unsafe { self.candidates.as_mut_ptr().add(self.count).write(MaybeUninit::new(packed)) };
         self.count += 1;
     }
 
@@ -574,11 +555,8 @@ impl MovePicker {
         let ksq = king_bb.lsb();
         let opp = stm.opposite();
 
-        let (oo_mask, ooo_mask, ks_idx, qs_idx) = if stm == Color::White {
-            (WHITE_OO, WHITE_OOO, 0, 1)
-        } else {
-            (BLACK_OO, BLACK_OOO, 2, 3)
-        };
+        let (oo_mask, ooo_mask, ks_idx, qs_idx) =
+            if stm == Color::White { (WHITE_OO, WHITE_OOO, 0, 1) } else { (BLACK_OO, BLACK_OOO, 2, 3) };
 
         // Kingside
         if (board.castling_rights & oo_mask) != 0 {

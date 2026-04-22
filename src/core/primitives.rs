@@ -2,9 +2,7 @@
 //!
 //! Provides the fundamental representations for chess board geometry.
 
-use std::ops::{
-    BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr, Sub, SubAssign,
-};
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr, Sub, SubAssign};
 
 pub const FILE_A: Bitboard = Bitboard(0x0101_0101_0101_0101);
 pub const FILE_B: Bitboard = FILE_A << 1;
@@ -184,11 +182,7 @@ impl Iterator for BitboardIter {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Square> {
-        if self.0.is_empty() {
-            None
-        } else {
-            Some(self.0.pop_lsb())
-        }
+        if self.0.is_empty() { None } else { Some(self.0.pop_lsb()) }
     }
 
     #[inline(always)]

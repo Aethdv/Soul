@@ -14,20 +14,13 @@ pub trait LrScheduler: Send + Sync {
     /// Wrap this scheduler with linear warmup over the first N epochs.
     fn with_warmup(self, epochs: usize) -> Warmup<Self>
     where Self: Sized {
-        Warmup {
-            inner:         self,
-            warmup_epochs: epochs,
-        }
+        Warmup { inner: self, warmup_epochs: epochs }
     }
 
     /// Chain another scheduler after this one.
     fn then<S: LrScheduler>(self, other: S, switch_epoch: usize) -> Sequence<Self, S>
     where Self: Sized {
-        Sequence {
-            first: self,
-            second: other,
-            switch_epoch,
-        }
+        Sequence { first: self, second: other, switch_epoch }
     }
 }
 
@@ -62,7 +55,7 @@ impl LrScheduler for Constant {
 #[derive(Clone, Copy, Debug)]
 pub struct Linear {
     pub start: f64,
-    pub end:   f64,
+    pub end: f64,
 }
 
 impl Linear {
@@ -116,19 +109,15 @@ impl LrScheduler for Exponential {
 /// Multiplicative step decay: LR = start · gamma^(epoch / step).
 #[derive(Clone, Copy, Debug)]
 pub struct StepDecay {
-    pub start:       f64,
-    pub gamma:       f64,
+    pub start: f64,
+    pub gamma: f64,
     pub step_epochs: usize,
 }
 
 impl StepDecay {
     #[must_use]
     pub const fn new(start: f64, gamma: f64, step_epochs: usize) -> Self {
-        Self {
-            start,
-            gamma,
-            step_epochs,
-        }
+        Self { start, gamma, step_epochs }
     }
 }
 
@@ -149,21 +138,16 @@ impl LrScheduler for StepDecay {
 /// Cosine annealing with warm restarts (SGDR).
 #[derive(Clone, Copy, Debug)]
 pub struct CosineAnnealing {
-    pub base:         f64,
-    pub min:          f64,
+    pub base: f64,
+    pub min: f64,
     pub warmup_ratio: f64,
-    pub restarts:     usize,
+    pub restarts: usize,
 }
 
 impl CosineAnnealing {
     #[must_use]
     pub const fn new(base: f64, min: f64) -> Self {
-        Self {
-            base,
-            min,
-            warmup_ratio: 0.0,
-            restarts: 1,
-        }
+        Self { base, min, warmup_ratio: 0.0, restarts: 1 }
     }
 
     #[must_use]
@@ -208,8 +192,8 @@ impl LrScheduler for CosineAnnealing {
 /// Warmup-Stable-Decay: LR ramps up, stays flat, then decays linearly to min.
 #[derive(Clone, Copy, Debug)]
 pub struct WarmupStableDecay {
-    pub base:         f64,
-    pub min:          f64,
+    pub base: f64,
+    pub min: f64,
     pub warmup_ratio: f64,
     pub stable_ratio: f64,
 }
@@ -217,12 +201,7 @@ pub struct WarmupStableDecay {
 impl WarmupStableDecay {
     #[must_use]
     pub const fn new(base: f64, min: f64, warmup: f64, stable: f64) -> Self {
-        Self {
-            base,
-            min,
-            warmup_ratio: warmup,
-            stable_ratio: stable,
-        }
+        Self { base, min, warmup_ratio: warmup, stable_ratio: stable }
     }
 }
 
@@ -264,7 +243,7 @@ impl LrScheduler for WarmupStableDecay {
 /// on `Cosine` or `WarmupStableDecay` instead).
 #[derive(Clone, Debug)]
 pub struct Warmup<S> {
-    pub inner:         S,
+    pub inner: S,
     pub warmup_epochs: usize,
 }
 
@@ -272,11 +251,7 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
     #[inline]
     fn rate(&self, epoch: usize, total: usize) -> f64 {
         let inner_lr = self.inner.rate(epoch, total);
-        if epoch <= self.warmup_epochs {
-            inner_lr * (epoch as f64 / self.warmup_epochs as f64)
-        } else {
-            inner_lr
-        }
+        if epoch <= self.warmup_epochs { inner_lr * (epoch as f64 / self.warmup_epochs as f64) } else { inner_lr }
     }
 
     fn describe(&self) -> String {
@@ -290,8 +265,8 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
 /// It is not directly selectable from the TOML config.
 #[derive(Clone, Debug)]
 pub struct Sequence<A, B> {
-    pub first:        A,
-    pub second:       B,
+    pub first: A,
+    pub second: B,
     pub switch_epoch: usize,
 }
 
@@ -301,18 +276,12 @@ impl<A: LrScheduler, B: LrScheduler> LrScheduler for Sequence<A, B> {
         if epoch <= self.switch_epoch {
             self.first.rate(epoch, self.switch_epoch)
         } else {
-            self.second
-                .rate(epoch - self.switch_epoch, total - self.switch_epoch)
+            self.second.rate(epoch - self.switch_epoch, total - self.switch_epoch)
         }
     }
 
     fn describe(&self) -> String {
-        format!(
-            "Sequence({} → {} @{})",
-            self.first.describe(),
-            self.second.describe(),
-            self.switch_epoch
-        )
+        format!("Sequence({} → {} @{})", self.first.describe(), self.second.describe(), self.switch_epoch)
     }
 }
 
@@ -352,7 +321,7 @@ impl WdlScheduler for ConstantWdl {
 #[derive(Clone, Copy, Debug)]
 pub struct LinearWdl {
     pub start: f64,
-    pub end:   f64,
+    pub end: f64,
 }
 
 impl LinearWdl {
@@ -378,7 +347,7 @@ impl WdlScheduler for LinearWdl {
 #[derive(Clone, Copy, Debug)]
 pub struct CosineWdl {
     pub start: f64,
-    pub end:   f64,
+    pub end: f64,
 }
 
 impl CosineWdl {
@@ -403,19 +372,15 @@ impl WdlScheduler for CosineWdl {
 /// WDL blend that stays stable for a portion of training, then cosine decays to an end value.
 #[derive(Clone, Copy, Debug)]
 pub struct StableDecayWdl {
-    pub start:        f64,
-    pub end:          f64,
+    pub start: f64,
+    pub end: f64,
     pub stable_ratio: f64,
 }
 
 impl StableDecayWdl {
     #[must_use]
     pub const fn new(start: f64, end: f64, stable_ratio: f64) -> Self {
-        Self {
-            start,
-            end,
-            stable_ratio,
-        }
+        Self { start, end, stable_ratio }
     }
 }
 
@@ -433,12 +398,7 @@ impl WdlScheduler for StableDecayWdl {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "StableDecayWDL({} → {}, stable: {:.0}%)",
-            self.start,
-            self.end,
-            self.stable_ratio * 100.0
-        )
+        format!("StableDecayWDL({} → {}, stable: {:.0}%)", self.start, self.end, self.stable_ratio * 100.0)
     }
 }
 

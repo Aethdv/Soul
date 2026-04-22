@@ -51,11 +51,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     let mut config = resolve_config(&parsed);
 
-    let start_count = if parsed.resume {
-        load_existing_count(&config.output_path)
-    } else {
-        0
-    };
+    let start_count = if parsed.resume { load_existing_count(&config.output_path) } else { 0 };
 
     config.generated_count = start_count as u64;
     let _ = config.save();
@@ -69,9 +65,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // compute-heavy, but leaving cores free keeps the system responsive
     // during multi-hour runs.
     let all_cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let num_threads = config
-        .thread_count
-        .unwrap_or_else(|| (all_cores / 2).max(1));
+    let num_threads = config.thread_count.unwrap_or_else(|| (all_cores / 2).max(1));
 
     let global = Arc::new(GlobalStats::new());
 
@@ -206,24 +200,24 @@ fn pct(part: u64, whole: u64) -> f64 {
 /// Rather than scattering `load(Relaxed)` calls everywhere and duplicating
 /// all the derived calculations, we capture once and compute from the snapshot.
 struct Snapshot {
-    elapsed:        f64,
-    generated:      u64,
-    target:         u64,
-    attempted:      u64,
-    saved:          u64,
+    elapsed: f64,
+    generated: u64,
+    target: u64,
+    attempted: u64,
+    saved: u64,
     passed_filters: u64,
-    games:          u64,
-    plies:          u64,
+    games: u64,
+    plies: u64,
     filtered_quiet: u64,
     filtered_score: u64,
-    search_fail:    u64,
-    term_check:     u64,
-    term_stale:     u64,
-    term_d50:       u64,
-    term_drep:      u64,
-    term_dmat:      u64,
-    term_draw_adj:  u64,
-    term_resign:    u64,
+    search_fail: u64,
+    term_check: u64,
+    term_stale: u64,
+    term_d50: u64,
+    term_drep: u64,
+    term_dmat: u64,
+    term_draw_adj: u64,
+    term_resign: u64,
 }
 
 impl Snapshot {
@@ -284,13 +278,7 @@ impl Snapshot {
     }
 
     fn total_terminations(&self) -> u64 {
-        self.term_check
-            + self.term_stale
-            + self.term_d50
-            + self.term_drep
-            + self.term_dmat
-            + self.term_draw_adj
-            + self.term_resign
+        self.term_check + self.term_stale + self.term_d50 + self.term_drep + self.term_dmat + self.term_draw_adj + self.term_resign
     }
 }
 
@@ -360,24 +348,12 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!();
     println!("  Positions:");
     println!("    Attempted:      {}", format_num(snap.attempted));
-    println!(
-        "    Saved:          {} ({:.1}% pass rate)",
-        format_num(snap.saved),
-        snap.pass_rate(),
-    );
+    println!("    Saved:          {} ({:.1}% pass rate)", format_num(snap.saved), snap.pass_rate(),);
     println!("    Filtered:       {}", format_num(total_filt));
     println!();
     println!("  Filter Breakdown:");
-    println!(
-        "    Quiet filter:   {} ({:.1}%)",
-        format_num(snap.filtered_quiet),
-        pct(snap.filtered_quiet, total_filt),
-    );
-    println!(
-        "    Score filter:   {} ({:.1}%)",
-        format_num(snap.filtered_score),
-        pct(snap.filtered_score, total_filt),
-    );
+    println!("    Quiet filter:   {} ({:.1}%)", format_num(snap.filtered_quiet), pct(snap.filtered_quiet, total_filt),);
+    println!("    Score filter:   {} ({:.1}%)", format_num(snap.filtered_score), pct(snap.filtered_score, total_filt),);
     println!();
     println!("  Game Terminations:");
 
@@ -526,12 +502,7 @@ fn print_help() {
     h.option_default("-n, --count", "<N>", "Target number of positions to generate", "8,000,000");
     h.option_default("-o, --output", "<PATH>", "Output file path", "data.soul.zst");
     h.option_default("-b, --book", "<PATH>", "Opening book path", "UHO_Lichess_4852_v1.epd");
-    h.option_default(
-        "-d, --depth",
-        "<N>",
-        "Search depth (default 6; MAX when --soft/--nodes set without --depth)",
-        "6",
-    );
+    h.option_default("-d, --depth", "<N>", "Search depth (default 6; MAX when --soft/--nodes set without --depth)", "6");
     h.option("--soft", "<N>", "Soft node limit");
     h.option("--nodes", "<N>", "Hard node limit");
     h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");

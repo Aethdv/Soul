@@ -30,35 +30,23 @@
 //!    Update the stored momentum (m) for the next step.
 //!    m = β₂ · m + (1 - β₂) · g
 pub struct Lion {
-    interp:   f64, // β₁ (interpolation weight)
+    interp: f64,   // β₁ (interpolation weight)
     momentum: f64, // β₂ (momentum decay)
-    lr:       f64,
-    wd:       f64,
-    clip:     Option<(f64, f64)>,
+    lr: f64,
+    wd: f64,
+    clip: Option<(f64, f64)>,
 }
 
 impl Lion {
     #[must_use]
     pub const fn new(interp: f64, momentum: f64, lr: f64, wd: f64) -> Self {
-        Self {
-            interp,
-            momentum,
-            lr,
-            wd,
-            clip: None,
-        }
+        Self { interp, momentum, lr, wd, clip: None }
     }
 
     /// Create Lion with weight clipping enabled.
     #[must_use]
     pub const fn with_clipping(interp: f64, momentum: f64, lr: f64, wd: f64, min: f64, max: f64) -> Self {
-        Self {
-            interp,
-            momentum,
-            lr,
-            wd,
-            clip: Some((min, max)),
-        }
+        Self { interp, momentum, lr, wd, clip: Some((min, max)) }
     }
 
     /// Enable weight clipping on an existing instance.
@@ -74,14 +62,7 @@ impl Lion {
     }
 
     /// Performs a single optimization step
-    pub fn update(
-        &self,
-        params: &mut [f64],
-        momentum: &mut [f64],
-        gradients: &[f64],
-        decay_mask: &[f64],
-        fixed_mask: &[bool],
-    ) {
+    pub fn update(&self, params: &mut [f64], momentum: &mut [f64], gradients: &[f64], decay_mask: &[f64], fixed_mask: &[bool]) {
         debug_assert_eq!(params.len(), momentum.len());
         debug_assert_eq!(params.len(), gradients.len());
         debug_assert_eq!(params.len(), decay_mask.len());
@@ -131,11 +112,7 @@ impl Lion {
             // Hard-zero momentum when both gradient and current momentum are essentially zero.
             // Without this, floating-point residuals in m can accumulate and trigger sign updates
             // on perfectly converged parameters — a kind of ghost-gradient effect.
-            momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 {
-                0.0
-            } else {
-                self.momentum.mul_add(m, (1.0 - self.momentum) * g)
-            };
+            momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { self.momentum.mul_add(m, (1.0 - self.momentum) * g) };
         }
     }
 }
@@ -163,18 +140,8 @@ mod tests {
         let mut params_sparse = vec![10.0];
         let mut momentum_sparse = vec![0.0];
         let grads_sparse = vec![0.0];
-        opt.update(
-            &mut params_sparse,
-            &mut momentum_sparse,
-            &grads_sparse,
-            &decay_mask,
-            &fixed_mask,
-        );
-        assert!(
-            (params_sparse[0] - 2.0).abs() < 1e-9,
-            "Sparse update should still clip: {}",
-            params_sparse[0]
-        );
+        opt.update(&mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask);
+        assert!((params_sparse[0] - 2.0).abs() < 1e-9, "Sparse update should still clip: {}", params_sparse[0]);
     }
 
     #[test]

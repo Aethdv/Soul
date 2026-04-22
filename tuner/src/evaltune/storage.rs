@@ -17,13 +17,13 @@ pub const CHECKPOINT_VERSION: u32 = 2;
 /// (e.g. adding or reordering evaluation terms).
 #[derive(Serialize, Deserialize)]
 pub struct Checkpoint {
-    pub version:  u32,
-    pub epoch:    usize,
+    pub version: u32,
+    pub epoch: usize,
     #[serde(default = "default_lr_scale")]
     pub lr_scale: f64,
-    pub values:   BTreeMap<String, f64>,
+    pub values: BTreeMap<String, f64>,
     pub momentum: BTreeMap<String, f64>,
-    pub hash:     u64,
+    pub hash: u64,
     pub rng_seed: u64,
 }
 
@@ -34,9 +34,9 @@ fn default_lr_scale() -> f64 {
 /// A frozen parameter snapshot at a specific epoch.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Snapshot {
-    pub epoch:  usize,
+    pub epoch: usize,
     pub params: BTreeMap<String, f64>,
-    pub error:  f64,
+    pub error: f64,
 }
 
 /// Save training state to a JSON checkpoint file.
@@ -85,18 +85,14 @@ pub fn save_checkpoint(
 /// # Errors
 /// Returns an error if the file cannot be opened or parsed.
 pub struct CheckpointData {
-    pub epoch:    usize,
+    pub epoch: usize,
     pub lr_scale: f64,
-    pub values:   Vec<f64>,
+    pub values: Vec<f64>,
     pub momentum: Vec<f64>,
     pub rng_seed: u64,
 }
 
-pub fn load_checkpoint(
-    path: &str,
-    tunables: &[Tunable],
-    current_values: &[f64],
-) -> Result<CheckpointData, CheckpointError> {
+pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64]) -> Result<CheckpointData, CheckpointError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let cp: Checkpoint = serde_json::from_reader(reader)?;
@@ -113,10 +109,7 @@ pub fn load_checkpoint(
 
     let current_hash = compute_layout_hash(tunables);
     if cp.hash != current_hash {
-        eprintln!(
-            "\x1b[33mWarning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x})\x1b[0m",
-            cp.hash, current_hash
-        );
+        eprintln!("\x1b[33mWarning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x})\x1b[0m", cp.hash, current_hash);
         eprintln!("New parameters will use current default values.");
     }
 
@@ -129,13 +122,7 @@ pub fn load_checkpoint(
         }
     }
 
-    Ok(CheckpointData {
-        epoch: cp.epoch,
-        lr_scale: cp.lr_scale,
-        values,
-        momentum,
-        rng_seed: cp.rng_seed,
-    })
+    Ok(CheckpointData { epoch: cp.epoch, lr_scale: cp.lr_scale, values, momentum, rng_seed: cp.rng_seed })
 }
 
 /// FNV-1a hash over parameter names to detect layout changes.

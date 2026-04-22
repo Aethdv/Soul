@@ -50,20 +50,12 @@ impl Mobility {
         // King safety — computed once per side, then both the raw features
         // and the derived score feed into the final metrics.
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
-        let safety_them =
-            SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
+        let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
 
-        let metrics_us =
-            score_side(ctx.them, ctx.atk_us, ctx.area_us, ctx.area_them, ctx.pawn_atk_them, ctx.xray_us);
-        let metrics_them =
-            score_side(ctx.us, ctx.atk_them, ctx.area_them, ctx.area_us, ctx.pawn_atk_us, ctx.xray_them);
+        let metrics_us = score_side(ctx.them, ctx.atk_us, ctx.area_us, ctx.area_them, ctx.pawn_atk_them, ctx.xray_us);
+        let metrics_them = score_side(ctx.us, ctx.atk_them, ctx.area_them, ctx.area_us, ctx.pawn_atk_us, ctx.xray_them);
 
-        MobilityData {
-            metrics_us,
-            metrics_them,
-            safety_us,
-            safety_them,
-        }
+        MobilityData { metrics_us, metrics_them, safety_us, safety_them }
     }
 
     /// Tapered, openness-interpolated score differential from `color`'s perspective.
@@ -138,9 +130,7 @@ impl Mobility {
 #[inline]
 pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
     let rams = (us_pawns << 8) & them_pawns;
-    (OPEN_UNITY
-        - RAM_SCALE * rams.count_ones() as i32
-        - PAWN_SCALE * (us_pawns | them_pawns).count_ones() as i32)
+    (OPEN_UNITY - RAM_SCALE * rams.count_ones() as i32 - PAWN_SCALE * (us_pawns | them_pawns).count_ones() as i32)
         .clamp(0, OPEN_UNITY)
 }
 
@@ -154,20 +144,20 @@ pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
 /// - `shadow_threats`: enemy pieces our x-rays touch.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SideMetrics {
-    pub mobility:        i32,
+    pub mobility: i32,
     pub shadow_mobility: i32,
-    pub threats:         i32,
-    pub shadow_threats:  i32,
+    pub threats: i32,
+    pub shadow_threats: i32,
 }
 
 /// Complete mobility snapshot for one position, computed once and consumed by
 /// both the engine (score diff) and the tuner (raw feature extraction).
 #[derive(Clone, Default, Debug)]
 pub struct MobilityData {
-    pub metrics_us:   SideMetrics,
+    pub metrics_us: SideMetrics,
     pub metrics_them: SideMetrics,
-    pub safety_us:    SafetyMetrics,
-    pub safety_them:  SafetyMetrics,
+    pub safety_us: SafetyMetrics,
+    pub safety_them: SafetyMetrics,
 }
 
 // ──────── King Safety Features ────────
@@ -179,15 +169,15 @@ pub struct MobilityData {
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SafetyMetrics {
     /// Enemy pieces hitting the king ring (capped to weight-table bounds).
-    pub attackers:      usize,
+    pub attackers: usize,
     /// King-zone squares attacked by them but not defended by us.
-    pub weak:           i32,
+    pub weak: i32,
     /// Friendly pawns adjacent to the king.
-    pub shield:         i32,
+    pub shield: i32,
     /// Rook-reachable squares from the king (open lines = exposure).
     pub ortho_exposure: i32,
     /// Bishop-reachable squares from the king.
-    pub diag_exposure:  i32,
+    pub diag_exposure: i32,
 }
 
 impl SafetyMetrics {
@@ -236,21 +226,15 @@ impl SafetyMetrics {
     /// Analyzes the king neighborhood
     /// and records how exposed or defended it is.
     #[inline(always)]
-    fn analyze(
-        ksq: Square,
-        occ: Bitboard,
-        atk_us: Bitboard,
-        atk_them: Bitboard,
-        our_pawns: Bitboard,
-    ) -> Self {
+    fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
         let zone = atk_king(ksq);
         Self {
             // Clamp to weight-table bounds — five-plus attackers all map to the maximum danger entry.
-            attackers:      ((zone & atk_them).popcount() as usize).min(ATTACKER_WEIGHTS.len() - 1),
-            weak:           (zone & atk_them & !atk_us).popcount() as i32,
-            shield:         (zone & our_pawns).popcount() as i32,
+            attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER_WEIGHTS.len() - 1),
+            weak: (zone & atk_them & !atk_us).popcount() as i32,
+            shield: (zone & our_pawns).popcount() as i32,
             ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
-            diag_exposure:  atk_bishop(ksq, occ).popcount() as i32,
+            diag_exposure: atk_bishop(ksq, occ).popcount() as i32,
         }
     }
 }
@@ -263,33 +247,33 @@ struct EvalCtx {
     /// Piece + pawn attacks, excluding king.
     /// Used for danger assessment — your own king's reach
     /// doesn't help assault the opponent's king zone.
-    atk_us:   Bitboard,
+    atk_us: Bitboard,
     atk_them: Bitboard,
 
     /// Full control:
     /// piece + pawn + king attacks.
     /// Used for mobility and piece-protection calculations
     /// where the king's influence matters.
-    area_us:   Bitboard,
+    area_us: Bitboard,
     area_them: Bitboard,
 
     /// Pawn-only attack maps, cached to avoid recomputation.
-    pawn_atk_us:   Bitboard,
+    pawn_atk_us: Bitboard,
     pawn_atk_them: Bitboard,
 
-    ksq_us:   Square,
+    ksq_us: Square,
     ksq_them: Square,
 
     /// Pawn occupancy (used for shield evaluation, not attacks).
-    pawn_us:   Bitboard,
+    pawn_us: Bitboard,
     pawn_them: Bitboard,
 
-    us:   Bitboard,
+    us: Bitboard,
     them: Bitboard,
-    occ:  Bitboard,
+    occ: Bitboard,
 
     /// Shadow/X-ray attack maps.
-    xray_us:   Bitboard,
+    xray_us: Bitboard,
     xray_them: Bitboard,
 }
 
@@ -306,13 +290,7 @@ impl EvalCtx {
     ///
     /// This prevents the evaluation from crediting mobility that would leave the king in check.
     #[inline(always)]
-    fn build(
-        pos: &Position,
-        color: Color,
-        tensor: &SpatialTensor,
-        pinned_w: Bitboard,
-        pinned_b: Bitboard,
-    ) -> Self {
+    fn build(pos: &Position, color: Color, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
         let opp = color.opposite();
         let us = pos.side_bb[color];
         let them = pos.side_bb[opp];
@@ -324,11 +302,7 @@ impl EvalCtx {
         let ksq_us = king_sq(kings & us);
         let ksq_them = king_sq(kings & them);
 
-        let (pinned_us, pinned_them) = if color == Color::White {
-            (pinned_w, pinned_b)
-        } else {
-            (pinned_b, pinned_w)
-        };
+        let (pinned_us, pinned_them) = if color == Color::White { (pinned_w, pinned_b) } else { (pinned_b, pinned_w) };
 
         // Knights: pinned = zero mobility.
         let mut knight_atk_us = Bitboard(0);
@@ -444,10 +418,5 @@ fn score_side(
     // Shadow threats (X-ray threats)
     let shadow_threats = (xray_us & them).popcount() as i32;
 
-    SideMetrics {
-        mobility,
-        shadow_mobility,
-        threats,
-        shadow_threats,
-    }
+    SideMetrics { mobility, shadow_mobility, threats, shadow_threats }
 }

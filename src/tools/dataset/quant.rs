@@ -20,22 +20,13 @@ const PIECE_CHARS: [[u8; 6]; 2] = [*b"PNBRQK", *b"pnbrqk"];
 /// normalised to the side-to-move's perspective.
 /// When STM is Black, all squares are rank-flipped so that "our"
 /// pieces always advance up the board.
-pub fn from_board(
-    board: &Position,
-    result: f64,
-    static_score: Option<i32>,
-    search_score: Option<i32>,
-) -> SoulEntry {
+pub fn from_board(board: &Position, result: f64, static_score: Option<i32>, search_score: Option<i32>) -> SoulEntry {
     let stm_is_white = board.stm == Color::White;
 
     // The only thing that changes between perspectives:
     // which real color maps to "Us" vs "Them",
     // and whether squares need a rank-flip.
-    let (us, them) = if stm_is_white {
-        (Color::White, Color::Black)
-    } else {
-        (Color::Black, Color::White)
-    };
+    let (us, them) = if stm_is_white { (Color::White, Color::Black) } else { (Color::Black, Color::White) };
 
     let mut entry = SoulEntry {
         result: result as f32,
@@ -85,8 +76,7 @@ pub fn from_board(
     let w_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
     let b_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
 
-    let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32
-        - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
+    let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
 
     // Normalize to STM
     entry.xray_ortho = (if stm_is_white { xray_val } else { -xray_val }) as i8;
@@ -165,13 +155,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     }
 
     fen.push(' ');
-    fen.push(
-        if entry.original_stm == STM_WHITE {
-            'w'
-        } else {
-            'b'
-        },
-    );
+    fen.push(if entry.original_stm == STM_WHITE { 'w' } else { 'b' });
     fen.push(' ');
 
     let mut castling = entry.castling;

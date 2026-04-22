@@ -6,16 +6,13 @@ pub const CMD: &str = "\x1b[33m";
 pub const RESET: &str = "\x1b[0m";
 
 pub struct Help {
-    width:    usize,
+    width: usize,
     use_ansi: bool,
 }
 
 impl Help {
     pub fn new(width: usize) -> Self {
-        Self {
-            width,
-            use_ansi: true,
-        }
+        Self { width, use_ansi: true }
     }
 
     pub fn with_ansi(mut self, enabled: bool) -> Self {
@@ -90,11 +87,7 @@ impl Help {
 
         let content_len = indent + name_len + gap + args_len;
 
-        let padding = if content_len < self.width {
-            self.width - content_len
-        } else {
-            1
-        };
+        let padding = if content_len < self.width { self.width - content_len } else { 1 };
 
         let spaces_indent = " ".repeat(indent);
         let spaces_pad = " ".repeat(padding);

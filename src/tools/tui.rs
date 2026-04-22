@@ -48,20 +48,20 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 
 pub struct SearchInfoData<'a> {
-    pub depth:     i32,
+    pub depth: i32,
     pub sel_depth: i32,
-    pub score:     i32,
-    pub nodes:     u64,
-    pub nps:       u64,
-    pub time_ms:   u128,
-    pub hashfull:  usize,
-    pub pv:        &'a Line,
-    pub show_wdl:  bool,
-    pub material:  u32,
-    pub stm:       usize,
-    pub history:   &'a [(u128, Line, i32)],
-    pub board:     &'a Position,
-    pub use_ansi:  bool,
+    pub score: i32,
+    pub nodes: u64,
+    pub nps: u64,
+    pub time_ms: u128,
+    pub hashfull: usize,
+    pub pv: &'a Line,
+    pub show_wdl: bool,
+    pub material: u32,
+    pub stm: usize,
+    pub history: &'a [(u128, Line, i32)],
+    pub board: &'a Position,
+    pub use_ansi: bool,
 }
 
 pub fn fmt_nodes(n: u64) -> String {
@@ -100,11 +100,7 @@ pub fn fmt_nps(nps: u64) -> String {
 
 pub fn fmt_score_uci(score: i32) -> String {
     if score.abs() > MATE_BOUND {
-        let mate_in = if score > 0 {
-            (MATE - score + 1) / 2
-        } else {
-            -(MATE + score + 1) / 2
-        };
+        let mate_in = if score > 0 { (MATE - score + 1) / 2 } else { -(MATE + score + 1) / 2 };
         format!("mate {mate_in}")
     } else {
         format!("cp {score}")
@@ -168,12 +164,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     } else {
         format!("{}{bold}", tui_fg(heat_color, data.use_ansi))
     };
-    println!(
-        "  {bold}{}Eval{reset} {}{}{reset}\x1b[K",
-        tui_fg(GOLD_DIM, data.use_ansi),
-        eval_color,
-        score_str
-    );
+    println!("  {bold}{}Eval{reset} {}{}{reset}\x1b[K", tui_fg(GOLD_DIM, data.use_ansi), eval_color, score_str);
 
     let bar_width = 50;
     let (wp, dp, lp) = (w as f32 / 10.0, d as f32 / 10.0, l as f32 / 10.0);
@@ -200,12 +191,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let white_first = data.stm == 0;
     println!("  {bold}{}Best PV{reset}", tui_fg(GOLD_DIM, data.use_ansi));
     print!("  ");
-    print_pv_line(
-        &data.pv.moves[..data.pv.len.min(10)],
-        white_first,
-        data.board.is_frc,
-        data.use_ansi,
-    );
+    print_pv_line(&data.pv.moves[..data.pv.len.min(10)], white_first, data.board.is_frc, data.use_ansi);
     if data.pv.len > 10 {
         print!("{}...{}", tui_fg(DIM, data.use_ansi), reset);
     }
@@ -235,11 +221,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
 
 #[inline]
 fn tui_fg(c: Rgb, enabled: bool) -> String {
-    if enabled {
-        format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
-    } else {
-        String::new()
-    }
+    if enabled { format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
 }
 
 /// Lerp between two colors. t=0 → a, t=1 → b.
@@ -293,11 +275,7 @@ fn fmt_score_pretty(score: i32, enabled: bool) -> String {
         format!("{}-M{}{}", tui_fg(MATE_PRPL, enabled), moves.max(1), reset)
     } else {
         let pawns = f64::from(score) / 100.0;
-        if score >= 0 {
-            format!("+{pawns:.2}")
-        } else {
-            format!("{pawns:.2}")
-        }
+        if score >= 0 { format!("+{pawns:.2}") } else { format!("{pawns:.2}") }
     }
 }
 
@@ -308,21 +286,13 @@ fn fmt_score_white_pov(score: i32, stm: usize, enabled: bool) -> String {
     if ws.abs() > MATE_BOUND {
         let plies = if ws > 0 { MATE - ws } else { MATE + ws };
         let moves = (plies + 1) / 2;
-        let s = if ws > 0 {
-            format!("M{}", moves.max(1))
-        } else {
-            format!("-M{}", moves.max(1))
-        };
+        let s = if ws > 0 { format!("M{}", moves.max(1)) } else { format!("-M{}", moves.max(1)) };
         return format!("{}{:>7}{}", tui_fg(MATE_PRPL, enabled), s, reset);
     }
 
     let color = eval_gradient(sigmoid(ws));
     let pawns = f64::from(ws) / 100.0;
-    let s = if ws >= 0 {
-        format!("+{pawns:.2}")
-    } else {
-        format!("{pawns:.2}")
-    };
+    let s = if ws >= 0 { format!("+{pawns:.2}") } else { format!("{pawns:.2}") };
     format!("{}{:>7}{}", tui_fg(color, enabled), s, reset)
 }
 
@@ -354,11 +324,7 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
     let pt = board.piece_at(from);
 
     if pt == PieceType::King && mv.is_castling() {
-        return if to > from {
-            "O-O".into()
-        } else {
-            "O-O-O".into()
-        };
+        return if to > from { "O-O".into() } else { "O-O-O".into() };
     }
 
     let mut san = String::with_capacity(6);
@@ -484,11 +450,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
     }
 
     let mut temp_board = if pretty { Some(*data.board) } else { None };
-    let mut temp_acc = if pretty {
-        Some(data.board.get_initial_accumulator())
-    } else {
-        None
-    };
+    let mut temp_acc = if pretty { Some(data.board.get_initial_accumulator()) } else { None };
     let white_first = data.stm == 0;
 
     for i in 0..data.pv.len {

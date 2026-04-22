@@ -61,25 +61,18 @@ fn main() {
                 protocols::uci::run_cli_go(&limit_args);
             },
             "gopretty" => {
-                let depth = args
-                    .get(2)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(soul::core::defs::MAX_DEPTH);
+                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(soul::core::defs::MAX_DEPTH);
 
                 let board = Position::from_fen(STARTPOS);
-                let limits = engine::search::Limits {
-                    depth,
-                    protocol: soul::core::defs::Protocol::Uci,
-                    ..Default::default()
-                };
+                let limits = engine::search::Limits { depth, protocol: soul::core::defs::Protocol::Uci, ..Default::default() };
 
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let display = engine::search::SearchDisplay {
-                    show_wdl:      true,
-                    go_pretty:     true,
-                    pretty_print:  false,
+                    show_wdl: true,
+                    go_pretty: true,
+                    pretty_print: false,
                     show_currmove: true,
-                    use_ansi:      true,
+                    use_ansi: true,
                 };
                 let cfg = engine::search::SearchConfig::new_full(
                     limits,

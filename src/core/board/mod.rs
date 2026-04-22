@@ -66,27 +66,27 @@ impl fmt::Display for Position {
 #[repr(C, align(32))]
 pub struct Position {
     /// Per-color occupancy: `side_bb[White]` has all white pieces, etc.
-    pub side_bb:         [Bitboard; 2],
+    pub side_bb: [Bitboard; 2],
     /// Per-role occupancy: `role_bb[Pawn]` has all pawns regardless of color.
-    pub role_bb:         [Bitboard; 6],
+    pub role_bb: [Bitboard; 6],
     /// Union of all occupied squares — always `side_bb[0] | side_bb[1]`.
-    pub occ:             Bitboard,
+    pub occ: Bitboard,
     /// Incrementally maintained Zobrist hash.
-    pub hash:            u64,
+    pub hash: u64,
     /// Mailbox: `pos.piece_at(sq)` gives the piece type (or `None` if empty).
-    pub pieces:          [PieceType; 64],
+    pub pieces: [PieceType; 64],
     /// Rook home squares for castling, indexed by rights bit position.
-    pub castling_rooks:  [Square; 4],
+    pub castling_rooks: [Square; 4],
     /// Packed castling rights — bits 0–3: WK, WQ, BK, BQ.
     pub castling_rights: u8,
     /// Side to move.
-    pub stm:             Color,
+    pub stm: Color,
     /// Fifty-move rule counter (half-moves since last pawn push or capture).
-    pub halfmove_clock:  u8,
+    pub halfmove_clock: u8,
     /// En passant target square, set after a double pawn push.
-    pub en_passant:      Option<Square>,
+    pub en_passant: Option<Square>,
     /// Fischer Random Chess mode. When true, FENs and moves use Chess960 format.
-    pub is_frc:          bool,
+    pub is_frc: bool,
     /// Full-move counter (starts at 1, incremented after Black moves).
     pub fullmove_number: u16,
 }
@@ -102,22 +102,16 @@ pub struct Position {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StateInfo {
-    pub hash:            u64,
-    pub en_passant:      Option<Square>,
+    pub hash: u64,
+    pub en_passant: Option<Square>,
     pub castling_rights: u8,
-    pub captured:        PieceType,
-    pub halfmove_clock:  u8,
+    pub captured: PieceType,
+    pub halfmove_clock: u8,
 }
 
 impl Default for StateInfo {
     fn default() -> Self {
-        Self {
-            hash:            0,
-            en_passant:      None,
-            castling_rights: 0,
-            captured:        PieceType::None,
-            halfmove_clock:  0,
-        }
+        Self { hash: 0, en_passant: None, castling_rights: 0, captured: PieceType::None, halfmove_clock: 0 }
     }
 }
 
@@ -127,17 +121,17 @@ impl Position {
     /// An empty board — no pieces, White to move, Zobrist initialized.
     pub fn new() -> Self {
         let mut pos = Self {
-            side_bb:         [Bitboard(0); 2],
-            role_bb:         [Bitboard(0); 6],
-            occ:             Bitboard(0),
-            hash:            0,
-            pieces:          [PieceType::None; 64],
-            castling_rooks:  [Square(0); 4],
+            side_bb: [Bitboard(0); 2],
+            role_bb: [Bitboard(0); 6],
+            occ: Bitboard(0),
+            hash: 0,
+            pieces: [PieceType::None; 64],
+            castling_rooks: [Square(0); 4],
             castling_rights: 0,
-            stm:             Color::White,
-            halfmove_clock:  0,
-            en_passant:      None,
-            is_frc:          false,
+            stm: Color::White,
+            halfmove_clock: 0,
+            en_passant: None,
+            is_frc: false,
             fullmove_number: 1,
         };
         pos.hash = pos.calc_zobrist();
@@ -182,11 +176,11 @@ impl Position {
     #[inline]
     pub fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
-            hash:            self.hash,
-            en_passant:      self.en_passant,
+            hash: self.hash,
+            en_passant: self.en_passant,
             castling_rights: self.castling_rights,
-            captured:        PieceType::None,
-            halfmove_clock:  self.halfmove_clock,
+            captured: PieceType::None,
+            halfmove_clock: self.halfmove_clock,
         };
 
         // Clear en passant
@@ -215,8 +209,8 @@ impl Position {
     /// Used by NMP to avoid null-moving in pure pawn endings (zugzwang).
     #[inline]
     pub fn has_non_pawn_material(&self, side: Color) -> bool {
-        let dominated = self.side_bb[side as usize]
-            & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
+        let dominated =
+            self.side_bb[side as usize] & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
         dominated.is_not_empty()
     }
 
@@ -225,14 +219,7 @@ impl Position {
     /// Must be called before the move is applied to the board — it
     /// reads the current piece layout to determine what changed.
     #[inline(always)]
-    pub fn update_accumulator(
-        &self,
-        acc: &mut Vi16x8,
-        mv: Move,
-        pt: PieceType,
-        captured: PieceType,
-        placed: PieceType,
-    ) {
+    pub fn update_accumulator(&self, acc: &mut Vi16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
         make::update_accumulator(self, acc, mv, pt, captured, placed);
     }
 
@@ -271,9 +258,7 @@ impl Position {
             return false;
         }
 
-        let limit = history
-            .len()
-            .saturating_sub(self.halfmove_clock as usize + 1);
+        let limit = history.len().saturating_sub(self.halfmove_clock as usize + 1);
         let mut count = 1; // Current position
 
         for &h in history[limit..].iter().rev().skip(2).step_by(2) {
@@ -306,8 +291,7 @@ impl Position {
         }
 
         // Only kings and minor pieces remain. A lone minor can't deliver mate.
-        let minors = self.role_bb[PieceType::Knight as usize].popcount()
-            + self.role_bb[PieceType::Bishop as usize].popcount();
+        let minors = self.role_bb[PieceType::Knight as usize].popcount() + self.role_bb[PieceType::Bishop as usize].popcount();
 
         minors <= 1
     }
@@ -552,8 +536,8 @@ impl Position {
     /// Used by non-pawn correction history to index by material configuration.
     pub fn calc_non_pawn_hash(&self, color: Color) -> u64 {
         let mut key = 0u64;
-        let pieces = self.side_bb[color as usize]
-            & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
+        let pieces =
+            self.side_bb[color as usize] & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
         for sq in pieces {
             key ^= zobrist::key_piece(self.piece_at(sq), color, sq);
         }

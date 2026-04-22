@@ -49,15 +49,7 @@ impl PackedPiece {
     pub fn unpack(self) -> (usize, Color, Square) {
         let sq = Square((self.0 & 0x3F) as u8);
         let upper = (self.0 >> 6) as usize;
-        (
-            upper & 0x07,
-            if upper & 0x08 != 0 {
-                Color::Black
-            } else {
-                Color::White
-            },
-            sq,
-        )
+        (upper & 0x07, if upper & 0x08 != 0 { Color::Black } else { Color::White }, sq)
     }
 
     #[inline]
@@ -73,9 +65,9 @@ impl PackedPiece {
 #[repr(C)]
 pub struct PackedSafety {
     pub attackers: u8,
-    pub weak:      i8,
-    pub shield:    i8,
-    pub exposure:  u8,
+    pub weak: i8,
+    pub shield: i8,
+    pub exposure: u8,
 }
 
 impl From<SafetyMetrics> for PackedSafety {
@@ -83,9 +75,9 @@ impl From<SafetyMetrics> for PackedSafety {
     fn from(m: SafetyMetrics) -> Self {
         Self {
             attackers: m.attackers as u8,
-            weak:      m.weak as i8,
-            shield:    m.shield as i8,
-            exposure:  (m.ortho_exposure.clamp(0, 15) as u8) << 4 | (m.diag_exposure.clamp(0, 15) as u8),
+            weak: m.weak as i8,
+            shield: m.shield as i8,
+            exposure: (m.ortho_exposure.clamp(0, 15) as u8) << 4 | (m.diag_exposure.clamp(0, 15) as u8),
         }
     }
 }
@@ -94,11 +86,11 @@ impl PackedSafety {
     #[inline]
     pub fn to_metrics(self) -> SafetyMetrics {
         SafetyMetrics {
-            attackers:      self.attackers as usize,
-            weak:           self.weak as i32,
-            shield:         self.shield as i32,
+            attackers: self.attackers as usize,
+            weak: self.weak as i32,
+            shield: self.shield as i32,
             ortho_exposure: (self.exposure >> 4) as i32,
-            diag_exposure:  (self.exposure & 0x0F) as i32,
+            diag_exposure: (self.exposure & 0x0F) as i32,
         }
     }
 }
@@ -114,24 +106,24 @@ pub const STM_BLACK: u8 = 1;
 #[derive(Clone, Copy, Immutable, IntoBytes, FromBytes)]
 #[repr(C)]
 pub struct SoulEntry {
-    pub result:       f32,               // 1.0 = Us won, 0.5 = draw, 0.0 = Us lost
-    pub pieces:       [PackedPiece; 32], // piece list, squares normalised to Us perspective
-    pub static_score: i16,               // raw static eval (centipawns, STM-relative)
-    pub search_score: i16,               // search eval from last iteration
+    pub result: f32,               // 1.0 = Us won, 0.5 = draw, 0.0 = Us lost
+    pub pieces: [PackedPiece; 32], // piece list, squares normalised to Us perspective
+    pub static_score: i16,         // raw static eval (centipawns, STM-relative)
+    pub search_score: i16,         // search eval from last iteration
     /// STM-relative mobility [us_*, them_*]. Note: these are stored features
     /// and may go stale if the engine's mobility formula changes.
-    pub mobility:     [i8; 8],
+    pub mobility: [i8; 8],
     /// King safety metrics. Note: stored features, may go stale vs formula changes.
-    pub safety_us:    PackedSafety, // 4 bytes
-    pub safety_them:  PackedSafety, // 4 bytes
-    pub piece_count:  u8,           // total pieces on board (2–32)
-    pub original_stm: u8,           // 0 = White, 1 = Black (see STM_WHITE/STM_BLACK)
-    pub castling:     u8,           // us_ks | us_qs | them_ks | them_qs
+    pub safety_us: PackedSafety, // 4 bytes
+    pub safety_them: PackedSafety, // 4 bytes
+    pub piece_count: u8,           // total pieces on board (2–32)
+    pub original_stm: u8,          // 0 = White, 1 = Black (see STM_WHITE/STM_BLACK)
+    pub castling: u8,              // us_ks | us_qs | them_ks | them_qs
     /// Rank-flipped if Us is Black. 64 = none. Note: only stored if ep capture
     /// is actually legal, so round-tripping to FEN might lose phantom ep squares.
-    pub ep_square:    u8,
-    pub xray_ortho:   i8,
-    pub _padding:     [u8; 3], // explicit padding to satisfy zerocopy
+    pub ep_square: u8,
+    pub xray_ortho: i8,
+    pub _padding: [u8; 3], // explicit padding to satisfy zerocopy
 }
 
 const _: () = assert!(size_of::<SoulEntry>() == 96);
@@ -147,12 +139,7 @@ impl Default for SoulEntry {
 
 impl SoulEntry {
     /// Encode a board position into a training entry, normalised to STM perspective.
-    pub fn from_board(
-        board: &Position,
-        result: f64,
-        static_score: Option<i32>,
-        search_score: Option<i32>,
-    ) -> Self {
+    pub fn from_board(board: &Position, result: f64, static_score: Option<i32>, search_score: Option<i32>) -> Self {
         quant::from_board(board, result, static_score, search_score)
     }
 

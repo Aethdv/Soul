@@ -100,11 +100,7 @@ fn inspect(path: &str, count: usize) {
 
     for (i, entry) in entries.iter().take(count).enumerate() {
         let fen_raw = entry.to_fen();
-        let fen = fen_raw
-            .split_once(';')
-            .map(|(f, _)| f)
-            .unwrap_or(&fen_raw)
-            .trim();
+        let fen = fen_raw.split_once(';').map(|(f, _)| f).unwrap_or(&fen_raw).trim();
 
         // SoulEntry is #[repr(packed)]
         // the format machinery takes &arg internally,
@@ -163,11 +159,7 @@ fn info(path: &str) {
         total_search += i64::from(search_score);
 
         // result is STM-relative. original_stm: 0 = White, 1 = Black
-        let white_result = if original_stm == crate::tools::dataset::STM_WHITE {
-            result
-        } else {
-            1.0 - result
-        };
+        let white_result = if original_stm == crate::tools::dataset::STM_WHITE { result } else { 1.0 - result };
 
         if white_result > 0.9 {
             white_wins += 1;
@@ -216,9 +208,7 @@ fn encode(input: &str, output: &str) {
     // Grab file size before the reader chain consumes the handle.
     let file_len = file.metadata().map_or(0, |m| m.len());
 
-    let is_zst = Path::new(input)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("zst"));
+    let is_zst = Path::new(input).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zst"));
 
     let mut reader: Box<dyn BufRead> = if is_zst {
         match zstd::Decoder::new(file) {
@@ -233,11 +223,7 @@ fn encode(input: &str, output: &str) {
     };
 
     // EPD lines average 90 bytes. For zstd, assume ~4× compress ratio.
-    let est_bytes = if is_zst {
-        file_len.saturating_mul(4)
-    } else {
-        file_len
-    };
+    let est_bytes = if is_zst { file_len.saturating_mul(4) } else { file_len };
     let est_entries = (est_bytes / 90).max(256) as usize;
 
     let mut entries = Vec::with_capacity(est_entries);

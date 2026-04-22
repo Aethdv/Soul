@@ -15,14 +15,8 @@ const B_COEFFS: [f64; 4] = [96.533_548_96, -165.790_583_88, 90.896_790_19, 49.29
 /// Returns (Win, Draw, Loss) probabilities as floats in [0, 1].
 pub fn wdl_model(score: i32, material: u32) -> (f64, f64, f64) {
     let m = f64::from(material.clamp(17, 78)) / 58.0;
-    let a = A_COEFFS[0]
-        .mul_add(m, A_COEFFS[1])
-        .mul_add(m, A_COEFFS[2])
-        .mul_add(m, A_COEFFS[3]);
-    let b = B_COEFFS[0]
-        .mul_add(m, B_COEFFS[1])
-        .mul_add(m, B_COEFFS[2])
-        .mul_add(m, B_COEFFS[3]);
+    let a = A_COEFFS[0].mul_add(m, A_COEFFS[1]).mul_add(m, A_COEFFS[2]).mul_add(m, A_COEFFS[3]);
+    let b = B_COEFFS[0].mul_add(m, B_COEFFS[1]).mul_add(m, B_COEFFS[2]).mul_add(m, B_COEFFS[3]);
     let v = f64::from(score) * (a / 100.0);
 
     let w = 1.0 / (1.0 + ((a - v) / b).exp());

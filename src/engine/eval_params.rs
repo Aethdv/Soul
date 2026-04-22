@@ -9,10 +9,10 @@ use crate::weave::Vi32x4;
 
 #[derive(Debug, Clone)]
 pub struct Tunable {
-    pub name:             String,
-    pub value:            f64,
-    pub idx:              usize,
-    pub is_fixed:         bool,
+    pub name: String,
+    pub value: f64,
+    pub idx: usize,
+    pub is_fixed: bool,
     pub freeze_resistant: bool,
 }
 
@@ -63,13 +63,7 @@ fn collect_params_from_arrays<const N: usize>(name: &str, arr: &[Param; N]) -> V
             // eval, not individual tunable scalars. Map to fixed zero.
             Param::S(..) | Param::CS(..) => (0, true),
         };
-        params.push(Tunable {
-            value: val as f64,
-            name: format!("{name}[{i}]"),
-            idx: i,
-            is_fixed,
-            freeze_resistant,
-        });
+        params.push(Tunable { value: val as f64, name: format!("{name}[{i}]"), idx: i, is_fixed, freeze_resistant });
     }
     params
 }
@@ -264,22 +258,22 @@ macro_rules! define_tunables {
 }
 
 pub struct Layout {
-    pub psqt_offset:            usize,
-    pub psqt_len:               usize,
-    pub material_offset:        usize,
-    pub material_len:           usize,
-    pub mobility_open_offset:   usize,
-    pub mobility_open_len:      usize,
+    pub psqt_offset: usize,
+    pub psqt_len: usize,
+    pub material_offset: usize,
+    pub material_len: usize,
+    pub mobility_open_offset: usize,
+    pub mobility_open_len: usize,
     pub mobility_closed_offset: usize,
-    pub mobility_closed_len:    usize,
-    pub weight_offset:          usize,
-    pub weight_len:             usize,
-    pub attacker_offset:        usize,
-    pub attacker_len:           usize,
-    pub king_safety_offset:     usize,
-    pub king_safety_len:        usize,
-    pub xray_offset:            usize,
-    pub xray_len:               usize,
+    pub mobility_closed_len: usize,
+    pub weight_offset: usize,
+    pub weight_len: usize,
+    pub attacker_offset: usize,
+    pub attacker_len: usize,
+    pub king_safety_offset: usize,
+    pub king_safety_len: usize,
+    pub xray_offset: usize,
+    pub xray_len: usize,
 }
 
 pub const LAYOUT: Layout = calc_layout();
@@ -340,10 +334,7 @@ pub fn collect_parameters() -> Vec<Tunable> {
     let weights = collect_weight_params();
     for mut p in weights {
         if p.name.starts_with("PHASE_WEIGHTS") {
-            assert!(
-                p.is_fixed,
-                "PHASE_WEIGHTS must be constant (CV) — tuning phase is not supported."
-            );
+            assert!(p.is_fixed, "PHASE_WEIGHTS must be constant (CV) — tuning phase is not supported.");
         }
         p.idx = all.len();
         all.push(p);

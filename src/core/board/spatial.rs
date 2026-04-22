@@ -90,9 +90,9 @@ pub fn atk_pawn_b(pawns: Vu64x4) -> Vu64x4 {
 /// AVX2 `vpsllq`/`vpsrlq` instructions applied to the packed `Vu64x4`.
 pub struct SpatialTensor {
     pub ortho_direct: Vu64x4,
-    pub ortho_xray:   Vu64x4,
-    pub diag_direct:  Vu64x4,
-    pub diag_xray:    Vu64x4,
+    pub ortho_xray: Vu64x4,
+    pub diag_direct: Vu64x4,
+    pub diag_xray: Vu64x4,
 }
 
 impl SpatialTensor {
@@ -179,12 +179,7 @@ impl SpatialTensor {
             (ne | nw | se | sw) & !diag_direct
         };
 
-        Self {
-            ortho_direct,
-            ortho_xray,
-            diag_direct,
-            diag_xray,
-        }
+        Self { ortho_direct, ortho_xray, diag_direct, diag_xray }
     }
 
     // ── Accessors ──
@@ -258,10 +253,7 @@ mod tests {
         let diag_xray = st.w_diag_xray();
 
         assert!((diag_xray & d5) != 0, "Should X-ray NW from E4 to D5");
-        assert!(
-            (diag_xray & f5) == 0,
-            "Phantom X-ray detected! E4 should not radiate NE (only NW)"
-        );
+        assert!((diag_xray & f5) == 0, "Phantom X-ray detected! E4 should not radiate NE (only NW)");
     }
 
     #[test]

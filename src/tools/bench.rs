@@ -32,12 +32,7 @@ pub fn run(depth: i32) {
     println!("Running bench on {} positions (Depth {})...", fens.len(), depth);
     io::stdout().flush().ok();
 
-    let limits = Limits {
-        depth,
-        silent: true,
-        protocol: Protocol::Uci,
-        ..Default::default()
-    };
+    let limits = Limits { depth, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
     for (i, fen) in fens.iter().enumerate() {
         let board = Position::from_fen(fen);
@@ -46,20 +41,9 @@ pub fn run(depth: i32) {
         print!("\rPosition {}/{}... ", i + 1, fens.len());
         io::stdout().flush().ok();
 
-        let cfg = SearchConfig::new(
-            limits.clone(),
-            Instant::now(),
-            stop_signal.clone(),
-            0,
-            SearchParams::default(),
-        );
-        let mut searcher = Searcher::new(
-            &cfg,
-            &board,
-            &history,
-            history::History::new(),
-            Arc::new(tt::TranspositionTable::new(16)),
-        );
+        let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
+        let mut searcher =
+            Searcher::new(&cfg, &board, &history, history::History::new(), Arc::new(tt::TranspositionTable::new(16)));
         searcher.iterative_deepening();
 
         let nodes = searcher.nodes;

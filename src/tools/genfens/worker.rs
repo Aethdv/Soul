@@ -35,35 +35,35 @@ use crate::{
 /// applies adjudication heuristics, filters positions for training quality,
 /// and back-propagates the final WDL result once the game concludes.
 pub struct WorkerState {
-    pub board:                  Position,
-    pub accumulator:            crate::weave::Vi16x8,
+    pub board: Position,
+    pub accumulator: crate::weave::Vi16x8,
     /// Position hashes fed to the searcher (in-search repetition detection).
-    pub search_history:         Vec<u64>,
+    pub search_history: Vec<u64>,
     /// Full game hash trail (threefold repetition detection).
-    pub game_history:           Vec<u64>,
+    pub game_history: Vec<u64>,
     /// Positions awaiting the final game result before becoming training data.
-    pub pending:                Vec<(SoulEntry, Color)>,
+    pub pending: Vec<(SoulEntry, Color)>,
     /// Fully labeled entries, ready for serialization.
-    pub confirmed:              Vec<SoulEntry>,
-    pub book:                   Arc<Vec<String>>,
-    pub config:                 GenfensConfig,
-    pub rng:                    fastrand::Rng,
-    pub global:                 Arc<GlobalStats>,
-    pub tt:                     Arc<tt::TranspositionTable>,
+    pub confirmed: Vec<SoulEntry>,
+    pub book: Arc<Vec<String>>,
+    pub config: GenfensConfig,
+    pub rng: fastrand::Rng,
+    pub global: Arc<GlobalStats>,
+    pub tt: Arc<tt::TranspositionTable>,
     /// Persistent history table — reused across positions within a game,
     /// cleared between games. Avoids per-position heap allocation.
-    pub history_table:          history::History,
+    pub history_table: history::History,
     /// Track if the last move made was a capture or promotion to filter out
     /// tactically "hot" positions reached via a trade.
     pub last_move_was_tactical: bool,
     /// Consecutive plies with |eval| ≥ 2500 (win adjudication fires at 4).
-    pub win_adj_counter:        usize,
+    pub win_adj_counter: usize,
     /// Consecutive plies with |eval| ≤ 4 (draw adjudication fires at 12).
-    pub draw_adj_counter:       usize,
+    pub draw_adj_counter: usize,
     /// Evaluation of the previous ply (to detect sign flips).
-    pub last_eval:              i32,
-    pub local_attempted:        u64,
-    pub local_plies:            u64,
+    pub last_eval: i32,
+    pub local_attempted: u64,
+    pub local_plies: u64,
 }
 
 /// Each clone gets a fresh, independently seeded RNG and zeroed adjudication
@@ -72,24 +72,24 @@ pub struct WorkerState {
 impl Clone for WorkerState {
     fn clone(&self) -> Self {
         Self {
-            board:                  self.board,
-            accumulator:            self.accumulator,
-            search_history:         self.search_history.clone(),
-            game_history:           self.game_history.clone(),
-            pending:                self.pending.clone(),
-            confirmed:              self.confirmed.clone(),
-            book:                   Arc::clone(&self.book),
-            config:                 self.config.clone(),
-            rng:                    fastrand::Rng::new(),
-            global:                 Arc::clone(&self.global),
-            tt:                     Arc::new(tt::TranspositionTable::new(16)),
-            history_table:          history::History::new(),
+            board: self.board,
+            accumulator: self.accumulator,
+            search_history: self.search_history.clone(),
+            game_history: self.game_history.clone(),
+            pending: self.pending.clone(),
+            confirmed: self.confirmed.clone(),
+            book: Arc::clone(&self.book),
+            config: self.config.clone(),
+            rng: fastrand::Rng::new(),
+            global: Arc::clone(&self.global),
+            tt: Arc::new(tt::TranspositionTable::new(16)),
+            history_table: history::History::new(),
             last_move_was_tactical: false,
-            win_adj_counter:        0,
-            draw_adj_counter:       0,
-            last_eval:              0,
-            local_attempted:        0,
-            local_plies:            0,
+            win_adj_counter: 0,
+            draw_adj_counter: 0,
+            last_eval: 0,
+            local_attempted: 0,
+            local_plies: 0,
         }
     }
 }
@@ -200,13 +200,9 @@ impl WorkerState {
 
             // ── Fixed depth search ──
             self.search_history.clear();
-            let irrev_idx = self
-                .game_history
-                .len()
-                .saturating_sub(self.board.halfmove_clock as usize);
+            let irrev_idx = self.game_history.len().saturating_sub(self.board.halfmove_clock as usize);
             if irrev_idx < self.game_history.len() {
-                self.search_history
-                    .extend_from_slice(&self.game_history[irrev_idx..]);
+                self.search_history.extend_from_slice(&self.game_history[irrev_idx..]);
             }
             self.search_history.push(self.board.hash);
 
@@ -224,12 +220,7 @@ impl WorkerState {
             // ── Adjudication ──
             let ply = (self.board.fullmove_number as usize - 1) * 2 + (self.board.stm as usize);
             if let Some(res) = check_adjudication(
-                search_eval,
-                self.last_eval,
-                &mut self.win_adj_counter,
-                &mut self.draw_adj_counter,
-                self.board.stm,
-                ply,
+                search_eval, self.last_eval, &mut self.win_adj_counter, &mut self.draw_adj_counter, self.board.stm, ply,
             ) {
                 outcome = res;
                 if res == GameOutcome::Draw {
@@ -298,14 +289,10 @@ impl WorkerState {
             self.confirmed.push(entry);
         }
 
-        self.global
-            .saved
-            .fetch_add(self.confirmed.len() as u64, Relaxed);
+        self.global.saved.fetch_add(self.confirmed.len() as u64, Relaxed);
 
         // Flush local stats to global
-        self.global
-            .attempted
-            .fetch_add(self.local_attempted, Relaxed);
+        self.global.attempted.fetch_add(self.local_attempted, Relaxed);
         self.global.plies.fetch_add(self.local_plies, Relaxed);
         self.local_attempted = 0;
         self.local_plies = 0;
@@ -342,13 +329,8 @@ impl WorkerState {
 
         // Move history out with a zero-cost default (empty cont Box).
         // The history accumulates across positions within a game for better ordering.
-        let mut searcher = Searcher::new(
-            &cfg,
-            &self.board,
-            &self.search_history,
-            std::mem::take(&mut self.history_table),
-            Arc::clone(&self.tt),
-        );
+        let mut searcher =
+            Searcher::new(&cfg, &self.board, &self.search_history, std::mem::take(&mut self.history_table), Arc::clone(&self.tt));
         searcher.iterative_deepening();
         let best_score = searcher.best_score().unwrap_or(0);
         let best_move = searcher.best_move();

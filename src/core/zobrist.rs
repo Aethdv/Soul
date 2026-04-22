@@ -46,10 +46,10 @@ impl ConstRng {
 }
 
 pub struct ZobristKeys {
-    pub pieces:     [u64; PIECE_KEYS_LEN],
+    pub pieces: [u64; PIECE_KEYS_LEN],
     pub en_passant: [u64; EP_KEYS_LEN],
-    pub castling:   [u64; CASTLING_KEYS_LEN],
-    pub side:       u64,
+    pub castling: [u64; CASTLING_KEYS_LEN],
+    pub side: u64,
 }
 
 pub static KEYS: ZobristKeys = init_keys();
@@ -119,10 +119,5 @@ const fn init_keys() -> ZobristKeys {
 
     let side = rng.next();
 
-    ZobristKeys {
-        pieces,
-        en_passant,
-        castling,
-        side,
-    }
+    ZobristKeys { pieces, en_passant, castling, side }
 }

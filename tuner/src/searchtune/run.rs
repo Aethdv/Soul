@@ -75,10 +75,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                 cmaes.restore_state(ckpt.variances, ckpt.p_sigma, ckpt.p_c);
 
                 best_params = ckpt.best_params;
-                println!(
-                    "\x1b[1;33m>> Resumed from epoch {} (Best: {best_elo:+.1} Elo)\x1b[0m",
-                    ckpt.epoch
-                );
+                println!("\x1b[1;33m>> Resumed from epoch {} (Best: {best_elo:+.1} Elo)\x1b[0m", ckpt.epoch);
                 println!();
             },
             Ok(None) => {
@@ -96,10 +93,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     println!("  Epochs:          {}", config.epochs);
     let lambda = cmaes.lambda();
     println!("  Workload:        {} candidates x {} pairs", lambda, config.pairs);
-    println!(
-        "                   (Total {} games/gen at 100% budget)",
-        lambda * config.pairs * 2
-    );
+    println!("                   (Total {} games/gen at 100% budget)", lambda * config.pairs * 2);
     println!();
     println!("\x1b[90m ─── Soft Active CMA-ES (Separable) ───\x1b[0m");
     println!("  Population (λ):  {}", cmaes.lambda());
@@ -206,11 +200,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         // Silverman's rule naturally "zooms in" the kernel as the optimizer converges.
         // We blend it with the config value to ensure we don't start too narrow.
         let silverman_h = elo_cache.silverman_bandwidth();
-        let adaptive_radius = if elo_cache.len() > 10 {
-            silverman_h
-        } else {
-            config.smoothing_radius
-        };
+        let adaptive_radius = if elo_cache.len() > 10 { silverman_h } else { config.smoothing_radius };
 
         // ── Surrogate-Assisted Rank Imputation ──
         // We use the EloCache to predict results for candidates in well-explored regions.
@@ -394,11 +384,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         let new_eta = cmaes.learning_rate() * adaptive_factor;
         cmaes.set_lr(new_eta);
 
-        let (gen_best_idx, _) = penalized_elo
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.total_cmp(b))
-            .unwrap();
+        let (gen_best_idx, _) = penalized_elo.iter().enumerate().max_by(|(_, a), (_, b)| a.total_cmp(b)).unwrap();
 
         let gen_best_elo = fitness_results[gen_best_idx].0;
         let avg_raw_elo = fitness_results.iter().map(|&(r, ..)| r).sum::<f64>() / lambda as f64;
@@ -447,12 +433,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
                 // Feed the grounding match back to the cache too
                 let weight = 1.0 / (2.5f64.powi(2) + 1.0);
-                elo_cache.add(
-                    best_params.clone(),
-                    SearchParams::default().to_normalized(),
-                    verified_elo,
-                    weight,
-                );
+                elo_cache.add(best_params.clone(), SearchParams::default().to_normalized(), verified_elo, weight);
             }
 
             h2h_result = Some((h2h_elo > 0.0, h2h_elo));
@@ -594,9 +575,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             // If the elite regresses during re-evaluation, rollback to the last
             // verified elite parameters and state.
             if reeval_elo < -25.0 {
-                println!(
-                    "\x1b[38;2;255;100;100m        └─ ⚠ Elite regressed! Reverting to last likely best elite.\x1b[0m"
-                );
+                println!("\x1b[38;2;255;100;100m        └─ ⚠ Elite regressed! Reverting to last likely best elite.\x1b[0m");
                 best_params.clone_from(&verified_elite_params);
                 cmaes = verified_elite_state.clone(); // Full state rollback!
                 best_elo = verified_elo;
@@ -635,10 +614,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         }
     }
 
-    println!(
-        "\n\x1b[1;36m>> Search Tuning Complete ({:.1}s)\x1b[0m",
-        total_start.elapsed().as_secs_f64()
-    );
+    println!("\n\x1b[1;36m>> Search Tuning Complete ({:.1}s)\x1b[0m", total_start.elapsed().as_secs_f64());
     println!("\x1b[1;33m>> Peak Elo (noisy estimate): {best_elo:+.1}\x1b[0m");
     println!("\x1b[90m   Elo cache: {} samples collected\x1b[0m", elo_cache.len());
 
@@ -648,11 +624,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
          {mc_misses}\x1b[0m"
     );
 
-    let final_radius = if elo_cache.len() > 10 {
-        elo_cache.silverman_bandwidth()
-    } else {
-        config.smoothing_radius
-    };
+    let final_radius = if elo_cache.len() > 10 { elo_cache.silverman_bandwidth() } else { config.smoothing_radius };
     if let Some((denoised, count)) = elo_cache.denoised_elo(&best_params, final_radius) {
         println!("\x1b[90m   Denoised estimate: {denoised:+.1} Elo (from {count} nearby samples)\x1b[0m");
     }

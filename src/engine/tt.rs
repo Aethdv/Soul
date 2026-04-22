@@ -12,9 +12,7 @@ pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 /// Can we use this TT score as a cutoff given the current window?
 #[inline(always)]
 pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
-    bound == BOUND_EXACT
-        || (bound == BOUND_LOWER && score >= beta)
-        || (bound == BOUND_UPPER && score <= alpha)
+    bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
 }
 
 /// Uninitialized TT eval/score.
@@ -24,14 +22,14 @@ pub const SCORE_NONE: i32 = 32000;
 #[repr(C)]
 pub struct TtEntry {
     /// Full 64-bit Zobrist key to mathematically prevent hash collisions
-    pub key:   u64,
+    pub key: u64,
     /// Best move found in this position
-    pub mv:    u16,
+    pub mv: u16,
     /// Search score
     pub score: i16,
     pub depth: u8,
     pub bound: u8,
-    pub _pad:  u16,
+    pub _pad: u16,
 }
 
 const _: () = assert!(std::mem::size_of::<TtEntry>() == 16);
@@ -49,9 +47,7 @@ unsafe impl Sync for TranspositionTable {}
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
     pub fn new(size_mb: usize) -> Self {
-        let mut tt = Self {
-            entries: Box::new([]),
-        };
+        let mut tt = Self { entries: Box::new([]) };
         tt.resize(size_mb);
         tt
     }
@@ -66,12 +62,7 @@ impl TranspositionTable {
     /// Returns TT occupancy in permille (0–1000) by sampling the first 1000 entries.
     pub fn hashfull(&self) -> usize {
         let sample = self.entries.len().min(1000);
-        self.entries[..sample]
-            .iter()
-            .filter(|e| e.bound != BOUND_NONE)
-            .count()
-            * 1000
-            / sample.max(1)
+        self.entries[..sample].iter().filter(|e| e.bound != BOUND_NONE).count() * 1000 / sample.max(1)
     }
 
     /// Clears the table cleanly. Safe because of boxed lifetime.

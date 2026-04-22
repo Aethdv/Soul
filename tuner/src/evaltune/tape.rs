@@ -18,11 +18,11 @@ use soul::{
 /// Active piece entry for PSQT gradient scatter.
 #[derive(Copy, Clone, Default)]
 pub struct ActivePiece {
-    pub mg_idx:     u32,
-    pub eg_idx:     u32,
+    pub mg_idx: u32,
+    pub eg_idx: u32,
     pub mat_mg_idx: u32,
     pub mat_eg_idx: u32,
-    pub sign:       f32,
+    pub sign: f32,
 }
 
 mod scatter {
@@ -68,14 +68,8 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
         let pt = piece.as_usize();
         piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
 
-        let mat_mg = values
-            .get(psqt::LAYOUT.material_offset + pt)
-            .copied()
-            .unwrap_or(0.0);
-        let mat_eg = values
-            .get(psqt::LAYOUT.material_offset + 6 + pt)
-            .copied()
-            .unwrap_or(0.0);
+        let mat_mg = values.get(psqt::LAYOUT.material_offset + pt).copied().unwrap_or(0.0);
+        let mat_eg = values.get(psqt::LAYOUT.material_offset + 6 + pt).copied().unwrap_or(0.0);
 
         // White pieces
         let mut bb_w = board.pieces(piece, Color::White);
@@ -87,10 +81,7 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
 
             lane_vals[0] += values.get(pt * 64 + mirror_idx).copied().unwrap_or(0.0);
-            lane_vals[1] += values
-                .get(pt * 64 + 32 + mirror_idx)
-                .copied()
-                .unwrap_or(0.0);
+            lane_vals[1] += values.get(pt * 64 + 32 + mirror_idx).copied().unwrap_or(0.0);
         }
 
         // Black pieces
@@ -103,10 +94,7 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
 
             lane_vals[0] -= values.get(pt * 64 + mirror_idx).copied().unwrap_or(0.0);
-            lane_vals[1] -= values
-                .get(pt * 64 + 32 + mirror_idx)
-                .copied()
-                .unwrap_or(0.0);
+            lane_vals[1] -= values.get(pt * 64 + 32 + mirror_idx).copied().unwrap_or(0.0);
         }
     }
 }
@@ -118,11 +106,11 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 /// as a snapshot that can be consumed later once the outer loss derivative
 /// is known.
 pub struct DualEvalResult {
-    pub score:        f64,
+    pub score: f64,
     /// Raw partial derivatives from the dual pass (29 active slots in 32).
-    pub grad:         [f32; soul::engine::autograd::dual::DUAL_N],
+    pub grad: [f32; soul::engine::autograd::dual::DUAL_N],
     /// Board pieces recorded during accumulation for PSQT scatter.
-    pub active:       [ActivePiece; 32],
+    pub active: [ActivePiece; 32],
     pub active_count: usize,
 }
 
@@ -188,11 +176,11 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
             lane_vals[1] += values.get(eg_idx).copied().unwrap_or(0.0) + mat_eg_val;
 
             active[active_count] = ActivePiece {
-                mg_idx:     mg_idx as u32,
-                eg_idx:     eg_idx as u32,
+                mg_idx: mg_idx as u32,
+                eg_idx: eg_idx as u32,
                 mat_mg_idx: mat_mg_idx as u32,
                 mat_eg_idx: mat_eg_idx as u32,
-                sign:       1.0,
+                sign: 1.0,
             };
             active_count += 1;
         }
@@ -209,11 +197,11 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
             lane_vals[1] -= values.get(eg_idx).copied().unwrap_or(0.0) + mat_eg_val;
 
             active[active_count] = ActivePiece {
-                mg_idx:     mg_idx as u32,
-                eg_idx:     eg_idx as u32,
+                mg_idx: mg_idx as u32,
+                eg_idx: eg_idx as u32,
                 mat_mg_idx: mat_mg_idx as u32,
                 mat_eg_idx: mat_eg_idx as u32,
-                sign:       -1.0,
+                sign: -1.0,
             };
             active_count += 1;
         }
@@ -226,9 +214,7 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
             phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
         }
     }
-    let phase = phase_dual
-        .math_clamp(DualNode::constant(0.0), DualNode::constant(24.0))
-        .trunc();
+    let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
 
     // Seed DualNode values
     // Only lanes 0 (MG) and 1 (EG) need gradient tracking.
@@ -247,33 +233,22 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
     let pinned_w = board.pinned_pieces(Color::White);
     let pinned_b = board.pinned_pieces(Color::Black);
     let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let data =
-        soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+    let data = soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
 
     let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
     let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
     let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
     let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
 
-    let xray_ortho = (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32
-        - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+    let xray_ortho =
+        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-    let features = soul::engine::eval::MacroFeatures {
-        openness,
-        data,
-        xray_ortho,
-    };
+    let features = soul::engine::eval::MacroFeatures { openness, data, xray_ortho };
 
     // Forward pass with dual numbers
-    let result =
-        soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
+    let result = soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
 
-    DualEvalResult {
-        score: result.val,
-        grad: result.grad,
-        active,
-        active_count,
-    }
+    DualEvalResult { score: result.val, grad: result.grad, active, active_count }
 }
 
 /// Fully fused eval + gradient scatter via forward-mode AD.
@@ -307,9 +282,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
             phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
         }
     }
-    let phase = phase_dual
-        .math_clamp(DualNode::constant(0.0), DualNode::constant(24.0))
-        .trunc();
+    let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
 
     // Seed DualNode values
     let mut dual_acc = DualVec8::zero();
@@ -326,26 +299,20 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let pinned_w = board.pinned_pieces(Color::White);
     let pinned_b = board.pinned_pieces(Color::Black);
     let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let data =
-        soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+    let data = soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
 
     let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
     let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
     let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
     let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
 
-    let xray_ortho = (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32
-        - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+    let xray_ortho =
+        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-    let features = soul::engine::eval::MacroFeatures {
-        openness,
-        data,
-        xray_ortho,
-    };
+    let features = soul::engine::eval::MacroFeatures { openness, data, xray_ortho };
 
     // Forward pass
-    let result =
-        soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
+    let result = soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
     let score = result.val;
 
     // Sigmoid + loss derivative
@@ -356,12 +323,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     // Scatter gradients immediately (no intermediate storage)
 
     // EvalParams gradients (slots 2..29)
-    let dummy = DualEvalResult {
-        score:        0.0,
-        grad:         result.grad,
-        active:       [ActivePiece::default(); 32],
-        active_count: 0,
-    };
+    let dummy = DualEvalResult { score: 0.0, grad: result.grad, active: [ActivePiece::default(); 32], active_count: 0 };
     dummy.scatter_dynamic(outer_deriv, param_grads);
 
     // PSQT gradients — re-iterate board pieces (still hot in L1)
@@ -590,8 +552,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // When multiplying by d (which incorporates stm_sign and loss derivative),
     // the sign flips correctly cancel out exactly. This ensures that the gradient applied to
     // param_grads[xr] naturally aligns with the STM-relative score evaluation!
-    let w_xray_ortho = (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32
-        - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+    let w_xray_ortho =
+        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
     param_grads[xr] += d * t_mg * w_xray_ortho as f64;
 
@@ -637,22 +599,15 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let xr = psqt::LAYOUT.xray_offset;
 
     let params = soul::engine::eval::EvalParams {
-        mg_mob_open:   F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
-        eg_mob_open:   F64Vec4([values[lo + 4], values[lo + 5], values[lo + 6], values[lo + 7]]),
+        mg_mob_open: F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
+        eg_mob_open: F64Vec4([values[lo + 4], values[lo + 5], values[lo + 6], values[lo + 7]]),
         mg_mob_closed: F64Vec4([values[lc], values[lc + 1], values[lc + 2], values[lc + 3]]),
         eg_mob_closed: F64Vec4([values[lc + 4], values[lc + 5], values[lc + 6], values[lc + 7]]),
-        w_shield:      values[ks],
-        w_ortho:       values[ks + 1],
-        w_diag:        values[ks + 2],
-        atk_weights:   [
-            values[ao],
-            values[ao + 1],
-            values[ao + 2],
-            values[ao + 3],
-            values[ao + 4],
-            values[ao + 5],
-        ],
-        w_xray_ortho:  values[xr],
+        w_shield: values[ks],
+        w_ortho: values[ks + 1],
+        w_diag: values[ks + 2],
+        atk_weights: [values[ao], values[ao + 1], values[ao + 2], values[ao + 3], values[ao + 4], values[ao + 5]],
+        w_xray_ortho: values[xr],
     };
 
     // Build the macroscopic features boundary
@@ -660,28 +615,19 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let pinned_w = board.pinned_pieces(Color::White);
     let pinned_b = board.pinned_pieces(Color::Black);
     let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let data =
-        soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+    let data = soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
 
     let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
     let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
     let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
     let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
 
-    let xray_ortho = (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32
-        - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+    let xray_ortho =
+        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-    let features = soul::engine::eval::MacroFeatures {
-        openness,
-        data,
-        xray_ortho,
-    };
+    let features = soul::engine::eval::MacroFeatures { openness, data, xray_ortho };
 
-    (
-        evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)),
-        trace_acc.0,
-        piece_counts,
-    )
+    (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }
 
 #[cfg(test)]

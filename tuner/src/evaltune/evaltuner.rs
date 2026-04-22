@@ -42,9 +42,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         return;
     };
     let path_str = paths.join(",");
-    let is_encoded = paths
-        .iter()
-        .all(|p| p.ends_with(".soul") || p.ends_with(".soul.zst"));
+    let is_encoded = paths.iter().all(|p| p.ends_with(".soul") || p.ends_with(".soul.zst"));
 
     if is_encoded {
         run_encoded(&paths, config, resume_path);
@@ -90,50 +88,45 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
     let (train, val) = entries.split_at(train_count);
 
     print_dataset_stats(train, val, entries.len(), |e| {
-        if e.original_stm == soul::tools::dataset::STM_WHITE {
-            e.result as f64
-        } else {
-            1.0 - e.result as f64
-        }
+        if e.original_stm == soul::tools::dataset::STM_WHITE { e.result as f64 } else { 1.0 - e.result as f64 }
     });
 
     // Batch gradient closure:
     // Uses TrainableEntry trait dispatch for generic accumulation,
     // though encoded datasets use stored features directly.
-    let batch_grad =
-        |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
-            let reduce_res = batch_indices
-                .par_chunks(256)
-                .fold(
-                    || (vec![0.0; values.len()], 0.0),
-                    |(mut g, mut loss), chunk| {
-                        for &i in chunk {
-                            let entry = &train[i];
-                            let score = entry.eval_with_state(values, &mut ());
-                            let sig = sigmoid(score, k);
-                            let target = entry.target(k, blend);
+    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
+        let reduce_res = batch_indices
+            .par_chunks(256)
+            .fold(
+                || (vec![0.0; values.len()], 0.0),
+                |(mut g, mut loss), chunk| {
+                    for &i in chunk {
+                        let entry = &train[i];
+                        let score = entry.eval_with_state(values, &mut ());
+                        let sig = sigmoid(score, k);
+                        let target = entry.target(k, blend);
 
-                            // MSE Loss gradient:
-                            // J = (S(x) - y)² where S(x) is the sigmoid eval and y is the target.
-                            //
-                            // Chain rule: dJ/dx = dJ/dS · dS/dx
-                            // 1. dJ/dS = 2 · (S(x) - y)
-                            // 2. dS/dx = K · S(x) · (1 - S(x))
-                            //
-                            // dJ/dx = 2 · (S(x) - y) · K · S(x) · (1 - S(x))
-                            let err = sig - target;
-                            let d = 2.0 * err * sig * (1.0 - sig) * k;
+                        // MSE Loss gradient:
+                        // J = (S(x) - y)² where S(x) is the sigmoid eval and y is the target.
+                        //
+                        // Chain rule: dJ/dx = dJ/dS · dS/dx
+                        // 1. dJ/dS = 2 · (S(x) - y)
+                        // 2. dS/dx = K · S(x) · (1 - S(x))
+                        //
+                        // dJ/dx = 2 · (S(x) - y) · K · S(x) · (1 - S(x))
+                        let err = sig - target;
+                        let d = 2.0 * err * sig * (1.0 - sig) * k;
 
-                            entry.accumulate_grad(values, d, &mut g, &());
-                            loss = err.mul_add(err, loss);
-                        }
-                        (g, loss)
-                    },
-                )
-                .reduce(|| (vec![0.0; values.len()], 0.0), grad_combine);
+                        entry.accumulate_grad(values, d, &mut g, &());
+                        loss = err.mul_add(err, loss);
+                    }
+                    (g, loss)
+                },
+            )
+            .reduce(|| (vec![0.0; values.len()], 0.0), grad_combine);
 
-            reduce_res.pipe_grads(grads)
-        };
+        reduce_res.pipe_grads(grads)
+    };
 
     // Validation eval closure
     let val_eval = |values: &[f64], k: f64| -> f64 {
@@ -149,14 +142,7 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
             / val.len() as f64
     };
 
-    train_loop(
-        train.len(),
-        "Encoded (no attack gen)",
-        config,
-        resume_path,
-        batch_grad,
-        val_eval,
-    );
+    train_loop(train.len(), "Encoded (no attack gen)", config, resume_path, batch_grad, val_eval);
 }
 
 /// Training loop for raw EPD datasets.
@@ -191,26 +177,25 @@ fn run_raw(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&str>)
     print_dataset_stats(train, val, entries.len(), |e| e.result);
 
     // Batch gradient closure: uses eval_linear_grad (exploits eval linearity)
-    let batch_grad =
-        |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
-            let reduce_res = batch_indices
-                .par_chunks(256)
-                .fold(
-                    || (vec![0.0; values.len()], 0.0),
-                    |(mut g, mut loss), chunk| {
-                        for &i in chunk {
-                            let entry = &train[i];
-                            let target = entry.target(k, blend);
-                            let sq_err = tape::eval_linear_grad(&entry.board, values, target, k, &mut g);
-                            loss += sq_err;
-                        }
-                        (g, loss)
-                    },
-                )
-                .reduce(|| (vec![0.0; values.len()], 0.0), grad_combine);
+    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
+        let reduce_res = batch_indices
+            .par_chunks(256)
+            .fold(
+                || (vec![0.0; values.len()], 0.0),
+                |(mut g, mut loss), chunk| {
+                    for &i in chunk {
+                        let entry = &train[i];
+                        let target = entry.target(k, blend);
+                        let sq_err = tape::eval_linear_grad(&entry.board, values, target, k, &mut g);
+                        loss += sq_err;
+                    }
+                    (g, loss)
+                },
+            )
+            .reduce(|| (vec![0.0; values.len()], 0.0), grad_combine);
 
-            reduce_res.pipe_grads(grads)
-        };
+        reduce_res.pipe_grads(grads)
+    };
 
     // Validation eval closure
     let val_eval = |values: &[f64], k: f64| -> f64 {
@@ -243,13 +228,7 @@ fn run_raw(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&str>)
         tape::eval_dual_fused(&entry.board, &default_values, target, 1.0, &mut dual_g);
 
         for (i, (lin, dual)) in linear_g.iter().zip(dual_g.iter()).enumerate() {
-            assert!(
-                (lin - dual).abs() < 1e-4,
-                "Gradient drift detected at index {}! linear: {}, dual: {}",
-                i,
-                lin,
-                dual
-            );
+            assert!((lin - dual).abs() < 1e-4, "Gradient drift detected at index {}! linear: {}, dual: {}", i, lin, dual);
         }
     }
 
@@ -283,10 +262,7 @@ fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Ve
 fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
     let train_count = train.len();
     let val_count = val.len();
-    println!(
-        "Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)",
-        total, train_count, val_count
-    );
+    println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", total, train_count, val_count);
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
@@ -366,10 +342,7 @@ fn train_loop<G, V>(
     println!("Mode:       \x1b[36m{mode_label}\x1b[0m");
     println!("LR Sched:   \x1b[36m{}\x1b[0m", lr_scheduler.describe());
     println!("WDL Sched:  \x1b[36m{}\x1b[0m", wdl_scheduler.describe());
-    println!(
-        "Optimizer:  \x1b[36mLion\x1b[0m (Batch: {}, WD: {})",
-        config.batch_size, config.weight_decay
-    );
+    println!("Optimizer:  \x1b[36mLion\x1b[0m (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = File::create("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
@@ -379,12 +352,7 @@ fn train_loop<G, V>(
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
-    let mut optimizer = Lion::new(
-        config.beta1,
-        config.beta2,
-        lr_scheduler.rate(start_epoch, config.epochs),
-        config.weight_decay,
-    );
+    let mut optimizer = Lion::new(config.beta1, config.beta2, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
 
     let mut grad_stats = GradientStats::new(100);
     let mut indices: Vec<usize> = (0..train_len).collect();
@@ -446,11 +414,7 @@ fn train_loop<G, V>(
             let clip_thresh = grad_stats.clip_threshold(config.grad_clip);
             let threshold = clip_thresh * n;
 
-            let scale = if norm > threshold {
-                threshold / norm
-            } else {
-                1.0
-            };
+            let scale = if norm > threshold { threshold / norm } else { 1.0 };
             for (i, g) in grads.iter_mut().enumerate() {
                 *g = *g / n * scale;
                 total_grads[i] += *g;
@@ -473,9 +437,7 @@ fn train_loop<G, V>(
             // ── Chronological EMA (Polyak Averaging) ──
             // High-frequency oscillations in raw weights are smoothed out.
             for i in 0..values.len() {
-                ema_values[i] = config
-                    .ema_decay
-                    .mul_add(ema_values[i], (1.0 - config.ema_decay) * values[i]);
+                ema_values[i] = config.ema_decay.mul_add(ema_values[i], (1.0 - config.ema_decay) * values[i]);
             }
         }
 
@@ -517,38 +479,17 @@ fn train_loop<G, V>(
             }
         }
 
-        let overfit_warn = if val_loss > best_val_loss * 1.02 {
-            " \x1b[31;1m⚠ OVERFIT\x1b[0m"
-        } else {
-            ""
-        };
+        let overfit_warn = if val_loss > best_val_loss * 1.02 { " \x1b[31;1m⚠ OVERFIT\x1b[0m" } else { "" };
 
-        let is_best =
-            update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit);
+        let is_best = update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit);
 
         // Group-wise gradient norms for diagnostics
-        let psqt_norm = total_grads[..psqt_end]
-            .iter()
-            .map(|g| g * g)
-            .sum::<f64>()
-            .sqrt();
-        let mob_norm = total_grads[mob_start..mob_end]
-            .iter()
-            .map(|g| g * g)
-            .sum::<f64>()
-            .sqrt();
+        let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
+        let mob_norm = total_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
 
         if let Some(ref mut w) = logger {
-            writeln!(
-                w,
-                "{:>3}     {:.6}    {:.6}    {:.4}{}",
-                epoch,
-                train_loss,
-                val_loss,
-                lr,
-                if is_best { " *" } else { "" }
-            )
-            .ok();
+            writeln!(w, "{:>3}     {:.6}    {:.6}    {:.4}{}", epoch, train_loss, val_loss, lr, if is_best { " *" } else { "" })
+                .ok();
         }
         if let Some(ref mut l) = json_logger {
             if is_restart {
@@ -694,11 +635,7 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
                     s.to_string()
                 } else {
                     let data_prefixed = format!("data/{s}");
-                    if std::path::Path::new(&data_prefixed).exists() {
-                        data_prefixed
-                    } else {
-                        s.to_string()
-                    }
+                    if std::path::Path::new(&data_prefixed).exists() { data_prefixed } else { s.to_string() }
                 }
             })
             .collect();

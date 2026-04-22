@@ -37,9 +37,9 @@ pub const TIME_HARD_CAP: f64 = 0.5;
 /// to decide when to stop iterating (`soft`) and when to bail mid-search
 /// regardless of progress (`hard`).
 pub struct TimeManager {
-    start:     Instant,
-    hard:      Duration,
-    soft:      Duration,
+    start: Instant,
+    hard: Duration,
+    soft: Duration,
     /// Immutable baseline from the initial budget computation.
     /// Dynamic scalers are always applied relative to this,
     /// never to an already-scaled `soft` — so factors don't compound
@@ -54,21 +54,9 @@ impl TimeManager {
     /// and feeds the moves-to-go interpolation. `overhead` is shaved off both
     /// budgets to leave room for I/O and GUI lag — never enough to drop a
     /// budget below 1 ms.
-    pub fn new(
-        limits: &Limits,
-        start: Instant,
-        stm: Color,
-        overhead: u64,
-        phase: i32,
-        params: &SearchParams,
-    ) -> Self {
+    pub fn new(limits: &Limits, start: Instant, stm: Color, overhead: u64, phase: i32, params: &SearchParams) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, params);
-        Self {
-            start,
-            soft,
-            hard,
-            base_soft: soft,
-        }
+        Self { start, soft, hard, base_soft: soft }
     }
 
     #[inline]
@@ -131,13 +119,7 @@ impl TimeManager {
 /// Walks the precedence ladder documented at the module level. The clocked
 /// path is the only one that consults `phase` and `params`; everything
 /// above it short-circuits before they're touched.
-fn compute_budget(
-    limits: &Limits,
-    stm: Color,
-    overhead: u64,
-    phase: i32,
-    params: &SearchParams,
-) -> (Duration, Duration) {
+fn compute_budget(limits: &Limits, stm: Color, overhead: u64, phase: i32, params: &SearchParams) -> (Duration, Duration) {
     if limits.infinite {
         return (Duration::MAX, Duration::MAX);
     }
@@ -174,8 +156,8 @@ fn with_overhead(ms: u64, overhead: u64) -> Duration {
 /// All the per-move budget arithmetic lives on this type so the public
 /// constructor stays a flat list of decisions rather than a wall of math.
 struct Clock {
-    time:      u64,
-    inc:       u64,
+    time: u64,
+    inc: u64,
     movestogo: u64,
 }
 
@@ -186,11 +168,7 @@ impl Clock {
             Color::White => (limits.wtime, limits.winc),
             Color::Black => (limits.btime, limits.binc),
         };
-        Self {
-            time,
-            inc,
-            movestogo: limits.movestogo,
-        }
+        Self { time, inc, movestogo: limits.movestogo }
     }
 
     /// True when the CLI/GUI sent neither time nor increment for this side —
@@ -224,9 +202,7 @@ impl Clock {
     /// clock itself. The increment is added unconditionally because we'll
     /// receive it as soon as we move — it's effectively part of the budget.
     fn hard_ms(&self) -> u64 {
-        ((self.time as f64 * TIME_HARD_CAP) as u64)
-            .saturating_add(self.inc)
-            .min(self.time)
+        ((self.time as f64 * TIME_HARD_CAP) as u64).saturating_add(self.inc).min(self.time)
     }
 
     /// Soft target: `time / mtg`, capped at `TIME_SOFT_CAP` of the clock,
@@ -238,11 +214,7 @@ impl Clock {
         let cap = (self.time as f64 * TIME_SOFT_CAP) as u64;
         let raw = (base.min(cap) + self.inc / 2).min(hard_ms);
 
-        if self.movestogo > 0 {
-            self.classical_adjustment(raw)
-        } else {
-            raw
-        }
+        if self.movestogo > 0 { self.classical_adjustment(raw) } else { raw }
     }
 
     /// Tighten the soft budget when the time control is `movestogo`-based.
