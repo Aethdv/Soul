@@ -134,6 +134,136 @@ pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
         .clamp(0, OPEN_UNITY)
 }
 
+// ──────── Tuner Gradient Scatter ────────
+//
+// Per-term, linear-parameter gradient scatter. Each function lives next to
+// its score counterpart so the formula and its derivative stay together —
+// edit one, edit the other, no cross-file hunting.
+//
+// Contract for every `scatter_*_grad`:
+// - `d`  = outer loss derivative folded with STM sign (`2·err·sig·(1−sig)·k · stm_sign`).
+// - `t_mg`, `t_eg` = tapered-phase fractions (`phase/24`, `(24−phase)/24`).
+// - The function writes `d · ∂score_white/∂param` into `grads` at each param's
+//   LAYOUT offset. PSQT/material stay out of band (handled in the tuner tape).
+
+/// Scatter gradients for the four mobility weight vectors
+/// (MG/EG × open/closed, 4 lanes each = 16 params).
+///
+/// # Derivation
+///
+/// `evaluate_score_diff` interpolates open/closed weight vectors by `openness`,
+/// then tapers MG↔EG. For lane `j`:
+///
+///   `∂score/∂mg_mob_open[j]    = t_mg · diff[j] · (openness / 1024)`
+///   `∂score/∂mg_mob_closed[j]  = t_mg · diff[j] · (closedness / 1024)`
+///
+/// same pattern for EG weights with `t_eg`. Scatter multiplies by `d`.
+#[inline]
+pub fn scatter_mobility_grad(
+    metrics_us: &SideMetrics,
+    metrics_them: &SideMetrics,
+    openness: i32,
+    d: f64,
+    t_mg: f64,
+    t_eg: f64,
+    grads: &mut [f64],
+) {
+    use crate::{core::psqt::LAYOUT, weave::Vf64x4};
+
+    let lo = LAYOUT.mobility_open_offset;
+    let lc = LAYOUT.mobility_closed_offset;
+
+    let o_frac = openness as f64 / f64::from(OPEN_UNITY);
+    let c_frac = (OPEN_UNITY - openness) as f64 / f64::from(OPEN_UNITY);
+
+    let diff = [
+        (metrics_us.mobility - metrics_them.mobility) as f64,
+        (metrics_us.shadow_mobility - metrics_them.shadow_mobility) as f64,
+        (metrics_us.threats - metrics_them.threats) as f64,
+        (metrics_us.shadow_threats - metrics_them.shadow_threats) as f64,
+    ];
+
+    let v_diff = Vf64x4::from(diff);
+    let v_d_om = Vf64x4::splat(d * t_mg * o_frac);
+    let v_d_oe = Vf64x4::splat(d * t_eg * o_frac);
+    let v_d_cm = Vf64x4::splat(d * t_mg * c_frac);
+    let v_d_ce = Vf64x4::splat(d * t_eg * c_frac);
+
+    // SAFETY: LAYOUT offsets place all four 4-wide mobility blocks (lo, lo+4,
+    // lc, lc+4) contiguously within the tunable region. Caller guarantees
+    // `grads.len() >= LAYOUT.xray_offset + 1` (asserted in the tape), which
+    // covers this range.
+    unsafe {
+        let p_lo_m = grads.as_mut_ptr().add(lo);
+        let p_lo_e = grads.as_mut_ptr().add(lo + 4);
+        let p_lc_m = grads.as_mut_ptr().add(lc);
+        let p_lc_e = grads.as_mut_ptr().add(lc + 4);
+
+        (Vf64x4::loadu(p_lo_m) + v_diff * v_d_om).storeu(p_lo_m);
+        (Vf64x4::loadu(p_lo_e) + v_diff * v_d_oe).storeu(p_lo_e);
+        (Vf64x4::loadu(p_lc_m) + v_diff * v_d_cm).storeu(p_lc_m);
+        (Vf64x4::loadu(p_lc_e) + v_diff * v_d_ce).storeu(p_lc_e);
+    }
+}
+
+/// Scatter gradients for king-safety linear parameters (shield, ortho, diag,
+/// attacker-weights).
+///
+/// # Derivation
+///
+/// `SafetyMetrics::score` is `shelter − exposure − pressure`, then the whole
+/// diff is tapered by `phase/24`, so every param in this block has an outer
+/// `t_mg` factor.
+///
+///   `∂score/∂w_shield  =  t_mg · (shield_us − shield_them)`
+///   `∂score/∂w_ortho   = −t_mg · (ortho_us  − ortho_them)`
+///   `∂score/∂w_diag    = −t_mg · (diag_us   − diag_them)`
+///
+/// Attacker weights are indexed by per-side attacker counts: only the two
+/// active indices (`idx_us`, `idx_them`) receive non-zero contribution, each
+/// proportional to that side's `weak / 10`. Pressure is subtracted from
+/// "us"'s score, so `∂score/∂atk_weights[idx_us] = −t_mg · (weak_us / 10)`
+/// (opposite sign for `idx_them`). When both sides share an attacker index,
+/// contributions sum.
+#[inline]
+pub fn scatter_king_safety_grad(
+    safety_us: &SafetyMetrics,
+    safety_them: &SafetyMetrics,
+    d: f64,
+    t_mg: f64,
+    grads: &mut [f64],
+) {
+    use crate::core::psqt::LAYOUT;
+
+    let ks = LAYOUT.king_safety_offset;
+    let ao = LAYOUT.attacker_offset;
+
+    let safety_coeff = d * t_mg;
+
+    let shield_diff = (safety_us.shield - safety_them.shield) as f64;
+    let ortho_diff = (safety_us.ortho_exposure - safety_them.ortho_exposure) as f64;
+    let diag_diff = (safety_us.diag_exposure - safety_them.diag_exposure) as f64;
+
+    grads[ks] += safety_coeff * shield_diff;
+    grads[ks + 1] -= safety_coeff * ortho_diff;
+    grads[ks + 2] -= safety_coeff * diag_diff;
+
+    let idx_us = safety_us.attackers.min(ATTACKER_WEIGHTS.len() - 1);
+    let idx_them = safety_them.attackers.min(ATTACKER_WEIGHTS.len() - 1);
+    for atk_k in 0..ATTACKER_WEIGHTS.len() {
+        let mut atk_deriv = 0.0;
+        if atk_k == idx_us {
+            atk_deriv -= safety_us.weak as f64 / 10.0;
+        }
+        if atk_k == idx_them {
+            atk_deriv += safety_them.weak as f64 / 10.0;
+        }
+        if atk_deriv != 0.0 {
+            grads[ao + atk_k] += safety_coeff * atk_deriv;
+        }
+    }
+}
+
 // ──────── Mobility Data ────────
 
 /// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.

@@ -76,10 +76,15 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 ///
 /// WARNING: Autograd Linearity Booby Trap
 /// If you introduce any non-linear math (e.g. `feature * feature * weight` or `max(feature, 0)`)
-/// to the evaluation parameters, `eval_linear_grad` in `tuner/src/evaltune/tape.rs` will silently compute
-/// mathematically invalid gradients because it assumes perfect parameter linearity (`y = w * x`).
-/// Any non-linear eval updates require a manual calculus derivation update in `tape.rs`.
-/// If you aren't sure, use `DualNode` oracle mode to verify structural gradients.
+/// to the evaluation parameters, the per-term `scatter_*_grad` functions
+/// (co-located with each term — `mobility::scatter_mobility_grad`,
+/// `mobility::scatter_king_safety_grad`, `scatter_xray_grad`) will silently
+/// compute mathematically invalid gradients because each assumes perfect
+/// parameter linearity (`y = w · x`). Any non-linear eval update requires
+/// a matching manual calculus derivation in the affected term's scatter.
+/// If you aren't sure, run the `test_linear_oracle_verification` test in
+/// `tuner/src/evaltune/tape.rs` — it compares against the dual-number forward
+/// pass and fails loudly on any drift.
 ///
 /// Non-PSQT weights come from `params` rather than const arrays,
 /// so the autograd tape can track them.
@@ -89,30 +94,13 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
     acc: &T::Vec8,
     phase: T,
     params: &EvalParams<T>,
-    features: Option<&MacroFeatures>,
+    features: Option<&SharedFeatures>,
 ) -> T {
     let features_store;
     let features = if let Some(f) = features {
         f
     } else {
-        use crate::core::board::spatial::SpatialTensor;
-
-        let pinned_w = board.pinned_pieces(Color::White);
-        let pinned_b = board.pinned_pieces(Color::Black);
-        let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-
-        let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-        let openness = Mobility::compute_openness(board);
-
-        let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-        let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-        let w_king_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
-        let b_king_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
-
-        let xray_ortho =
-            (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-        features_store = MacroFeatures { openness, data, xray_ortho };
+        features_store = SharedFeatures::compute(board);
         &features_store
     };
 
@@ -130,29 +118,12 @@ pub struct DetailedEval {
 
 /// A version of evaluate that returns individual components for debugging and visualization.
 pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
-    use crate::core::board::spatial::SpatialTensor;
-
     let phase = extract_phase(acc);
     let params = EvalParams::<i32>::from_const();
 
     let psqt = i32::tapered(acc, phase);
 
-    let pinned_w = board.pinned_pieces(Color::White);
-    let pinned_b = board.pinned_pieces(Color::Black);
-    let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-
-    let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-    let openness = Mobility::compute_openness(board);
-
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_king_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
-    let b_king_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
-
-    let xray_ortho_raw =
-        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-    let features = MacroFeatures { openness, data, xray_ortho: xray_ortho_raw };
+    let features = SharedFeatures::compute(board);
 
     let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
     let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
@@ -178,18 +149,62 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     DetailedEval { psqt: p, mobility: m, safety: s, total: t }
 }
 
-/// Macroscopic features extracted from the position.
-/// Used to bridge the engine's search eval and the tuner's gradient extraction.
-pub struct MacroFeatures {
+/// Macroscopic features extracted once per position.
+///
+/// Single feature-extraction boundary: computed once, consumed by both
+/// the engine's score pass (`compute_macro_eval`) and the tuner's gradient
+/// scatter functions (`mobility::scatter_*`, `scatter_xray_grad`). Adding
+/// a new eval term that depends on fresh board state should extend this
+/// struct, not duplicate extraction.
+pub struct SharedFeatures {
     pub openness: i32,
     pub data: MobilityData,
     pub xray_ortho: i32,
 }
 
+impl SharedFeatures {
+    /// Single-pass extraction: spatial tensor, mobility/safety metrics, openness,
+    /// king-ring x-ray differential. Mirrors what both the engine and the tuner
+    /// need, so neither side recomputes.
+    #[inline]
+    pub fn compute(board: &Position) -> Self {
+        use crate::core::board::spatial::SpatialTensor;
+
+        let pinned_w = board.pinned_pieces(Color::White);
+        let pinned_b = board.pinned_pieces(Color::Black);
+        let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
+
+        let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+        let openness = Mobility::compute_openness(board);
+
+        let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
+        let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
+        let w_king_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
+        let b_king_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
+
+        let xray_ortho =
+            (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+
+        Self { openness, data, xray_ortho }
+    }
+}
+
+/// Scatter the x-ray linear-parameter gradient.
+///
+/// Contract: `d_safety = outer · t_mg` (x-ray is tapered MG-only, same
+/// cadence as king safety). `outer` already folds in STM sign + loss derivative.
+///
+/// Co-located with the x-ray scoring term so the score formula and its
+/// gradient live next to one another. Any future change to the x-ray
+/// contribution updates both here.
+pub fn scatter_xray_grad(xray_ortho: i32, d_safety: f64, grads: &mut [f64]) {
+    grads[crate::core::psqt::LAYOUT.xray_offset] += d_safety * xray_ortho as f64;
+}
+
 /// The single source of truth for evaluation math.
 /// Generic over `EvalMath` to support both `i32` search and `DualNode` tuning.
 #[inline(always)]
-pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &MacroFeatures, params: &EvalParams<T>) -> T {
+pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &SharedFeatures, params: &EvalParams<T>) -> T {
     let mut score = T::tapered(acc, phase);
 
     let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
