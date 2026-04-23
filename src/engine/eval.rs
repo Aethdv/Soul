@@ -18,6 +18,7 @@ use crate::{
     },
     engine::{
         autograd::EvalMath,
+        combiner::{Accumulators, Combiner, LinearCombiner},
         mobility::{Mobility, MobilityData},
         search_params::SearchParams,
     },
@@ -120,29 +121,15 @@ pub struct DetailedEval {
 pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     let phase = extract_phase(acc);
     let params = EvalParams::<i32>::from_const();
-
-    let psqt = i32::tapered(acc, phase);
-
     let features = SharedFeatures::compute(board);
 
-    let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
-    let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
+    let buckets = fill_accumulators::<i32>(acc, phase, &features, &params);
 
-    let s_us_score = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-    let s_them_score = features
-        .data
-        .safety_them
-        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
+    let psqt = buckets.mg_eg;
+    let mobility = buckets.mobility;
+    let total = LinearCombiner::forward(&buckets, phase);
+    let safety = total - psqt - mobility;
 
-    let xray_diff = params.w_xray_ortho * features.xray_ortho;
-    let safety = (s_us_score - s_them_score + xray_diff) * phase / crate::core::defs::TOTAL_PHASE;
-
-    let mobility = Mobility::evaluate_score_diff::<i32>(
-        &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open, params.mg_mob_closed,
-        params.eg_mob_open, params.eg_mob_closed,
-    );
-
-    let total = psqt + safety + mobility;
     let (p, m, s, t) =
         if board.stm == Color::White { (psqt, mobility, safety, total) } else { (-psqt, -mobility, -safety, -total) };
 
@@ -204,31 +191,42 @@ pub fn scatter_xray_grad(xray_ortho: i32, d_safety: f64, grads: &mut [f64]) {
 /// The single source of truth for evaluation math.
 /// Generic over `EvalMath` to support both `i32` search and `DualNode` tuning.
 #[inline(always)]
-pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &SharedFeatures, params: &EvalParams<T>) -> T {
-    let mut score = T::tapered(acc, phase);
+pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
+    acc: &T::Vec8,
+    phase: T,
+    features: &SharedFeatures,
+    params: &EvalParams<T>,
+) -> T {
+    let buckets = fill_accumulators::<T>(acc, phase, features, params);
+    LinearCombiner::forward(&buckets, phase)
+}
 
+/// Run every term against the shared features, producing a filled
+/// [`Accumulators`]. Isolated so both `compute_macro_eval` and
+/// `detailed_eval` produce identical bucket values from one code path.
+#[inline]
+fn fill_accumulators<T: EvalMath<Scalar = T>>(
+    acc: &T::Vec8,
+    phase: T,
+    features: &SharedFeatures,
+    params: &EvalParams<T>,
+) -> Accumulators<T> {
     let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
     let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
 
-    let s_us_score = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-    let s_them_score = features
-        .data
-        .safety_them
-        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
-
-    let xray_diff = params.w_xray_ortho * T::from_i32(features.xray_ortho);
-
-    // Tapered king safety: only applies heavily in the middlegame
-    // Combines direct king safety and x-ray attacks into the ring.
-    let safety_diff = s_us_score - s_them_score + xray_diff;
-    score += ((safety_diff * phase) / T::from_i32(crate::core::defs::TOTAL_PHASE)).trunc();
-
-    score += Mobility::evaluate_score_diff::<T>(
-        &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open, params.mg_mob_closed,
-        params.eg_mob_open, params.eg_mob_closed,
-    );
-
-    score
+    Accumulators::<T> {
+        mg_eg: T::tapered(acc, phase),
+        mobility: Mobility::evaluate_score_diff::<T>(
+            &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open,
+            params.mg_mob_closed, params.eg_mob_open, params.eg_mob_closed,
+        ),
+        safety_us: features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us),
+        safety_them: features
+            .data
+            .safety_them
+            .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them),
+        xray: params.w_xray_ortho * T::from_i32(features.xray_ortho),
+    }
 }
 
 // ──────── Parameters & Utilities ────────
