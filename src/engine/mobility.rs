@@ -226,13 +226,7 @@ pub fn scatter_mobility_grad(
 /// (opposite sign for `idx_them`). When both sides share an attacker index,
 /// contributions sum.
 #[inline]
-pub fn scatter_king_safety_grad(
-    safety_us: &SafetyMetrics,
-    safety_them: &SafetyMetrics,
-    d: f64,
-    t_mg: f64,
-    grads: &mut [f64],
-) {
+pub fn scatter_king_safety_grad(safety_us: &SafetyMetrics, safety_them: &SafetyMetrics, d: f64, t_mg: f64, grads: &mut [f64]) {
     use crate::core::psqt::LAYOUT;
 
     let ks = LAYOUT.king_safety_offset;
