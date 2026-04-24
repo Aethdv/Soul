@@ -31,20 +31,16 @@ pub struct Accumulators<T: EvalMath> {
     /// Tapered material + PSQT score, read straight from the SIMD accumulator.
     /// Pre-tapered because the accumulator owns the mg/eg blend via `EvalMath::tapered`.
     pub mg_eg: T,
-
     /// Tapered mobility differential.
     /// Pre-tapered because the openness interpolation and phase blend both happen inside
     /// `madd`-packed i16 SIMD lanes — extracting them into the combiner would lose the vectorization.
     pub mobility: T,
-
     /// Raw king-safety score from "us"'s perspective, untapered.
     /// Combiner applies `phase / TOTAL_PHASE` to the `us - them + xray`
     /// differential so the whole king-safety block shares one taper.
     pub safety_us: T,
-
     /// Raw king-safety score from "them"'s perspective, untapered.
     pub safety_them: T,
-
     /// X-ray king-ring differential, untapered.
     /// Sits in the same taper block as `safety_us`/`safety_them`.
     /// Separate bucket because its feature (orthogonal x-ray count)
