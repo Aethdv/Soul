@@ -12,7 +12,6 @@ use soul::{
         psqt,
     },
     engine::autograd::{EnvVec8, EvalMath},
-    weave::Vf64x4,
 };
 
 /// Active piece entry for PSQT gradient scatter.
@@ -102,9 +101,9 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 /// Result of a forward-mode dual evaluation.
 ///
 /// Captures the score and raw gradient array from the dual forward pass,
-/// plus the piece locations needed to scatter PSQT gradients. Designed
-/// as a snapshot that can be consumed later once the outer loss derivative
-/// is known.
+/// plus the piece locations needed to scatter PSQT gradients.
+/// Designed as a snapshot that can be consumed later once the outer loss
+/// derivative is known.
 pub struct DualEvalResult {
     pub score: f64,
     /// Raw partial derivatives from the dual pass (29 active slots in 32).
@@ -228,22 +227,7 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
 
     let params = soul::engine::eval::EvalParams::<DualNode>::load_tunable(values);
 
-    // Build the macroscopic features boundary
-    let openness = soul::engine::mobility::Mobility::compute_openness(board);
-    let pinned_w = board.pinned_pieces(Color::White);
-    let pinned_b = board.pinned_pieces(Color::Black);
-    let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let data = soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
-    let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
-
-    let xray_ortho =
-        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-    let features = soul::engine::eval::MacroFeatures { openness, data, xray_ortho };
+    let features = soul::engine::eval::SharedFeatures::compute(board);
 
     // Forward pass with dual numbers
     let result = soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
@@ -294,22 +278,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 
     let params = soul::engine::eval::EvalParams::<DualNode>::load_tunable(values);
 
-    // Build the macroscopic features boundary
-    let openness = soul::engine::mobility::Mobility::compute_openness(board);
-    let pinned_w = board.pinned_pieces(Color::White);
-    let pinned_b = board.pinned_pieces(Color::Black);
-    let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let data = soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
-    let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
-
-    let xray_ortho =
-        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-    let features = soul::engine::eval::MacroFeatures { openness, data, xray_ortho };
+    let features = soul::engine::eval::SharedFeatures::compute(board);
 
     // Forward pass
     let result = soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
@@ -384,9 +353,13 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 /// Returns squared error for loss tracking.
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    use soul::engine::mobility::Mobility;
+    use soul::engine::{
+        combiner::{Combiner, LinearCombiner},
+        eval::{SharedFeatures, scatter_all_terms},
+    };
 
-    // PSQT + Material accumulator (for lane values + PSQT scatter)
+    // ── PSQT + Material accumulator ──
+    // (for lane values + PSQT scatter)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
@@ -400,53 +373,22 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
         }
     }
 
-    // NOTE: dJ/dPhaseWeight is intentionally omitted from the
-    // gradient scattering process below because the tuner architecture requires
+    // NOTE: dJ/dPhaseWeight is intentionally omitted from the gradient
+    // scattering process below because the tuner architecture requires
     // the game phase thresholds to be strictly fixed constants.
-    let phase = phase_raw.clamp(0.0, 24.0) as i32;
-    let t_mg = phase as f64 / 24.0;
-    let t_eg = (24.0 - phase as f64) / 24.0;
+    let phase = phase_raw.clamp(0.0, 24.0).trunc();
     let score = eval_f64(board, values);
 
-    // Sigmoid + loss derivative
+    // ── Sigmoid + loss derivative ──
+    // `d` folds the STM sign into the outer derivative once,
+    // so every downstream scatter can stay STM-agnostic.
     let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
     let err = sig - target;
     let outer = 2.0 * err * sig * (1.0 - sig) * k;
-
     let stm_sign: f64 = if board.stm == Color::White { 1.0 } else { -1.0 };
     let d = outer * stm_sign;
 
-    // Mobility + safety features
-    let pinned_w = board.pinned_pieces(Color::White);
-    let pinned_b = board.pinned_pieces(Color::Black);
-    let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let mob_data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-    let openness = Mobility::compute_openness(board);
-    let o = openness as f64;
-    let c = (1024 - openness) as f64;
-
-    let lo = psqt::LAYOUT.mobility_open_offset;
-    let lc = psqt::LAYOUT.mobility_closed_offset;
-    let ks = psqt::LAYOUT.king_safety_offset;
-    let ao = psqt::LAYOUT.attacker_offset;
-    let xr = psqt::LAYOUT.xray_offset;
-
-    // Feature difference vector (same as evaluate_score_diff builds)
-    let idx_us = mob_data.safety_us.attackers.min(5);
-    let idx_them = mob_data.safety_them.attackers.min(5);
-
-    let diff = [
-        (mob_data.metrics_us.mobility - mob_data.metrics_them.mobility) as f64,
-        (mob_data.metrics_us.shadow_mobility - mob_data.metrics_them.shadow_mobility) as f64,
-        (mob_data.metrics_us.threats - mob_data.metrics_them.threats) as f64,
-        (mob_data.metrics_us.shadow_threats - mob_data.metrics_them.shadow_threats) as f64,
-    ];
-
-    // Scatter gradients
-
-    // PSQT gradients
-    let d_mg = d * t_mg;
-    let d_eg = d * t_eg;
+    let features = SharedFeatures::compute(board);
 
     debug_assert!(
         param_grads.len() >= psqt::LAYOUT.mobility_open_offset,
@@ -454,6 +396,19 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
         param_grads.len(),
         psqt::LAYOUT.mobility_open_offset,
     );
+
+    // Combiner owns every upstream derivative. PSQT / material scatter
+    // (out-of-band, accumulator-level) pulls `mg_eg`; term scatter reads
+    // the rest via `scatter_all_terms`.
+    let upstreams = LinearCombiner::backward(phase, d, param_grads);
+
+    // ── PSQT + material (out-of-band, not a term) ──
+    //
+    // Stays in the tape because it lives in the accumulator, not the
+    // per-term parameter block. One board sweep writes both PSQT
+    // and material gradients for every active piece.
+    let d_mg = upstreams.mg_eg.d_mg;
+    let d_eg = upstreams.mg_eg.d_eg;
 
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
@@ -489,73 +444,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
         }
     }
 
-    // Mobility weight gradients
-    // d(score)/d(mg_mob_open[j]) = t_mg · diff[j] · (openness/1024)
-    // d(score)/d(mg_mob_closed[j]) = t_mg · diff[j] · (closedness/1024)
-    // Same pattern for EG weights with t_eg
-    let o_frac = o / 1024.0;
-    let c_frac = c / 1024.0;
-
-    let v_diff = Vf64x4::from(diff);
-    let v_d_om = Vf64x4::splat(d * t_mg * o_frac);
-    let v_d_oe = Vf64x4::splat(d * t_eg * o_frac);
-    let v_d_cm = Vf64x4::splat(d * t_mg * c_frac);
-    let v_d_ce = Vf64x4::splat(d * t_eg * c_frac);
-
-    // SAFETY: The params array layout strictly guarantees that mobility parameter blocks
-    // (lo, lo+4, lc, lc+4) are contiguous 4-float arrays fully within the param_grads buffer.
-    unsafe {
-        let p_lo_m = param_grads.as_mut_ptr().add(lo);
-        let p_lo_e = param_grads.as_mut_ptr().add(lo + 4);
-        let p_lc_m = param_grads.as_mut_ptr().add(lc);
-        let p_lc_e = param_grads.as_mut_ptr().add(lc + 4);
-
-        (Vf64x4::loadu(p_lo_m) + v_diff * v_d_om).storeu(p_lo_m);
-        (Vf64x4::loadu(p_lo_e) + v_diff * v_d_oe).storeu(p_lo_e);
-        (Vf64x4::loadu(p_lc_m) + v_diff * v_d_cm).storeu(p_lc_m);
-        (Vf64x4::loadu(p_lc_e) + v_diff * v_d_ce).storeu(p_lc_e);
-    }
-
-    // King safety gradients
-    // Safety params are tapered (mg only), so coeff is d · t_mg.
-    let safety_coeff = d * t_mg;
-
-    let shield_diff = (mob_data.safety_us.shield - mob_data.safety_them.shield) as f64;
-    let ortho_diff = (mob_data.safety_us.ortho_exposure - mob_data.safety_them.ortho_exposure) as f64;
-    let diag_diff = (mob_data.safety_us.diag_exposure - mob_data.safety_them.diag_exposure) as f64;
-
-    param_grads[ks] += safety_coeff * shield_diff;
-    param_grads[ks + 1] -= safety_coeff * ortho_diff;
-    param_grads[ks + 2] -= safety_coeff * diag_diff;
-
-    // Attacker weight gradients
-    for atk_k in 0..6 {
-        let mut atk_deriv = 0.0;
-        if atk_k == idx_us {
-            atk_deriv -= mob_data.safety_us.weak as f64 / 10.0;
-        }
-        if atk_k == idx_them {
-            atk_deriv += mob_data.safety_them.weak as f64 / 10.0;
-        }
-        if atk_deriv != 0.0 {
-            param_grads[ao + atk_k] += safety_coeff * atk_deriv;
-        }
-    }
-
-    // X-Ray features
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
-    let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
-
-    // NOTE: The symmetrical subtraction here correctly yields the difference.
-    // When multiplying by d (which incorporates stm_sign and loss derivative),
-    // the sign flips correctly cancel out exactly. This ensures that the gradient applied to
-    // param_grads[xr] naturally aligns with the STM-relative score evaluation!
-    let w_xray_ortho =
-        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-    param_grads[xr] += d * t_mg * w_xray_ortho as f64;
+    // Adding a new term = one line in `register_terms!`
+    scatter_all_terms(&features, &upstreams, param_grads);
 
     err * err
 }
@@ -610,63 +500,112 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
         w_xray_ortho: values[xr],
     };
 
-    // Build the macroscopic features boundary
-    let openness = soul::engine::mobility::Mobility::compute_openness(board);
-    let pinned_w = board.pinned_pieces(Color::White);
-    let pinned_b = board.pinned_pieces(Color::Black);
-    let tensor = soul::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let data = soul::engine::mobility::Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_king_ring = soul::core::board::bitboard::atk_king(w_ksq).0;
-    let b_king_ring = soul::core::board::bitboard::atk_king(b_ksq).0;
-
-    let xray_ortho =
-        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-    let features = soul::engine::eval::MacroFeatures { openness, data, xray_ortho };
+    let features = soul::engine::eval::SharedFeatures::compute(board);
 
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }
 
 #[cfg(test)]
 mod tests {
-    use soul::core::board::Position;
+    use std::ops::Range;
+
+    use soul::core::{board::Position, psqt::LAYOUT};
 
     use super::*;
 
-    #[test]
-    fn test_linear_oracle_verification() {
-        let fens = [
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-        ];
+    const FENS: &[&str] = &[
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    ];
 
-        let mut values = vec![0.0f64; soul::core::psqt::LAYOUT.xray_offset + 1];
-        for (n, v) in values.iter_mut().enumerate() {
-            *v = (n % 17) as f64 - 8.0;
+    const TARGET: f64 = 0.5;
+    const K: f64 = 0.005;
+
+    /// Return the eval layer (`LinearTerm` impl or accumulator-level scatter)
+    /// that owns a given param slot. Used to name term-level gradient drift
+    /// in oracle failure messages.
+    fn term_for(slot: usize) -> &'static str {
+        if slot < LAYOUT.mobility_open_offset {
+            "PSQT/material (accumulator-level)"
+        } else if slot < LAYOUT.king_safety_offset {
+            "MobilityTerm"
+        } else if slot < LAYOUT.attacker_offset {
+            "KingSafetyTerm (shield/ortho/diag)"
+        } else if slot < LAYOUT.xray_offset {
+            "KingSafetyTerm (attackers)"
+        } else {
+            "XrayTerm"
         }
+    }
 
-        let target = 0.5;
-        let k = 0.005;
-
-        for fen in &fens {
+    /// Compare `eval_linear_grad` against `eval_dual_fused` on every test FEN
+    /// under the given `values` vector. Identifies drift by term name.
+    fn assert_oracle_matches(context: &str, values: &[f64]) {
+        for fen in FENS {
             let pos = Position::from_fen(fen);
 
             let mut linear_grad = vec![0.0f64; values.len()];
-            let linear_eval = eval_linear_grad(&pos, &values, target, k, &mut linear_grad);
+            let linear_eval = eval_linear_grad(&pos, values, TARGET, K, &mut linear_grad);
 
             let mut dual_grad = vec![0.0f64; values.len()];
-            let dual_eval = eval_dual_fused(&pos, &values, target, k, &mut dual_grad);
+            let dual_eval = eval_dual_fused(&pos, values, TARGET, K, &mut dual_grad);
 
-            assert!((linear_eval - dual_eval).abs() < 1e-4, "Eval mismatch on fn: {}", fen);
+            assert!(
+                (linear_eval - dual_eval).abs() < 1e-4,
+                "[{context}] eval mismatch on '{fen}': linear={linear_eval} dual={dual_eval}",
+            );
 
             for (i, (&lg, &dg)) in linear_grad.iter().zip(dual_grad.iter()).enumerate() {
-                assert!((lg - dg).abs() < 1e-3, "Gradient mismatch at index {} on {}", i, fen);
+                assert!(
+                    (lg - dg).abs() < 1e-3,
+                    "[{context}] {} scatter drift at slot {i} on '{fen}': linear={lg} dual={dg}",
+                    term_for(i),
+                );
             }
         }
+    }
+
+    fn full_values() -> Vec<f64> {
+        let mut values = vec![0.0f64; LAYOUT.xray_offset + 1];
+        for (n, v) in values.iter_mut().enumerate() {
+            *v = (n % 17) as f64 - 8.0;
+        }
+        values
+    }
+
+    /// Populate only a contiguous slice of `values`; everything else stays zero.
+    /// Used to isolate a single `LinearTerm` — only its param range drives the
+    /// score, so `eval_linear_grad`'s scatter on that range is the only thing
+    /// being verified against the `DualNode` oracle.
+    fn values_in_range(range: Range<usize>) -> Vec<f64> {
+        let mut values = vec![0.0f64; LAYOUT.xray_offset + 1];
+        for i in range {
+            values[i] = (i % 17) as f64 - 8.0;
+        }
+        values
+    }
+
+    /// Pipeline-sum oracle: every term active, every bucket contributing.
+    /// Failure names the owning term, so drift localizes without bisection.
+    #[test]
+    fn test_linear_oracle_verification() {
+        assert_oracle_matches("pipeline", &full_values());
+    }
+
+    #[test]
+    fn test_mobility_term_oracle() {
+        assert_oracle_matches("MobilityTerm alone", &values_in_range(LAYOUT.mobility_open_offset..LAYOUT.king_safety_offset));
+    }
+
+    #[test]
+    fn test_king_safety_term_oracle() {
+        assert_oracle_matches("KingSafetyTerm alone", &values_in_range(LAYOUT.king_safety_offset..LAYOUT.xray_offset));
+    }
+
+    #[test]
+    fn test_xray_term_oracle() {
+        assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + 1));
     }
 }

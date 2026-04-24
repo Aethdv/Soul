@@ -18,6 +18,7 @@ use crate::{
     },
     engine::{
         autograd::EvalMath,
+        combiner::{Accumulators, Combiner, LinearCombiner},
         mobility::{Mobility, MobilityData},
         search_params::SearchParams,
     },
@@ -76,10 +77,15 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 ///
 /// WARNING: Autograd Linearity Booby Trap
 /// If you introduce any non-linear math (e.g. `feature * feature * weight` or `max(feature, 0)`)
-/// to the evaluation parameters, `eval_linear_grad` in `tuner/src/evaltune/tape.rs` will silently compute
-/// mathematically invalid gradients because it assumes perfect parameter linearity (`y = w * x`).
-/// Any non-linear eval updates require a manual calculus derivation update in `tape.rs`.
-/// If you aren't sure, use `DualNode` oracle mode to verify structural gradients.
+/// to the evaluation parameters, the affected [`crate::engine::term::LinearTerm::scatter`]
+/// impl will silently compute mathematically invalid gradients because
+/// [`LinearTerm`] assumes perfect parameter linearity (`y = w · x`).
+/// Non-linear shapes belong in the [`crate::engine::combiner::Combiner`] layer
+/// or soon a future `NonlinearTerm`.
+///
+/// If you aren't sure, just run the `test_linear_oracle_verification` test in
+/// `tuner/src/evaltune/tape.rs` — it compares against the dual-number forward
+/// pass and fails on any drift.
 ///
 /// Non-PSQT weights come from `params` rather than const arrays,
 /// so the autograd tape can track them.
@@ -89,12 +95,71 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
     acc: &T::Vec8,
     phase: T,
     params: &EvalParams<T>,
-    features: Option<&MacroFeatures>,
+    features: Option<&SharedFeatures>,
 ) -> T {
     let features_store;
     let features = if let Some(f) = features {
         f
     } else {
+        features_store = SharedFeatures::compute(board);
+        &features_store
+    };
+
+    let score = compute_macro_eval(acc, phase, features, params);
+
+    if board.stm == Color::White { score } else { -score }
+}
+
+pub struct DetailedEval {
+    pub psqt: i32,
+    pub mobility: i32,
+    pub bonus: i32,
+    pub safety: i32,
+    pub total: i32,
+}
+
+/// A version of evaluate that returns individual components for debugging and visualization.
+pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
+    let phase = extract_phase(acc);
+    let params = EvalParams::<i32>::from_const();
+    let features = SharedFeatures::compute(board);
+
+    let buckets = fill_accumulators::<i32>(acc, phase, &features, &params);
+
+    let psqt = buckets.mg_eg;
+    let mobility = buckets.mobility;
+    let bonus = buckets.bonus;
+    let total = LinearCombiner::forward(&buckets, phase);
+    let safety = total - psqt - mobility - bonus;
+
+    let (p, m, b, s, t) = if board.stm == Color::White {
+        (psqt, mobility, bonus, safety, total)
+    } else {
+        (-psqt, -mobility, -bonus, -safety, -total)
+    };
+
+    DetailedEval { psqt: p, mobility: m, bonus: b, safety: s, total: t }
+}
+
+/// Macroscopic features extracted once per position.
+///
+/// Single feature-extraction boundary: computed once, consumed by both
+/// the engine's score pass (`compute_macro_eval`) and every registered
+/// [`crate::engine::term::LinearTerm::scatter`] in the tuner's backward
+/// pass. Adding a new eval term that depends on fresh board state should
+/// extend this struct, not duplicate extraction.
+pub struct SharedFeatures {
+    pub openness: i32,
+    pub data: MobilityData,
+    pub xray_ortho: i32,
+}
+
+impl SharedFeatures {
+    /// Single-pass extraction: spatial tensor, mobility/safety metrics, openness,
+    /// king-ring x-ray differential. Mirrors what both the engine and the tuner
+    /// need, so neither side recomputes.
+    #[inline]
+    pub fn compute(board: &Position) -> Self {
         use crate::core::board::spatial::SpatialTensor;
 
         let pinned_w = board.pinned_pieces(Color::White);
@@ -112,108 +177,71 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
         let xray_ortho =
             (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-        features_store = MacroFeatures { openness, data, xray_ortho };
-        &features_store
-    };
-
-    let score = compute_macro_eval(acc, phase, features, params);
-
-    if board.stm == Color::White { score } else { -score }
+        Self { openness, data, xray_ortho }
+    }
 }
 
-pub struct DetailedEval {
-    pub psqt: i32,
-    pub mobility: i32,
-    pub safety: i32,
-    pub total: i32,
+/// X-ray king-ring differential: `w_xray_ortho · xray_ortho`. Writes
+/// `acc.xray`; shares the king-safety block's scalar upstream.
+pub struct XrayTerm;
+
+impl crate::engine::term::LinearTerm for XrayTerm {
+    /// Scalar upstream — x-ray is tapered MG-only inside the combiner's
+    /// king-safety block, same cadence as king safety.
+    type Upstream = f64;
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
+        acc.xray = params.w_xray_ortho * T::from_i32(features.xray_ortho);
+    }
+
+    #[inline]
+    fn scatter(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
+        grads[crate::core::psqt::LAYOUT.xray_offset] += upstream * features.xray_ortho as f64;
+    }
 }
 
-/// A version of evaluate that returns individual components for debugging and visualization.
-pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
-    use crate::core::board::spatial::SpatialTensor;
-
-    let phase = extract_phase(acc);
-    let params = EvalParams::<i32>::from_const();
-
-    let psqt = i32::tapered(acc, phase);
-
-    let pinned_w = board.pinned_pieces(Color::White);
-    let pinned_b = board.pinned_pieces(Color::Black);
-    let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-
-    let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
-    let openness = Mobility::compute_openness(board);
-
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_king_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
-    let b_king_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
-
-    let xray_ortho_raw =
-        (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-    let features = MacroFeatures { openness, data, xray_ortho: xray_ortho_raw };
-
-    let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
-    let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
-
-    let s_us_score = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-    let s_them_score = features
-        .data
-        .safety_them
-        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
-
-    let xray_diff = params.w_xray_ortho * features.xray_ortho;
-    let safety = (s_us_score - s_them_score + xray_diff) * phase / crate::core::defs::TOTAL_PHASE;
-
-    let mobility = Mobility::evaluate_score_diff::<i32>(
-        &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open, params.mg_mob_closed,
-        params.eg_mob_open, params.eg_mob_closed,
-    );
-
-    let total = psqt + safety + mobility;
-    let (p, m, s, t) =
-        if board.stm == Color::White { (psqt, mobility, safety, total) } else { (-psqt, -mobility, -safety, -total) };
-
-    DetailedEval { psqt: p, mobility: m, safety: s, total: t }
-}
-
-/// Macroscopic features extracted from the position.
-/// Used to bridge the engine's search eval and the tuner's gradient extraction.
-pub struct MacroFeatures {
-    pub openness: i32,
-    pub data: MobilityData,
-    pub xray_ortho: i32,
+crate::register_terms! {
+    crate::engine::mobility::MobilityTerm => mobility,
+    crate::engine::mobility::KingSafetyTerm => king_safety,
+    XrayTerm => xray,
 }
 
 /// The single source of truth for evaluation math.
 /// Generic over `EvalMath` to support both `i32` search and `DualNode` tuning.
 #[inline(always)]
-pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &MacroFeatures, params: &EvalParams<T>) -> T {
-    let mut score = T::tapered(acc, phase);
+pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
+    acc: &T::Vec8,
+    phase: T,
+    features: &SharedFeatures,
+    params: &EvalParams<T>,
+) -> T {
+    let buckets = fill_accumulators::<T>(acc, phase, features, params);
+    LinearCombiner::forward(&buckets, phase)
+}
 
-    let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(5)];
-    let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(5)];
-
-    let s_us_score = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-    let s_them_score = features
-        .data
-        .safety_them
-        .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
-
-    let xray_diff = params.w_xray_ortho * T::from_i32(features.xray_ortho);
-
-    // Tapered king safety: only applies heavily in the middlegame
-    // Combines direct king safety and x-ray attacks into the ring.
-    let safety_diff = s_us_score - s_them_score + xray_diff;
-    score += ((safety_diff * phase) / T::from_i32(crate::core::defs::TOTAL_PHASE)).trunc();
-
-    score += Mobility::evaluate_score_diff::<T>(
-        &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open, params.mg_mob_closed,
-        params.eg_mob_open, params.eg_mob_closed,
-    );
-
-    score
+/// Build the per-bucket accumulator by initializing the PSQT-level
+/// `mg_eg` bucket from the SIMD accumulator, zeroing the rest, and letting
+/// every registered [`LinearTerm`] populate its owned bucket(s) via
+/// [`apply_all_terms`]. Isolated so both `compute_macro_eval` and
+/// `detailed_eval` produce identical bucket values from one code path.
+#[inline]
+fn fill_accumulators<T: EvalMath<Scalar = T>>(
+    acc: &T::Vec8,
+    phase: T,
+    features: &SharedFeatures,
+    params: &EvalParams<T>,
+) -> Accumulators<T> {
+    let mut buckets = Accumulators::<T> {
+        mg_eg: T::tapered(acc, phase),
+        mobility: T::zero(),
+        bonus: T::zero(),
+        safety_us: T::zero(),
+        safety_them: T::zero(),
+        xray: T::zero(),
+    };
+    apply_all_terms::<T>(features, params, phase, &mut buckets);
+    buckets
 }
 
 // ──────── Parameters & Utilities ────────
