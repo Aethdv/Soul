@@ -41,6 +41,12 @@ pub struct Accumulators<T: EvalMath> {
     /// Pre-tapered because the openness interpolation and phase blend both happen inside
     /// `madd`-packed i16 SIMD lanes — extracting them into the combiner would lose the vectorization.
     pub mobility: T,
+    /// Shared pre-tapered bucket for simple linear bonuses.
+    /// Each such term `+=` its own `mg · phase + eg · eg_phase` contribution;
+    /// scatter writes that term's own param slots.
+    /// Lets new tapered bonuses land as one-line `register_terms!`
+    /// additions rather than bucket expansions.
+    pub bonus: T,
     /// Raw king-safety score from "us"'s perspective, untapered.
     /// Combiner applies `phase / TOTAL_PHASE` to the `us - them + xray`
     /// differential so the whole king-safety block shares one taper.
@@ -89,7 +95,7 @@ impl Combiner for LinearCombiner {
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T) -> T {
         let safety_diff = buckets.safety_us - buckets.safety_them + buckets.xray;
         let safety_tapered = (safety_diff * phase / T::from_i32(TOTAL_PHASE)).trunc();
-        buckets.mg_eg + buckets.mobility + safety_tapered
+        buckets.mg_eg + buckets.mobility + buckets.bonus + safety_tapered
     }
 
     #[inline]
@@ -98,6 +104,6 @@ impl Combiner for LinearCombiner {
         let t_eg = 1.0 - t_mg;
         let taper = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };
         let safety_block = d_loss * t_mg;
-        BucketUpstreams { mg_eg: taper, mobility: taper, king_safety: safety_block, xray: safety_block }
+        BucketUpstreams { mg_eg: taper, mobility: taper, bonus: taper, king_safety: safety_block, xray: safety_block }
     }
 }

@@ -113,6 +113,7 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
 pub struct DetailedEval {
     pub psqt: i32,
     pub mobility: i32,
+    pub bonus: i32,
     pub safety: i32,
     pub total: i32,
 }
@@ -127,13 +128,17 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
 
     let psqt = buckets.mg_eg;
     let mobility = buckets.mobility;
+    let bonus = buckets.bonus;
     let total = LinearCombiner::forward(&buckets, phase);
-    let safety = total - psqt - mobility;
+    let safety = total - psqt - mobility - bonus;
 
-    let (p, m, s, t) =
-        if board.stm == Color::White { (psqt, mobility, safety, total) } else { (-psqt, -mobility, -safety, -total) };
+    let (p, m, b, s, t) = if board.stm == Color::White {
+        (psqt, mobility, bonus, safety, total)
+    } else {
+        (-psqt, -mobility, -bonus, -safety, -total)
+    };
 
-    DetailedEval { psqt: p, mobility: m, safety: s, total: t }
+    DetailedEval { psqt: p, mobility: m, bonus: b, safety: s, total: t }
 }
 
 /// Macroscopic features extracted once per position.
@@ -230,6 +235,7 @@ fn fill_accumulators<T: EvalMath<Scalar = T>>(
     let mut buckets = Accumulators::<T> {
         mg_eg: T::tapered(acc, phase),
         mobility: T::zero(),
+        bonus: T::zero(),
         safety_us: T::zero(),
         safety_them: T::zero(),
         xray: T::zero(),

@@ -63,6 +63,7 @@ pub struct TaperPair {
 pub struct BucketUpstreams {
     pub mg_eg: TaperPair,
     pub mobility: TaperPair,
+    pub bonus: TaperPair,
     pub king_safety: f64,
     pub xray: f64,
 }

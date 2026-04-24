@@ -294,6 +294,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             let res = crate::engine::eval::detailed_eval(&state.board, &state.accumulator);
             println!("PSQT:     {:>5}", res.psqt);
             println!("Mobility: {:>5}", res.mobility);
+            println!("Bonus:    {:>5}", res.bonus);
             println!("Safety:   {:>5}", res.safety);
             println!("───────────────");
             println!("Total:    {:>5}", res.total);
