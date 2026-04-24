@@ -507,41 +507,105 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
 
 #[cfg(test)]
 mod tests {
-    use soul::core::board::Position;
+    use std::ops::Range;
+
+    use soul::core::{board::Position, psqt::LAYOUT};
 
     use super::*;
 
-    #[test]
-    fn test_linear_oracle_verification() {
-        let fens = [
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-        ];
+    const FENS: &[&str] = &[
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    ];
 
-        let mut values = vec![0.0f64; soul::core::psqt::LAYOUT.xray_offset + 1];
-        for (n, v) in values.iter_mut().enumerate() {
-            *v = (n % 17) as f64 - 8.0;
+    const TARGET: f64 = 0.5;
+    const K: f64 = 0.005;
+
+    /// Return the eval layer (`LinearTerm` impl or accumulator-level scatter)
+    /// that owns a given param slot. Used to name term-level gradient drift
+    /// in oracle failure messages.
+    fn term_for(slot: usize) -> &'static str {
+        if slot < LAYOUT.mobility_open_offset {
+            "PSQT/material (accumulator-level)"
+        } else if slot < LAYOUT.king_safety_offset {
+            "MobilityTerm"
+        } else if slot < LAYOUT.attacker_offset {
+            "KingSafetyTerm (shield/ortho/diag)"
+        } else if slot < LAYOUT.xray_offset {
+            "KingSafetyTerm (attackers)"
+        } else {
+            "XrayTerm"
         }
+    }
 
-        let target = 0.5;
-        let k = 0.005;
-
-        for fen in &fens {
+    /// Compare `eval_linear_grad` against `eval_dual_fused` on every test FEN
+    /// under the given `values` vector. Identifies drift by term name.
+    fn assert_oracle_matches(context: &str, values: &[f64]) {
+        for fen in FENS {
             let pos = Position::from_fen(fen);
 
             let mut linear_grad = vec![0.0f64; values.len()];
-            let linear_eval = eval_linear_grad(&pos, &values, target, k, &mut linear_grad);
+            let linear_eval = eval_linear_grad(&pos, values, TARGET, K, &mut linear_grad);
 
             let mut dual_grad = vec![0.0f64; values.len()];
-            let dual_eval = eval_dual_fused(&pos, &values, target, k, &mut dual_grad);
+            let dual_eval = eval_dual_fused(&pos, values, TARGET, K, &mut dual_grad);
 
-            assert!((linear_eval - dual_eval).abs() < 1e-4, "Eval mismatch on fn: {}", fen);
+            assert!(
+                (linear_eval - dual_eval).abs() < 1e-4,
+                "[{context}] eval mismatch on '{fen}': linear={linear_eval} dual={dual_eval}",
+            );
 
             for (i, (&lg, &dg)) in linear_grad.iter().zip(dual_grad.iter()).enumerate() {
-                assert!((lg - dg).abs() < 1e-3, "Gradient mismatch at index {} on {}", i, fen);
+                assert!(
+                    (lg - dg).abs() < 1e-3,
+                    "[{context}] {} scatter drift at slot {i} on '{fen}': linear={lg} dual={dg}",
+                    term_for(i),
+                );
             }
         }
+    }
+
+    fn full_values() -> Vec<f64> {
+        let mut values = vec![0.0f64; LAYOUT.xray_offset + 1];
+        for (n, v) in values.iter_mut().enumerate() {
+            *v = (n % 17) as f64 - 8.0;
+        }
+        values
+    }
+
+    /// Populate only a contiguous slice of `values`; everything else stays zero.
+    /// Used to isolate a single `LinearTerm` — only its param range drives the
+    /// score, so `eval_linear_grad`'s scatter on that range is the only thing
+    /// being verified against the `DualNode` oracle.
+    fn values_in_range(range: Range<usize>) -> Vec<f64> {
+        let mut values = vec![0.0f64; LAYOUT.xray_offset + 1];
+        for i in range {
+            values[i] = (i % 17) as f64 - 8.0;
+        }
+        values
+    }
+
+    /// Pipeline-sum oracle: every term active, every bucket contributing.
+    /// Failure names the owning term, so drift localizes without bisection.
+    #[test]
+    fn test_linear_oracle_verification() {
+        assert_oracle_matches("pipeline", &full_values());
+    }
+
+    #[test]
+    fn test_mobility_term_oracle() {
+        assert_oracle_matches("MobilityTerm alone", &values_in_range(LAYOUT.mobility_open_offset..LAYOUT.king_safety_offset));
+    }
+
+    #[test]
+    fn test_king_safety_term_oracle() {
+        assert_oracle_matches("KingSafetyTerm alone", &values_in_range(LAYOUT.king_safety_offset..LAYOUT.xray_offset));
+    }
+
+    #[test]
+    fn test_xray_term_oracle() {
+        assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + 1));
     }
 }
