@@ -101,9 +101,9 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 /// Result of a forward-mode dual evaluation.
 ///
 /// Captures the score and raw gradient array from the dual forward pass,
-/// plus the piece locations needed to scatter PSQT gradients. Designed
-/// as a snapshot that can be consumed later once the outer loss derivative
-/// is known.
+/// plus the piece locations needed to scatter PSQT gradients.
+/// Designed as a snapshot that can be consumed later once the outer loss
+/// derivative is known.
 pub struct DualEvalResult {
     pub score: f64,
     /// Raw partial derivatives from the dual pass (29 active slots in 32).
@@ -354,11 +354,12 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
     use soul::engine::{
-        eval::{SharedFeatures, scatter_xray_grad},
-        mobility::{scatter_king_safety_grad, scatter_mobility_grad},
+        eval::{SharedFeatures, scatter_all_terms},
+        term::{BucketUpstreams, TaperPair},
     };
 
-    // PSQT + Material accumulator (for lane values + PSQT scatter)
+    // ── PSQT + Material accumulator ──
+    // (for lane values + PSQT scatter)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
@@ -372,16 +373,17 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
         }
     }
 
-    // NOTE: dJ/dPhaseWeight is intentionally omitted from the
-    // gradient scattering process below because the tuner architecture requires
+    // NOTE: dJ/dPhaseWeight is intentionally omitted from the gradient
+    // scattering process below because the tuner architecture requires
     // the game phase thresholds to be strictly fixed constants.
     let phase = phase_raw.clamp(0.0, 24.0) as i32;
     let t_mg = phase as f64 / 24.0;
     let t_eg = (24.0 - phase as f64) / 24.0;
     let score = eval_f64(board, values);
 
-    // Sigmoid + loss derivative. `d` folds the STM sign into the outer
-    // derivative once, so every downstream scatter can stay STM-agnostic.
+    // ── Sigmoid + loss derivative ──
+    // `d` folds the STM sign into the outer derivative once,
+    // so every downstream scatter can stay STM-agnostic.
     let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
     let err = sig - target;
     let outer = 2.0 * err * sig * (1.0 - sig) * k;
@@ -400,8 +402,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // ── PSQT + material (out-of-band, not a term) ──
     //
     // Stays in the tape because it lives in the accumulator, not the
-    // per-term parameter block. One board sweep writes both PSQT and
-    // material gradients for every active piece.
+    // per-term parameter block. One board sweep writes both PSQT
+    // and material gradients for every active piece.
     let d_mg = d * t_mg;
     let d_eg = d * t_eg;
 
@@ -441,13 +443,11 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     // ── Per-term scatter ──
     //
-    // Each term owns its derivative formula next to its score formula.
-    // Adding a new linear term here is a single call; migrating a term to
-    // a non-linear parameterization (patch 2) swaps the scatter body, not
-    // the dispatch.
-    scatter_mobility_grad(&features.data.metrics_us, &features.data.metrics_them, features.openness, d, t_mg, t_eg, param_grads);
-    scatter_king_safety_grad(&features.data.safety_us, &features.data.safety_them, d, t_mg, param_grads);
-    scatter_xray_grad(features.xray_ortho, d * t_mg, param_grads);
+    // `scatter_all_terms` dispatches to every registered `LinearTerm`'s scatter.
+    // Adding a new term = one line in `register_terms!`; the tape is untouched.
+    let upstreams =
+        BucketUpstreams { mg_eg: TaperPair { d_mg, d_eg }, mobility: TaperPair { d_mg, d_eg }, king_safety: d_mg, xray: d_mg };
+    scatter_all_terms(&features, &upstreams, param_grads);
 
     err * err
 }
