@@ -21,7 +21,13 @@
 //! Future combiners (sigmoid over king danger, winnable eg-scale) slot
 //! in by implementing [`Combiner`] without touching any term.
 
-use crate::{core::defs::TOTAL_PHASE, engine::autograd::EvalMath};
+use crate::{
+    core::defs::TOTAL_PHASE,
+    engine::{
+        autograd::EvalMath,
+        term::{BucketUpstreams, TaperPair},
+    },
+};
 
 /// Per-bucket evaluation scores, filled by the term layer prior to combination.
 /// Every field is a score contribution in the same units;
@@ -56,6 +62,12 @@ pub struct Accumulators<T: EvalMath> {
 /// king danger, quadratic pressure, eg scale factors) belong here.
 pub trait Combiner {
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T) -> T;
+
+    /// Produce per-term upstream derivatives given the loss derivative
+    /// (STM sign folded in) and the game phase. Future non-linear combiners
+    /// also write gradients for their own tunable params into `grads`;
+    /// [`LinearCombiner`] has none, so `grads` is unused here.
+    fn backward(phase: f64, d_loss: f64, grads: &mut [f64]) -> BucketUpstreams;
 }
 
 /// Soul's current combiner — linear sum with a single multiplicative taper
@@ -78,5 +90,14 @@ impl Combiner for LinearCombiner {
         let safety_diff = buckets.safety_us - buckets.safety_them + buckets.xray;
         let safety_tapered = (safety_diff * phase / T::from_i32(TOTAL_PHASE)).trunc();
         buckets.mg_eg + buckets.mobility + safety_tapered
+    }
+
+    #[inline]
+    fn backward(phase: f64, d_loss: f64, _grads: &mut [f64]) -> BucketUpstreams {
+        let t_mg = phase / f64::from(TOTAL_PHASE);
+        let t_eg = 1.0 - t_mg;
+        let taper = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };
+        let safety_block = d_loss * t_mg;
+        BucketUpstreams { mg_eg: taper, mobility: taper, king_safety: safety_block, xray: safety_block }
     }
 }

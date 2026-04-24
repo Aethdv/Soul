@@ -354,8 +354,8 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
     use soul::engine::{
+        combiner::{Combiner, LinearCombiner},
         eval::{SharedFeatures, scatter_all_terms},
-        term::{BucketUpstreams, TaperPair},
     };
 
     // ── PSQT + Material accumulator ──
@@ -376,9 +376,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // NOTE: dJ/dPhaseWeight is intentionally omitted from the gradient
     // scattering process below because the tuner architecture requires
     // the game phase thresholds to be strictly fixed constants.
-    let phase = phase_raw.clamp(0.0, 24.0) as i32;
-    let t_mg = phase as f64 / 24.0;
-    let t_eg = (24.0 - phase as f64) / 24.0;
+    let phase = phase_raw.clamp(0.0, 24.0).trunc();
     let score = eval_f64(board, values);
 
     // ── Sigmoid + loss derivative ──
@@ -399,13 +397,18 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
         psqt::LAYOUT.mobility_open_offset,
     );
 
+    // Combiner owns every upstream derivative. PSQT / material scatter
+    // (out-of-band, accumulator-level) pulls `mg_eg`; term scatter reads
+    // the rest via `scatter_all_terms`.
+    let upstreams = LinearCombiner::backward(phase, d, param_grads);
+
     // ── PSQT + material (out-of-band, not a term) ──
     //
     // Stays in the tape because it lives in the accumulator, not the
     // per-term parameter block. One board sweep writes both PSQT
     // and material gradients for every active piece.
-    let d_mg = d * t_mg;
-    let d_eg = d * t_eg;
+    let d_mg = upstreams.mg_eg.d_mg;
+    let d_eg = upstreams.mg_eg.d_eg;
 
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
@@ -441,12 +444,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
         }
     }
 
-    // ── Per-term scatter ──
-    //
-    // `scatter_all_terms` dispatches to every registered `LinearTerm`'s scatter.
-    // Adding a new term = one line in `register_terms!`; the tape is untouched.
-    let upstreams =
-        BucketUpstreams { mg_eg: TaperPair { d_mg, d_eg }, mobility: TaperPair { d_mg, d_eg }, king_safety: d_mg, xray: d_mg };
+    // Adding a new term = one line in `register_terms!`
     scatter_all_terms(&features, &upstreams, param_grads);
 
     err * err
