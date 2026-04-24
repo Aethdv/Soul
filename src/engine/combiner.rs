@@ -79,7 +79,7 @@ pub trait Combiner {
 /// Soul's current combiner — linear sum with a single multiplicative taper
 /// over the king-safety block.
 ///
-/// ```rust
+/// ```text
 /// final = mg_eg
 ///       + mobility
 ///       + trunc((safety_us − safety_them + xray) · phase / TOTAL_PHASE)
