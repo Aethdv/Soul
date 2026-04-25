@@ -168,6 +168,12 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             writeln!(w, "], // [Ortho King]").ok();
         }
 
+        if params.len() > psqt::LAYOUT.bishop_pair_offset {
+            write!(w, "    BISHOP_PAIR_WEIGHTS = [").ok();
+            write_weight_array(w, psqt::LAYOUT.bishop_pair_offset, 2, values, params, initial);
+            writeln!(w, "], // [MG, EG]").ok();
+        }
+
         if colored {
             writeln!(w, "}}").ok();
         }
