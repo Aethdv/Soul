@@ -208,9 +208,10 @@ impl crate::engine::term::LinearTerm for XrayTerm {
     }
 }
 
-/// Tapered bonus for holding both bishops. Routes to the shared `bonus`
-/// bucket via `acc.bonus += mg · phase + eg · eg_phase` (× the +1/-1/0
-/// `bishop_pair_diff` feature).
+/// ── Bishop Pair (~9 Elo) ──
+/// Tapered bonus for holding both bishops.
+/// Routes to the shared `bonus` bucket via `acc.bonus += mg · phase + eg · eg_phase`
+/// (× the +1/-1/0 `bishop_pair_diff` feature).
 pub struct BishopPairTerm;
 
 impl crate::engine::term::LinearTerm for BishopPairTerm {
@@ -291,7 +292,7 @@ pub fn extract_phase(acc: &Vi16x8) -> i32 {
 /// - For the tuner: constructed with `AutogradNode::parameter()`
 ///   so gradient flows to the values array.
 macro_rules! impl_eval_params {
-    ($( ($name:ident, $ty:ident, $offset:expr) ),* $(,)?) => {
+    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
         pub struct EvalParams<T: EvalMath> {
             $( pub $name: <T as EvalMath>::$ty, )*
         }
@@ -306,7 +307,13 @@ macro_rules! impl_eval_params {
                 let mut slot = 2;
                 paste::paste! {
                     Self {
-                        $( $name: T::[<load_ $ty:lower>](values, $offset, &mut slot), )*
+                        $(
+                            $name: T::[<load_ $ty:lower>](
+                                values,
+                                $crate::engine::eval_params::LAYOUT.$offset_field + $extra,
+                                &mut slot,
+                            ),
+                        )*
                     }
                 }
             }

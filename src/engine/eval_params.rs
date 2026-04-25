@@ -243,18 +243,17 @@ macro_rules! define_weight_params {
 macro_rules! define_tunables {
     ($macro:ident) => {
         $macro! {
-            // Field Name,  Type,   Offset in values array
-            (mg_mob_open,   Vec4,   $crate::engine::eval_params::LAYOUT.mobility_open_offset),
-            (eg_mob_open,   Vec4,   $crate::engine::eval_params::LAYOUT.mobility_open_offset + 4),
-            (mg_mob_closed, Vec4,   $crate::engine::eval_params::LAYOUT.mobility_closed_offset),
-            (eg_mob_closed, Vec4,   $crate::engine::eval_params::LAYOUT.mobility_closed_offset + 4),
-            (w_shield,      Scalar, $crate::engine::eval_params::LAYOUT.king_safety_offset),
-            (w_ortho,       Scalar, $crate::engine::eval_params::LAYOUT.king_safety_offset + 1),
-            (w_diag,        Scalar, $crate::engine::eval_params::LAYOUT.king_safety_offset + 2),
-            (atk_weights,   Array6, $crate::engine::eval_params::LAYOUT.attacker_offset),
-            (w_xray_ortho,  Scalar, $crate::engine::eval_params::LAYOUT.xray_offset),
-            (w_bp_mg,       Scalar, $crate::engine::eval_params::LAYOUT.bishop_pair_offset),
-            (w_bp_eg,       Scalar, $crate::engine::eval_params::LAYOUT.bishop_pair_offset + 1)
+            (mg_mob_open,   Vec4,   mobility_open_offset,   0),
+            (eg_mob_open,   Vec4,   mobility_open_offset,   4),
+            (mg_mob_closed, Vec4,   mobility_closed_offset, 0),
+            (eg_mob_closed, Vec4,   mobility_closed_offset, 4),
+            (w_shield,      Scalar, king_safety_offset,     0),
+            (w_ortho,       Scalar, king_safety_offset,     1),
+            (w_diag,        Scalar, king_safety_offset,     2),
+            (atk_weights,   Array6, attacker_offset,        0),
+            (w_xray_ortho,  Scalar, xray_offset,            0),
+            (w_bp_mg,       Scalar, bishop_pair_offset,     0),
+            (w_bp_eg,       Scalar, bishop_pair_offset,     1)
         }
     };
 }

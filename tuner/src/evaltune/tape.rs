@@ -47,12 +47,20 @@ mod scatter {
 }
 
 macro_rules! impl_scatter {
-    ($( ($name:ident, $ty:ident, $offset:expr) ),* $(,)?) => {
+    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
         paste::paste! {
             impl DualEvalResult {
                 pub fn scatter_dynamic(&self, outer_deriv: f64, param_grads: &mut [f64]) {
                     let mut slot = 2; // Mg=0, Eg=1
-                    $( scatter::[<scatter_ $ty:lower>](&self.grad, &mut slot, outer_deriv, param_grads, $offset); )*
+                    $(
+                        scatter::[<scatter_ $ty:lower>](
+                            &self.grad,
+                            &mut slot,
+                            outer_deriv,
+                            param_grads,
+                            soul::engine::eval_params::LAYOUT.$offset_field + $extra,
+                        );
+                    )*
                 }
             }
         }
