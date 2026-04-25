@@ -152,8 +152,8 @@ pub struct SharedFeatures {
     pub openness: i32,
     pub data: MobilityData,
     pub xray_ortho: i32,
-    /// `+1` if white has the bishop pair and black doesn't, `-1` for the
-    /// reverse, `0` otherwise.
+    /// `+1` if white has the bishop pair and black doesn't,
+    /// `-1` for the reverse, `0` otherwise.
     pub bishop_pair_diff: i32,
 }
 
