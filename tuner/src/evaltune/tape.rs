@@ -487,6 +487,7 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let ks = psqt::LAYOUT.king_safety_offset;
     let ao = psqt::LAYOUT.attacker_offset;
     let xr = psqt::LAYOUT.xray_offset;
+    let bp = psqt::LAYOUT.bishop_pair_offset;
 
     let params = soul::engine::eval::EvalParams {
         mg_mob_open: F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
@@ -498,6 +499,8 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
         w_diag: values[ks + 2],
         atk_weights: [values[ao], values[ao + 1], values[ao + 2], values[ao + 3], values[ao + 4], values[ao + 5]],
         w_xray_ortho: values[xr],
+        w_bp_mg: values[bp],
+        w_bp_eg: values[bp + 1],
     };
 
     let features = soul::engine::eval::SharedFeatures::compute(board);
@@ -535,8 +538,10 @@ mod tests {
             "KingSafetyTerm (shield/ortho/diag)"
         } else if slot < LAYOUT.xray_offset {
             "KingSafetyTerm (attackers)"
-        } else {
+        } else if slot < LAYOUT.bishop_pair_offset {
             "XrayTerm"
+        } else {
+            "BishopPairTerm"
         }
     }
 
@@ -568,7 +573,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.xray_offset + 1];
+        let mut values = vec![0.0f64; LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -580,7 +585,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.xray_offset + 1];
+        let mut values = vec![0.0f64; LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -606,6 +611,14 @@ mod tests {
 
     #[test]
     fn test_xray_term_oracle() {
-        assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + 1));
+        assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + LAYOUT.xray_len));
+    }
+
+    #[test]
+    fn test_bishop_pair_term_oracle() {
+        assert_oracle_matches(
+            "BishopPairTerm alone",
+            &values_in_range(LAYOUT.bishop_pair_offset..LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len),
+        );
     }
 }

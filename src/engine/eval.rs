@@ -152,6 +152,9 @@ pub struct SharedFeatures {
     pub openness: i32,
     pub data: MobilityData,
     pub xray_ortho: i32,
+    /// `+1` if white has the bishop pair and black doesn't, `-1` for the
+    /// reverse, `0` otherwise.
+    pub bishop_pair_diff: i32,
 }
 
 impl SharedFeatures {
@@ -177,7 +180,11 @@ impl SharedFeatures {
         let xray_ortho =
             (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
-        Self { openness, data, xray_ortho }
+        let w_pair = i32::from(board.pieces(PieceType::Bishop, Color::White).more_than_one());
+        let b_pair = i32::from(board.pieces(PieceType::Bishop, Color::Black).more_than_one());
+        let bishop_pair_diff = w_pair - b_pair;
+
+        Self { openness, data, xray_ortho, bishop_pair_diff }
     }
 }
 
@@ -201,9 +208,34 @@ impl crate::engine::term::LinearTerm for XrayTerm {
     }
 }
 
+/// Tapered bonus for holding both bishops. Routes to the shared `bonus`
+/// bucket via `acc.bonus += mg · phase + eg · eg_phase` (× the +1/-1/0
+/// `bishop_pair_diff` feature).
+pub struct BishopPairTerm;
+
+impl crate::engine::term::LinearTerm for BishopPairTerm {
+    type Upstream = crate::engine::term::TaperPair;
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
+        let feature = T::from_i32(features.bishop_pair_diff);
+        let eg_phase = T::from_i32(TOTAL_PHASE) - phase;
+        let tapered = params.w_bp_mg * phase + params.w_bp_eg * eg_phase;
+        acc.bonus += (tapered * feature / T::from_i32(TOTAL_PHASE)).trunc();
+    }
+
+    #[inline]
+    fn scatter(features: &SharedFeatures, upstream: crate::engine::term::TaperPair, grads: &mut [f64]) {
+        let feature = features.bishop_pair_diff as f64;
+        grads[crate::engine::eval_params::LAYOUT.bishop_pair_offset] += upstream.d_mg * feature;
+        grads[crate::engine::eval_params::LAYOUT.bishop_pair_offset + 1] += upstream.d_eg * feature;
+    }
+}
+
 crate::register_terms! {
     crate::engine::mobility::MobilityTerm => mobility,
     crate::engine::mobility::KingSafetyTerm => king_safety,
+    BishopPairTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -289,8 +321,8 @@ impl EvalParams<i32> {
     #[inline(always)]
     pub fn from_const() -> Self {
         use crate::engine::eval_params::{
-            ATTACKER_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
-            XRAY_WEIGHTS,
+            ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED,
+            MG_MOBILITY_OPEN, XRAY_WEIGHTS,
         };
 
         Self {
@@ -303,6 +335,8 @@ impl EvalParams<i32> {
             w_diag: KING_SAFETY_WEIGHTS[2],
             atk_weights: ATTACKER_WEIGHTS,
             w_xray_ortho: XRAY_WEIGHTS[0],
+            w_bp_mg: BISHOP_PAIR_WEIGHTS[0],
+            w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
         }
     }
 }
