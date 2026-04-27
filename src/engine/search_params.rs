@@ -150,16 +150,16 @@ search_params! {
 
         /// Estimated moves-to-go in opening (phase=24) (ply)
         pub mtg_opening: i32 {
-            default: 280,
+            default:  80,
             min:      40,
             max:     300,
             step:      2,
         },
         /// Estimated moves-to-go in endgame (phase=0) (ply)
         pub mtg_endgame: i32 {
-            default: 100,
+            default:  40,
             min:      10,
-            max:     150,
+            max:     100,
             step:      2,
         },
 
