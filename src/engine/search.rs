@@ -1495,7 +1495,7 @@ impl SearchConfig {
 
     /// LMR reduction table from tunable base/divisor.
     ///
-    /// R(d, m) = base + ln(d) · ln(m) / divisor
+    ///   `R(d, m) = base + ln(d) · ln(m) / divisor`
     ///
     /// Logarithmic in both depth and move index: deeper searches tolerate
     /// larger reductions, and later moves deserve them. Precomputed so the
