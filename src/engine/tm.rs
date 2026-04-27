@@ -206,13 +206,16 @@ impl Clock {
     }
 
     /// Soft target: `time / mtg`, capped at `TIME_SOFT_CAP` of the clock,
-    /// plus half the increment as a small bonus, never above `hard_ms`.
+    /// plus 80% of the increment as a bonus — the increment is treated as
+    /// guaranteed refill, so spending it aggressively improves move quality.
+    /// Never above `hard_ms`.
     /// In a classical (movestogo) control, also runs a tightening pass —
     /// see `classical_adjustment`.
     fn soft_ms(&self, mtg: u64, hard_ms: u64) -> u64 {
         let base = (self.time as f64 / mtg as f64) as u64;
         let cap = (self.time as f64 * TIME_SOFT_CAP) as u64;
-        let raw = (base.min(cap) + self.inc / 2).min(hard_ms);
+        let inc_contrib = (self.inc as f64 * 0.8) as u64;
+        let raw = (base.min(cap) + inc_contrib).min(hard_ms);
 
         if self.movestogo > 0 { self.classical_adjustment(raw) } else { raw }
     }
