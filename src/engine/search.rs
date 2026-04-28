@@ -201,6 +201,13 @@ impl<'cfg> Searcher<'cfg> {
 
         let mut last_iter_elapsed = 0;
 
+        // ── Singular Bailout ──
+        // Only one legal move. Slash the budget to 5% so we exit the depth
+        // loop almost instantly, banking the saved time.
+        if self.root_moves.len() == 1 {
+            self.tm.apply_stability_factor(5);
+        }
+
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
 
