@@ -27,18 +27,21 @@ pub const TIME_HARD_CAP: f64 = 0.5;
 
 /// Tracks elapsed time against precomputed soft / hard budgets.
 ///
-/// Constructed once at the start of a search; queried from the search loop
-/// to decide when to stop iterating (`soft`) and when to bail mid-search
+/// Constructed once at the start of a search; queried each iteration to
+/// decide when to stop iterating (`soft`) and when to bail mid-search
 /// regardless of progress (`hard`).
+///
+/// Soft is composable: each dynamic signal owns one multiplicative factor.
+/// `soft = base_soft · ∏ factors`, clamped to `hard`. Every setter
+/// recomputes from `base_soft`, so factors never compound across
+/// iterations — adding a new signal is one field plus one setter.
 pub struct TimeManager {
     start: Instant,
     hard: Duration,
     soft: Duration,
-    /// Immutable baseline from the initial budget computation.
-    /// Dynamic scalers are always applied relative to this,
-    /// never to an already-scaled `soft` — so factors don't compound
-    /// across iterations.
     base_soft: Duration,
+    bm_stab: f64,
+    score: f64,
 }
 
 impl TimeManager {
@@ -46,11 +49,10 @@ impl TimeManager {
     ///
     /// `phase` is the current game phase (0 = endgame, `TOTAL_PHASE` = opening)
     /// and feeds the moves-to-go interpolation. `overhead` is shaved off both
-    /// budgets to leave room for I/O and GUI lag — never enough to drop a
-    /// budget below 1 ms.
+    /// budgets to leave room for I/O and GUI lag — never enough to drop a budget below 1 ms.
     pub fn new(limits: &Limits, start: Instant, stm: Color, overhead: u64, phase: i32, params: &SearchParams) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, params);
-        Self { start, soft, hard, base_soft: soft }
+        Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, score: 1.0 }
     }
 
     #[inline]
@@ -78,31 +80,32 @@ impl TimeManager {
         self.start.elapsed()
     }
 
-    /// Stretch the current soft budget by `percent / 100`, clamped to hard.
+    /// Update the best-move-stability factor and refresh `soft`.
     ///
-    /// Called when iterative deepening detects instability that warrants more
-    /// time on this move — e.g. the root score just dropped sharply. The hard
-    /// clamp is the invariant: soft may grow, but never past the clock cap.
+    /// Concentrated root-node effort on one move (high best/total ratio)
+    /// passes a factor below 1 to shrink the budget;
+    /// scattered effort passes a factor above 1 to stretch it.
     #[inline]
-    pub fn extend_soft_limit(&mut self, percent: u32) {
-        let current_ms = self.soft.as_millis() as u64;
-        let extended = Duration::from_millis(current_ms.saturating_mul(percent as u64) / 100);
-        self.soft = extended.min(self.hard);
+    pub fn set_bm_stab_factor(&mut self, factor: f64) {
+        self.bm_stab = factor;
+        self.recompute_soft();
     }
 
-    /// Rescale the soft budget relative to the original baseline.
+    /// Update the score-response factor and refresh `soft`.
     ///
-    ///   `soft = min(base_soft · percent / 100, hard)`
-    ///
-    /// Called once per ID iteration with a factor derived from per-root-move node effort:
-    /// concentrated effort shrinks the budget, scattered effort stretches it.
-    /// Anchoring on `base_soft` (not current `soft`) keeps the factor
-    /// from compounding across iterations.
+    /// Caller picks the factor from this iteration's score change relative
+    /// to the previous one. A factor of 1.0 means no response — pass it to
+    /// clear a stretch from the previous iteration.
     #[inline]
-    pub fn apply_stability_factor(&mut self, percent: u32) {
-        let base_ms = self.base_soft.as_millis() as u64;
-        let scaled = Duration::from_millis(base_ms.saturating_mul(percent as u64) / 100);
-        self.soft = scaled.min(self.hard);
+    pub fn set_score_factor(&mut self, factor: f64) {
+        self.score = factor;
+        self.recompute_soft();
+    }
+
+    #[inline]
+    fn recompute_soft(&mut self) {
+        let scaled = self.base_soft.as_millis() as f64 * self.bm_stab * self.score;
+        self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }
 }
 

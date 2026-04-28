@@ -205,7 +205,7 @@ impl<'cfg> Searcher<'cfg> {
         // Only one legal move. Slash the budget to 5% so we exit the depth
         // loop almost instantly, banking the saved time.
         if self.root_moves.len() == 1 {
-            self.tm.apply_stability_factor(5);
+            self.tm.set_bm_stab_factor(0.05);
         }
 
         for depth in 1..=depth_limit {
@@ -294,18 +294,23 @@ impl<'cfg> Searcher<'cfg> {
                 let total_nodes = self.nodes.max(1);
                 let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
                 let percent = (sp.bm_stab_base as u64).saturating_sub(effort_discount).max(sp.bm_stab_floor as u64);
-                self.tm.apply_stability_factor(percent as u32);
+                self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
             // ── Score Drop Extension (~27 Elo) ──
             // A sharp drop from the previous iteration signals instability:
             // a refutation just surfaced, or the best move changed.
             // Stretch the soft budget so this iteration (and possibly one more)
-            // can resolve the swing before we commit. Applied on top of the
-            // stability factor; hard cap still bounds the result.
-            if depth >= sp.score_drop_depth && new_score < self.prev_score - sp.score_drop_cp {
-                self.tm.extend_soft_limit(sp.score_drop_factor as u32);
-            }
+            // can resolve the swing before we commit. The factor composes
+            // multiplicatively with the stability factor; hard cap still
+            // bounds the result. Re-asserted every iteration so a stretch
+            // from the previous one doesn't carry over.
+            let score_factor = if depth >= sp.score_drop_depth && new_score < self.prev_score - sp.score_drop_cp {
+                sp.score_drop_factor as f64 / 100.0
+            } else {
+                1.0
+            };
+            self.tm.set_score_factor(score_factor);
 
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
