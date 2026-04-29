@@ -91,7 +91,7 @@ impl TimeManager {
         self.recompute_soft();
     }
 
-    /// Update the score-response factor and refresh `soft`.
+    /// Update the score-swing factor and refresh `soft`.
     ///
     /// Caller picks the factor from this iteration's score change relative
     /// to the previous one. A factor of 1.0 means no response — pass it to

@@ -506,31 +506,25 @@ search_params! {
             step:      8,
         },
 
-        /// Score-drop extension minimum depth (plies).
-        /// Below this, aspiration-window wobble dominates the signal, so a
-        /// drop is as likely to be noise as real instability.
+        /// Score-swing minimum depth (plies).
+        /// Below this, aspiration-window wobble dominates the signal, so an
+        /// iteration-to-iteration score change is as likely to be noise as
+        /// real instability.
         pub score_drop_depth: i32 {
             default:   5,
             min:       3,
             max:      10,
             step:      1,
         },
-        /// Score-drop extension trigger threshold (cp).
-        /// Extend the soft time limit when this iteration's root score falls
-        /// more than this many cp below the previous iteration's score.
-        pub score_drop_cp: i32 {
-            default:  30,
-            min:      10,
-            max:      80,
-            step:      2,
-        },
-        /// Score-drop extension factor (×100 fixed-point).
-        /// 135 = stretch the soft limit by 1.35×, clamped to the hard cap.
-        pub score_drop_factor: i32 {
-            default: 135,
-            min:     110,
+        /// Score-swing scale (cp per factor doubling).
+        /// Maps the iteration-to-iteration score change to a multiplicative
+        /// factor on the soft budget: `factor = 2 ^ (clamp(diff, ±scale) / scale)`.
+        /// A drop of `scale` cp doubles the budget; a surge of `scale` cp halves it.
+        pub score_factor_scale: i32 {
+            default: 100,
+            min:      40,
             max:     200,
-            step:      5,
+            step:      4,
         },
 
         /// Best-move stability minimum depth (plies).
