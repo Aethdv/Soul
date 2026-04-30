@@ -297,19 +297,22 @@ impl<'cfg> Searcher<'cfg> {
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
-            // ── Score Drop Extension (~27 Elo) ──
-            // A sharp drop from the previous iteration signals instability:
-            // a refutation just surfaced, or the best move changed.
-            // Stretch the soft budget so this iteration (and possibly one more)
-            // can resolve the swing before we commit. The factor composes
-            // multiplicatively with the stability factor; hard cap still
-            // bounds the result. Re-asserted every iteration so a stretch
-            // from the previous one doesn't carry over.
-            let score_factor = if depth >= sp.score_drop_depth && new_score < self.prev_score - sp.score_drop_cp {
-                sp.score_drop_factor as f64 / 100.0
+            // ── Score Swing (~28 Elo) ──
+            // Log-symmetric bidirectional reaction to the iteration-to-iteration
+            // score change. A drop of `score_factor_scale` cp doubles the soft
+            // budget (refutation surfaced — buy depth to resolve it); a surge
+            // of the same magnitude halves it (we just found something strong,
+            // so bank the time). Diff is clamped to ±scale so the factor stays
+            // in [0.5, 2.0]. Gated below `score_drop_depth` because aspiration
+            // churn at low depth produces noise, not signal.
+            let score_factor = if depth >= sp.score_drop_depth {
+                let scale = sp.score_factor_scale as f64;
+                let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
+                2.0_f64.powf(diff / scale)
             } else {
                 1.0
             };
+
             self.tm.set_score_factor(score_factor);
 
             self.prev_pv = *self.root_moves[0].pv;
