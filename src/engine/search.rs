@@ -297,7 +297,7 @@ impl<'cfg> Searcher<'cfg> {
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
-            // ── Score Swing ──
+            // ── Score Swing (~28 Elo) ──
             // Log-symmetric bidirectional reaction to the iteration-to-iteration
             // score change. A drop of `score_factor_scale` cp doubles the soft
             // budget (refutation surfaced — buy depth to resolve it); a surge
