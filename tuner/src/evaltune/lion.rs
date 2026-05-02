@@ -81,10 +81,11 @@ impl Lion {
             // 1. Interpolation: c = β₁ · m + (1 - β₁) · g
             let c = self.interp.mul_add(m, (1.0 - self.interp) * g);
 
-            // 2. Guard against signumless updates:
-            // When |c| is negligible, sign(c) ≈ 0 but weight decay on p would still fire,
-            // silently eroding a parameter without any gradient signal.
-            // Skip the update but clipping still applies below.
+            // 2. Parameter update with sign gate and weight decay.
+            //
+            // When |c| is negligible the sign step is skipped, but weight decay
+            // still fires — a converged parameter without gradient signal should
+            // not lose its regularisation pressure.
             //
             // TODO: Consider Momentum-Aligned Gradient Masking (Magma).
             // Maintaining dense momentum updates while gating the sign-update magnitude
@@ -92,14 +93,15 @@ impl Lion {
             // regularization term proportional to Δᵀ·H·Δ. This implicitly biases the
             // tuner toward flatter, more generalizable minima and suppresses noisy
             // updates in high-curvature directions of the evaluation landscape.
-            // *Ref: Joo, T., Xia, W., Kim, C., Zhang, M., & Ie, E. (2026). On
-            // Surprising Effectiveness of Masking Updates in Adaptive Optimizers.*
+            // *Ref: Joo, T., Xia, W., Kim, C., Zhang, M., & Ie, E. (2026).
+            // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.*
             // <https://arxiv.org/abs/2602.15322v1>
+            let decayed = self.lr.mul_add(-self.wd * d * p, p);
             let updated = if c.abs() < 1e-9 {
-                p // No significant gradient or momentum
+                decayed
             } else {
                 let sign = c.signum();
-                self.lr.mul_add(-(self.wd * d).mul_add(p, sign), p)
+                decayed - self.lr * sign
             };
 
             // 3. Optional weight clipping
@@ -157,5 +159,41 @@ mod tests {
 
         // c = β₁ · m + (1 - β₁) · g = 0.9 · 0.0 + 0.1 · 0.0 = 0 :p
         assert!((params[0] - 100.0).abs() < 0.01, "No clipping: {}", params[0]);
+    }
+
+    #[test]
+    fn lion_dead_zone_still_applies_weight_decay() {
+        // c ≈ 0, g ≈ 0: no sign update, but weight decay must still fire.
+        let mut params = vec![10.0];
+        let mut momentum = vec![0.0];
+        let grads = vec![0.0];
+        let decay_mask = vec![1.0]; // Full decay on this slot
+        let fixed_mask = vec![false];
+
+        // lr=1.0, wd=0.05, d=1.0 → decay = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
+        let opt = Lion::new(0.9, 0.99, 1.0, 0.05);
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+
+        let expected = 10.0 - 0.5;
+        assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
+    }
+
+    #[test]
+    fn lion_sign_update_unchanged() {
+        // When c is nonzero, behavior should be identical to before the fix.
+        let mut params = vec![1.0];
+        let mut momentum = vec![0.0];
+        let grads = vec![1.0]; // g=1.0, m=0 → c = 0.9·0 + 0.1·1 = 0.1
+        let decay_mask = vec![0.5];
+        let fixed_mask = vec![false];
+
+        // lr=0.2, wd=0.01, d=0.5 → decay = 0.2·0.01·0.5·1.0 = 0.001
+        // sign update = 0.2 · sign(0.1) = 0.2
+        // net: 1.0 - 0.001 - 0.2 = 0.799
+        let opt = Lion::new(0.9, 0.99, 0.2, 0.01);
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+
+        let expected = 1.0 - 0.001 - 0.2;
+        assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
     }
 }
