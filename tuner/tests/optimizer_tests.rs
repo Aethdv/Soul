@@ -57,7 +57,7 @@ fn test_cmaes_sphere_function() {
     cmaes.set_mean(&vec![3.0; n]); // Start away from optimum
     let mut rng   = fastrand::Rng::new();
 
-    for generation in 0..50 {
+    for _generation in 0..50 {
         let pop = cmaes.sample_population(&mut rng);
 
         // Evaluate: maximize negative ||x||²
