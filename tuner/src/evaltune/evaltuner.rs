@@ -327,7 +327,7 @@ fn train_loop<G, V>(
     println!("K Factor:   \x1b[36m{k:.6}\x1b[0m (100cp -> {:.1}%)   ", win_rate_100cp * 100.0);
 
     // Frozen reference K - never re-optimized.
-    // L_ref uses this K so that loss numbers are comparable across epochs 
+    // L_ref uses this K so that loss numbers are comparable across epochs
     // and runs regardless of K-reopt drift.
     let k_ref = k;
     println!("Ref K:      \x1b[36m{k_ref:.6}\x1b[0m");
@@ -364,6 +364,12 @@ fn train_loop<G, V>(
     let mut indices: Vec<usize> = (0..train_len).collect();
 
     let mut ema_values = values.clone();
+    let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
+
+    // Tail-only EMA doesn't apply to constant schedules,
+    // there is no "tail" phase. Fall back to uniform Polyak averaging.
+    let mut ema_active = is_constant_schedule;
+    let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
     let mut best_val_loss = f64::MAX;
     let mut plateau_count = 0usize;
 
@@ -383,6 +389,11 @@ fn train_loop<G, V>(
 
         let scheduled_lr = lr_scheduler.rate(epoch, config.epochs) * lr_scale;
         let lr = scheduled_lr.max(0.00001);
+
+        if !ema_active && lr < ema_threshold {
+            println!("  EMA activated at epoch {epoch} (lr {lr:.6} < {ema_threshold:.6})");
+            ema_active = true;
+        }
 
         let is_restart = epoch > 1 && {
             let prev_scheduled_lr = lr_scheduler.rate(epoch - 1, config.epochs) * lr_scale;
@@ -440,10 +451,16 @@ fn train_loop<G, V>(
                 }
             }
 
-            // ── Chronological EMA (Polyak Averaging) ──
-            // High-frequency oscillations in raw weights are smoothed out.
-            for i in 0..values.len() {
-                ema_values[i] = config.ema_decay.mul_add(ema_values[i], (1.0 - config.ema_decay) * values[i]);
+            // ── Tail-only EMA ──
+            // Skip the noisy high-LR phase; only average once LR has
+            // decayed below 30 % of its peak.  Before that, snapshot
+            // the live weights directly.
+            if ema_active {
+                for i in 0..values.len() {
+                    ema_values[i] = config.ema_decay.mul_add(ema_values[i], (1.0 - config.ema_decay) * values[i]);
+                }
+            } else {
+                ema_values.copy_from_slice(&values);
             }
         }
 
@@ -495,8 +512,17 @@ fn train_loop<G, V>(
         let mob_norm = total_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
 
         if let Some(ref mut w) = logger {
-            writeln!(w, "{:>3}     {:.6}    {:.6}    {:.6}    {:.4}{}", epoch, train_loss, val_loss, ref_loss, lr, if is_best { " *" } else { "" })
-                .ok();
+            writeln!(
+                w,
+                "{:>3}     {:.6}    {:.6}    {:.6}    {:.4}{}",
+                epoch,
+                train_loss,
+                val_loss,
+                ref_loss,
+                lr,
+                if is_best { " *" } else { "" }
+            )
+            .ok();
         }
         if let Some(ref mut l) = json_logger {
             if is_restart {
