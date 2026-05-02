@@ -91,7 +91,7 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
         if e.original_stm == soul::tools::dataset::STM_WHITE { e.result as f64 } else { 1.0 - e.result as f64 }
     });
 
-    // Batch gradient closure:
+    // Batch gradient closure.
     // Uses TrainableEntry trait dispatch for generic accumulation,
     // though encoded datasets use stored features directly.
     let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
@@ -326,6 +326,12 @@ fn train_loop<G, V>(
     let win_rate_100cp = sigmoid(100.0, k);
     println!("K Factor:   \x1b[36m{k:.6}\x1b[0m (100cp -> {:.1}%)   ", win_rate_100cp * 100.0);
 
+    // Frozen reference K - never re-optimized.
+    // L_ref uses this K so that loss numbers are comparable across epochs 
+    // and runs regardless of K-reopt drift.
+    let k_ref = k;
+    println!("Ref K:      \x1b[36m{k_ref:.6}\x1b[0m");
+
     let initial_values = values.clone();
 
     // Setup optimizer state and convergence tracking
@@ -347,7 +353,7 @@ fn train_loop<G, V>(
     let log_file = File::create("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
     if let Some(ref mut w) = logger {
-        writeln!(w, "epoch   L_train     L_val       LR").unwrap();
+        writeln!(w, "epoch   L_train     L_val       L_ref       LR").unwrap();
     }
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
 
@@ -461,6 +467,7 @@ fn train_loop<G, V>(
         }
 
         let val_loss = val_eval(&ema_values, k);
+        let ref_loss = val_eval(&ema_values, k_ref);
         let train_loss = train_loss / train_len as f64;
 
         // ── Validation Plateau Detection ──
@@ -488,7 +495,7 @@ fn train_loop<G, V>(
         let mob_norm = total_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
 
         if let Some(ref mut w) = logger {
-            writeln!(w, "{:>3}     {:.6}    {:.6}    {:.4}{}", epoch, train_loss, val_loss, lr, if is_best { " *" } else { "" })
+            writeln!(w, "{:>3}     {:.6}    {:.6}    {:.6}    {:.4}{}", epoch, train_loss, val_loss, ref_loss, lr, if is_best { " *" } else { "" })
                 .ok();
         }
         if let Some(ref mut l) = json_logger {
@@ -501,6 +508,7 @@ fn train_loop<G, V>(
                     "epoch": epoch,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
+                    "ref_loss": ref_loss,
                     "lr": lr,
                     "is_best": is_best,
                     "psqt_norm": psqt_norm,
@@ -513,8 +521,8 @@ fn train_loop<G, V>(
         let elapsed = t0.elapsed().as_secs_f32();
         let color = if is_best { "\x1b[32m" } else { "\x1b[0m" };
         println!(
-            "\r{}Epoch {:>3}/{} | L_train: {:.6} | L_val (EMA): {:.6} | LR: {:.4} | {:.2}s{}\x1b[0m\x1b[K",
-            color, epoch, config.epochs, train_loss, val_loss, lr, elapsed, overfit_warn
+            "\r{}Epoch {:>3}/{} | L_train: {:.6} | L_val: {:.6} | L_ref: {:.6} | LR: {:.4} | {:.2}s{}\x1b[0m\x1b[K",
+            color, epoch, config.epochs, train_loss, val_loss, ref_loss, lr, elapsed, overfit_warn
         );
 
         if epoch % 20 == 0 || epoch == config.epochs {
