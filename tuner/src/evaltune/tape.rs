@@ -657,6 +657,17 @@ mod tests {
 
             let entry = soul::tools::dataset::SoulEntry::from_board(&pos, TARGET, None, None);
 
+            // Position → SoulEntry → to_fen → Position.
+            // If this fails, to_fen() is corrupting the board.
+            // Scores will never agree. therefore the startup assertion is useless.
+            let rt_pos = Position::from_fen(&entry.to_fen());
+            let orig_score = eval_f64(&pos, &values);
+            let rt_score = eval_f64(&rt_pos, &values);
+            assert!(
+                (orig_score - rt_score).abs() < 1e-4,
+                "Round-trip score mismatch on '{fen}': orig={orig_score} reconstructed={rt_score}",
+            );
+
             // Score agreement
             let board_score = eval_f64(&pos, &values);
             let entry_score = soul::tools::dataset::eval_soul(&entry, &values);

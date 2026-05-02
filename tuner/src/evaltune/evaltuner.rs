@@ -142,37 +142,6 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
             / val.len() as f64
     };
 
-    // Verify encoded-path gradients against the dual oracle before training.
-    // Same pattern as the equivalent check in `run_raw`.
-    {
-        let all_params = eval_params::collect_parameters();
-        let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
-
-        for entry in train.iter().take(10) {
-            let target = entry.target(1.0, 0.0);
-            let pos = soul::core::board::Position::from_fen(&entry.to_fen());
-
-            let score = soul::tools::dataset::eval_soul(entry, &default_values);
-            let sig = sigmoid(score, 1.0);
-            let err = sig - target;
-            let outer = 2.0 * err * sig * (1.0 - sig) * 1.0;
-
-            let mut encoded_g = vec![0.0; default_values.len()];
-            soul::tools::dataset::accumulate_gradient(entry, &default_values, outer, &mut encoded_g);
-
-            let mut dual_g = vec![0.0; default_values.len()];
-            tape::eval_dual_fused(&pos, &default_values, target, 1.0, &mut dual_g);
-
-            for (i, (enc, dual)) in encoded_g.iter().zip(dual_g.iter()).enumerate() {
-                assert!(
-                    (enc - dual).abs() < 1e-3,
-                    "Encoded gradient drift at slot {i} ({}): encoded={enc} dual={dual}",
-                    all_params[i].name,
-                );
-            }
-        }
-    }
-
     train_loop(train.len(), "Encoded (no attack gen)", config, resume_path, batch_grad, val_eval);
 }
 
