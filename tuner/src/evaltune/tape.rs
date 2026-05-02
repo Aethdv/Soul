@@ -523,6 +523,7 @@ mod tests {
     use soul::core::{board::Position, psqt::LAYOUT};
 
     use super::*;
+    use crate::evaltune::training::sigmoid;
 
     const FENS: &[&str] = &[
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -628,5 +629,66 @@ mod tests {
             "BishopPairTerm alone",
             &values_in_range(LAYOUT.bishop_pair_offset..LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len),
         );
+    }
+
+    // ── Encoded-path cross-verification ──
+    //
+    // `accumulate_gradient` (dataset/gradient.rs) shares math with the
+    // board-based gradient paths but has never been verified against the
+    // DualNode oracle. A drift here corrupts every `run_encoded` session.
+
+    const ENCODED_FENS: &[&str] = &[
+        // White-to-move
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+
+        // Black-to-move
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
+    ];
+
+    #[test]
+    fn test_encoded_path_oracle() {
+        let values = full_values();
+        let n_params = values.len();
+
+        for fen in ENCODED_FENS {
+            let pos = Position::from_fen(fen);
+
+            let entry = soul::tools::dataset::SoulEntry::from_board(&pos, TARGET, None, None);
+
+            // Score agreement
+            let board_score = eval_f64(&pos, &values);
+            let entry_score = soul::tools::dataset::eval_soul(&entry, &values);
+            assert!(
+                (board_score - entry_score).abs() < 1e-4,
+                "Score mismatch on '{fen}': board={board_score} encoded={entry_score}",
+            );
+
+            // Gradient agreement
+            let mut dual_grads = vec![0.0f64; n_params];
+            let dual_loss = eval_dual_fused(&pos, &values, TARGET, K, &mut dual_grads);
+
+            // Replicate the loss-derivative scaling the encoded training loop uses.
+            let sig = sigmoid(entry_score, K);
+            let err = sig - TARGET;
+            let outer = 2.0 * err * sig * (1.0 - sig) * K;
+
+            let mut encoded_grads = vec![0.0f64; n_params];
+            soul::tools::dataset::accumulate_gradient(&entry, &values, outer, &mut encoded_grads);
+
+            let enc_loss = err * err;
+            assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}",);
+
+            for (i, (&dual, &encoded)) in dual_grads.iter().zip(encoded_grads.iter()).enumerate() {
+                let diff = (dual - encoded).abs();
+                assert!(
+                    diff < 1e-3,
+                    "[encoded] {} scatter drift at slot {i} on '{fen}': dual={dual} encoded={encoded} diff={diff}",
+                    term_for(i),
+                );
+            }
+        }
     }
 }
