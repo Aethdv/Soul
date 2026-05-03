@@ -125,6 +125,12 @@ pub struct EvalTuneConfig {
     /// Decay rate for Polyak averaging (Chronological EMA). Default: 0.999.
     #[serde(default = "default_ema_decay")]
     pub ema_decay: f64,
+    /// Epoch at which to unfreeze non-material parameters (mobility, king safety, etc.).
+    /// During epochs 0..unfreeze_epoch only PSQT and material values train; the rest
+    /// are held at their initial values. After unfreeze_epoch, all trainable parameters
+    /// participate normally. 0 disables progressive unfreeze. Default: 0.
+    #[serde(default)]
+    pub unfreeze_epoch: usize,
 }
 
 fn default_patience() -> usize {
@@ -208,6 +214,7 @@ impl Default for TunerConfig {
                 k_max: 0.010,
                 patience: 100,
                 ema_decay: 0.999,
+                unfreeze_epoch: 0,
             },
             searchtune: SearchTuneConfig {
                 population_scale: 2.0,

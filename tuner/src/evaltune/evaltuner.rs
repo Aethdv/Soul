@@ -375,8 +375,19 @@ fn train_loop<G, V>(
     let mut plateau_count = 0usize;
 
     let psqt_end = psqt::LAYOUT.material_offset;
+    let base_end = psqt_end + psqt::LAYOUT.material_len;
     let mob_start = psqt::LAYOUT.mobility_open_offset;
     let mob_end = psqt::LAYOUT.weight_offset;
+
+    // ── Progressive unfreeze: material-only warmup ──
+    // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
+    // so PSQT + material settle before the refinements join.
+    if config.unfreeze_epoch > 0 {
+        for i in base_end..fixed_mask.len() {
+            fixed_mask[i] = true;
+        }
+        println!("Progressive unfreeze: params {base_end}+ frozen until epoch {}", config.unfreeze_epoch);
+    }
 
     for epoch in start_epoch..=config.epochs {
         let t0 = Instant::now();
@@ -465,6 +476,14 @@ fn train_loop<G, V>(
             }
         }
 
+        // Progressive unfreeze; lift the material-only gate.
+        if config.unfreeze_epoch > 0 && epoch == config.unfreeze_epoch {
+            for (i, p) in all_params.iter().enumerate() {
+                fixed_mask[i] = p.is_fixed;
+            }
+            println!("  Unfrozen all remaining parameters at epoch {epoch}");
+        }
+
         // ── Auto-freeze stagnant parameters ──
         if epoch > 500 && epoch % 100 == 0 {
             let mut frozen = 0;
@@ -506,7 +525,7 @@ fn train_loop<G, V>(
 
         let overfit_warn = if val_loss > best_val_loss * 1.02 { " \x1b[31;1m⚠ OVERFIT\x1b[0m" } else { "" };
 
-        let is_best = update_snapshots(&mut snapshots, epoch, &values, &all_params, val_loss, snapshot_limit);
+        let is_best = update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit);
 
         // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
@@ -553,7 +572,7 @@ fn train_loop<G, V>(
         );
 
         if epoch % 20 == 0 || epoch == config.epochs {
-            print_params(&all_params, &initial_values, if epoch == config.epochs { &values } else { &ema_values });
+            print_params(&all_params, &initial_values, &ema_values);
 
             if let Err(e) = save_checkpoint(
                 "evaltune_checkpoint.json",
@@ -573,10 +592,12 @@ fn train_loop<G, V>(
     print_results(&snapshots, &all_params, &initial_values, &ema_values);
 }
 
-/// Sensitivity Analysis: Reuses gradient EMA to rank parameters by impact.
-/// Identifies "load-bearing" terms that are critical for accuracy.
+/// Sensitivity Analysis — writes `sensitivity-report.txt`.
 fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
-    println!("\n[Sensitivity Analysis]");
+    let Ok(mut f) = std::fs::File::create("sensitivity-report.txt") else { return };
+    let mut w = std::io::BufWriter::new(&mut f);
+    writeln!(w, "Sensitivity Analysis").ok();
+    writeln!(w).ok();
     let mut sensitivities = Vec::new();
     let mut frozen = Vec::new();
 
@@ -592,20 +613,26 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
     sensitivities.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
     frozen.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
-    println!("  Top Load-Bearing Parameters (Active):");
+    let max_width = |list: &[(f64, usize, &str)]| list.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20);
+    let active_width = max_width(&sensitivities) + 1;
+    let frozen_width = frozen.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
+
+    writeln!(w, "  Top Load-Bearing Parameters:").ok();
     for (i, (delta, _, name)) in sensitivities.iter().take(10).enumerate() {
-        println!("    {:>2}. {:<20} ΔL: {:.8}", i + 1, name, delta);
+        writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
 
-    println!("  Lowest-Impact Parameters (Active):");
+    writeln!(w).ok();
+    writeln!(w, "  Lowest-Impact Parameters:").ok();
     for (i, (delta, _, name)) in sensitivities.iter().rev().take(10).enumerate() {
-        println!("    {:>2}. {:<20} ΔL: {:.8}", i + 1, name, delta);
+        writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
 
     if !frozen.is_empty() {
-        println!("  Highest Sensitivity Auto-Frozen/Fixed Parameters:");
+        writeln!(w).ok();
+        writeln!(w, "  Highest Sensitivity Auto-Frozen/Fixed Parameters:").ok();
         for (i, (delta, _, name)) in frozen.iter().take(10).enumerate() {
-            println!("    {:>2}. {:<20} ΔL: {:.8} (VALUE AT FREEZE)", i + 1, name, delta);
+            writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = frozen_width).ok();
         }
     }
 }

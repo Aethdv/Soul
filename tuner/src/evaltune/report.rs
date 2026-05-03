@@ -5,19 +5,14 @@ use soul::{core::psqt, engine::eval_params::Tunable};
 use crate::evaltune::storage::Snapshot;
 
 pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64]) {
-    println!();
     let count = snapshots.len();
     if count == 0 {
         return;
     }
-    println!("Top {count} snapshots (sorted by L_val):");
-    for (i, snap) in snapshots.iter().enumerate() {
-        println!("  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error);
-    }
-    println!();
 
-    println!("Best Snapshot:");
     let best_snap = snapshots.first().unwrap();
+    println!();
+    println!("Best Snapshot (Epoch {}):", best_snap.epoch);
     let mut best_values = vec![0.0; values.len()];
     for t in all_params {
         if let Some(&v) = best_snap.params.get(&t.name) {
@@ -29,6 +24,15 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
 
     let best = best_snap.error;
     print_params(all_params, initial_values, &best_values);
+
+    // Top snapshots
+    if let Ok(mut f) = std::fs::File::create("top-snapshots.txt") {
+        let mut w = BufWriter::new(&mut f);
+        writeln!(w, "Top {count} snapshots (sorted by L_val):").ok();
+        for (i, snap) in snapshots.iter().enumerate() {
+            writeln!(w, "  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error).ok();
+        }
+    }
 
     if let Ok(log_file) = std::fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
         let mut w = BufWriter::new(log_file);
