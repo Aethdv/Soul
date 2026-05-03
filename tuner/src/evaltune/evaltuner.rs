@@ -115,7 +115,9 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
                         //
                         // dJ/dx = 2 · (S(x) - y) · K · S(x) · (1 - S(x))
                         let err = sig - target;
-                        let d = 2.0 * err * sig * (1.0 - sig) * k;
+                        let delta_cp = ((entry.static_score as i32) - (entry.search_score as i32)).unsigned_abs() as f64;
+                        let delta_weight = 1.0 + (delta_cp / 400.0).min(1.0);
+                        let d = delta_weight * 2.0 * err * sig * (1.0 - sig) * k;
 
                         entry.accumulate_grad(values, d, &mut g, &());
                         loss = err.mul_add(err, loss);
