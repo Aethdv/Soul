@@ -53,6 +53,9 @@ pub fn run(args: &[&str]) {
         ["encode", input, output, ..] => encode(input, output),
         ["encode", ..] => eprintln!("Usage: soul dataset encode <input.epd> <output.soul>"),
 
+        ["deltas", path, ..] => dump_deltas(path),
+        ["deltas"] => eprintln!("Usage: soul dataset deltas <path>"),
+
         [unknown, ..] => {
             eprintln!("Unknown dataset command: {unknown}");
             help();
@@ -73,6 +76,7 @@ fn help() {
     h.subcommand_default("inspect", "<path> [count]", "Show first N entries as readable FENs", "10");
     h.subcommand("info", "<path>", "Show dataset statistics");
     h.subcommand("encode", "<input> <output>", "Convert EPD/TXT/FEN file to .soul binary format");
+    h.subcommand("deltas", "<path>", "Dump (delta, result, static, search) CSV for analysis");
     h.separator();
 
     h.header("Examples:");
@@ -185,6 +189,20 @@ fn info(path: &str) {
     println!("Average Scores:");
     println!("  Static:  {:+.2} cp", (total_static as f64) / n);
     println!("  Search:  {:+.2} cp", (total_search as f64) / n);
+}
+
+fn dump_deltas(path: &str) {
+    let entries: Vec<SoulEntry> = load_or_bail!(path);
+    let stdout = std::io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    let _ = writeln!(out, "delta_cp,result,static_score,search_score");
+    for entry in &entries {
+        let st = entry.static_score;
+        let sr = entry.search_score;
+        let delta = (i32::from(st) - i32::from(sr)).unsigned_abs();
+        let _ = writeln!(out, "{delta},{},{st},{sr}", entry.result);
+    }
 }
 
 /// Converts plaintext EPD/FEN into compact `.soul` binary format.
