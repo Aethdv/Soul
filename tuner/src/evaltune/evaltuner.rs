@@ -558,7 +558,7 @@ fn train_loop<G, V>(
                 "evaltune_checkpoint.json",
                 epoch + 1, // resume starts here; the current epoch is already done
                 lr_scale,
-                &ema_values,
+                &values,
                 &momentum,
                 &all_params,
                 rng_seed,
