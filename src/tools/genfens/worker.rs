@@ -12,7 +12,7 @@ use super::{config::GenfensConfig, stats::GlobalStats};
 use crate::{
     core::{
         board::Position,
-        defs::{Color, GameOutcome},
+        defs::{Color, GameOutcome, PieceType},
         moves::Move,
     },
     engine::{
@@ -266,6 +266,19 @@ impl WorkerState {
             // Stochastic subsampling for training diversity.
             let sampled = self.config.sample_rate >= 1.0 || self.rng.f64() < self.config.sample_rate;
 
+            let ply = (self.board.fullmove_number as usize - 1) * 2 + (self.board.stm as usize);
+            let pieces: u32 = PieceType::ALL.iter().map(|&pt| self.board.piece_count(pt) as u32).sum();
+
+            let should_save = should_save && ply >= self.config.min_ply && pieces >= self.config.min_pieces;
+
+            if !should_save {
+                if ply < self.config.min_ply {
+                    self.global.filtered_ply.fetch_add(1, Relaxed);
+                } else if pieces < self.config.min_pieces {
+                    self.global.filtered_pieces.fetch_add(1, Relaxed);
+                }
+            }
+
             if should_save && sampled {
                 let entry = SoulEntry::from_board(
                     &self.board,
@@ -286,6 +299,26 @@ impl WorkerState {
         // Back-propagate game result to every saved position
         for (mut entry, stm) in self.pending.drain(..) {
             entry.result = outcome.relative_to(stm);
+
+            let search_eval = entry.search_score as i32;
+            let contradictory = match (outcome, stm) {
+                // STM won but eval said STM was losing badly.
+                (GameOutcome::WhiteWins, Color::White) | (GameOutcome::BlackWins, Color::Black) => {
+                    search_eval < -self.config.eval_contradiction_limit
+                },
+                // STM lost but eval said STM was winning.
+                (GameOutcome::WhiteWins, Color::Black) | (GameOutcome::BlackWins, Color::White) => {
+                    search_eval > self.config.eval_contradiction_limit
+                },
+                // Draw, but eval was decisively non-draw.
+                (GameOutcome::Draw, _) => search_eval.abs() > self.config.eval_contradiction_limit,
+            };
+
+            if contradictory {
+                self.global.filtered_incorrect.fetch_add(1, Relaxed);
+                continue;
+            }
+
             self.confirmed.push(entry);
         }
 

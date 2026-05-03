@@ -37,7 +37,7 @@ const DASHBOARD_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 
 /// Number of lines the dashboard occupies. We print this many newlines on
 /// first render, then cursor-up by this amount on every subsequent frame.
-const DASHBOARD_LINES: usize = 10;
+const DASHBOARD_LINES: usize = 13;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let parsed = parse_args(args);
@@ -210,6 +210,9 @@ struct Snapshot {
     plies: u64,
     filtered_quiet: u64,
     filtered_score: u64,
+    filtered_ply: u64,
+    filtered_pieces: u64,
+    filtered_incorrect: u64,
     search_fail: u64,
     term_check: u64,
     term_stale: u64,
@@ -236,6 +239,9 @@ impl Snapshot {
             plies: global.plies.load(Ordering::Relaxed),
             filtered_quiet: global.filtered_quiet.load(Ordering::Relaxed),
             filtered_score: global.filtered_score.load(Ordering::Relaxed),
+            filtered_ply: global.filtered_ply.load(Ordering::Relaxed),
+            filtered_pieces: global.filtered_pieces.load(Ordering::Relaxed),
+            filtered_incorrect: global.filtered_incorrect.load(Ordering::Relaxed),
             search_fail: global.search_fail.load(Ordering::Relaxed),
             term_check: global.term_check.load(Ordering::Relaxed),
             term_stale: global.term_stale.load(Ordering::Relaxed),
@@ -274,7 +280,7 @@ impl Snapshot {
     }
 
     fn total_filtered(&self) -> u64 {
-        self.filtered_quiet + self.filtered_score
+        self.filtered_quiet + self.filtered_score + self.filtered_ply + self.filtered_pieces + self.filtered_incorrect
     }
 
     fn total_terminations(&self) -> u64 {
@@ -321,6 +327,9 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
     println!("\r\x1b[KFiltered Quiet:  {}", format_num(snap.filtered_quiet));
     println!("\r\x1b[KFiltered Score:  {}", format_num(snap.filtered_score));
+    println!("\r\x1b[KFiltered Ply:    {}", format_num(snap.filtered_ply));
+    println!("\r\x1b[KFiltered Pieces: {}", format_num(snap.filtered_pieces));
+    println!("\r\x1b[KFiltered Incorr: {}", format_num(snap.filtered_incorrect));
     println!("\r\x1b[KBest Move fails: {}", format_num(snap.search_fail));
     println!("\r\x1b[KRAM alloc:       {} MB", get_rss_kb() / 1024);
     println!("\r\x1b[KElapsed:         {}", format_eta(snap.elapsed));
@@ -354,6 +363,13 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!("  Filter Breakdown:");
     println!("    Quiet filter:   {} ({:.1}%)", format_num(snap.filtered_quiet), pct(snap.filtered_quiet, total_filt),);
     println!("    Score filter:   {} ({:.1}%)", format_num(snap.filtered_score), pct(snap.filtered_score, total_filt),);
+    println!("    Ply filter:     {} ({:.1}%)", format_num(snap.filtered_ply), pct(snap.filtered_ply, total_filt),);
+    println!("    Pieces filter:  {} ({:.1}%)", format_num(snap.filtered_pieces), pct(snap.filtered_pieces, total_filt),);
+    println!(
+        "    Incorrect filt: {} ({:.1}%)",
+        format_num(snap.filtered_incorrect),
+        pct(snap.filtered_incorrect, total_filt),
+    );
     println!();
     println!("  Game Terminations:");
 
@@ -431,6 +447,15 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     if config.filter_quiet {
         println!("Filter: quiet positions only");
     }
+    if config.min_ply > 0 {
+        println!("Filter: min ply = {}", config.min_ply);
+    }
+    if config.min_pieces > 0 {
+        println!("Filter: min pieces = {}", config.min_pieces);
+    }
+    if config.eval_contradiction_limit != i32::MAX {
+        println!("Filter: eval contradiction limit = {} cp", config.eval_contradiction_limit);
+    }
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
     }
@@ -487,8 +512,6 @@ fn load_existing_count(path: &str) -> usize {
     load_encoded(path).map_or(0, |v| v.len())
 }
 
-// ── CLI argument parsing ──
-
 fn print_help() {
     use crate::cli::Help;
 
@@ -500,21 +523,28 @@ fn print_help() {
 
     h.header("Options:");
     h.option_default("-n, --count", "<N>", "Target number of positions to generate", "8,000,000");
+    h.option_default("-t, --threads", "<N>", "Number of threads", "auto");
     h.option_default("-o, --output", "<PATH>", "Output file path", "data.soul.zst");
     h.option_default("-b, --book", "<PATH>", "Opening book path", "UHO_Lichess_4852_v1.epd");
     h.option_default("-d, --depth", "<N>", "Search depth (default 6; MAX when --soft/--nodes set without --depth)", "6");
     h.option("--soft", "<N>", "Soft node limit");
     h.option("--nodes", "<N>", "Hard node limit");
-    h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
-    h.option_default("--filter", "<CP>", "Max score for saved positions", "450");
     h.option_default("--plies", "<N>", "Max game length", "300");
     h.option_default("--buf", "<N>", "Buffer size per thread", "256");
-    h.option_default("-t, --threads", "<N>", "Number of threads", "auto");
+    h.option("--resume", "", "Resume from existing config/output");
     h.option_default("--save-interval", "<N>", "Save interval", "5000");
     h.option_default("--sample", "<0-1>", "Randomly sample fraction of positions", "0.7");
     h.option("--all", "", "Disable quiet position filtering");
-    h.option("--resume", "", "Resume from existing config/output");
-    h.option("-h, --help", "", "Print this help message");
+    h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
+    h.option_default("--filter", "<CP>", "Max score for saved positions", "450");
+    h.option_default("--min-ply", "<N>", "Skip positions before this ply", "0");
+    h.option_default("--min-pieces", "<N>", "Skip positions with fewer pieces", "4");
+    h.option_default(
+        "--eval-contradiction-limit",
+        "<CP>",
+        "Skip positions where eval contradicts game outcome by more than this (centipawns)",
+        "disabled",
+    );
 }
 
 fn parse_args(args: &[&str]) -> GenfensArgs {
@@ -532,6 +562,9 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
     let mut save_interval = 5000;
     let mut filter_quiet = true;
     let mut sample_rate = 0.7;
+    let mut min_ply = 0usize;
+    let mut min_pieces = 4u32;
+    let mut eval_contradiction_limit = i32::MAX;
     let mut resume = false;
 
     let mut it = args.iter().copied();
@@ -603,6 +636,21 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                     sample_rate = v.parse().unwrap_or(sample_rate);
                 }
             },
+            "--min-ply" => {
+                if let Some(v) = it.next() {
+                    min_ply = v.parse().unwrap_or(min_ply);
+                }
+            },
+            "--min-pieces" => {
+                if let Some(v) = it.next() {
+                    min_pieces = v.parse().unwrap_or(min_pieces);
+                }
+            },
+            "--eval-contradiction-limit" => {
+                if let Some(v) = it.next() {
+                    eval_contradiction_limit = v.parse().unwrap_or(eval_contradiction_limit);
+                }
+            },
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
@@ -633,6 +681,9 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
         save_interval,
         filter_quiet,
         sample_rate,
+        min_ply,
+        min_pieces,
+        eval_contradiction_limit,
         resume,
     }
 }

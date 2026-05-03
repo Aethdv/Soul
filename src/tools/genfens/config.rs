@@ -20,6 +20,13 @@ pub struct GenfensConfig {
     pub save_interval: usize,
     pub filter_quiet: bool,
     pub sample_rate: f64,
+    /// Skip positions before this ply count. 0 = disabled.
+    pub min_ply: usize,
+    /// Skip positions with fewer pieces than this. 0 = disabled.
+    pub min_pieces: u32,
+    /// Skip positions where search eval contradicts game outcome
+    /// by more than this many centipawns. i32::MAX = disabled.
+    pub eval_contradiction_limit: i32,
     pub generated_count: u64,
     pub last_update: i64,
 }
@@ -41,6 +48,9 @@ impl Default for GenfensConfig {
             save_interval: 5000,
             filter_quiet: true,
             sample_rate: 0.7,
+            min_ply: 0,
+            min_pieces: 4,
+            eval_contradiction_limit: i32::MAX,
             generated_count: 0,
             last_update: 0,
         }
@@ -91,6 +101,9 @@ pub struct GenfensArgs {
     pub save_interval: usize,
     pub filter_quiet: bool,
     pub sample_rate: f64,
+    pub min_ply: usize,
+    pub min_pieces: u32,
+    pub eval_contradiction_limit: i32,
     pub resume: bool,
 }
 
@@ -117,6 +130,9 @@ impl From<GenfensArgs> for GenfensConfig {
             save_interval: args.save_interval,
             filter_quiet: args.filter_quiet,
             sample_rate: args.sample_rate,
+            min_ply: args.min_ply,
+            min_pieces: args.min_pieces,
+            eval_contradiction_limit: args.eval_contradiction_limit,
             generated_count: 0,
             last_update: 0,
         }
