@@ -506,7 +506,7 @@ fn train_loop<G, V>(
 
         let overfit_warn = if val_loss > best_val_loss * 1.02 { " \x1b[31;1m⚠ OVERFIT\x1b[0m" } else { "" };
 
-        let is_best = update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit);
+        let is_best = update_snapshots(&mut snapshots, epoch, &values, &all_params, val_loss, snapshot_limit);
 
         // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
@@ -553,7 +553,7 @@ fn train_loop<G, V>(
         );
 
         if epoch % 20 == 0 || epoch == config.epochs {
-            print_params(&all_params, &initial_values, &ema_values);
+            print_params(&all_params, &initial_values, if epoch == config.epochs { &values } else { &ema_values });
 
             if let Err(e) = save_checkpoint(
                 "evaltune_checkpoint.json",
