@@ -337,6 +337,7 @@ fn train_loop<G, V>(
     // Setup optimizer state and convergence tracking
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
     let decay_mask = build_decay_mask(&all_params);
+    let beta2_mask = build_beta2_mask(&all_params, config.beta2);
 
     let mut grad_ema_per_param = vec![0.001_f64; values.len()];
     let mut stagnant_epochs = vec![0usize; values.len()];
@@ -358,7 +359,7 @@ fn train_loop<G, V>(
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
-    let mut optimizer = Lion::new(config.beta1, config.beta2, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
+    let mut optimizer = Lion::new(config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
 
     let mut grad_stats = GradientStats::new(100);
     let mut indices: Vec<usize> = (0..train_len).collect();
@@ -437,7 +438,7 @@ fn train_loop<G, V>(
                 total_grads[i] += *g;
             }
 
-            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask);
+            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask);
 
             for value in &mut values[mob_start..mob_end] {
                 *value = value.clamp(-MOB_CLAMP, MOB_CLAMP);
@@ -703,6 +704,34 @@ fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
                 1.5
             } else {
                 1.0
+            }
+        })
+        .collect()
+}
+
+/// Per-group momentum decay mask.
+///
+/// Different parameter groups have different natural gradient timescales.
+/// - PSQT (0.995): squares only see updates when a piece of that type lands
+///   there — longer momentum smooths sparse signal across positions.
+/// - Mobility (0.95): features are computed every position; shorter momentum
+///   lets weights track the faster dynamics without lag.
+/// - Everything else (0.99): the existing default from the config.
+fn build_beta2_mask(params: &[Tunable], default_beta2: f64) -> Vec<f64> {
+    let psqt_end = psqt::LAYOUT.material_offset;
+    let mat_end = psqt::LAYOUT.mobility_open_offset;
+    let mob_end = psqt::LAYOUT.weight_offset;
+
+    (0..params.len())
+        .map(|i| {
+            if i < psqt_end {
+                0.995
+            } else if i < mat_end {
+                default_beta2
+            } else if i < mob_end {
+                0.95
+            } else {
+                default_beta2
             }
         })
         .collect()

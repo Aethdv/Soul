@@ -11,8 +11,9 @@ fn test_lion_quadratic_convergence() {
     let mut momentum = vec![0.0; n];
     let decay_mask   = vec![1.0; n];
     let fixed_mask   = vec![false; n];
+    let beta2        = vec![0.99; n];
 
-    let mut optimizer = Lion::new(0.9, 0.99, 0.1, 0.0);
+    let mut optimizer = Lion::new(0.9, 0.1, 0.0);
 
     for iter in 0..200 {
         // ∇f = 2x
@@ -21,7 +22,7 @@ fn test_lion_quadratic_convergence() {
         let decay = 1.0 - (iter as f64 / 200.0);
         optimizer.set_lr(0.1 * decay.max(0.05));
 
-        optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+        optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
     }
 
     let final_norm: f64 = params.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -38,11 +39,12 @@ fn test_lion_respects_fixed_mask() {
     let grads        = vec![1.0, 1.0, 1.0];
     let decay_mask   = vec![1.0; 3];
     let fixed_mask   = vec![false, true, false];
+    let beta2        = vec![0.99; 3];
 
     let original_middle = params[1];
 
-    let optimizer = Lion::new(0.9, 0.99, 0.1, 0.0);
-    optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+    let optimizer = Lion::new(0.9, 0.1, 0.0);
+    optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
 
     assert_eq!(params[1], original_middle, "Fixed parameter should not change");
     assert_ne!(params[0], 1.0,             "Unfixed parameter should change");

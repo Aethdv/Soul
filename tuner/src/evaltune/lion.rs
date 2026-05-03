@@ -28,10 +28,10 @@
 //!
 //! 4. Momentum Tracking:
 //!    Update the stored momentum (m) for the next step.
-//!    m = β₂ · m + (1 - β₂) · g
+//!    m = β₂ · m + (1 - β₂) · g,
+//!    where β₂ is per-parameter (PSQT 0.995, mobility 0.95, default 0.99).
 pub struct Lion {
-    interp: f64,   // β₁ (interpolation weight)
-    momentum: f64, // β₂ (momentum decay)
+    interp: f64, // β₁ (interpolation weight)
     lr: f64,
     wd: f64,
     clip: Option<(f64, f64)>,
@@ -39,14 +39,14 @@ pub struct Lion {
 
 impl Lion {
     #[must_use]
-    pub const fn new(interp: f64, momentum: f64, lr: f64, wd: f64) -> Self {
-        Self { interp, momentum, lr, wd, clip: None }
+    pub const fn new(interp: f64, lr: f64, wd: f64) -> Self {
+        Self { interp, lr, wd, clip: None }
     }
 
     /// Create Lion with weight clipping enabled.
     #[must_use]
-    pub const fn with_clipping(interp: f64, momentum: f64, lr: f64, wd: f64, min: f64, max: f64) -> Self {
-        Self { interp, momentum, lr, wd, clip: Some((min, max)) }
+    pub const fn with_clipping(interp: f64, lr: f64, wd: f64, min: f64, max: f64) -> Self {
+        Self { interp, lr, wd, clip: Some((min, max)) }
     }
 
     /// Enable weight clipping on an existing instance.
@@ -62,11 +62,20 @@ impl Lion {
     }
 
     /// Performs a single optimization step
-    pub fn update(&self, params: &mut [f64], momentum: &mut [f64], gradients: &[f64], decay_mask: &[f64], fixed_mask: &[bool]) {
+    pub fn update(
+        &self,
+        params: &mut [f64],
+        momentum: &mut [f64],
+        gradients: &[f64],
+        decay_mask: &[f64],
+        fixed_mask: &[bool],
+        beta2: &[f64],
+    ) {
         debug_assert_eq!(params.len(), momentum.len());
         debug_assert_eq!(params.len(), gradients.len());
         debug_assert_eq!(params.len(), decay_mask.len());
         debug_assert_eq!(params.len(), fixed_mask.len());
+        debug_assert_eq!(params.len(), beta2.len());
 
         for i in 0..params.len() {
             if fixed_mask[i] {
@@ -114,7 +123,7 @@ impl Lion {
             // Hard-zero momentum when both gradient and current momentum are essentially zero.
             // Without this, floating-point residuals in m can accumulate and trigger sign updates
             // on perfectly converged parameters — a kind of ghost-gradient effect.
-            momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { self.momentum.mul_add(m, (1.0 - self.momentum) * g) };
+            momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { beta2[i].mul_add(m, (1.0 - beta2[i]) * g) };
         }
     }
 }
@@ -132,17 +141,18 @@ mod tests {
         let fixed_mask = vec![false];
 
         let grads_neg = vec![-1.0];
-        let opt = Lion::with_clipping(0.9, 0.99, 1.0, 0.0, -2.0, 2.0);
+        let opt = Lion::with_clipping(0.9, 1.0, 0.0, -2.0, 2.0);
         let mut momentum_neg = vec![-0.5];
+        let beta2 = vec![0.99];
 
-        opt.update(&mut params, &mut momentum_neg, &grads_neg, &decay_mask, &fixed_mask);
+        opt.update(&mut params, &mut momentum_neg, &grads_neg, &decay_mask, &fixed_mask, &beta2);
         assert!((params[0] - 2.0).abs() < 1e-9, "Should be clipped to max: {}", params[0]);
 
         // Test sparse path clipping
         let mut params_sparse = vec![10.0];
         let mut momentum_sparse = vec![0.0];
         let grads_sparse = vec![0.0];
-        opt.update(&mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask);
+        opt.update(&mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2);
         assert!((params_sparse[0] - 2.0).abs() < 1e-9, "Sparse update should still clip: {}", params_sparse[0]);
     }
 
@@ -154,8 +164,9 @@ mod tests {
         let decay_mask = vec![0.0];
         let fixed_mask = vec![false];
 
-        let opt = Lion::new(0.9, 0.99, 0.1, 0.0);
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+        let opt = Lion::new(0.9, 0.1, 0.0);
+        let beta2 = vec![0.99];
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
 
         // c = β₁ · m + (1 - β₁) · g = 0.9 · 0.0 + 0.1 · 0.0 = 0 :p
         assert!((params[0] - 100.0).abs() < 0.01, "No clipping: {}", params[0]);
@@ -171,8 +182,9 @@ mod tests {
         let fixed_mask = vec![false];
 
         // lr=1.0, wd=0.05, d=1.0 → decay = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
-        let opt = Lion::new(0.9, 0.99, 1.0, 0.05);
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+        let opt = Lion::new(0.9, 1.0, 0.05);
+        let beta2 = vec![0.99];
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
 
         let expected = 10.0 - 0.5;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
@@ -190,8 +202,9 @@ mod tests {
         // lr=0.2, wd=0.01, d=0.5 → decay = 0.2·0.01·0.5·1.0 = 0.001
         // sign update = 0.2 · sign(0.1) = 0.2
         // net: 1.0 - 0.001 - 0.2 = 0.799
-        let opt = Lion::new(0.9, 0.99, 0.2, 0.01);
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask);
+        let opt = Lion::new(0.9, 0.2, 0.01);
+        let beta2 = vec![0.99];
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
 
         let expected = 1.0 - 0.001 - 0.2;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
