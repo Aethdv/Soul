@@ -108,6 +108,8 @@ impl Lion {
             let decayed = self.lr.mul_add(-self.wd * d * p, p);
             let updated = if c.abs() < 1e-9 {
                 decayed
+            } else if m.signum() != g.signum() && m.abs() > 1e-6 {
+                decayed
             } else {
                 let sign = c.signum();
                 decayed - self.lr * sign
@@ -208,5 +210,24 @@ mod tests {
 
         let expected = 1.0 - 0.001 - 0.2;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
+    }
+
+    #[test]
+    fn lion_skips_sign_update_on_momentum_gradient_disagreement() {
+        // momentum and gradient point in opposite directions → skip.
+        let mut params = vec![5.0];
+        let mut momentum = vec![0.5]; // positive momentum
+        let grads = vec![-1.0]; // negative gradient
+        let decay_mask = vec![0.0];
+        let fixed_mask = vec![false];
+
+        // c = 0.9·0.5 + 0.1·(-1.0) = 0.45 - 0.1 = 0.35 > 0 → would normally update
+        // but m.signum() ≠ g.signum() → skip sign step
+        let opt = Lion::new(0.9, 0.1, 0.0);
+        let beta2 = vec![0.99];
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+
+        // No weight decay (wd=0, d=1.0), sign update skipped → no change.
+        assert!((params[0] - 5.0).abs() < 1e-9, "Expected no change, got {}", params[0]);
     }
 }
