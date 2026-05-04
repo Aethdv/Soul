@@ -501,12 +501,12 @@ fn train_loop<G, V>(
         }
 
         // ── Auto-freeze stagnant parameters ──
-        if epoch > 500 && epoch % 100 == 0 {
+        if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
             let mut frozen = 0;
             for i in 0..values.len() {
-                if !fixed_mask[i] && grad_ema_per_param[i] < 1e-7 && !all_params[i].freeze_resistant {
+                if !fixed_mask[i] && grad_ema_per_param[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
                     stagnant_epochs[i] += 1;
-                    if stagnant_epochs[i] >= 2 {
+                    if stagnant_epochs[i] >= config.freeze_consecutive {
                         fixed_mask[i] = true;
                         frozen += 1;
                     }

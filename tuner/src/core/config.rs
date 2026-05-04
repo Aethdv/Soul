@@ -135,6 +135,21 @@ pub struct EvalTuneConfig {
     /// is randomly generated at startup. Set to any u64 for reproducible training runs.
     #[serde(default)]
     pub seed: Option<u64>,
+    /// Enable auto-freeze of stagnant parameters. Default: true.
+    #[serde(default = "default_true")]
+    pub auto_freeze: bool,
+    /// Delay auto-freeze activation until this epoch. Default: 500.
+    #[serde(default = "default_freeze_start")]
+    pub freeze_start_epoch: usize,
+    /// Check for stagnant parameters every N epochs. Default: 100.
+    #[serde(default = "default_freeze_cadence")]
+    pub freeze_cadence: usize,
+    /// Grad EMA below this value is considered stagnant. Default: 1e-7.
+    #[serde(default = "default_freeze_threshold")]
+    pub freeze_threshold: f64,
+    /// Number of consecutive checks before freezing. Default: 2.
+    #[serde(default = "default_freeze_consecutive")]
+    pub freeze_consecutive: usize,
 }
 
 fn default_patience() -> usize {
@@ -142,6 +157,21 @@ fn default_patience() -> usize {
 }
 fn default_ema_decay() -> f64 {
     0.999
+}
+fn default_true() -> bool {
+    true
+}
+fn default_freeze_start() -> usize {
+    500
+}
+fn default_freeze_cadence() -> usize {
+    100
+}
+fn default_freeze_threshold() -> f64 {
+    1e-7
+}
+fn default_freeze_consecutive() -> usize {
+    2
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -220,6 +250,11 @@ impl Default for TunerConfig {
                 ema_decay: 0.999,
                 unfreeze_epoch: 0,
                 seed: None,
+                auto_freeze: true,
+                freeze_start_epoch: 500,
+                freeze_cadence: 100,
+                freeze_threshold: 1e-7,
+                freeze_consecutive: 2,
             },
             searchtune: SearchTuneConfig {
                 population_scale: 2.0,
