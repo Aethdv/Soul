@@ -16,10 +16,11 @@ warmup_ratio = 0.1
 restarts = 1
 
 [evaltune.wdl_schedule]
-type = "stable-decay"
-start = 0.4
-end = 0.1
-stable_ratio = 0.35
+type = "constant" # stable-decay
+value = 0.5
+#start = 0.4
+#end = 0.1
+#stable_ratio = 0.35
 
 [searchtune]
 population_scale = 2.0  # λ = ceil((3·ln(n) + 4) · scale), floored at 16.
