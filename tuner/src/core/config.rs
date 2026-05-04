@@ -131,6 +131,10 @@ pub struct EvalTuneConfig {
     /// participate normally. 0 disables progressive unfreeze. Default: 0.
     #[serde(default)]
     pub unfreeze_epoch: usize,
+    /// Fixed RNG seed for deterministic batch ordering. When None (default), the seed
+    /// is randomly generated at startup. Set to any u64 for reproducible training runs.
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 fn default_patience() -> usize {
@@ -215,6 +219,7 @@ impl Default for TunerConfig {
                 patience: 100,
                 ema_decay: 0.999,
                 unfreeze_epoch: 0,
+                seed: None,
             },
             searchtune: SearchTuneConfig {
                 population_scale: 2.0,

@@ -301,7 +301,7 @@ fn train_loop<G, V>(
     let (start_epoch, mut lr_scale, mut values, mut momentum, rng_seed) = resume_path.map_or_else(
         || {
             let momentum = vec![0.0; default_values.len()];
-            let seed = fastrand::u64(..);
+            let seed = config.seed.unwrap_or_else(|| fastrand::u64(..));
             (1, 1.0_f64, default_values.clone(), momentum, seed)
         },
         |path| {
@@ -331,6 +331,8 @@ fn train_loop<G, V>(
     // and runs regardless of K-reopt drift.
     let k_ref = k;
     println!("Ref K:      \x1b[36m{k_ref:.6}\x1b[0m");
+    let seed_label = if config.seed.is_some() { " (deterministic)" } else { "" };
+    println!("Seed:       \x1b[36m{rng_seed}\x1b[0m{seed_label}");
 
     let initial_values = values.clone();
 
@@ -358,6 +360,7 @@ fn train_loop<G, V>(
     let log_file = File::create("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
     if let Some(ref mut w) = logger {
+        writeln!(w, "# Seed: {rng_seed}").unwrap();
         writeln!(w, "epoch   L_train     L_val       L_ref       LR").unwrap();
     }
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();

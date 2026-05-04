@@ -51,6 +51,9 @@ struct Args {
     #[arg(long)]
     wdl_schedule: Option<String>,
 
+    #[arg(long)]
+    seed: Option<u64>,
+
     #[arg(long, action = clap::ArgAction::SetTrue)]
     help: bool,
 }
@@ -89,6 +92,10 @@ fn main() {
 
             if let Some(epochs) = args.epochs {
                 tuner_config.evaltune.epochs = epochs;
+            }
+
+            if let Some(seed) = args.seed {
+                tuner_config.evaltune.seed = Some(seed);
             }
 
             // Apply LR schedule overrides
@@ -225,4 +232,5 @@ fn print_help() {
     h.option("--wdl-start", "<ratio>", "WDL blend start (scheduled)");
     h.option("--wdl-end", "<ratio>", "WDL blend end (scheduled)");
     h.option("--wdl-schedule", "<type>", "[constant|linear|cosine]");
+    h.option("--seed", "<u64>", "Fixed RNG seed for reproducible training");
 }
