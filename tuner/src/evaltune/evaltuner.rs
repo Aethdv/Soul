@@ -361,6 +361,7 @@ fn train_loop<G, V>(
     let mut logger = log_file.map(BufWriter::new);
     if let Some(ref mut w) = logger {
         writeln!(w, "# Seed: {rng_seed}").unwrap();
+        writeln!(w).unwrap();
         writeln!(w, "epoch   L_train     L_val       L_ref       LR").unwrap();
     }
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
@@ -603,8 +604,12 @@ fn train_loop<G, V>(
         }
     }
 
+    // Flush the log before writing final reports,
+    // since print_results opens its own handle to the same file.
+    drop(logger);
+
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
-    print_results(&snapshots, &all_params, &initial_values, &ema_values);
+    print_results(&snapshots, &all_params, &initial_values, &ema_values, config.epochs);
 }
 
 /// Sensitivity Analysis — writes `sensitivity-report.txt`.
