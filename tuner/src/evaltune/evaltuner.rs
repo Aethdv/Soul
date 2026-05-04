@@ -413,9 +413,14 @@ fn train_loop<G, V>(
 
         let is_restart = epoch > 1 && {
             let prev_scheduled_lr = lr_scheduler.rate(epoch - 1, config.epochs) * lr_scale;
-            // A ≥50% jump in LR indicates a scheduler restart (e.g., cosine SGDR cycle boundary).
+            // A ≥50% jump in LR indicates a scheduler restart (e.g. cosine SGDR cycle boundary).
             // This threshold is intentionally generous: normal LR decay is monotone, so a
             // 50% increase can only mean a deliberate reset point.
+            //
+            // Correct for cosine-with-restarts, but would false-fire on any scheduler that
+            // legitimately increases LR during training (e.g. warmup phases).
+            // If a new scheduler with a genuine LR increase is added,
+            // gate this on scheduler type or add an LrScheduler::is_restart_boundary method to the trait.
             scheduled_lr > prev_scheduled_lr * 1.5
         };
 
@@ -469,7 +474,7 @@ fn train_loop<G, V>(
 
             // ── Tail-only EMA ──
             // Skip the noisy high-LR phase; only average once LR has
-            // decayed below 30 % of its peak.  Before that, snapshot
+            // decayed below 30 % of its peak. Before that, snapshot
             // the live weights directly.
             if ema_active {
                 for i in 0..values.len() {
@@ -518,6 +523,9 @@ fn train_loop<G, V>(
             plateau_count = 0;
         } else {
             plateau_count += 1;
+            // Plateau LR halving is gated to constant schedules only.
+            // Cosine/WSD/etc don't need a separate stall-response mechanism.
+            // Reducing LR when the scheduler is already responsible for decay would overcorrect.
             if is_constant_schedule {
                 if plateau_count >= config.patience {
                     lr_scale *= 0.5;

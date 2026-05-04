@@ -71,6 +71,8 @@ soul::define_tunables!(impl_scatter);
 
 #[inline(always)]
 fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
+    // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
+    // SIMD accumulator layout, but the f64 evaluator path never reads them.
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
         piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
