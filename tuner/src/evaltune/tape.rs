@@ -69,65 +69,6 @@ macro_rules! impl_scatter {
 
 soul::define_tunables!(impl_scatter);
 
-#[inline(always)]
-fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
-    debug_assert!(
-        values.len() >= psqt::LAYOUT.mobility_open_offset,
-        "values too short: {} < {} (needs PSQT + material footprint)",
-        values.len(),
-        psqt::LAYOUT.mobility_open_offset
-    );
-
-    // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
-    // SIMD accumulator layout, but the f64 evaluator path never reads them.
-    for piece in PieceType::ALL {
-        let pt = piece.as_usize();
-        piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
-
-        let mat_mg = values[psqt::LAYOUT.material_offset + pt];
-        let mat_eg = values[psqt::LAYOUT.material_offset + 6 + pt];
-
-        // White pieces
-        let mut bb_w = board.pieces(piece, Color::White);
-        let count_w = bb_w.popcount() as f64;
-        lane_vals[0] += count_w * mat_mg;
-        lane_vals[1] += count_w * mat_eg;
-        while bb_w.is_not_empty() {
-            let sq = bb_w.pop_lsb();
-            let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
-
-            lane_vals[0] += values[pt * 64 + mirror_idx];
-            lane_vals[1] += values[pt * 64 + 32 + mirror_idx];
-        }
-
-        // Black pieces
-        let mut bb_b = board.pieces(piece, Color::Black);
-        let count_b = bb_b.popcount() as f64;
-        lane_vals[0] -= count_b * mat_mg;
-        lane_vals[1] -= count_b * mat_eg;
-        while bb_b.is_not_empty() {
-            let sq = bb_b.pop_lsb();
-            let mirror_idx = psqt::mirror_sq(usize::from(sq));
-
-            lane_vals[0] -= values[pt * 64 + mirror_idx];
-            lane_vals[1] -= values[pt * 64 + 32 + mirror_idx];
-        }
-    }
-}
-
-/// Compute raw game phase as the dot product of piece counts and phase weights.
-#[inline(always)]
-fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
-    let mut phase_raw = 0.0;
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
-        if phase_idx < values.len() {
-            phase_raw += count * values[phase_idx];
-        }
-    }
-    phase_raw
-}
-
 /// Result of a forward-mode dual evaluation.
 ///
 /// Captures the score and raw gradient array from the dual forward pass,
@@ -524,6 +465,68 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let features = soul::engine::eval::SharedFeatures::compute(board);
 
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
+}
+
+// ────── Private Helpers ──────
+
+/// Compute raw game phase as the dot product of piece counts and phase weights.
+#[inline(always)]
+fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
+    let mut phase_raw = 0.0;
+    for (pt, count) in piece_counts.iter().enumerate().take(6) {
+        let phase_idx = psqt::LAYOUT.weight_offset + pt;
+        if phase_idx < values.len() {
+            phase_raw += count * values[phase_idx];
+        }
+    }
+    phase_raw
+}
+
+/// Walk the board accumulating PSQT and material into MG/EG lane sums.
+#[inline(always)]
+fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
+    debug_assert!(
+        values.len() >= psqt::LAYOUT.mobility_open_offset,
+        "values too short: {} < {} (needs PSQT + material footprint)",
+        values.len(),
+        psqt::LAYOUT.mobility_open_offset
+    );
+
+    // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
+    // SIMD accumulator layout, but the f64 evaluator path never reads them.
+    for piece in PieceType::ALL {
+        let pt = piece.as_usize();
+        piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
+
+        let mat_mg = values[psqt::LAYOUT.material_offset + pt];
+        let mat_eg = values[psqt::LAYOUT.material_offset + 6 + pt];
+
+        // White pieces
+        let mut bb_w = board.pieces(piece, Color::White);
+        let count_w = bb_w.popcount() as f64;
+        lane_vals[0] += count_w * mat_mg;
+        lane_vals[1] += count_w * mat_eg;
+        while bb_w.is_not_empty() {
+            let sq = bb_w.pop_lsb();
+            let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
+
+            lane_vals[0] += values[pt * 64 + mirror_idx];
+            lane_vals[1] += values[pt * 64 + 32 + mirror_idx];
+        }
+
+        // Black pieces
+        let mut bb_b = board.pieces(piece, Color::Black);
+        let count_b = bb_b.popcount() as f64;
+        lane_vals[0] -= count_b * mat_mg;
+        lane_vals[1] -= count_b * mat_eg;
+        while bb_b.is_not_empty() {
+            let sq = bb_b.pop_lsb();
+            let mirror_idx = psqt::mirror_sq(usize::from(sq));
+
+            lane_vals[0] -= values[pt * 64 + mirror_idx];
+            lane_vals[1] -= values[pt * 64 + 32 + mirror_idx];
+        }
+    }
 }
 
 #[cfg(test)]
