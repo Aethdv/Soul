@@ -71,14 +71,21 @@ soul::define_tunables!(impl_scatter);
 
 #[inline(always)]
 fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
+    debug_assert!(
+        values.len() >= psqt::LAYOUT.mobility_open_offset,
+        "values too short: {} < {} (needs PSQT + material footprint)",
+        values.len(),
+        psqt::LAYOUT.mobility_open_offset
+    );
+
     // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
     // SIMD accumulator layout, but the f64 evaluator path never reads them.
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
         piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
 
-        let mat_mg = values.get(psqt::LAYOUT.material_offset + pt).copied().unwrap_or(0.0);
-        let mat_eg = values.get(psqt::LAYOUT.material_offset + 6 + pt).copied().unwrap_or(0.0);
+        let mat_mg = values[psqt::LAYOUT.material_offset + pt];
+        let mat_eg = values[psqt::LAYOUT.material_offset + 6 + pt];
 
         // White pieces
         let mut bb_w = board.pieces(piece, Color::White);
@@ -89,8 +96,8 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
             let sq = bb_w.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
 
-            lane_vals[0] += values.get(pt * 64 + mirror_idx).copied().unwrap_or(0.0);
-            lane_vals[1] += values.get(pt * 64 + 32 + mirror_idx).copied().unwrap_or(0.0);
+            lane_vals[0] += values[pt * 64 + mirror_idx];
+            lane_vals[1] += values[pt * 64 + 32 + mirror_idx];
         }
 
         // Black pieces
@@ -102,8 +109,8 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
             let sq = bb_b.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
 
-            lane_vals[0] -= values.get(pt * 64 + mirror_idx).copied().unwrap_or(0.0);
-            lane_vals[1] -= values.get(pt * 64 + 32 + mirror_idx).copied().unwrap_or(0.0);
+            lane_vals[0] -= values[pt * 64 + mirror_idx];
+            lane_vals[1] -= values[pt * 64 + 32 + mirror_idx];
         }
     }
 }
