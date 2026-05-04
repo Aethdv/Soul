@@ -339,7 +339,11 @@ fn train_loop<G, V>(
     let decay_mask = build_decay_mask(&all_params);
     let beta2_mask = build_beta2_mask(&all_params, config.beta2);
 
-    let mut grad_ema_per_param = vec![0.001_f64; values.len()];
+    // Zero init - the EMA decay (0.99 per batch) extinguishes any seed value
+    // before epoch 500 when auto-freeze activates, so the auto-freeze sees
+    // only real gradient history. A non-zero seed only delays detection of
+    // genuinely dead parameters.
+    let mut grad_ema_per_param = vec![0.0_f64; values.len()];
     let mut stagnant_epochs = vec![0usize; values.len()];
 
     let snapshot_limit = (config.epochs / 10).max(1);
