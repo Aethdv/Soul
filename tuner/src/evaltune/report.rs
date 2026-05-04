@@ -4,13 +4,7 @@ use soul::{core::psqt, engine::eval_params::Tunable};
 
 use crate::evaltune::storage::Snapshot;
 
-pub fn print_results(
-    snapshots: &[Snapshot],
-    all_params: &[Tunable],
-    initial_values: &[f64],
-    values: &[f64],
-    final_epoch: usize,
-) {
+pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64], final_epoch: usize) {
     let count = snapshots.len();
     if count == 0 {
         return;

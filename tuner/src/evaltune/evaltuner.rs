@@ -405,6 +405,9 @@ fn train_loop<G, V>(
         if epoch % 500 == 0 {
             k = find_optimal_k(&ema_values, config, |v, kk| val_eval(v, kk));
             println!("  Reoptimized K: {k:.6}");
+            if let Some(ref mut w) = logger {
+                writeln!(w, "# K re-opt @ epoch {epoch}: {k:.6}").ok();
+            }
         }
 
         let scheduled_lr = lr_scheduler.rate(epoch, config.epochs) * lr_scale;
