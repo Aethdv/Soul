@@ -322,7 +322,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         format_num(snap.target),
         snap.progress_pct(),
     );
-    println!("\r\x1b[KRate:            {:.1} k/s", snap.rate() / 1000.0);
+    println!("\r\x1b[KRate:            {:.3} k/s", snap.rate() / 1000.0);
     println!("\r\x1b[KGames:           {}", format_num(snap.games));
     println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
     println!("\r\x1b[KFiltered Quiet:  {}", format_num(snap.filtered_quiet));
@@ -344,7 +344,7 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     let total_term = snap.total_terminations();
 
     println!(
-        "{GREEN}[OK]{RESET} {} positions in {:.1}s ({:.1}k/s)",
+        "{GREEN}[OK]{RESET} {} positions in {:.1}s ({:.3}k/s)",
         format_num(snap.saved),
         snap.elapsed,
         snap.rate() / 1000.0,
