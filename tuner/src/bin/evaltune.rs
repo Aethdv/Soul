@@ -65,6 +65,11 @@ enum Commands {
         input: String,
         output: String,
     },
+    #[command(name = "ablation")]
+    Ablation {
+        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+        data: Vec<String>,
+    },
     Help,
 }
 
@@ -83,6 +88,9 @@ fn main() {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
+        },
+        Some(Commands::Ablation { data }) => {
+            evaltune::ablation::run_ablation(&data);
         },
         None => {
             let mut tuner_config = tuner::core::config::TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
@@ -218,6 +226,7 @@ fn print_help() {
 
     h.header("Commands");
     h.command_args("encode", "<in> <out>", "Pre-encode EPD → .soul.zst");
+    h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.separator();
 
     h.header("Options");
