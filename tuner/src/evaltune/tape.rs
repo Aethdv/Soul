@@ -115,6 +115,19 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
     }
 }
 
+/// Compute raw game phase as the dot product of piece counts and phase weights.
+#[inline(always)]
+fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
+    let mut phase_raw = 0.0;
+    for (pt, count) in piece_counts.iter().enumerate().take(6) {
+        let phase_idx = psqt::LAYOUT.weight_offset + pt;
+        if phase_idx < values.len() {
+            phase_raw += count * values[phase_idx];
+        }
+    }
+    phase_raw
+}
+
 /// Result of a forward-mode dual evaluation.
 ///
 /// Captures the score and raw gradient array from the dual forward pass,
@@ -382,13 +395,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    let mut phase_raw = 0.0;
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
-        if phase_idx < values.len() {
-            phase_raw += count * values[phase_idx];
-        }
-    }
+    let phase_raw = compute_phase(&piece_counts, values);
 
     // NOTE: dJ/dPhaseWeight is intentionally omitted from the gradient
     // scattering process below because the tuner architecture requires
@@ -489,13 +496,7 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
 
     accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
 
-    let mut phase_raw = 0.0;
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
-        if phase_idx < values.len() {
-            phase_raw += count * values[phase_idx];
-        }
-    }
+    let phase_raw = compute_phase(&piece_counts, values);
     let phase = phase_raw.math_clamp(0.0, 24.0).trunc();
 
     use soul::engine::autograd::traits::F64Vec4;
