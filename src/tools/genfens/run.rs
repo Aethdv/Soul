@@ -37,7 +37,7 @@ const DASHBOARD_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 
 /// Number of lines the dashboard occupies. We print this many newlines on
 /// first render, then cursor-up by this amount on every subsequent frame.
-const DASHBOARD_LINES: usize = 13;
+const DASHBOARD_LINES: usize = 14;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let parsed = parse_args(args);
@@ -213,6 +213,7 @@ struct Snapshot {
     filtered_ply: u64,
     filtered_pieces: u64,
     filtered_incorrect: u64,
+    filtered_tactical: u64,
     search_fail: u64,
     term_check: u64,
     term_stale: u64,
@@ -242,6 +243,7 @@ impl Snapshot {
             filtered_ply: global.filtered_ply.load(Ordering::Relaxed),
             filtered_pieces: global.filtered_pieces.load(Ordering::Relaxed),
             filtered_incorrect: global.filtered_incorrect.load(Ordering::Relaxed),
+            filtered_tactical: global.filtered_tactical.load(Ordering::Relaxed),
             search_fail: global.search_fail.load(Ordering::Relaxed),
             term_check: global.term_check.load(Ordering::Relaxed),
             term_stale: global.term_stale.load(Ordering::Relaxed),
@@ -280,7 +282,12 @@ impl Snapshot {
     }
 
     fn total_filtered(&self) -> u64 {
-        self.filtered_quiet + self.filtered_score + self.filtered_ply + self.filtered_pieces + self.filtered_incorrect
+        self.filtered_quiet
+            + self.filtered_score
+            + self.filtered_ply
+            + self.filtered_pieces
+            + self.filtered_incorrect
+            + self.filtered_tactical
     }
 
     fn total_terminations(&self) -> u64 {
@@ -330,6 +337,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     println!("\r\x1b[KFiltered Ply:    {}", format_num(snap.filtered_ply));
     println!("\r\x1b[KFiltered Pieces: {}", format_num(snap.filtered_pieces));
     println!("\r\x1b[KFiltered Incorr: {}", format_num(snap.filtered_incorrect));
+    println!("\r\x1b[KFiltered Tact:   {}", format_num(snap.filtered_tactical));
     println!("\r\x1b[KBest Move fails: {}", format_num(snap.search_fail));
     println!("\r\x1b[KRAM alloc:       {} MB", get_rss_kb() / 1024);
     println!("\r\x1b[KElapsed:         {}", format_eta(snap.elapsed));
@@ -370,6 +378,7 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
         format_num(snap.filtered_incorrect),
         pct(snap.filtered_incorrect, total_filt),
     );
+    println!("    Qsearch filt:   {} ({:.1}%)", format_num(snap.filtered_tactical), pct(snap.filtered_tactical, total_filt),);
     println!();
     println!("  Game Terminations:");
 
@@ -537,6 +546,7 @@ fn print_help() {
     h.option("--all", "", "Disable quiet position filtering");
     h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
     h.option_default("--filter", "<CP>", "Max score for saved positions", "450");
+    h.option_default("--qsearch", "<CP>", "Skip positions where |search - static| delta exceeds this threshold", "disabled");
     h.option_default("--min-ply", "<N>", "Skip positions before this ply", "0");
     h.option_default("--min-pieces", "<N>", "Skip positions with fewer pieces", "4");
     h.option_default(
@@ -565,6 +575,7 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
     let mut min_ply = 0usize;
     let mut min_pieces = 4u32;
     let mut eval_contradiction_limit = i32::MAX;
+    let mut qsearch_filter = i32::MAX;
     let mut resume = false;
 
     let mut it = args.iter().copied();
@@ -651,6 +662,11 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                     eval_contradiction_limit = v.parse().unwrap_or(eval_contradiction_limit);
                 }
             },
+            "--qsearch" => {
+                if let Some(v) = it.next() {
+                    qsearch_filter = v.parse().unwrap_or(qsearch_filter);
+                }
+            },
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
@@ -684,6 +700,7 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
         min_ply,
         min_pieces,
         eval_contradiction_limit,
+        qsearch_filter,
         resume,
     }
 }

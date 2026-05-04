@@ -27,6 +27,10 @@ pub struct GenfensConfig {
     /// Skip positions where search eval contradicts game outcome
     /// by more than this many centipawns. i32::MAX = disabled.
     pub eval_contradiction_limit: i32,
+    /// Skip positions where |search_eval - static_eval| exceeds this
+    /// threshold. Catches positions with unresolved tactics the HCE
+    /// cannot learn. i32::MAX = disabled.
+    pub qsearch_filter: i32,
     pub generated_count: u64,
     pub last_update: i64,
 }
@@ -51,6 +55,7 @@ impl Default for GenfensConfig {
             min_ply: 0,
             min_pieces: 4,
             eval_contradiction_limit: i32::MAX,
+            qsearch_filter: i32::MAX,
             generated_count: 0,
             last_update: 0,
         }
@@ -104,6 +109,7 @@ pub struct GenfensArgs {
     pub min_ply: usize,
     pub min_pieces: u32,
     pub eval_contradiction_limit: i32,
+    pub qsearch_filter: i32,
     pub resume: bool,
 }
 
@@ -133,6 +139,7 @@ impl From<GenfensArgs> for GenfensConfig {
             min_ply: args.min_ply,
             min_pieces: args.min_pieces,
             eval_contradiction_limit: args.eval_contradiction_limit,
+            qsearch_filter: args.qsearch_filter,
             generated_count: 0,
             last_update: 0,
         }

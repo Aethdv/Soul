@@ -39,6 +39,8 @@ pub struct GlobalStats {
     pub filtered_pieces: Align64<AtomicU64>,
     /// Positions filtered: eval contradicted game outcome.
     pub filtered_incorrect: Align64<AtomicU64>,
+    /// Positions filtered: |search - static| delta exceeded the qsearch threshold.
+    pub filtered_tactical: Align64<AtomicU64>,
     /// Number of times the search aborted mid-game due to depth boundaries or extreme scores.
     pub search_fail: Align64<AtomicU64>,
     /// Total number of raw chess games completed.
@@ -80,6 +82,7 @@ impl GlobalStats {
             filtered_ply: Align64::new(AtomicU64::new(0)),
             filtered_pieces: Align64::new(AtomicU64::new(0)),
             filtered_incorrect: Align64::new(AtomicU64::new(0)),
+            filtered_tactical: Align64::new(AtomicU64::new(0)),
             search_fail: Align64::new(AtomicU64::new(0)),
             games: Align64::new(AtomicU64::new(0)),
             plies: Align64::new(AtomicU64::new(0)),

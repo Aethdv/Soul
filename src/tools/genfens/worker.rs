@@ -279,6 +279,20 @@ impl WorkerState {
                 }
             }
 
+            // Skip positions where static eval diverges from search eval
+            // by more than the threshold. i32::MAX disables this gate.
+            let should_save = if should_save {
+                let delta = (search_eval - static_eval).abs();
+                if delta > self.config.qsearch_filter {
+                    self.global.filtered_tactical.fetch_add(1, Relaxed);
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+
             if should_save && sampled {
                 let entry = SoulEntry::from_board(
                     &self.board,
