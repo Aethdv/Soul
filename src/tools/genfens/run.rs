@@ -444,7 +444,11 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
     println!("Output: {}", config.output_path);
-    println!("Book: {} ({book_count} openings)", config.book_paths.join(", "),);
+    if config.startpos {
+        println!("Book: startpos");
+    } else {
+        println!("Book: {} ({book_count} openings)", config.book_paths.join(", "),);
+    }
 
     match (config.soft_nodes, config.hard_nodes) {
         (None, None) => println!("Search: depth={}", config.depth),
