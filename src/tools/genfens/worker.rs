@@ -143,11 +143,89 @@ impl WorkerState {
         self.last_move_was_tactical = false;
     }
 
+    /// Plays one game — either a full self-play game
+    /// or a single random-restart position, depending on config.
+    pub fn play_game(&mut self) -> Vec<SoulEntry> {
+        if self.config.random_restart { self.play_random_position() } else { self.play_full_game() }
+    }
+
+    /// Random-restart: pick a random book FEN, play N random moves,
+    /// run search, apply quality filters, emit one position.
+    /// Each call produces at most one entry.
+    fn play_random_position(&mut self) -> Vec<SoulEntry> {
+        self.global.attempted.fetch_add(1, Relaxed);
+
+        let opening = self.book[self.rng.usize(..self.book.len())].clone();
+        self.reset_for_new_game(&opening);
+
+        for _ in 0..self.config.random_moves {
+            let moves = gen_legal_moves(&self.board);
+            if moves.is_empty() {
+                return Vec::new();
+            }
+            let mv = moves[self.rng.usize(0..moves.len())];
+            self.board.make_move(mv, &mut self.accumulator);
+            self.search_history.push(self.board.hash);
+            self.game_history.push(self.board.hash);
+        }
+
+        let (static_eval, search_eval, search_move) = self.search_position();
+
+        let best_move = match search_move {
+            Some(mv) => mv,
+            None => {
+                self.global.search_fail.fetch_add(1, Relaxed);
+                return Vec::new();
+            },
+        };
+
+        let abs_eval = search_eval.abs();
+
+        let is_quiet = self.board.checkers().is_empty() && !best_move.is_tactical();
+        let within_score_window = abs_eval <= self.config.score_filter;
+
+        if !is_quiet {
+            self.global.filtered_quiet.fetch_add(1, Relaxed);
+            return Vec::new();
+        }
+        if !within_score_window {
+            self.global.filtered_score.fetch_add(1, Relaxed);
+            return Vec::new();
+        }
+
+        self.global.passed_filters.fetch_add(1, Relaxed);
+
+        // The qsearch filter catches positions where the search sees something
+        // the static eval doesn't — unresolved tactics the HCE can't learn.
+        // `eval_contradiction_limit` is not applied here because random-restart
+        // has no game outcome to contradict against; the filter only applies in
+        // full-game mode where a back-propagated outcome exists.
+        let delta = (search_eval - static_eval).abs();
+        if delta > self.config.qsearch_filter {
+            self.global.filtered_tactical.fetch_add(1, Relaxed);
+            return Vec::new();
+        }
+
+        // No game outcome — set result to the draw prior (0.5).
+        // At training time, the tuner's instance-confidence WDL blending
+        // (training.rs:107-121) treats this as a weak anchor: near-zero
+        // search scores keep the 0.5 prior, high-magnitude scores converge
+        // to sigmoid(k · score). With wdl_blend=1.0, the draw prior only
+        // sticks when the search itself is uncertain.
+        let entry = SoulEntry::from_board(&self.board, 0.5, Some(static_eval), Some(search_eval));
+        self.confirmed.push(entry);
+        self.global.saved.fetch_add(1, Relaxed);
+
+        let mut out = Vec::new();
+        std::mem::swap(&mut self.confirmed, &mut out);
+        out
+    }
+
     /// Plays one complete self-play game and returns labeled training positions.
     ///
     /// Flow: random opening → ply loop (search, adjudicate, filter, move) →
     /// back-propagate WDL result → return confirmed entries.
-    pub fn play_game(&mut self) -> Vec<SoulEntry> {
+    fn play_full_game(&mut self) -> Vec<SoulEntry> {
         let opening = self.book[self.rng.usize(..self.book.len())].clone();
         self.reset_for_new_game(&opening);
         self.global.games.fetch_add(1, Relaxed);

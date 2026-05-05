@@ -31,6 +31,13 @@ pub struct GenfensConfig {
     /// threshold. Catches positions with unresolved tactics the HCE
     /// cannot learn. i32::MAX = disabled.
     pub qsearch_filter: i32,
+    /// Use random-restart generation; each position is independently
+    /// generated from a random book line or startpos + N random moves
+    /// instead of playing full self-play game.
+    pub random_restart: bool,
+    /// Number of random legal moves to play from the position
+    /// before running the verification search.
+    pub random_moves: usize,
     pub generated_count: u64,
     pub last_update: i64,
 }
@@ -56,6 +63,8 @@ impl Default for GenfensConfig {
             min_pieces: 4,
             eval_contradiction_limit: i32::MAX,
             qsearch_filter: i32::MAX,
+            random_restart: true,
+            random_moves: 6,
             generated_count: 0,
             last_update: 0,
         }
@@ -110,6 +119,8 @@ pub struct GenfensArgs {
     pub min_pieces: u32,
     pub eval_contradiction_limit: i32,
     pub qsearch_filter: i32,
+    pub random_restart: bool,
+    pub random_moves: usize,
     pub resume: bool,
 }
 
@@ -140,6 +151,8 @@ impl From<GenfensArgs> for GenfensConfig {
             min_pieces: args.min_pieces,
             eval_contradiction_limit: args.eval_contradiction_limit,
             qsearch_filter: args.qsearch_filter,
+            random_restart: args.random_restart,
+            random_moves: args.random_moves,
             generated_count: 0,
             last_update: 0,
         }

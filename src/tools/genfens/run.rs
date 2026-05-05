@@ -542,6 +542,8 @@ fn print_help() {
     h.option_default("--buf", "<N>", "Buffer size per thread", "256");
     h.option("--resume", "", "Resume from existing config/output");
     h.option_default("--save-interval", "<N>", "Save interval", "5000");
+    h.option_default("--random-moves", "<N>", "Random moves from book position (random-restart)", "6");
+    h.option("--no-random-restart", "", "Disable random-restart; use full game mode");
     h.option_default("--sample", "<0-1>", "Randomly sample fraction of positions", "0.7");
     h.option("--all", "", "Disable quiet position filtering");
     h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
@@ -576,6 +578,8 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
     let mut min_pieces = 4u32;
     let mut eval_contradiction_limit = i32::MAX;
     let mut qsearch_filter = i32::MAX;
+    let mut random_restart = true;
+    let mut random_moves = 6usize;
     let mut resume = false;
 
     let mut it = args.iter().copied();
@@ -667,6 +671,12 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                     qsearch_filter = v.parse().unwrap_or(qsearch_filter);
                 }
             },
+            "--random-moves" => {
+                if let Some(v) = it.next() {
+                    random_moves = v.parse().unwrap_or(random_moves);
+                }
+            },
+            "--no-random-restart" => random_restart = false,
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
@@ -701,6 +711,8 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
         min_pieces,
         eval_contradiction_limit,
         qsearch_filter,
+        random_restart,
+        random_moves,
         resume,
     }
 }
