@@ -131,11 +131,7 @@ fn v5_to_v6(raw: &[u8]) -> SoulEntry {
     let castling = if original_stm == 0 { castling_stm } else { (castling_stm >> 2) | ((castling_stm & 0x3) << 2) };
 
     // V5 ep square is STM-relative (rank-flipped for Black); undo to absolute.
-    let ep = if ep_square >= 64 || original_stm == 0 {
-        ep_square
-    } else {
-        ep_square ^ 0x38
-    };
+    let ep = if ep_square >= 64 || original_stm == 0 { ep_square } else { ep_square ^ 0x38 };
 
     SoulEntry {
         occupancy,

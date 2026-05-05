@@ -1,19 +1,15 @@
 //! Gradient computation against dataset entries for evaluation tuning.
 
+use super::SoulEntry;
 use crate::{
     core::{
-        board::Position,
+        board::{Position, bitboard::atk_king, spatial::SpatialTensor},
         defs::{Color, PieceType, Square},
         phase::compute_phase_weights_f64,
         psqt,
     },
-    engine::mobility::{Mobility, SafetyMetrics},
+    engine::mobility::{Mobility, OPEN_UNITY, SafetyMetrics, compute_openness_raw},
 };
-
-use crate::core::board::{bitboard::atk_king, spatial::SpatialTensor};
-use crate::engine::mobility::{OPEN_UNITY, compute_openness_raw};
-
-use super::SoulEntry;
 
 /// Pre-computed instance-level features, populated at tuner startup.
 ///
@@ -69,8 +65,7 @@ impl FeatureSlots {
         let b_ksq = pos.pieces(PieceType::King, Color::Black).lsb();
         let w_ring = atk_king(w_ksq).0;
         let b_ring = atk_king(b_ksq).0;
-        let xray_val =
-            (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
+        let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
         let stm_xray = if pos.stm == Color::White { xray_val } else { -xray_val };
         self.xray_ortho.push(stm_xray as i8);
     }
@@ -218,7 +213,8 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let mobility = slots.mobility[idx];
     for i in 0..4 {
         let diff = f64::from(mobility[i]) - f64::from(mobility[i + 4]);
-        let mobility_w = interpolate_weight(values, mobility_open_offset + i, mobility_closed_offset + i, mg_w, eg_w, openness_f, closedness_f);
+        let mobility_w =
+            interpolate_weight(values, mobility_open_offset + i, mobility_closed_offset + i, mg_w, eg_w, openness_f, closedness_f);
         score += diff * mobility_w;
     }
 
@@ -323,8 +319,7 @@ fn interpolate_weight(
 ) -> f64 {
     let w_mg_val =
         ((values[open_offset] * openness * 1024.0 + values[closed_offset] * closedness * 1024.0 + 512.0) / 1024.0).floor();
-    let w_eg_val = ((values[open_offset + 4] * openness * 1024.0 + values[closed_offset + 4] * closedness * 1024.0 + 512.0)
-        / 1024.0)
-        .floor();
+    let w_eg_val =
+        ((values[open_offset + 4] * openness * 1024.0 + values[closed_offset + 4] * closedness * 1024.0 + 512.0) / 1024.0).floor();
     w_mg_val * mg_w + w_eg_val * eg_w
 }

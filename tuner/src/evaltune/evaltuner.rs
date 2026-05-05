@@ -102,8 +102,16 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
         let stm_white = (entry.stm_and_ep & 0x80) == 0;
         let r = entry.result;
         let white_result = if stm_white { r } else { 2 - r };
-        if white_result >= 2 { (w + 1, b, d) } else if white_result == 0 { (w, b + 1, d) } else { (w, b, d + 1) }
+
+        if white_result >= 2 {
+            (w + 1, b, d)
+        } else if white_result == 0 {
+            (w, b + 1, d)
+        } else {
+            (w, b, d + 1)
+        }
     });
+
     println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", entries.len(), train.len(), val.len());
     println!("  White wins: \x1b[32m{ww}\x1b[0m");
     println!("  Black wins: \x1b[32m{bw}\x1b[0m");
@@ -232,10 +240,12 @@ fn run_raw(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&str>)
     // in tuner/src/evaltune/tape.rs have diverged — fixing it then is mandatory.
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
+
     for entry in train.iter().take(10) {
         let target = entry.target(1.0, 0.0);
         let mut linear_g = vec![0.0; default_values.len()];
         let mut dual_g = vec![0.0; default_values.len()];
+
         tape::eval_linear_grad(&entry.board, &default_values, target, 1.0, &mut linear_g);
         tape::eval_dual_fused(&entry.board, &default_values, target, 1.0, &mut dual_g);
 

@@ -119,11 +119,7 @@ impl TrainableEntry for loader::SoulEntry {
         // is pure sigmoid(score). Used for random-restart data with no game outcome.
         // 400 cp is the empirical confidence saturation point.
         let confidence_threshold = 400.0;
-        let instance_blend = if wdl_blend >= 1.0 {
-            1.0
-        } else {
-            wdl_blend * (score.abs() / confidence_threshold).min(1.0)
-        };
+        let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / confidence_threshold).min(1.0) };
 
         let expected = sigmoid(score, k);
         // result in {0,1,2} → normalise to [0.0, 1.0] for sigmoid target.
@@ -137,7 +133,9 @@ impl TrainableEntry for loader::SoulEntry {
 
     #[inline]
     fn accumulate_grad(&self, _values: &[f64], _gradient: f64, _grads: &mut [f64], _: &Self::GradState) {
-        unimplemented!("SoulEntry gradient accumulation requires FeatureSlots; production code uses the cached path via eval_soul_cached / accumulate_gradient_cached");
+        unimplemented!(
+            "SoulEntry gradient accumulation requires FeatureSlots; production code uses the cached path via eval_soul_cached / accumulate_gradient_cached"
+        );
     }
 }
 

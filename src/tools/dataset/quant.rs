@@ -33,9 +33,16 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
         let piece = board.piece_at(sq);
         let color = board.color_at(sq);
         let pt_raw = piece.as_usize() & 0x07;
-        let pt = if pt_raw == PieceType::Rook.as_usize() && is_castling_rook(board, sq, color) { CASTLING_ROOK } else { pt_raw };
+
+        let pt = if pt_raw == PieceType::Rook.as_usize() && is_castling_rook(board, sq, color) {
+            CASTLING_ROOK
+        } else {
+            pt_raw
+        };
+
         let color_bit = if color == Color::Black { 0x08 } else { 0x00 };
         let nibble = (pt | color_bit) as u8;
+
         pieces[idx / 2] |= nibble << ((idx & 1) * 4);
         idx += 1;
     }
@@ -50,13 +57,12 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
         _pad: [0u8; 3],
     }
 }
+
 fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
     for slot in 0..4 {
         let bit = 1u8 << slot;
-        
-        if board.castling_rights & bit != 0 && board.castling_rooks[slot] == sq
-            && (slot < 2) == (color == Color::White)
-        {
+
+        if board.castling_rights & bit != 0 && board.castling_rooks[slot] == sq && (slot < 2) == (color == Color::White) {
             return true;
         }
     }
@@ -77,11 +83,11 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     let mut pending_count = 0usize;
     let mut occ = entry.occupancy;
     let mut idx = 0usize;
-    
+
     while occ != 0 {
         let sq = Square(occ.trailing_zeros() as u8);
         occ &= occ - 1; // clear lowest set bit
-        
+
         let nibble = next_nibble(&entry.pieces, &mut idx);
         let pt_raw = (nibble & 0x07) as usize;
         let color_idx = if (nibble & 0x08) != 0 { 1 } else { 0 };
@@ -91,7 +97,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         if pt_raw == 5 {
             king_sq[color_idx] = sq;
         }
-        
+
         if pt_raw == CASTLING_ROOK {
             pending_rooks[pending_count] = (color_idx, sq);
             pending_count += 1;
@@ -102,12 +108,14 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         let king_file = u8::from(king_sq[color_idx]) % 8;
         let rook_file = u8::from(sq) % 8;
         let is_kingside = rook_file > king_file;
+
         let slot = match (color_idx, is_kingside) {
             (0, true) => 0,
             (0, false) => 1,
             (_, true) => 2,
             (_, false) => 3,
         };
+
         castling_rooks[slot] = sq;
         castling_bits |= 1u8 << slot;
     }
@@ -115,18 +123,27 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     let mut fen = String::with_capacity(80);
     for rank in (0..8usize).rev() {
         let mut empty = 0u8;
-        
+
         for file in 0..8usize {
             let ch = board[rank * 8 + file];
             if ch == b'.' {
                 empty += 1;
             } else {
-                if empty > 0 { fen.push((b'0' + empty) as char); empty = 0; }
+                if empty > 0 {
+                    fen.push((b'0' + empty) as char);
+                    empty = 0;
+                }
                 fen.push(ch as char);
             }
         }
-        if empty > 0 { fen.push((b'0' + empty) as char); }
-        if rank > 0 { fen.push('/'); }
+
+        if empty > 0 {
+            fen.push((b'0' + empty) as char);
+        }
+
+        if rank > 0 {
+            fen.push('/');
+        }
     }
 
     fen.push(' ');
@@ -140,12 +157,20 @@ pub fn to_fen(entry: &SoulEntry) -> String {
             && castling_rooks[1] == Square::from_coords(0, 0)
             && castling_rooks[2] == Square::from_coords(7, 7)
             && castling_rooks[3] == Square::from_coords(0, 7);
-        
+
         if standard {
-            if castling_bits & 1 != 0 { fen.push('K'); }
-            if castling_bits & 2 != 0 { fen.push('Q'); }
-            if castling_bits & 4 != 0 { fen.push('k'); }
-            if castling_bits & 8 != 0 { fen.push('q'); }
+            if castling_bits & 1 != 0 {
+                fen.push('K');
+            }
+            if castling_bits & 2 != 0 {
+                fen.push('Q');
+            }
+            if castling_bits & 4 != 0 {
+                fen.push('k');
+            }
+            if castling_bits & 8 != 0 {
+                fen.push('q');
+            }
         } else {
             for (slot, &rook) in castling_rooks.iter().enumerate() {
                 if castling_bits & (1u8 << slot) != 0 {
@@ -159,7 +184,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
 
     fen.push(' ');
     let ep = entry.stm_and_ep & 0x7F;
-    
+
     if ep >= 64 {
         fen.push('-');
     } else {
@@ -176,12 +201,12 @@ pub fn compute_openness_factors(entry: &SoulEntry) -> (f64, f64) {
     let mut black_pawns = 0u64;
     let mut occ = entry.occupancy;
     let mut idx = 0usize;
-    
+
     while occ != 0 {
         let sq = occ.trailing_zeros() as u8;
         occ &= occ - 1;
         let nibble = next_nibble(&entry.pieces, &mut idx);
-        
+
         if (nibble & 0x07) == 0 {
             let bit = 1u64 << sq;
             if (nibble & 0x08) != 0 {

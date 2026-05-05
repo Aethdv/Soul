@@ -32,7 +32,6 @@ macro_rules! load_or_bail {
     };
 }
 
-
 /// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
 /// The `encode` arm is split into two patterns — the match itself proves
 /// the argument count, replacing the original's `if args.len() < 3` guard.
@@ -61,7 +60,6 @@ pub fn run(args: &[&str]) {
         },
     }
 }
-
 
 fn help() {
     let h = Help::new(28);
@@ -110,17 +108,13 @@ fn inspect(path: &str, count: usize) {
 
         // WDL estimate for CLI display (unrelated to tuner K).
         let k = 0.0066;
-        
+
         let exp = (-k * f64::from(score)).exp();
         let win_prob = 1.0 / (1.0 + exp);
         let wdl_str = format!("W:{:.1}%", win_prob * 100.0);
 
         let _ = writeln!(out, "[{i:05}] {fen}");
-        let _ = writeln!(
-            out,
-            "       Search: {:+5}  Result: {}  WDL: {}  Pieces: {}",
-            score, result, wdl_str, piece_count,
-        );
+        let _ = writeln!(out, "       Search: {:+5}  Result: {}  WDL: {}  Pieces: {}", score, result, wdl_str, piece_count,);
         let _ = writeln!(out, "{SEP_THIN}");
     }
 }
