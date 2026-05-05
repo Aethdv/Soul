@@ -2,7 +2,7 @@
 beta1 = 0.9
 beta2 = 0.99
 weight_decay = 0.00001
-batch_size = 262144
+batch_size = 32768 # 262144
 epochs = 4000
 grad_clip = 1.0
 k_min = 0.003
@@ -17,7 +17,7 @@ restarts = 1
 
 [evaltune.wdl_schedule]
 type = "constant" # stable-decay
-value = 0.5
+value = 1.0
 #start = 0.4
 #end = 0.1
 #stable_ratio = 0.35

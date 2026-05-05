@@ -1,223 +1,206 @@
 //! Position quantization and dataset encoding.
 //!
-//! Provides the serialization logic to pack chess board states into the compact
-//! `SoulEntry` binary layout.
+//! Packs board state into a 32-byte [`SoulEntry`] using occupancy-bitboard +
+//! nibble-array encoding. The i-th nibble (LSB to MSB) in `pieces` describes
+//! the piece on the i-th set bit of `occupancy`.
+//!
+//! Nibble layout: bits 0-2 = type (pawn=0..king=5, 6=castling rook), bit 3 = colour (0=W,1=B).
+//! Unused nibbles are zero.
 
 use crate::{
     core::{
         board::Position,
-        defs::{Color, PieceType},
+        defs::{Color, PieceType, Square},
     },
-    engine::mobility::{Mobility, OPEN_UNITY},
-    tools::dataset::{PackedPiece, PackedSafety, STM_WHITE, SoulEntry},
+    engine::mobility::{OPEN_UNITY, compute_openness_raw},
+    tools::dataset::SoulEntry,
 };
 
-/// FEN characters indexed by `[color_index][piece_type]`.
-/// In normalised entries: index 0 = White = "Us" (STM), index 1 = Black = "Them".
-const PIECE_CHARS: [[u8; 6]; 2] = [*b"PNBRQK", *b"pnbrqk"];
-
-/// Encode a board position into a [`SoulEntry`],
-/// normalised to the side-to-move's perspective.
-/// When STM is Black, all squares are rank-flipped so that "our"
-/// pieces always advance up the board.
-pub fn from_board(board: &Position, result: f64, static_score: Option<i32>, search_score: Option<i32>) -> SoulEntry {
-    let stm_is_white = board.stm == Color::White;
-
-    // The only thing that changes between perspectives:
-    // which real color maps to "Us" vs "Them",
-    // and whether squares need a rank-flip.
-    let (us, them) = if stm_is_white { (Color::White, Color::Black) } else { (Color::Black, Color::White) };
-
-    let mut entry = SoulEntry {
-        result: result as f32,
-        static_score: static_score.unwrap_or(0) as i16,
-        search_score: search_score.unwrap_or(0) as i16,
-        original_stm: u8::from(!stm_is_white),
-        ..Default::default()
-    };
-
-    // Piece list (perspective-normalised)
-    //
-    // For each piece type: encode Us pieces (as White), then Them (as Black).
-    // The compiler unrolls the 2-element inner iterator — zero overhead.
+/// Encode a board position into a [`SoulEntry`].
+///
+/// Board state is stored in raw (non-normalised) form;
+/// occupancy bitboard + nibble-array of piece types/colours.
+/// The tuner normalises the perspective during feature extraction.
+pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, search_score: Option<i32>) -> SoulEntry {
+    let mut pieces = [0u8; 16];
     let mut idx = 0usize;
+    let mut occ = board.occ.0;
 
-    for piece in PieceType::ALL {
-        let pt = piece.as_usize();
-
-        for &(board_color, packed_color) in &[(us, Color::White), (them, Color::Black)] {
-            let mut bb = board.pieces(piece, board_color);
-            while bb.is_not_empty() {
-                let mut sq = bb.pop_lsb();
-                if !stm_is_white {
-                    sq = sq.flip_rank();
-                }
-                if idx < 32 {
-                    entry.pieces[idx] = PackedPiece::new(pt, packed_color, sq);
-                    idx += 1;
-                }
-            }
-        }
+    while occ != 0 {
+        let lsb_idx = occ.trailing_zeros() as u8;
+        occ &= occ - 1;
+        let sq = Square(lsb_idx);
+        let piece = board.piece_at(sq);
+        let color = board.color_at(sq);
+        let pt_raw = piece.as_usize() & 0x07;
+        let pt = if pt_raw == PieceType::Rook.as_usize() && is_castling_rook(board, sq, color) { CASTLING_ROOK } else { pt_raw };
+        let color_bit = if color == Color::Black { 0x08 } else { 0x00 };
+        let nibble = (pt | color_bit) as u8;
+        pieces[idx / 2] |= nibble << ((idx & 1) * 4);
+        idx += 1;
     }
 
-    entry.piece_count = idx as u8;
-
-    // ── Mobility & king safety ──
-    let pinned_w = board.pinned_pieces(crate::core::defs::Color::White);
-    let pinned_b = board.pinned_pieces(crate::core::defs::Color::Black);
-    let tensor = crate::core::board::spatial::SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
-    let mob = Mobility::compute_all(board, board.stm, &tensor, pinned_w, pinned_b);
-    entry.safety_us = PackedSafety::from(mob.safety_us);
-    entry.safety_them = PackedSafety::from(mob.safety_them);
-
-    // ── X-Ray feature (ortho) ──
-    let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-    let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-    let w_ring = crate::core::board::bitboard::atk_king(w_ksq).0;
-    let b_ring = crate::core::board::bitboard::atk_king(b_ksq).0;
-
-    let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
-
-    // Normalize to STM
-    entry.xray_ortho = (if stm_is_white { xray_val } else { -xray_val }) as i8;
-
-    entry.mobility[0] = mob.metrics_us.mobility.clamp(-127, 127) as i8;
-    entry.mobility[1] = mob.metrics_us.shadow_mobility.clamp(-127, 127) as i8;
-    entry.mobility[2] = mob.metrics_us.threats.clamp(-127, 127) as i8;
-    entry.mobility[3] = mob.metrics_us.shadow_threats.clamp(-127, 127) as i8;
-
-    entry.mobility[4] = mob.metrics_them.mobility.clamp(-127, 127) as i8;
-    entry.mobility[5] = mob.metrics_them.shadow_mobility.clamp(-127, 127) as i8;
-    entry.mobility[6] = mob.metrics_them.threats.clamp(-127, 127) as i8;
-    entry.mobility[7] = mob.metrics_them.shadow_threats.clamp(-127, 127) as i8;
-
-    // ── Stateful context ──
-    let mut castling = board.castling_rights;
-    if !stm_is_white {
-        castling = (castling >> 2) | ((castling & 0x3) << 2);
+    SoulEntry {
+        occupancy: board.occ.0,
+        pieces,
+        score: search_score.unwrap_or(0).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        result: (result * 2.0) as u8,
+        stm_and_ep: (u8::from(board.stm == Color::Black) << 7) | (board.en_passant.map_or(64, |sq| sq.0) & 0x7F),
+        castling: board.castling_rights,
+        _pad: [0u8; 3],
     }
-    entry.castling = castling;
-
-    entry.ep_square = if let Some(mut sq) = board.en_passant
-        && board.can_capture_ep(sq, board.stm)
-    {
-        if !stm_is_white {
-            sq = sq.flip_rank();
-        }
-        sq.0
-    } else {
-        64
-    };
-
-    entry
 }
+fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
+    for slot in 0..4 {
+        let bit = 1u8 << slot;
+        
+        if board.castling_rights & bit != 0 && board.castling_rooks[slot] == sq
+            && (slot < 2) == (color == Color::White)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// FEN characters indexed by `[color_index][piece_type]`.
+const PIECE_CHARS: [[u8; 6]; 2] = [*b"PNBRQK", *b"pnbrqk"];
+const CASTLING_ROOK: usize = 6;
 
 /// Reconstruct a FEN string from a [`SoulEntry`].
 pub fn to_fen(entry: &SoulEntry) -> String {
-    // Scatter pieces onto a flat board.
     let mut board = [b'.'; 64];
+    let mut castling_rooks = [Square(0); 4];
+    let mut castling_bits = 0u8;
+    let mut king_sq = [Square(0); 2];
+    let mut pending_rooks = [(0usize, Square(0)); 4];
+    let mut pending_count = 0usize;
+    let mut occ = entry.occupancy;
+    let mut idx = 0usize;
+    
+    while occ != 0 {
+        let sq = Square(occ.trailing_zeros() as u8);
+        occ &= occ - 1; // clear lowest set bit
+        
+        let nibble = next_nibble(&entry.pieces, &mut idx);
+        let pt_raw = (nibble & 0x07) as usize;
+        let color_idx = if (nibble & 0x08) != 0 { 1 } else { 0 };
+        let pt = if pt_raw == CASTLING_ROOK { 3 } else { pt_raw };
 
-    for i in 0..entry.piece_count as usize {
-        let (pt, mut color, mut sq) = entry.pieces[i].unpack();
-        if entry.original_stm == 1 {
-            sq = sq.flip_rank();
-            color = color.opposite();
+        board[usize::from(sq)] = PIECE_CHARS[color_idx][pt];
+        if pt_raw == 5 {
+            king_sq[color_idx] = sq;
         }
-        if pt < 6 {
-            let ci = if color == Color::White { 0 } else { 1 };
-            board[usize::from(sq)] = PIECE_CHARS[ci][pt];
+        
+        if pt_raw == CASTLING_ROOK {
+            pending_rooks[pending_count] = (color_idx, sq);
+            pending_count += 1;
         }
     }
 
-    // Build the FEN directly into a single String — no intermediate Vec<String>.
-    let mut fen = String::with_capacity(80);
+    for &(color_idx, sq) in &pending_rooks[..pending_count] {
+        let king_file = u8::from(king_sq[color_idx]) % 8;
+        let rook_file = u8::from(sq) % 8;
+        let is_kingside = rook_file > king_file;
+        let slot = match (color_idx, is_kingside) {
+            (0, true) => 0,
+            (0, false) => 1,
+            (_, true) => 2,
+            (_, false) => 3,
+        };
+        castling_rooks[slot] = sq;
+        castling_bits |= 1u8 << slot;
+    }
 
+    let mut fen = String::with_capacity(80);
     for rank in (0..8usize).rev() {
-        if rank < 7 {
-            fen.push('/');
-        }
         let mut empty = 0u8;
+        
         for file in 0..8usize {
             let ch = board[rank * 8 + file];
             if ch == b'.' {
                 empty += 1;
             } else {
-                if empty > 0 {
-                    fen.push((b'0' + empty) as char);
-                    empty = 0;
-                }
+                if empty > 0 { fen.push((b'0' + empty) as char); empty = 0; }
                 fen.push(ch as char);
             }
         }
-        if empty > 0 {
-            fen.push((b'0' + empty) as char);
-        }
+        if empty > 0 { fen.push((b'0' + empty) as char); }
+        if rank > 0 { fen.push('/'); }
     }
 
     fen.push(' ');
-    fen.push(if entry.original_stm == STM_WHITE { 'w' } else { 'b' });
+    fen.push(if (entry.stm_and_ep & 0x80) == 0 { 'w' } else { 'b' });
     fen.push(' ');
 
-    let mut castling = entry.castling;
-    if entry.original_stm != STM_WHITE {
-        castling = (castling >> 2) | ((castling & 0x3) << 2);
-    }
-
-    if castling == 0 {
+    if castling_bits == 0 {
         fen.push('-');
     } else {
-        if castling & 1 != 0 {
-            fen.push('K');
-        }
-        if castling & 2 != 0 {
-            fen.push('Q');
-        }
-        if castling & 4 != 0 {
-            fen.push('k');
-        }
-        if castling & 8 != 0 {
-            fen.push('q');
+        let standard = castling_rooks[0] == Square::from_coords(7, 0)
+            && castling_rooks[1] == Square::from_coords(0, 0)
+            && castling_rooks[2] == Square::from_coords(7, 7)
+            && castling_rooks[3] == Square::from_coords(0, 7);
+        
+        if standard {
+            if castling_bits & 1 != 0 { fen.push('K'); }
+            if castling_bits & 2 != 0 { fen.push('Q'); }
+            if castling_bits & 4 != 0 { fen.push('k'); }
+            if castling_bits & 8 != 0 { fen.push('q'); }
+        } else {
+            for (slot, &rook) in castling_rooks.iter().enumerate() {
+                if castling_bits & (1u8 << slot) != 0 {
+                    let file = u8::from(rook) % 8;
+                    let base = if slot < 2 { b'A' } else { b'a' };
+                    fen.push((base + file) as char);
+                }
+            }
         }
     }
 
     fen.push(' ');
-
-    // En passant
-    if entry.ep_square >= 64 {
+    let ep = entry.stm_and_ep & 0x7F;
+    
+    if ep >= 64 {
         fen.push('-');
     } else {
-        let mut sq = crate::core::defs::Square(entry.ep_square);
-        if entry.original_stm != STM_WHITE {
-            sq = sq.flip_rank();
-        }
-        fen.push_str(&sq.to_string());
+        fen.push_str(&Square(ep).to_string());
     }
-
     fen.push_str(" 0 1");
     fen
 }
 
-/// Positional openness derived from the pawn structure in a normalised entry.
-///
+/// Positional openness from a nibble-encoded entry.
 /// Returns `(openness, closedness)` where `closedness = 1.0 - openness`.
 pub fn compute_openness_factors(entry: &SoulEntry) -> (f64, f64) {
-    let mut us_pawns = 0u64;
-    let mut them_pawns = 0u64;
-
-    for i in 0..entry.piece_count as usize {
-        let (pt, color, sq) = entry.pieces[i].unpack();
-        if pt == 0 {
-            let bit = 1u64 << u8::from(sq);
-            if color == Color::White {
-                us_pawns |= bit;
+    let mut white_pawns = 0u64;
+    let mut black_pawns = 0u64;
+    let mut occ = entry.occupancy;
+    let mut idx = 0usize;
+    
+    while occ != 0 {
+        let sq = occ.trailing_zeros() as u8;
+        occ &= occ - 1;
+        let nibble = next_nibble(&entry.pieces, &mut idx);
+        
+        if (nibble & 0x07) == 0 {
+            let bit = 1u64 << sq;
+            if (nibble & 0x08) != 0 {
+                black_pawns |= bit;
             } else {
-                them_pawns |= bit;
+                white_pawns |= bit;
             }
         }
     }
 
-    // Openness computed via the raw bitboard formula from mobility.rs.
-    let open_i32 = crate::engine::mobility::compute_openness_raw(us_pawns, them_pawns);
+    let open_i32 = compute_openness_raw(white_pawns, black_pawns);
     let openness = f64::from(open_i32) / f64::from(OPEN_UNITY);
     (openness, 1.0 - openness)
+}
+
+#[inline]
+pub(super) fn next_nibble(pieces: &[u8; 16], idx: &mut usize) -> u8 {
+    let i = *idx;
+    *idx += 1;
+    let byte = pieces[i / 2];
+    if i & 1 == 0 { byte & 0x0F } else { byte >> 4 }
 }

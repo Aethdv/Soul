@@ -6,7 +6,7 @@ use std::{
 };
 
 use soul::core::board::Position as Board;
-pub use soul::tools::dataset::{MAGIC_V5, SoulEntry, accumulate_gradient, eval_soul, load_encoded, save_encoded};
+pub use soul::tools::dataset::{SoulEntry, accumulate_gradient_cached, eval_soul_cached, load_encoded, save_encoded};
 
 /// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).
 pub struct Entry {

@@ -83,17 +83,36 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
 
     fastrand::shuffle(&mut entries);
 
+    // Populate cached features at startup: reconstruct a Position from each
+    // nibble-encoded entry, compute mobility / king safety / x-ray, and store
+    // in SoA (Structure of Arrays) layout for cache-friendly training access.
+    // This is the one-time cost — training reads from the slot arrays directly.
+    println!("Extracting features ({} entries)...", entries.len());
+    let mut slots = soul::tools::dataset::FeatureSlots::with_capacity(entries.len());
+    for entry in &entries {
+        slots.push_entry(entry);
+    }
+
     let val_count = entries.len() / 10;
     let train_count = entries.len() - val_count;
     let (train, val) = entries.split_at(train_count);
 
-    print_dataset_stats(train, val, entries.len(), |e| {
-        if e.original_stm == soul::tools::dataset::STM_WHITE { e.result as f64 } else { 1.0 - e.result as f64 }
+    // W/D/L breakdown over the full dataset (white-relative)
+    let (ww, bw, dr) = entries.iter().fold((0, 0, 0), |(w, b, d), entry| {
+        let stm_white = (entry.stm_and_ep & 0x80) == 0;
+        let r = entry.result;
+        let white_result = if stm_white { r } else { 2 - r };
+        if white_result >= 2 { (w + 1, b, d) } else if white_result == 0 { (w, b + 1, d) } else { (w, b, d + 1) }
     });
+    println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", entries.len(), train.len(), val.len());
+    println!("  White wins: \x1b[32m{ww}\x1b[0m");
+    println!("  Black wins: \x1b[32m{bw}\x1b[0m");
+    println!("  Draws:      \x1b[32m{dr}\x1b[0m");
 
-    // Batch gradient closure.
-    // Uses TrainableEntry trait dispatch for generic accumulation,
-    // though encoded datasets use stored features directly.
+    // Shared reference for the closure captures below.
+    // `train` and `slots` are parallel arrays indexed by the same subscript.
+    let slots_ref = &slots;
+
     let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
         let reduce_res = batch_indices
             .par_chunks(256)
@@ -102,22 +121,14 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
                 |(mut g, mut loss), chunk| {
                     for &i in chunk {
                         let entry = &train[i];
-                        let score = entry.eval_with_state(values, &mut ());
-                        let sig = sigmoid(score, k);
                         let target = entry.target(k, blend);
-
-                        // MSE Loss gradient:
-                        // J = (S(x) - y)² where S(x) is the sigmoid eval and y is the target.
-                        //
-                        // Chain rule: dJ/dx = dJ/dS · dS/dx
-                        // 1. dJ/dS = 2 · (S(x) - y)
-                        // 2. dS/dx = K · S(x) · (1 - S(x))
-                        //
-                        // dJ/dx = 2 · (S(x) - y) · K · S(x) · (1 - S(x))
+                        let sig = sigmoid(loader::eval_soul_cached(entry, slots_ref, i, values), k);
                         let err = sig - target;
+                        // MSE Loss gradient:
+                        // dJ/dx = 2 · (S(x) - target) · K · S(x) · (1 - S(x))
+                        // Chain: dJ/dS = 2·(S - target), dS/dx = K·S·(1-S)
                         let d = 2.0 * err * sig * (1.0 - sig) * k;
-
-                        entry.accumulate_grad(values, d, &mut g, &());
+                        loader::accumulate_gradient_cached(entry, slots_ref, i, values, d, &mut g);
                         loss = err.mul_add(err, loss);
                     }
                     (g, loss)
@@ -128,13 +139,14 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
         reduce_res.pipe_grads(grads)
     };
 
-    // Validation eval closure
     let val_eval = |values: &[f64], k: f64| -> f64 {
         val.par_iter()
-            .map(|e: &loader::SoulEntry| {
-                let score = loader::eval_soul(e, values);
+            .enumerate()
+            .map(|(idx, entry): (usize, &loader::SoulEntry)| {
+                // val items occupy slots[train_count..] — offset by train_count
+                let score = loader::eval_soul_cached(entry, slots_ref, train_count + idx, values);
                 let sig = sigmoid(score, k);
-                let target = e.target(k, 0.0); // Hardcoded to 0.0 for validation
+                let target = entry.target(k, 0.0);
                 let err = sig - target;
                 err * err
             })
@@ -142,7 +154,7 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
             / val.len() as f64
     };
 
-    train_loop(train.len(), "Encoded (no attack gen)", config, resume_path, batch_grad, val_eval);
+    train_loop(train.len(), "Encoded (feature cache)", config, resume_path, batch_grad, val_eval);
 }
 
 /// Training loop for raw EPD datasets.

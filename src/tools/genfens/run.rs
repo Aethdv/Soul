@@ -508,7 +508,7 @@ fn load_existing_count(path: &str) -> usize {
         return 0;
     }
 
-    if &magic == crate::tools::dataset::MAGIC_V5 {
+    if &magic == crate::tools::dataset::MAGIC_V5 || &magic == crate::tools::dataset::MAGIC_V6 {
         let mut buf = [0u8; 8];
         if reader.read_exact(&mut buf).is_ok() {
             return u64::from_le_bytes(buf) as usize;

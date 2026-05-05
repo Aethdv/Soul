@@ -169,14 +169,16 @@ impl WorkerState {
             self.game_history.push(self.board.hash);
         }
 
+        if gen_legal_moves(&self.board).is_empty() {
+            return Vec::new();
+        }
+
         let (static_eval, search_eval, search_move) = self.search_position();
 
-        let best_move = match search_move {
-            Some(mv) => mv,
-            None => {
-                self.global.search_fail.fetch_add(1, Relaxed);
-                return Vec::new();
-            },
+        let Some(best_move) = search_move else {
+            self.global.search_fail.fetch_add(1, Relaxed);
+            eprintln!("Warning: random-restart search returned no best move — skipping position");
+            return Vec::new();
         };
 
         let abs_eval = search_eval.abs();
@@ -390,9 +392,9 @@ impl WorkerState {
 
         // Back-propagate game result to every saved position
         for (mut entry, stm) in self.pending.drain(..) {
-            entry.result = outcome.relative_to(stm);
+            entry.result = (outcome.relative_to(stm) * 2.0) as u8;
 
-            let search_eval = entry.search_score as i32;
+            let search_eval = entry.score as i32;
             let contradictory = match (outcome, stm) {
                 // STM won but eval said STM was losing badly.
                 (GameOutcome::WhiteWins, Color::White) | (GameOutcome::BlackWins, Color::Black) => {

@@ -32,7 +32,6 @@ macro_rules! load_or_bail {
     };
 }
 
-// ──────── Entry point ────────
 
 /// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
 /// The `encode` arm is split into two patterns — the match itself proves
@@ -53,7 +52,7 @@ pub fn run(args: &[&str]) {
         ["encode", input, output, ..] => encode(input, output),
         ["encode", ..] => eprintln!("Usage: soul dataset encode <input.epd> <output.soul>"),
 
-        ["deltas", path, ..] => dump_deltas(path),
+        ["deltas", path, ..] => dump_scores(path),
         ["deltas"] => eprintln!("Usage: soul dataset deltas <path>"),
 
         [unknown, ..] => {
@@ -63,7 +62,6 @@ pub fn run(args: &[&str]) {
     }
 }
 
-// ──────── Subcommands ────────
 
 fn help() {
     let h = Help::new(28);
@@ -106,26 +104,22 @@ fn inspect(path: &str, count: usize) {
         let fen_raw = entry.to_fen();
         let fen = fen_raw.split_once(';').map(|(f, _)| f).unwrap_or(&fen_raw).trim();
 
-        // SoulEntry is #[repr(packed)]
-        // the format machinery takes &arg internally,
-        // creating misaligned references to packed fields.
-        // Copy every field we need to a stack-aligned local first.
-        let static_score = entry.static_score;
-        let search_score = entry.search_score;
+        let score = entry.score;
         let result = entry.result;
-        let piece_count = entry.piece_count;
+        let piece_count = entry.occupancy.count_ones();
 
-        // Calculate a reference WDL for display using k=0.0066
+        // WDL estimate for CLI display (unrelated to tuner K).
         let k = 0.0066;
-        let exp = (-k * f64::from(search_score)).exp();
+        
+        let exp = (-k * f64::from(score)).exp();
         let win_prob = 1.0 / (1.0 + exp);
         let wdl_str = format!("W:{:.1}%", win_prob * 100.0);
 
         let _ = writeln!(out, "[{i:05}] {fen}");
         let _ = writeln!(
             out,
-            "       Static: {:+5}  Search: {:+5}  Result: {:.1}  WDL: {}  Pieces: {}",
-            static_score, search_score, result, wdl_str, piece_count,
+            "       Search: {:+5}  Result: {}  WDL: {}  Pieces: {}",
+            score, result, wdl_str, piece_count,
         );
         let _ = writeln!(out, "{SEP_THIN}");
     }
@@ -144,30 +138,25 @@ fn info(path: &str) {
     // Widen accumulators to prevent precision loss on 100M+ entry datasets.
     // Scores use i64 to prevent overflow: WDL uses f64 because f32 loses
     // precision past 2²⁴ (~16.8M) — adding 1.0 to 16_777_216.0f32 is a no-op.
-    let mut total_static = 0i64;
     let mut total_search = 0i64;
     let mut white_wins = 0u64;
     let mut draw_count = 0u64;
     let mut black_wins = 0u64;
 
     for entry in &entries {
-        // Packed struct:
-        // copy fields to aligned locals before any operation that may
-        // take a reference (trait calls, comparisons, formatting).
-        let static_score = entry.static_score;
-        let search_score = entry.search_score;
+        let score = entry.score;
         let result = entry.result;
-        let original_stm = entry.original_stm;
+        let stm_white = (entry.stm_and_ep & 0x80) == 0;
 
-        total_static += i64::from(static_score);
-        total_search += i64::from(search_score);
+        total_search += i64::from(score);
 
-        // result is STM-relative. original_stm: 0 = White, 1 = Black
-        let white_result = if original_stm == crate::tools::dataset::STM_WHITE { result } else { 1.0 - result };
+        // Result: 0=loss, 1=draw, 2=win from side-to-move perspective.
+        // Convert to white-relative for the breakdown.
+        let white_result = if stm_white { result } else { 2 - result };
 
-        if white_result > 0.9 {
+        if white_result >= 2 {
             white_wins += 1;
-        } else if white_result < 0.1 {
+        } else if white_result == 0 {
             black_wins += 1;
         } else {
             draw_count += 1;
@@ -187,21 +176,17 @@ fn info(path: &str) {
     println!("  Draws:      {draw_count} ({:.1}%)", (draw_count as f64) / n * 100.0);
     println!();
     println!("Average Scores:");
-    println!("  Static:  {:+.2} cp", (total_static as f64) / n);
     println!("  Search:  {:+.2} cp", (total_search as f64) / n);
 }
 
-fn dump_deltas(path: &str) {
+fn dump_scores(path: &str) {
     let entries: Vec<SoulEntry> = load_or_bail!(path);
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
-    let _ = writeln!(out, "delta_cp,result,static_score,search_score");
+    let _ = writeln!(out, "result,score");
     for entry in &entries {
-        let st = entry.static_score;
-        let sr = entry.search_score;
-        let delta = (i32::from(st) - i32::from(sr)).unsigned_abs();
-        let _ = writeln!(out, "{delta},{},{st},{sr}", entry.result);
+        let _ = writeln!(out, "{:.1},{}", f64::from(entry.result) / 2.0, entry.score);
     }
 }
 
