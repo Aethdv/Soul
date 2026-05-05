@@ -181,13 +181,15 @@ fn info(path: &str) {
 
 fn dump_scores(path: &str) {
     let entries: Vec<SoulEntry> = load_or_bail!(path);
-    let stdout = std::io::stdout();
-    let mut out = BufWriter::new(stdout.lock());
+    let out_path = format!("{path}.scores.csv");
+    let file = std::fs::File::create(&out_path).expect("Failed to create output file");
+    let mut out = BufWriter::new(file);
 
     let _ = writeln!(out, "result,score");
     for entry in &entries {
         let _ = writeln!(out, "{:.1},{}", f64::from(entry.result) / 2.0, entry.score);
     }
+    println!("Saved → {out_path}");
 }
 
 /// Converts plaintext EPD/FEN into compact `.soul` binary format.
