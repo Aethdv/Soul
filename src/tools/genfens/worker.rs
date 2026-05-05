@@ -158,7 +158,7 @@ impl WorkerState {
         let opening = self.book[self.rng.usize(..self.book.len())].clone();
         self.reset_for_new_game(&opening);
 
-        for _ in 0..self.config.random_moves {
+        for _ in 0..self.config.random_plies {
             let moves = gen_legal_moves(&self.board);
             if moves.is_empty() {
                 return Vec::new();

@@ -42,11 +42,16 @@ const DASHBOARD_LINES: usize = 14;
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let parsed = parse_args(args);
 
-    let book_fens = load_books(&parsed.book_paths);
-    if book_fens.is_empty() {
-        eprintln!("{RED}Error: No opening positions loaded!{RESET}");
-        return;
-    }
+    let book_fens = if parsed.startpos {
+        vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]
+    } else {
+        let fens = load_books(&parsed.book_paths);
+        if fens.is_empty() {
+            eprintln!("{RED}Error: No opening positions loaded!{RESET}");
+            return;
+        }
+        fens
+    };
     println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len(),);
 
     let mut config = resolve_config(&parsed);
@@ -542,8 +547,9 @@ fn print_help() {
     h.option_default("--buf", "<N>", "Buffer size per thread", "256");
     h.option("--resume", "", "Resume from existing config/output");
     h.option_default("--save-interval", "<N>", "Save interval", "5000");
-    h.option_default("--random-moves", "<N>", "Random moves from book position (random-restart)", "6");
+    h.option_default("--random-plies", "<N>", "Random plies (half-moves) from book position (random-restart)", "6");
     h.option("--no-random-restart", "", "Disable random-restart; use full game mode");
+    h.option("--startpos", "", "Use standard start position instead of book files");
     h.option_default("--sample", "<0-1>", "Randomly sample fraction of positions", "0.7");
     h.option("--all", "", "Disable quiet position filtering");
     h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
@@ -579,7 +585,8 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
     let mut eval_contradiction_limit = i32::MAX;
     let mut qsearch_filter = i32::MAX;
     let mut random_restart = true;
-    let mut random_moves = 6usize;
+    let mut random_plies = 6usize;
+    let mut startpos = false;
     let mut resume = false;
 
     let mut it = args.iter().copied();
@@ -671,12 +678,13 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                     qsearch_filter = v.parse().unwrap_or(qsearch_filter);
                 }
             },
-            "--random-moves" => {
+            "--random-plies" => {
                 if let Some(v) = it.next() {
-                    random_moves = v.parse().unwrap_or(random_moves);
+                    random_plies = v.parse().unwrap_or(random_plies);
                 }
             },
             "--no-random-restart" => random_restart = false,
+            "--startpos" => startpos = true,
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
@@ -712,7 +720,8 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
         eval_contradiction_limit,
         qsearch_filter,
         random_restart,
-        random_moves,
+        random_plies,
+        startpos,
         resume,
     }
 }

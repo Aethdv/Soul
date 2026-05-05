@@ -508,7 +508,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "tuner"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "fastrand",

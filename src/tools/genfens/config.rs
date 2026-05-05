@@ -35,9 +35,11 @@ pub struct GenfensConfig {
     /// generated from a random book line or startpos + N random moves
     /// instead of playing full self-play game.
     pub random_restart: bool,
-    /// Number of random legal moves to play from the position
+    /// Plies (half-moves) of random legal moves from the book position
     /// before running the verification search.
-    pub random_moves: usize,
+    pub random_plies: usize,
+    /// Use the standard start position instead of book files.
+    pub startpos: bool,
     pub generated_count: u64,
     pub last_update: i64,
 }
@@ -64,7 +66,8 @@ impl Default for GenfensConfig {
             eval_contradiction_limit: i32::MAX,
             qsearch_filter: i32::MAX,
             random_restart: true,
-            random_moves: 6,
+            random_plies: 6,
+            startpos: false,
             generated_count: 0,
             last_update: 0,
         }
@@ -120,7 +123,8 @@ pub struct GenfensArgs {
     pub eval_contradiction_limit: i32,
     pub qsearch_filter: i32,
     pub random_restart: bool,
-    pub random_moves: usize,
+    pub random_plies: usize,
+    pub startpos: bool,
     pub resume: bool,
 }
 
@@ -152,7 +156,8 @@ impl From<GenfensArgs> for GenfensConfig {
             eval_contradiction_limit: args.eval_contradiction_limit,
             qsearch_filter: args.qsearch_filter,
             random_restart: args.random_restart,
-            random_moves: args.random_moves,
+            random_plies: args.random_plies,
+            startpos: args.startpos,
             generated_count: 0,
             last_update: 0,
         }
