@@ -215,12 +215,8 @@ impl WorkerState {
         // to sigmoid(k · score). With wdl_blend=1.0, the draw prior only
         // sticks when the search itself is uncertain.
         let entry = SoulEntry::from_board(&self.board, 0.5, Some(static_eval), Some(search_eval));
-        self.confirmed.push(entry);
         self.global.saved.fetch_add(1, Relaxed);
-
-        let mut out = Vec::new();
-        std::mem::swap(&mut self.confirmed, &mut out);
-        out
+        vec![entry]
     }
 
     /// Plays one complete self-play game and returns labeled training positions.

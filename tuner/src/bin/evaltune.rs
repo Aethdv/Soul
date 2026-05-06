@@ -200,7 +200,7 @@ fn main() {
                 tuner::core::config::WdlScheduleConfig::Cosine { start, end }
                 | tuner::core::config::WdlScheduleConfig::Linear { start, end }
                 | tuner::core::config::WdlScheduleConfig::StableDecay { start, end, .. } => (start, end),
-                tuner::core::config::WdlScheduleConfig::Constant { value } => (value, 0.3),
+                tuner::core::config::WdlScheduleConfig::Constant { value } => (value, tuner::core::config::DEFAULT_WDL_END),
             };
 
             if let Some(stype) = args.wdl_schedule {
