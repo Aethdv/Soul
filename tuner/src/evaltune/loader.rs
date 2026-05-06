@@ -5,8 +5,10 @@ use std::{
     time::Instant,
 };
 
-use soul::core::board::Position as Board;
-pub use soul::tools::dataset::{SoulEntry, accumulate_gradient_cached, eval_soul_cached, load_encoded, save_encoded};
+use soul::core::{board::Position as Board, defs::Color};
+pub use soul::tools::dataset::{
+    SoulEntry, accumulate_gradient_cached, eval_soul_cached, load_encoded, parse_epd_str, save_encoded,
+};
 
 /// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).
 pub struct Entry {
@@ -24,7 +26,7 @@ pub fn load_epd(path: &str) -> std::io::Result<Vec<Entry>> {
 
     for line in reader.lines() {
         let line = line?;
-        if let Some((board, result)) = soul::tools::dataset::parse_epd_str(&line) {
+        if let Some((board, result)) = parse_epd_str(&line) {
             entries.push(Entry { board, result });
         }
     }
@@ -48,12 +50,12 @@ pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
 
     for line in reader.lines() {
         let line = line?;
-        let Some((board, result)) = soul::tools::dataset::parse_epd_str(&line) else {
+        let Some((board, result)) = parse_epd_str(&line) else {
             continue;
         };
 
         // Result is white-relative in EPD, we need STM-relative.
-        let stm_result = if board.stm == soul::core::defs::Color::Black { 1.0 - result } else { result };
+        let stm_result = if board.stm == Color::Black { 1.0 - result } else { result };
         encoded.push(SoulEntry::from_board(&board, stm_result, None, None));
 
         if last_print.elapsed().as_millis() > 500 {

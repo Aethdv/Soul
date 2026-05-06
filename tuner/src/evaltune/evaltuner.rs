@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use soul::{
     core::psqt,
     engine::eval_params::{self, Tunable},
+    tools::dataset::FeatureSlots,
 };
 
 use super::{lion::Lion, loader, report::*, storage::*, tape, training::*};
@@ -88,7 +89,7 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
     // in SoA (Structure of Arrays) layout for cache-friendly training access.
     // This is the one-time cost — training reads from the slot arrays directly.
     println!("Extracting features ({} entries)...", entries.len());
-    let mut slots = soul::tools::dataset::FeatureSlots::with_capacity(entries.len());
+    let mut slots = FeatureSlots::with_capacity(entries.len());
     for entry in &entries {
         slots.push_entry(entry);
     }

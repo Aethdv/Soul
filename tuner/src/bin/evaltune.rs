@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use tuner::evaltune;
+use tuner::{
+    core::config::{DEFAULT_WDL_END, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
+    evaltune,
+};
 
 #[derive(Parser)]
 #[command(
@@ -98,9 +101,9 @@ fn main() {
             evaltune::correlation::run_correlation();
         },
         None => {
-            let mut tuner_config = tuner::core::config::TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
+            let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
                 eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
-                tuner::core::config::TunerConfig::default()
+                TunerConfig::default()
             });
 
             if let Some(epochs) = args.epochs {
@@ -114,18 +117,13 @@ fn main() {
             // Apply LR schedule overrides
             if let Some(stype) = args.lr_schedule {
                 match stype.as_str() {
-                    "constant" => {
-                        tuner_config.evaltune.lr_schedule =
-                            tuner::core::config::LrScheduleConfig::Constant { value: args.lr.unwrap_or(0.1) }
-                    },
+                    "constant" => tuner_config.evaltune.lr_schedule = LrScheduleConfig::Constant { value: args.lr.unwrap_or(0.1) },
                     "linear" => {
-                        tuner_config.evaltune.lr_schedule = tuner::core::config::LrScheduleConfig::Linear {
-                            start: args.lr.unwrap_or(0.1),
-                            end: args.min_lr.unwrap_or(0.0),
-                        }
+                        tuner_config.evaltune.lr_schedule =
+                            LrScheduleConfig::Linear { start: args.lr.unwrap_or(0.1), end: args.min_lr.unwrap_or(0.0) }
                     },
                     "cosine" => {
-                        tuner_config.evaltune.lr_schedule = tuner::core::config::LrScheduleConfig::Cosine {
+                        tuner_config.evaltune.lr_schedule = LrScheduleConfig::Cosine {
                             base: args.lr.unwrap_or(0.1),
                             min: args.min_lr.unwrap_or(0.0001),
                             warmup_ratio: args.warmup.unwrap_or(0.1),
@@ -133,7 +131,7 @@ fn main() {
                         }
                     },
                     "wsd" => {
-                        tuner_config.evaltune.lr_schedule = tuner::core::config::LrScheduleConfig::WarmupStableDecay {
+                        tuner_config.evaltune.lr_schedule = LrScheduleConfig::WarmupStableDecay {
                             base: args.lr.unwrap_or(0.1),
                             min: args.min_lr.unwrap_or(0.0),
                             warmup_ratio: args.warmup.unwrap_or(0.1),
@@ -141,7 +139,7 @@ fn main() {
                         }
                     },
                     "sd" => {
-                        tuner_config.evaltune.lr_schedule = tuner::core::config::LrScheduleConfig::StableDecay {
+                        tuner_config.evaltune.lr_schedule = LrScheduleConfig::StableDecay {
                             base: args.lr.unwrap_or(0.03),
                             min: args.min_lr.unwrap_or(0.0001),
                             stable_ratio: 0.5,
@@ -149,12 +147,8 @@ fn main() {
                     },
                     _ => eprintln!("Warning: Unknown LR schedule '{}', ignoring.", stype),
                 }
-            } else if let tuner::core::config::LrScheduleConfig::Cosine {
-                ref mut base,
-                ref mut min,
-                ref mut warmup_ratio,
-                ref mut cycles,
-            } = tuner_config.evaltune.lr_schedule
+            } else if let LrScheduleConfig::Cosine { ref mut base, ref mut min, ref mut warmup_ratio, ref mut cycles } =
+                tuner_config.evaltune.lr_schedule
             {
                 if let Some(v) = args.lr {
                     *base = v;
@@ -168,12 +162,8 @@ fn main() {
                 if let Some(v) = args.cycles {
                     *cycles = v;
                 }
-            } else if let tuner::core::config::LrScheduleConfig::WarmupStableDecay {
-                ref mut base,
-                ref mut min,
-                ref mut warmup_ratio,
-                ..
-            } = tuner_config.evaltune.lr_schedule
+            } else if let LrScheduleConfig::WarmupStableDecay { ref mut base, ref mut min, ref mut warmup_ratio, .. } =
+                tuner_config.evaltune.lr_schedule
             {
                 if let Some(v) = args.lr {
                     *base = v;
@@ -184,9 +174,7 @@ fn main() {
                 if let Some(v) = args.warmup {
                     *warmup_ratio = v;
                 }
-            } else if let tuner::core::config::LrScheduleConfig::StableDecay { ref mut base, ref mut min, .. } =
-                tuner_config.evaltune.lr_schedule
-            {
+            } else if let LrScheduleConfig::StableDecay { ref mut base, ref mut min, .. } = tuner_config.evaltune.lr_schedule {
                 if let Some(v) = args.lr {
                     *base = v;
                 }
@@ -197,32 +185,31 @@ fn main() {
 
             // Apply WDL schedule overrides
             let (def_start, def_end) = match tuner_config.evaltune.wdl_schedule {
-                tuner::core::config::WdlScheduleConfig::Cosine { start, end }
-                | tuner::core::config::WdlScheduleConfig::Linear { start, end }
-                | tuner::core::config::WdlScheduleConfig::StableDecay { start, end, .. } => (start, end),
-                tuner::core::config::WdlScheduleConfig::Constant { value } => (value, tuner::core::config::DEFAULT_WDL_END),
+                WdlScheduleConfig::Cosine { start, end }
+                | WdlScheduleConfig::Linear { start, end }
+                | WdlScheduleConfig::StableDecay { start, end, .. } => (start, end),
+                WdlScheduleConfig::Constant { value } => (value, DEFAULT_WDL_END),
             };
 
             if let Some(stype) = args.wdl_schedule {
                 match stype.as_str() {
                     "constant" => {
-                        tuner_config.evaltune.wdl_schedule =
-                            tuner::core::config::WdlScheduleConfig::Constant { value: args.blend.unwrap_or(def_start) }
+                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Constant { value: args.blend.unwrap_or(def_start) }
                     },
                     "linear" => {
-                        tuner_config.evaltune.wdl_schedule = tuner::core::config::WdlScheduleConfig::Linear {
+                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Linear {
                             start: args.wdl_start.unwrap_or(def_start),
                             end: args.wdl_end.unwrap_or(def_end),
                         }
                     },
                     "cosine" => {
-                        tuner_config.evaltune.wdl_schedule = tuner::core::config::WdlScheduleConfig::Cosine {
+                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Cosine {
                             start: args.wdl_start.unwrap_or(def_start),
                             end: args.wdl_end.unwrap_or(def_end),
                         }
                     },
                     "stable-decay" => {
-                        tuner_config.evaltune.wdl_schedule = tuner::core::config::WdlScheduleConfig::StableDecay {
+                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::StableDecay {
                             start: args.wdl_start.unwrap_or(def_start),
                             end: args.wdl_end.unwrap_or(def_end),
                             stable_ratio: 0.35,
@@ -232,12 +219,12 @@ fn main() {
                 }
             } else {
                 if let Some(blend) = args.blend {
-                    tuner_config.evaltune.wdl_schedule = tuner::core::config::WdlScheduleConfig::Constant { value: blend };
+                    tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Constant { value: blend };
                 }
                 match tuner_config.evaltune.wdl_schedule {
-                    tuner::core::config::WdlScheduleConfig::Linear { ref mut start, ref mut end }
-                    | tuner::core::config::WdlScheduleConfig::Cosine { ref mut start, ref mut end }
-                    | tuner::core::config::WdlScheduleConfig::StableDecay { ref mut start, ref mut end, .. } => {
+                    WdlScheduleConfig::Linear { ref mut start, ref mut end }
+                    | WdlScheduleConfig::Cosine { ref mut start, ref mut end }
+                    | WdlScheduleConfig::StableDecay { ref mut start, ref mut end, .. } => {
                         if let Some(v) = args.wdl_start {
                             *start = v;
                         }

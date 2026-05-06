@@ -1,3 +1,5 @@
+use soul::core::{board::Position, defs::Color};
+
 use crate::evaltune::{loader, tape, tape::eval_f64};
 
 /// Adaptive gradient clipping based on exponentially weighted percentile estimation.
@@ -93,7 +95,7 @@ impl TunableData for loader::SoulEntry {
     /// Production code uses `eval_soul_cached` with `FeatureSlots`.
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {
-        let board = soul::core::board::Position::from_fen(&self.to_fen());
+        let board = Position::from_fen(&self.to_fen());
         eval_f64(&board, values)
     }
 
@@ -150,7 +152,7 @@ impl TunableData for loader::Entry {
         // EPD results are from White's perspective.
         // The eval produces a score relative to the side-to-move,
         // so we flip for Black.
-        if self.board.stm == soul::core::defs::Color::Black { 1.0 - self.result } else { self.result }
+        if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
     }
 }
 
