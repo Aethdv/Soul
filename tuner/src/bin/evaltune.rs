@@ -140,6 +140,13 @@ fn main() {
                             stable_ratio: 0.5,
                         }
                     },
+                    "sd" => {
+                        tuner_config.evaltune.lr_schedule = tuner::core::config::LrScheduleConfig::StableDecay {
+                            base: args.lr.unwrap_or(0.03),
+                            min: args.min_lr.unwrap_or(0.0001),
+                            stable_ratio: 0.5,
+                        }
+                    },
                     _ => eprintln!("Warning: Unknown LR schedule '{}', ignoring.", stype),
                 }
             } else if let tuner::core::config::LrScheduleConfig::Cosine {
@@ -243,7 +250,7 @@ fn print_help() {
     h.option("--lr", "<value>", "Base learning rate");
     h.option("--min-lr", "<value>", "Minimum learning rate (cosine/linear)");
     h.option_default("--warmup", "<ratio>", "Warmup fraction", "0.1");
-    h.option("--lr-schedule", "<type>", "[cosine|linear|constant|wsd]");
+    h.option("--lr-schedule", "<type>", "[cosine|linear|constant|wsd|sd]");
     h.option("--wdl-start", "<ratio>", "WDL blend start (scheduled)");
     h.option("--wdl-end", "<ratio>", "WDL blend end (scheduled)");
     h.option("--wdl-schedule", "<type>", "[constant|linear|cosine]");

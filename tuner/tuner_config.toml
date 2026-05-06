@@ -10,14 +10,19 @@ k_min = 0.003
 k_max = 0.010
 
 [evaltune.lr_schedule]
-type = "cosine"
-base = 0.1
+type = "sd"
+base = 0.03
 min = 0.0001
-warmup_ratio = 0.0
-cycles = 1
+stable_ratio = 0.5
+
+# type = "cosine"
+# base = 0.1
+# min = 0.0001
+# warmup_ratio = 0.0
+# cycles = 1
 
 [evaltune.wdl_schedule]
-type = "constant" # stable-decay
+type = "constant"
 value = 1.0
 #start = 0.4
 #end = 0.1

@@ -38,6 +38,12 @@ pub enum LrScheduleConfig {
         warmup_ratio: f64,
         stable_ratio: f64,
     },
+    #[serde(rename = "sd")]
+    StableDecay {
+        base: f64,
+        min: f64,
+        stable_ratio: f64,
+    },
 }
 
 impl LrScheduleConfig {
@@ -53,6 +59,7 @@ impl LrScheduleConfig {
             Self::WarmupStableDecay { base, min, warmup_ratio, stable_ratio } => {
                 Box::new(schedule::WarmupStableDecay::new(base, min, warmup_ratio, stable_ratio))
             },
+            Self::StableDecay { base, min, stable_ratio } => Box::new(schedule::StableDecay::new(base, min, stable_ratio)),
         }
     }
 }

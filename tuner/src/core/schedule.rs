@@ -234,6 +234,42 @@ impl LrScheduler for WarmupStableDecay {
     }
 }
 
+// ── Stable-Decay (SD) ──
+
+/// Stable-Decay: LR stays flat, then decays linearly to min.
+/// Lion's sign-step benefits from a prolonged exploration window at full
+/// step size before settling — warmup is unnecessary for non-adaptive optimisers.
+#[derive(Clone, Copy, Debug)]
+pub struct StableDecay {
+    pub base: f64,
+    pub min: f64,
+    pub stable_ratio: f64,
+}
+
+impl StableDecay {
+    #[must_use]
+    pub const fn new(base: f64, min: f64, stable: f64) -> Self {
+        Self { base, min, stable_ratio: stable }
+    }
+}
+
+impl LrScheduler for StableDecay {
+    #[inline]
+    fn rate(&self, epoch: usize, total: usize) -> f64 {
+        let stable_len = (total as f64 * self.stable_ratio) as usize;
+        if epoch <= stable_len {
+            self.base
+        } else {
+            let t = ((epoch - stable_len) as f64 / total.saturating_sub(stable_len).max(1) as f64).min(1.0);
+            self.base - t * (self.base - self.min)
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("StableDecay({} → {}, stable: {:.0}%)", self.base, self.min, self.stable_ratio * 100.0)
+    }
+}
+
 // ──────── Combinators ────────
 
 /// Linear warmup wrapper: scales inner scheduler from 0 to 1 over first N epochs.
