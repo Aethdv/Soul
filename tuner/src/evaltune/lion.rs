@@ -30,29 +30,43 @@
 //!    Update the stored momentum (m) for the next step.
 //!    m = β₂ · m + (1 - β₂) · g,
 //!    where β₂ is per-parameter (PSQT 0.995, mobility 0.95, default 0.99).
+
 pub struct Lion {
     interp: f64, // β₁ (interpolation weight)
     lr: f64,
     wd: f64,
     clip: Option<(f64, f64)>,
+    /// Momentum-Aligned Gradient Masking temperature.
+    /// 0.0 = disabled. 0.05–0.3 effective range.
+    /// Scales the sign update magnitude by sigmoid(cossim(momentum_vec, gradient_vec) / tau).
+    /// Induces implicit Δᵀ·H·Δ geometric regularization toward flatter minima.
+    magma_tau: f64,
 }
 
 impl Lion {
     #[must_use]
     pub const fn new(interp: f64, lr: f64, wd: f64) -> Self {
-        Self { interp, lr, wd, clip: None }
+        Self { interp, lr, wd, clip: None, magma_tau: 0.0 }
     }
 
     /// Create Lion with weight clipping enabled.
     #[must_use]
     pub const fn with_clipping(interp: f64, lr: f64, wd: f64, min: f64, max: f64) -> Self {
-        Self { interp, lr, wd, clip: Some((min, max)) }
+        Self { interp, lr, wd, clip: Some((min, max)), magma_tau: 0.0 }
     }
 
     /// Enable weight clipping on an existing instance.
     #[must_use]
     pub const fn clipped(mut self, min: f64, max: f64) -> Self {
         self.clip = Some((min, max));
+        self
+    }
+
+    /// Enable Momentum-Aligned Gradient Masking with the given temperature.
+    /// τ controls gating sharpness: 0.05 (aggressive) to 0.3 (permissive).
+    #[must_use]
+    pub const fn with_magma(mut self, tau: f64) -> Self {
+        self.magma_tau = tau;
         self
     }
 
@@ -77,6 +91,29 @@ impl Lion {
         debug_assert_eq!(params.len(), fixed_mask.len());
         debug_assert_eq!(params.len(), beta2.len());
 
+        // Magma; global momentum-gradient alignment gate.
+        // Accumulate cosine similarity across all parameters,
+        // then scale the sign-update magnitude by sigmoid(cossim / tau).
+        // Biases toward flatter minima by suppressing updates when the
+        // optimizer oscillation indicates high local curvature.
+        let magma_scale = if self.magma_tau > 0.0 {
+            let mut dot = 0.0f64;
+            let mut norm_m = 0.0f64;
+            let mut norm_g = 0.0f64;
+
+            for i in 0..params.len() {
+                if !fixed_mask[i] {
+                    dot = momentum[i].mul_add(gradients[i], dot);
+                    norm_m = momentum[i].mul_add(momentum[i], norm_m);
+                    norm_g = gradients[i].mul_add(gradients[i], norm_g);
+                }
+            }
+            let cossim = if norm_m > 1e-12 && norm_g > 1e-12 { dot / (norm_m.sqrt() * norm_g.sqrt()) } else { 0.0 };
+            1.0 / (1.0 + (-cossim / self.magma_tau).exp())
+        } else {
+            1.0
+        };
+
         for i in 0..params.len() {
             if fixed_mask[i] {
                 continue;
@@ -96,12 +133,11 @@ impl Lion {
             // still fires — a converged parameter without gradient signal should
             // not lose its regularisation pressure.
             //
-            // TODO: Consider Momentum-Aligned Gradient Masking (Magma).
-            // Maintaining dense momentum updates while gating the sign-update magnitude
-            // by sigmoid(cossim(m, g) / τ) induces a curvature-dependent geometric
-            // regularization term proportional to Δᵀ·H·Δ. This implicitly biases the
-            // tuner toward flatter, more generalizable minima and suppresses noisy
-            // updates in high-curvature directions of the evaluation landscape.
+            // Per-parameter disagreement gate (m.signum() ≠ g.signum()) is local
+            // oscillation suppression. Magma's global cossim gate is a curvature-
+            // dependent scaling layer on top — when the optimizer as a whole is
+            // aligned, full step; when oscillating, suppressed step.
+            //
             // *Ref: Joo, T., Xia, W., Kim, C., Zhang, M., & Ie, E. (2026).
             // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.*
             // <https://arxiv.org/abs/2602.15322v1>
@@ -112,7 +148,7 @@ impl Lion {
                 decayed
             } else {
                 let sign = c.signum();
-                decayed - self.lr * sign
+                decayed - self.lr * sign * magma_scale
             };
 
             // 3. Optional weight clipping

@@ -29,7 +29,7 @@ pub enum LrScheduleConfig {
         base: f64,
         min: f64,
         warmup_ratio: f64,
-        restarts: usize,
+        cycles: usize,
     },
     #[serde(rename = "wsd")]
     WarmupStableDecay {
@@ -47,8 +47,8 @@ impl LrScheduleConfig {
             Self::Linear { start, end } => Box::new(schedule::Linear::new(start, end)),
             Self::Exponential { start, gamma } => Box::new(schedule::Exponential::new(start, gamma)),
             Self::StepDecay { start, gamma, step_epochs } => Box::new(schedule::StepDecay::new(start, gamma, step_epochs)),
-            Self::Cosine { base, min, warmup_ratio, restarts } => {
-                Box::new(schedule::CosineAnnealing::new(base, min).warmup_ratio(warmup_ratio).restarts(restarts))
+            Self::Cosine { base, min, warmup_ratio, cycles } => {
+                Box::new(schedule::CosineAnnealing::new(base, min).warmup_ratio(warmup_ratio).cycles(cycles))
             },
             Self::WarmupStableDecay { base, min, warmup_ratio, stable_ratio } => {
                 Box::new(schedule::WarmupStableDecay::new(base, min, warmup_ratio, stable_ratio))
@@ -135,6 +135,11 @@ pub struct EvalTuneConfig {
     /// is randomly generated at startup. Set to any u64 for reproducible training runs.
     #[serde(default)]
     pub seed: Option<u64>,
+    /// Magma temperature for Lion sign-update scaling.
+    /// 0.0 = disabled. 0.05–0.3 effective range.
+    /// Controls sigmoid(cossim(momentum, gradient) / tau) gate sharpness.
+    #[serde(default)]
+    pub magma_tau: f64,
     /// Enable auto-freeze of stagnant parameters. Default: true.
     #[serde(default = "default_true")]
     pub auto_freeze: bool,
@@ -236,7 +241,7 @@ impl Default for TunerConfig {
     fn default() -> Self {
         Self {
             evaltune: EvalTuneConfig {
-                lr_schedule: LrScheduleConfig::Cosine { base: 0.1, min: 0.0001, warmup_ratio: 0.1, restarts: 1 },
+                lr_schedule: LrScheduleConfig::Cosine { base: 0.1, min: 0.0001, warmup_ratio: 0.1, cycles: 1 },
                 wdl_schedule: WdlScheduleConfig::Constant { value: 0.3 },
                 beta1: 0.9,
                 beta2: 0.99,
@@ -250,6 +255,7 @@ impl Default for TunerConfig {
                 ema_decay: 0.999,
                 unfreeze_epoch: 0,
                 seed: None,
+                magma_tau: 0.0,
                 auto_freeze: true,
                 freeze_start_epoch: 500,
                 freeze_cadence: 100,

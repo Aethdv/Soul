@@ -2,8 +2,9 @@
 beta1 = 0.9
 beta2 = 0.99
 weight_decay = 0.00001
+magma_tau = 0.15 # 0.1–0.2 effective range.
 batch_size = 32768 # 262144
-epochs = 4000
+epochs = 2000
 grad_clip = 1.0
 k_min = 0.003
 k_max = 0.010
@@ -12,8 +13,8 @@ k_max = 0.010
 type = "cosine"
 base = 0.1
 min = 0.0001
-warmup_ratio = 0.1
-restarts = 1
+warmup_ratio = 0.0
+cycles = 1
 
 [evaltune.wdl_schedule]
 type = "constant" # stable-decay

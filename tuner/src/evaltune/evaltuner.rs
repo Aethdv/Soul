@@ -391,6 +391,10 @@ fn train_loop<G, V>(
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     let mut optimizer = Lion::new(config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
 
+    if config.magma_tau > 0.0 {
+        optimizer = optimizer.with_magma(config.magma_tau);
+    }
+
     let mut grad_stats = GradientStats::new(100);
     let mut indices: Vec<usize> = (0..train_len).collect();
 
@@ -401,6 +405,7 @@ fn train_loop<G, V>(
     // there is no "tail" phase. Fall back to uniform Polyak averaging.
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
+    let warmup_end = (config.epochs as f64 * 0.1).max(1.0) as usize;
     let mut best_val_loss = f64::MAX;
     let mut plateau_count = 0usize;
 
@@ -446,7 +451,7 @@ fn train_loop<G, V>(
             // This threshold is intentionally generous: normal LR decay is monotone, so a
             // 50% increase can only mean a deliberate reset point.
             //
-            // Correct for cosine-with-restarts, but would false-fire on any scheduler that
+            // Correct for cosine-with-cycles, but would false-fire on any scheduler that
             // legitimately increases LR during training (e.g. warmup phases).
             // If a new scheduler with a genuine LR increase is added,
             // gate this on scheduler type or add an LrScheduler::is_restart_boundary method to the trait.
@@ -566,7 +571,11 @@ fn train_loop<G, V>(
 
         let overfit_warn = if val_loss > best_val_loss * 1.02 { " \x1b[31;1m⚠ OVERFIT\x1b[0m" } else { "" };
 
-        let is_best = update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit);
+        let is_best = if epoch > warmup_end {
+            update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit)
+        } else {
+            false
+        };
 
         // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();

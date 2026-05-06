@@ -37,7 +37,7 @@ struct Args {
     warmup: Option<f64>,
 
     #[arg(long)]
-    restarts: Option<usize>,
+    cycles: Option<usize>,
 
     #[arg(long)]
     lr_schedule: Option<String>,
@@ -129,7 +129,7 @@ fn main() {
                             base: args.lr.unwrap_or(0.1),
                             min: args.min_lr.unwrap_or(0.0001),
                             warmup_ratio: args.warmup.unwrap_or(0.1),
-                            restarts: args.restarts.unwrap_or(1),
+                            cycles: args.cycles.unwrap_or(1),
                         }
                     },
                     "wsd" => {
@@ -146,7 +146,7 @@ fn main() {
                 ref mut base,
                 ref mut min,
                 ref mut warmup_ratio,
-                ref mut restarts,
+                ref mut cycles,
             } = tuner_config.evaltune.lr_schedule
             {
                 if let Some(v) = args.lr {
@@ -158,8 +158,8 @@ fn main() {
                 if let Some(v) = args.warmup {
                     *warmup_ratio = v;
                 }
-                if let Some(v) = args.restarts {
-                    *restarts = v;
+                if let Some(v) = args.cycles {
+                    *cycles = v;
                 }
             }
 

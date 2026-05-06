@@ -135,19 +135,19 @@ impl LrScheduler for StepDecay {
 
 // ── Cosine Annealing ──
 
-/// Cosine annealing with warm restarts (SGDR).
+/// Cosine annealing with configurable cycle count (SGDR when cycles > 1).
 #[derive(Clone, Copy, Debug)]
 pub struct CosineAnnealing {
     pub base: f64,
     pub min: f64,
     pub warmup_ratio: f64,
-    pub restarts: usize,
+    pub cycles: usize,
 }
 
 impl CosineAnnealing {
     #[must_use]
     pub const fn new(base: f64, min: f64) -> Self {
-        Self { base, min, warmup_ratio: 0.0, restarts: 1 }
+        Self { base, min, warmup_ratio: 0.0, cycles: 1 }
     }
 
     #[must_use]
@@ -156,8 +156,8 @@ impl CosineAnnealing {
         self
     }
     #[must_use]
-    pub const fn restarts(mut self, n: usize) -> Self {
-        self.restarts = n;
+    pub const fn cycles(mut self, n: usize) -> Self {
+        self.cycles = n;
         self
     }
 }
@@ -165,7 +165,7 @@ impl CosineAnnealing {
 impl LrScheduler for CosineAnnealing {
     #[inline]
     fn rate(&self, epoch: usize, total: usize) -> f64 {
-        let cycle_len = total / self.restarts.max(1);
+        let cycle_len = total / self.cycles.max(1);
         let cycle_pos = (epoch - 1) % cycle_len.max(1);
         let warmup_len = (cycle_len as f64 * self.warmup_ratio) as usize;
 
@@ -179,8 +179,8 @@ impl LrScheduler for CosineAnnealing {
     }
 
     fn describe(&self) -> String {
-        if self.restarts > 1 {
-            format!("CosineAnnealing({} → {}, {} restarts)", self.base, self.min, self.restarts)
+        if self.cycles > 1 {
+            format!("CosineAnnealing({} → {}, {} cycles)", self.base, self.min, self.cycles)
         } else {
             format!("CosineAnnealing({} → {})", self.base, self.min)
         }
@@ -438,8 +438,8 @@ mod tests {
     }
 
     #[test]
-    fn cosine_with_restarts() {
-        let s = CosineAnnealing::new(1.0, 0.0).restarts(2);
+    fn cosine_with_cycles() {
+        let s = CosineAnnealing::new(1.0, 0.0).cycles(2);
         assert!(s.rate(51, 100) > 0.8, "Second cycle should restart at high LR");
     }
 
