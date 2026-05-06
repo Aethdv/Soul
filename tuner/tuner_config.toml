@@ -2,7 +2,6 @@
 beta1 = 0.9
 beta2 = 0.99
 weight_decay = 0.00001
-magma_tau = 0.15 # 0.1–0.2 effective range.
 batch_size = 32768 # 262144
 epochs = 2000
 grad_clip = 1.0
@@ -27,6 +26,7 @@ value = 1.0
 #start = 0.4
 #end = 0.1
 #stable_ratio = 0.35
+
 
 [searchtune]
 population_scale = 2.0  # λ = ceil((3·ln(n) + 4) · scale), floored at 16.

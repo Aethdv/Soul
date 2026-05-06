@@ -36,37 +36,24 @@ pub struct Lion {
     lr: f64,
     wd: f64,
     clip: Option<(f64, f64)>,
-    /// Momentum-Aligned Gradient Masking temperature.
-    /// 0.0 = disabled. 0.05–0.3 effective range.
-    /// Scales the sign update magnitude by sigmoid(cossim(momentum_vec, gradient_vec) / tau).
-    /// Induces implicit Δᵀ·H·Δ geometric regularization toward flatter minima.
-    magma_tau: f64,
 }
 
 impl Lion {
     #[must_use]
     pub const fn new(interp: f64, lr: f64, wd: f64) -> Self {
-        Self { interp, lr, wd, clip: None, magma_tau: 0.0 }
+        Self { interp, lr, wd, clip: None }
     }
 
     /// Create Lion with weight clipping enabled.
     #[must_use]
     pub const fn with_clipping(interp: f64, lr: f64, wd: f64, min: f64, max: f64) -> Self {
-        Self { interp, lr, wd, clip: Some((min, max)), magma_tau: 0.0 }
+        Self { interp, lr, wd, clip: Some((min, max)) }
     }
 
     /// Enable weight clipping on an existing instance.
     #[must_use]
     pub const fn clipped(mut self, min: f64, max: f64) -> Self {
         self.clip = Some((min, max));
-        self
-    }
-
-    /// Enable Momentum-Aligned Gradient Masking with the given temperature.
-    /// τ controls gating sharpness: 0.05 (aggressive) to 0.3 (permissive).
-    #[must_use]
-    pub const fn with_magma(mut self, tau: f64) -> Self {
-        self.magma_tau = tau;
         self
     }
 
@@ -91,29 +78,6 @@ impl Lion {
         debug_assert_eq!(params.len(), fixed_mask.len());
         debug_assert_eq!(params.len(), beta2.len());
 
-        // Magma; global momentum-gradient alignment gate.
-        // Accumulate cosine similarity across all parameters,
-        // then scale the sign-update magnitude by sigmoid(cossim / tau).
-        // Biases toward flatter minima by suppressing updates when the
-        // optimizer oscillation indicates high local curvature.
-        let magma_scale = if self.magma_tau > 0.0 {
-            let mut dot = 0.0f64;
-            let mut norm_m = 0.0f64;
-            let mut norm_g = 0.0f64;
-
-            for i in 0..params.len() {
-                if !fixed_mask[i] {
-                    dot = momentum[i].mul_add(gradients[i], dot);
-                    norm_m = momentum[i].mul_add(momentum[i], norm_m);
-                    norm_g = gradients[i].mul_add(gradients[i], norm_g);
-                }
-            }
-            let cossim = if norm_m > 1e-12 && norm_g > 1e-12 { dot / (norm_m.sqrt() * norm_g.sqrt()) } else { 0.0 };
-            1.0 / (1.0 + (-cossim / self.magma_tau).exp())
-        } else {
-            1.0
-        };
-
         for i in 0..params.len() {
             if fixed_mask[i] {
                 continue;
@@ -133,14 +97,20 @@ impl Lion {
             // still fires — a converged parameter without gradient signal should
             // not lose its regularisation pressure.
             //
-            // Per-parameter disagreement gate (m.signum() ≠ g.signum()) is local
-            // oscillation suppression. Magma's global cossim gate is a curvature-
-            // dependent scaling layer on top — when the optimizer as a whole is
-            // aligned, full step; when oscillating, suppressed step.
+            // Per-parameter disagreement gate (m.signum() ≠ g.signum()) catches
+            // local oscillation — if momentum and gradient disagree, the sign
+            // update is skipped for this parameter.
             //
-            // *Ref: Joo, T., Xia, W., Kim, C., Zhang, M., & Ie, E. (2026).
-            // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.*
+            //
+            // Ref: Taejong Joo, Wenhan Xia, Cheolmin Kim, Ming Zhang & Eugene Ie (2026).
+            // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.
             // <https://arxiv.org/abs/2602.15322v1>
+            //
+            // MAGMA (global cossim gate) was tested at 430 HCE parameters,
+            // with PSQT being 384 of the params, which dominated the global cossim.
+            // Validated neutral-ish at SPRT (−0.67 ± 5.39 Elo, 8240 games).
+            // <https://asylum.red/test/4378/>
+            // Probably revisit at NNUE scale.
             let decayed = self.lr.mul_add(-self.wd * d * p, p);
             let updated = if c.abs() < 1e-9 {
                 decayed
@@ -148,7 +118,7 @@ impl Lion {
                 decayed
             } else {
                 let sign = c.signum();
-                decayed - self.lr * sign * magma_scale
+                decayed - self.lr * sign
             };
 
             // 3. Optional weight clipping

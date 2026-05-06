@@ -142,11 +142,6 @@ pub struct EvalTuneConfig {
     /// is randomly generated at startup. Set to any u64 for reproducible training runs.
     #[serde(default)]
     pub seed: Option<u64>,
-    /// Magma temperature for Lion sign-update scaling.
-    /// 0.0 = disabled. 0.05–0.3 effective range.
-    /// Controls sigmoid(cossim(momentum, gradient) / tau) gate sharpness.
-    #[serde(default)]
-    pub magma_tau: f64,
     /// Enable auto-freeze of stagnant parameters. Default: true.
     #[serde(default = "default_true")]
     pub auto_freeze: bool,
@@ -262,7 +257,6 @@ impl Default for TunerConfig {
                 ema_decay: 0.999,
                 unfreeze_epoch: 0,
                 seed: None,
-                magma_tau: 0.0,
                 auto_freeze: true,
                 freeze_start_epoch: 500,
                 freeze_cadence: 100,

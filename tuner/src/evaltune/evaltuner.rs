@@ -391,10 +391,6 @@ fn train_loop<G, V>(
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     let mut optimizer = Lion::new(config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
 
-    if config.magma_tau > 0.0 {
-        optimizer = optimizer.with_magma(config.magma_tau);
-    }
-
     let mut grad_stats = GradientStats::new(100);
     let mut indices: Vec<usize> = (0..train_len).collect();
 
