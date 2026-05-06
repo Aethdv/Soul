@@ -11,6 +11,7 @@ use std::{
 
 use crate::{
     cli::Help,
+    engine::wdl::wdl_model,
     tools::dataset::{self, SoulEntry},
 };
 
@@ -106,15 +107,11 @@ fn inspect(path: &str, count: usize) {
         let result = entry.result;
         let piece_count = entry.occupancy.count_ones();
 
-        // WDL estimate for CLI display (unrelated to tuner K).
-        let k = 0.0066;
-
-        let exp = (-k * f64::from(score)).exp();
-        let win_prob = 1.0 / (1.0 + exp);
-        let wdl_str = format!("W:{:.1}%", win_prob * 100.0);
+        let (w, d, l) = wdl_model(i32::from(score), piece_count);
+        let wdl_str = format!("W:{:.1}% D:{:.1}% L:{:.1}%", w * 100.0, d * 100.0, l * 100.0);
 
         let _ = writeln!(out, "[{i:05}] {fen}");
-        let _ = writeln!(out, "       Search: {:+5}  Result: {}  WDL: {}  Pieces: {}", score, result, wdl_str, piece_count,);
+        let _ = writeln!(out, "       Search: {:+5}  Result: {}  {}  Pieces: {}", score, result, wdl_str, piece_count,);
         let _ = writeln!(out, "{SEP_THIN}");
     }
 }
