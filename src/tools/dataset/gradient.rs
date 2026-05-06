@@ -8,7 +8,10 @@ use crate::{
         phase::compute_phase_weights_f64,
         psqt,
     },
-    engine::mobility::{Mobility, OPEN_UNITY, SafetyMetrics, compute_openness_raw},
+    engine::{
+        eval::{evaluate_fast, extract_phase},
+        mobility::{Mobility, OPEN_UNITY, SafetyMetrics, compute_openness_raw},
+    },
 };
 
 /// Pre-computed instance-level features, populated at tuner startup.
@@ -21,6 +24,8 @@ pub struct FeatureSlots {
     pub safety_us: Vec<[u8; 4]>,
     pub safety_them: Vec<[u8; 4]>,
     pub xray_ortho: Vec<i8>,
+    /// Raw static eval for volatility filtering at training time.
+    pub static_eval: Vec<i16>,
 }
 
 impl FeatureSlots {
@@ -30,6 +35,7 @@ impl FeatureSlots {
             safety_us: Vec::with_capacity(cap),
             safety_them: Vec::with_capacity(cap),
             xray_ortho: Vec::with_capacity(cap),
+            static_eval: Vec::with_capacity(cap),
         }
     }
 
@@ -68,6 +74,10 @@ impl FeatureSlots {
         let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
         let stm_xray = if pos.stm == Color::White { xray_val } else { -xray_val };
         self.xray_ortho.push(stm_xray as i8);
+
+        let acc = pos.get_initial_accumulator();
+        let phase = extract_phase(&acc);
+        self.static_eval.push(evaluate_fast(&pos, &acc, phase) as i16);
     }
 }
 

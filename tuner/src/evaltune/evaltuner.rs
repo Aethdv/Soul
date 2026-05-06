@@ -121,6 +121,8 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
     // Shared reference for the closure captures below.
     // `train` and `slots` are parallel arrays indexed by the same subscript.
     let slots_ref = &slots;
+    let vol_threshold = config.volatility_threshold;
+    let vol_adaptive = config.volatility_adaptive;
 
     let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
         let reduce_res = batch_indices
@@ -130,13 +132,27 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
                 |(mut g, mut loss), chunk| {
                     for &i in chunk {
                         let entry = &train[i];
+
+                        if vol_threshold > 0 {
+                            let threshold = if vol_adaptive {
+                                let pieces = entry.occupancy.count_ones();
+                                vol_threshold + (pieces.saturating_sub(10) as i16).saturating_mul(2)
+                            } else {
+                                vol_threshold
+                            };
+                            let delta = (i32::from(slots_ref.static_eval[i]) - i32::from(entry.score)).abs();
+                            if delta > threshold as i32 {
+                                continue;
+                            }
+                        }
+
                         let target = entry.target(k, blend);
                         let sig = sigmoid(loader::eval_soul_cached(entry, slots_ref, i, values), k);
                         let err = sig - target;
-                        // MSE Loss gradient:
+
                         // dJ/dx = 2 · (S(x) - target) · K · S(x) · (1 - S(x))
-                        // Chain: dJ/dS = 2·(S - target), dS/dx = K·S·(1-S)
                         let d = 2.0 * err * sig * (1.0 - sig) * k;
+
                         loader::accumulate_gradient_cached(entry, slots_ref, i, values, d, &mut g);
                         loss = err.mul_add(err, loss);
                     }
@@ -148,14 +164,13 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
         reduce_res.pipe_grads(grads)
     };
 
-    let val_eval = |values: &[f64], k: f64| -> f64 {
+    let val_eval = |values: &[f64], k: f64, blend: f64| -> f64 {
         val.par_iter()
             .enumerate()
             .map(|(idx, entry): (usize, &loader::SoulEntry)| {
-                // val items occupy slots[train_count..] — offset by train_count
                 let score = loader::eval_soul_cached(entry, slots_ref, train_count + idx, values);
                 let sig = sigmoid(score, k);
-                let target = entry.target(k, 0.0);
+                let target = entry.target(k, blend);
                 let err = sig - target;
                 err * err
             })
@@ -219,12 +234,12 @@ fn run_raw(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&str>)
     };
 
     // Validation eval closure
-    let val_eval = |values: &[f64], k: f64| -> f64 {
+    let val_eval = |values: &[f64], k: f64, _: f64| -> f64 {
         val.par_iter()
             .map(|e: &loader::Entry| {
                 let score = e.eval(values);
                 let sig = sigmoid(score, k);
-                let target = e.target(k, 0.0); // Hardcoded to 0.0 for validation
+                let target = e.target(k, 0.0);
                 let err = sig - target;
                 err * err
             })
@@ -316,7 +331,7 @@ fn train_loop<G, V>(
     val_eval: V,
 ) where
     G: Fn(&[usize], &[f64], f64, f64, &mut [f64]) -> f64,
-    V: Fn(&[f64], f64) -> f64,
+    V: Fn(&[f64], f64, f64) -> f64,
 {
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
@@ -345,7 +360,8 @@ fn train_loop<G, V>(
     // the sigmoid scaling constant that best maps
     // raw centipawn scores to win/draw/loss outcomes
     println!("Optimizing K...");
-    let mut k = find_optimal_k(&values, config, |v, k| val_eval(v, k));
+    let init_blend = wdl_scheduler.blend(1, config.epochs);
+    let mut k = find_optimal_k(&values, config, |v, kk| val_eval(v, kk, init_blend));
     let win_rate_100cp = sigmoid(100.0, k);
     println!("K Factor:   \x1b[36m{k:.6}\x1b[0m (100cp -> {:.1}%)   ", win_rate_100cp * 100.0);
 
@@ -423,11 +439,11 @@ fn train_loop<G, V>(
 
     for epoch in start_epoch..=config.epochs {
         let t0 = Instant::now();
+        let blend = wdl_scheduler.blend(epoch, config.epochs);
 
         // ── Periodic K factor re-optimization ──
-        // Re-align the sigmoid scaling as parameters drift from their initial state.
         if epoch % 500 == 0 {
-            k = find_optimal_k(&ema_values, config, |v, kk| val_eval(v, kk));
+            k = find_optimal_k(&ema_values, config, |v, kk| val_eval(v, kk, blend));
             println!("  Reoptimized K: {k:.6}");
             if let Some(ref mut w) = logger {
                 writeln!(w, "# K re-opt @ epoch {epoch}: {k:.6}").ok();
@@ -455,7 +471,6 @@ fn train_loop<G, V>(
             scheduled_lr > prev_scheduled_lr * 1.5
         };
 
-        let blend = wdl_scheduler.blend(epoch, config.epochs);
         optimizer.set_lr(lr);
 
         if is_restart {
@@ -543,8 +558,8 @@ fn train_loop<G, V>(
             }
         }
 
-        let val_loss = val_eval(&ema_values, k);
-        let ref_loss = val_eval(&ema_values, k_ref);
+        let val_loss = val_eval(&ema_values, k, blend);
+        let ref_loss = val_eval(&ema_values, k_ref, 0.0);
         let train_loss = train_loss / train_len as f64;
 
         // ── Validation Plateau Detection ──

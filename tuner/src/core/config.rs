@@ -145,6 +145,13 @@ pub struct EvalTuneConfig {
     /// Number of consecutive checks before freezing. Default: 2.
     #[serde(default = "default_freeze_consecutive")]
     pub freeze_consecutive: usize,
+    /// Volatility filter threshold in centipawns. 0 = disabled.
+    /// Positions where |static_eval - search_eval| exceeds this are skipped.
+    #[serde(default)]
+    pub volatility_threshold: i16,
+    /// Scale the threshold with piece count (higher in complex positions).
+    #[serde(default = "default_true")]
+    pub volatility_adaptive: bool,
 }
 
 fn default_patience() -> usize {
@@ -251,6 +258,8 @@ impl Default for TunerConfig {
                 freeze_cadence: 100,
                 freeze_threshold: 1e-7,
                 freeze_consecutive: 2,
+                volatility_threshold: 0,
+                volatility_adaptive: true,
             },
             searchtune: SearchTuneConfig {
                 population_scale: 2.0,

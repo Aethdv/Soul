@@ -7,6 +7,8 @@ epochs = 2000
 grad_clip = 1.0
 k_min = 0.003
 k_max = 0.010
+volatility_threshold = 140 # skip positions where |static - search| exceeds threshold (cp).
+volatility_adaptive = true # scales with piece count.
 
 [evaltune.lr_schedule]
 type = "sd"
