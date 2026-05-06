@@ -67,22 +67,10 @@ impl LrScheduleConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum WdlScheduleConfig {
-    Constant {
-        value: f64,
-    },
-    Linear {
-        start: f64,
-        end: f64,
-    },
-    Cosine {
-        start: f64,
-        end: f64,
-    },
-    StableDecay {
-        start: f64,
-        end: f64,
-        stable_ratio: f64,
-    },
+    Constant { value: f64 },
+    Linear { start: f64, end: f64 },
+    Cosine { start: f64, end: f64 },
+    StableDecay { start: f64, end: f64, stable_ratio: f64 },
 }
 
 impl WdlScheduleConfig {

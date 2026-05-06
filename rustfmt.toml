@@ -51,6 +51,6 @@ trailing_comma = "Vertical"
 trailing_semicolon = true
 
 use_try_shorthand = true
-use_small_heuristics = "Off"
+use_small_heuristics = "Max"
 
 where_single_line = true
