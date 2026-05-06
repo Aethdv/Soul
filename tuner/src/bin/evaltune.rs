@@ -175,17 +175,24 @@ fn main() {
                 ..
             } = tuner_config.evaltune.lr_schedule
             {
-                if let Some(v) = args.lr { *base = v; }
-                if let Some(v) = args.min_lr { *min = v; }
-                if let Some(v) = args.warmup { *warmup_ratio = v; }
-            } else if let tuner::core::config::LrScheduleConfig::StableDecay {
-                ref mut base,
-                ref mut min,
-                ..
-            } = tuner_config.evaltune.lr_schedule
+                if let Some(v) = args.lr {
+                    *base = v;
+                }
+                if let Some(v) = args.min_lr {
+                    *min = v;
+                }
+                if let Some(v) = args.warmup {
+                    *warmup_ratio = v;
+                }
+            } else if let tuner::core::config::LrScheduleConfig::StableDecay { ref mut base, ref mut min, .. } =
+                tuner_config.evaltune.lr_schedule
             {
-                if let Some(v) = args.lr { *base = v; }
-                if let Some(v) = args.min_lr { *min = v; }
+                if let Some(v) = args.lr {
+                    *base = v;
+                }
+                if let Some(v) = args.min_lr {
+                    *min = v;
+                }
             }
 
             // Apply WDL schedule overrides
