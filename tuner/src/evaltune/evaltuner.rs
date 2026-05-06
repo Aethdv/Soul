@@ -23,34 +23,53 @@ const MOB_CLAMP: f64 = 100.0;
 pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>) {
     let total_start = Instant::now();
 
-    // 1. Enable FTZ/DAZ on the MAIN thread immediately.
+    // Enable FTZ/DAZ on the MAIN thread immediately.
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        enable_ftz_daz();
-    }
+    unsafe { enable_ftz_daz(); }
 
-    // 2. Configure the Rayon thread pool (catches new worker threads).
+    // Configure the Rayon thread pool (catches new worker threads).
     rayon::ThreadPoolBuilder::new()
         .start_handler(|_| unsafe {
             #[cfg(target_arch = "x86_64")]
             enable_ftz_daz();
         })
         .build_global()
-        .ok(); // because it might already be initialized
+        .ok();
 
     let paths = resolve_dataset_paths(dataset_path.unwrap_or("default"));
-    let Some(paths) = paths else {
-        return;
-    };
-    let path_str = paths.join(",");
-    let is_encoded = paths.iter().all(|p| p.ends_with(".soul") || p.ends_with(".soul.zst"));
+    let Some(paths) = paths else { return };
 
-    if is_encoded {
-        run_encoded(&paths, config, resume_path);
-    } else {
-        println!("Loading raw datasets: {path_str}");
-        run_raw(&paths, config, resume_path);
+    let mut all_entries = Vec::new();
+    for path in &paths {
+        if path.ends_with(".soul") || path.ends_with(".soul.zst") {
+            println!("Loading encoded dataset: {path}");
+            let mut file_entries = loader::load_encoded(path).expect("Failed to load .soul dataset");
+            all_entries.append(&mut file_entries);
+        } else {
+            println!("Loading raw dataset: {path}");
+            match loader::load_epd(path) {
+                Ok(epd_entries) => {
+                    for e in &epd_entries {
+                        let stm_result = if e.board.stm == soul::core::defs::Color::Black {
+                            1.0 - e.result
+                        } else {
+                            e.result
+                        };
+                        all_entries.push(loader::SoulEntry::from_board(&e.board, stm_result, None, None));
+                    }
+                },
+                Err(e) => eprintln!("Error loading {path}: {e}"),
+            }
+        }
     }
+
+    if all_entries.is_empty() {
+        eprintln!("Error: No positions loaded.");
+        return;
+    }
+    println!("Total positions: \x1b[32m{}\x1b[0m", all_entries.len());
+
+    run_encoded_with_entries(all_entries, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n\x1b[93mDone in {elapsed:.2}s\x1b[0m");
@@ -81,6 +100,10 @@ fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&s
         let mut file_entries = loader::load_encoded(path).expect("Failed to load .soul dataset");
         entries.append(&mut file_entries);
     }
+    run_encoded_with_entries(entries, config, resume_path);
+}
+
+fn run_encoded_with_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
 
     fastrand::shuffle(&mut entries);
 
