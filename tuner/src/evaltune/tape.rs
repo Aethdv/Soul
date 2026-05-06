@@ -533,7 +533,10 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 mod tests {
     use std::ops::Range;
 
-    use soul::core::{board::Position, psqt::LAYOUT};
+    use soul::{
+        core::{board::Position, psqt::LAYOUT},
+        tools::dataset::{FeatureSlots, SoulEntry, accumulate_gradient_cached, eval_soul_cached},
+    };
 
     use super::*;
     use crate::evaltune::training::sigmoid;
@@ -644,12 +647,6 @@ mod tests {
         );
     }
 
-    // ── Encoded-path cross-verification ──
-    //
-    // `accumulate_gradient` (dataset/gradient.rs) shares math with the
-    // board-based gradient paths but has never been verified against the
-    // DualNode oracle. A drift here corrupts every `run_encoded` session.
-
     const ENCODED_FENS: &[&str] = &[
         // White-to-move
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -660,6 +657,8 @@ mod tests {
         "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
     ];
 
+    /// `accumulate_gradient` shares math with the board-based gradient paths.
+    /// A drift here corrupts every `run_encoded` session.
     #[test]
     fn test_encoded_path_oracle() {
         let values = full_values();
@@ -667,12 +666,10 @@ mod tests {
 
         for fen in ENCODED_FENS {
             let pos = Position::from_fen(fen);
-
-            let entry = soul::tools::dataset::SoulEntry::from_board(&pos, TARGET, None, None);
+            let entry = SoulEntry::from_board(&pos, TARGET, None, Some(20));
 
             // Position → SoulEntry → to_fen → Position.
             // If this fails, to_fen() is corrupting the board.
-            // Scores will never agree. therefore the startup assertion is useless.
             let rt_pos = Position::from_fen(&entry.to_fen());
             let orig_score = eval_f64(&pos, &values);
             let rt_score = eval_f64(&rt_pos, &values);
@@ -681,28 +678,28 @@ mod tests {
                 "Round-trip score mismatch on '{fen}': orig={orig_score} reconstructed={rt_score}",
             );
 
-            // Score agreement
+            let mut slots = FeatureSlots::with_capacity(1);
+            slots.push_entry(&entry);
+
             let board_score = eval_f64(&pos, &values);
-            let entry_score = soul::tools::dataset::eval_soul(&entry, &values);
+            let entry_score = eval_soul_cached(&entry, &slots, 0, &values);
             assert!(
                 (board_score - entry_score).abs() < 1e-4,
                 "Score mismatch on '{fen}': board={board_score} encoded={entry_score}",
             );
 
-            // Gradient agreement
             let mut dual_grads = vec![0.0f64; n_params];
             let dual_loss = eval_dual_fused(&pos, &values, TARGET, K, &mut dual_grads);
 
-            // Replicate the loss-derivative scaling the encoded training loop uses.
             let sig = sigmoid(entry_score, K);
             let err = sig - TARGET;
             let outer = 2.0 * err * sig * (1.0 - sig) * K;
 
             let mut encoded_grads = vec![0.0f64; n_params];
-            soul::tools::dataset::accumulate_gradient(&entry, &values, outer, &mut encoded_grads);
+            accumulate_gradient_cached(&entry, &slots, 0, &values, outer, &mut encoded_grads);
 
             let enc_loss = err * err;
-            assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}",);
+            assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}");
 
             for (i, (&dual, &encoded)) in dual_grads.iter().zip(encoded_grads.iter()).enumerate() {
                 let diff = (dual - encoded).abs();
