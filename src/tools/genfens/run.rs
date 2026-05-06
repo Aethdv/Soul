@@ -90,6 +90,8 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let shared_generated = Arc::new(AtomicUsize::new(total_generated));
     let finished = Arc::new(AtomicBool::new(false));
 
+    let rr = config.random_restart;
+
     // ── Dashboard thread ──
     {
         let global_mon = global.clone();
@@ -100,7 +102,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         std::thread::spawn(move || {
             let mut first_frame = true;
             while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
-                let snap = Snapshot::capture(&global_mon, &gen_mon, target);
+                let snap = Snapshot::capture(&global_mon, &gen_mon, target, rr);
                 render_dashboard(&snap, &mut first_frame);
                 std::thread::sleep(DASHBOARD_INTERVAL);
             }
@@ -160,7 +162,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     // Final report
     println!();
-    let snap = Snapshot::capture(&global, &AtomicUsize::new(total_generated), target);
+    let snap = Snapshot::capture(&global, &AtomicUsize::new(total_generated), target, config.random_restart);
     print_final_report(&snap, &output_path);
 
     config.generated_count = snap.saved;
@@ -213,6 +215,7 @@ struct Snapshot {
     passed_filters: u64,
     games: u64,
     plies: u64,
+    random_restart: bool,
     filtered_quiet: u64,
     filtered_score: u64,
     filtered_ply: u64,
@@ -233,7 +236,7 @@ impl Snapshot {
     /// Reads every atomic counter with `Relaxed` ordering.
     /// Relaxed is fine here — we're displaying approximate progress,
     /// not synchronizing memory. Counters only ever increase.
-    fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64) -> Self {
+    fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64, random_restart: bool) -> Self {
         Self {
             elapsed: global.start_time.elapsed().as_secs_f64(),
             generated: generated.load(Ordering::Relaxed) as u64,
@@ -243,6 +246,7 @@ impl Snapshot {
             passed_filters: global.passed_filters.load(Ordering::Relaxed),
             games: global.games.load(Ordering::Relaxed),
             plies: global.plies.load(Ordering::Relaxed),
+            random_restart,
             filtered_quiet: global.filtered_quiet.load(Ordering::Relaxed),
             filtered_score: global.filtered_score.load(Ordering::Relaxed),
             filtered_ply: global.filtered_ply.load(Ordering::Relaxed),
@@ -335,8 +339,13 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         snap.progress_pct(),
     );
     println!("\r\x1b[KRate:            {:.3} k/s", snap.rate() / 1000.0);
-    println!("\r\x1b[KGames:           {}", format_num(snap.games));
-    println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
+    if snap.random_restart {
+        println!("\r\x1b[KAttempted:       {}", format_num(snap.attempted));
+        println!("\r\x1b[K",);
+    } else {
+        println!("\r\x1b[KGames:           {}", format_num(snap.games));
+        println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
+    }
     println!("\r\x1b[KFiltered Quiet:  {}", format_num(snap.filtered_quiet));
     println!("\r\x1b[KFiltered Score:  {}", format_num(snap.filtered_score));
     println!("\r\x1b[KFiltered Ply:    {}", format_num(snap.filtered_ply));
@@ -365,8 +374,12 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!("{GREEN}[OK]{RESET} Saved to {output_path}");
     println!();
     println!("[FINAL STATS]");
-    println!("  Total Games:      {}", format_num(snap.games));
-    println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
+    if snap.random_restart {
+        println!("  Total Positions:  {}", format_num(snap.attempted));
+    } else {
+        println!("  Total Games:      {}", format_num(snap.games));
+        println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
+    }
     println!();
     println!("  Positions:");
     println!("    Attempted:      {}", format_num(snap.attempted));
