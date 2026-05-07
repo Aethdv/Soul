@@ -172,12 +172,6 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     train_loop(train.len(), "Encoded (feature cache)", config, resume_path, batch_grad, val_eval);
 }
 
-/// Training loop for raw EPD datasets.
-///
-/// Computes full mobility, king safety, and zone defense from scratch for each position.
-/// Uses `eval_linear_grad` for direct gradient extraction — exploiting the eval's linearity
-/// to compute feature coefficients directly instead of propagating gradient arrays.
-
 // ──────── Shared training infrastructure ────────
 
 /// Scatter rayon-reduced gradients into the caller's accumulator.

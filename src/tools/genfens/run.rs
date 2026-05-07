@@ -341,7 +341,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     println!("\r\x1b[KRate:            {:.3} k/s", snap.rate() / 1000.0);
     if snap.random_restart {
         println!("\r\x1b[KAttempted:       {}", format_num(snap.attempted));
-        println!("\r\x1b[K",);
+        println!("\r\x1b[K",); // preserves alignment
     } else {
         println!("\r\x1b[KGames:           {}", format_num(snap.games));
         println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
