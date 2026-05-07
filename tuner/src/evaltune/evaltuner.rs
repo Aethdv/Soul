@@ -25,7 +25,9 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 
     // Enable FTZ/DAZ on the MAIN thread immediately.
     #[cfg(target_arch = "x86_64")]
-    unsafe { enable_ftz_daz(); }
+    unsafe {
+        enable_ftz_daz();
+    }
 
     // Configure the Rayon thread pool (catches new worker threads).
     rayon::ThreadPoolBuilder::new()
@@ -50,12 +52,8 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
             match loader::load_epd(path) {
                 Ok(epd_entries) => {
                     for e in &epd_entries {
-                        let stm_result = if e.board.stm == soul::core::defs::Color::Black {
-                            1.0 - e.result
-                        } else {
-                            e.result
-                        };
-                        all_entries.push(loader::SoulEntry::from_board(&e.board, stm_result, None, None));
+                        let stm_result = if e.board.stm == soul::core::defs::Color::Black { 1.0 - e.result } else { e.result };
+                        all_entries.push(loader::SoulEntry::from_board(&e.board, stm_result, None, Some(i16::MAX as i32)));
                     }
                 },
                 Err(e) => eprintln!("Error loading {path}: {e}"),
@@ -89,7 +87,6 @@ unsafe fn enable_ftz_daz() {
 }
 
 fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
-
     fastrand::shuffle(&mut entries);
 
     // Populate cached features at startup: reconstruct a Position from each
@@ -127,7 +124,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                     for &i in chunk {
                         let entry = &train[i];
 
-                        if vol_threshold > 0 {
+                        if vol_threshold > 0 && entry.score != i16::MAX {
                             let threshold = if vol_adaptive {
                                 let pieces = entry.occupancy.count_ones();
                                 vol_threshold + (pieces.saturating_sub(10) as i16).saturating_mul(2)
@@ -181,7 +178,6 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 /// Uses `eval_linear_grad` for direct gradient extraction — exploiting the eval's linearity
 /// to compute feature coefficients directly instead of propagating gradient arrays.
 
-
 // ──────── Shared training infrastructure ────────
 
 /// Scatter rayon-reduced gradients into the caller's accumulator.
@@ -211,7 +207,13 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
-        if (r - 1.0).abs() < 1e-4 { (w + 1, b, d) } else if r.abs() < 1e-4 { (w, b + 1, d) } else { (w, b, d + 1) }
+        if (r - 1.0).abs() < 1e-4 {
+            (w + 1, b, d)
+        } else if r.abs() < 1e-4 {
+            (w, b + 1, d)
+        } else {
+            (w, b, d + 1)
+        }
     });
     println!("  White wins: \x1b[32m{ww}\x1b[0m");
     println!("  Black wins: \x1b[32m{bw}\x1b[0m");

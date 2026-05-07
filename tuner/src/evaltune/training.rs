@@ -110,6 +110,10 @@ impl TrainableEntry for loader::SoulEntry {
 
     #[inline]
     fn target(&self, k: f64, wdl_blend: f64) -> f64 {
+        // i16::MAX sentinel = EPD data with no search score — pure outcome.
+        if self.score == i16::MAX {
+            return f64::from(self.result) / 2.0;
+        }
         let score = f64::from(self.score);
 
         // Instance-Confidence WDL blending:
