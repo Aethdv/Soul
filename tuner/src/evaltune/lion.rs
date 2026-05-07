@@ -5,9 +5,9 @@
 //! Lion just goes "is the gradient positive?"
 //! and shoves the parameter one step in that direction.
 //!
-//! *Ref: Chen, X., Liang, C., Huang, D., Real, E., Wang, K., Liu, Y., Pham, H.,
-//! Dong, X., Luong, T., Hsieh, C.-J., Lu, Y., & Le, Q. V. (2023). Symbolic
-//! Discovery of Optimization Algorithms. NeurIPS 2023.*
+//! *Ref: Xiangning Chen, Chen Liang, Da Huang, Esteban Real, Kaiyuan Wang,
+//! Yao Liu, Hieu Pham, Xuanyi Dong, Thang Luong, Cho-Jui Hsieh, Yifeng Lu, Quoc V. Le*
+//! Symbolic Discovery of Optimization Algorithms. NeurIPS 2023.
 //! <https://arxiv.org/abs/2302.06675v4>
 //!
 //! The update rule consists of four steps per iteration t.
@@ -151,7 +151,6 @@ mod tests {
         let grads_neg = vec![-1.0];
         let opt = Lion::with_clipping(0.9, 1.0, 0.0, -2.0, 2.0);
         let mut momentum_neg = vec![-0.5];
-        let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
 
         let lr_mask = vec![1.0; params.len()];
