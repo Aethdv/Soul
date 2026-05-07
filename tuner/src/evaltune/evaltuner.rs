@@ -13,7 +13,7 @@ use soul::{
 
 use super::{lion::Lion, loader, report::*, storage::*, training::*};
 use crate::core::{
-    config::{EvalTuneConfig, LrScheduleConfig},
+    config::{EvalTuneConfig, LossFn, LrScheduleConfig},
     logger::JsonLogger,
 };
 
@@ -114,6 +114,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     let slots_ref = &slots;
     let vol_threshold = config.volatility_threshold;
     let vol_adaptive = config.volatility_adaptive;
+    let loss_fn = config.loss;
 
     let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
         let reduce_res = batch_indices
@@ -141,11 +142,20 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                         let sig = sigmoid(loader::eval_soul_cached(entry, slots_ref, i, values), k);
                         let err = sig - target;
 
-                        // dJ/dx = 2 · (S(x) - target) · K · S(x) · (1 - S(x))
-                        let d = 2.0 * err * sig * (1.0 - sig) * k;
-
-                        loader::accumulate_gradient_cached(entry, slots_ref, i, values, d, &mut g);
-                        loss = err.mul_add(err, loss);
+                        match loss_fn {
+                            LossFn::CrossEntropy => {
+                                // L = -target·ln(S) - (1-target)·ln(1-S), dL/dx = (S - target)·K
+                                let s = sig.clamp(1e-7, 1.0 - 1e-7);
+                                loss -= target * s.ln() + (1.0 - target) * (1.0 - s).ln();
+                                loader::accumulate_gradient_cached(entry, slots_ref, i, values, err * k, &mut g);
+                            },
+                            LossFn::Mse => {
+                                // dJ/dx = 2·(S - target)·K·S·(1 - S)
+                                let d = 2.0 * err * sig * (1.0 - sig) * k;
+                                loss = err.mul_add(err, loss);
+                                loader::accumulate_gradient_cached(entry, slots_ref, i, values, d, &mut g);
+                            },
+                        }
                     }
                     (g, loss)
                 },

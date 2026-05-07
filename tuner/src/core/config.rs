@@ -6,6 +6,20 @@ use serde::Deserialize;
 
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LossFn {
+    Mse,
+    #[serde(rename = "cross_entropy")]
+    CrossEntropy,
+}
+
+impl Default for LossFn {
+    fn default() -> Self {
+        Self::Mse
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LrScheduleConfig {
@@ -107,8 +121,13 @@ pub struct EvalTuneConfig {
     pub beta1: f64,
     pub beta2: f64,
     pub weight_decay: f64,
-    /// Empirically, 262,144 works well with ~8M positions; smaller datasets benefit from smaller
-    /// batches (e.g., 8192 for ~2M). Gradient stability is highly batch-size dependent.
+    /// Default is MSE.
+    #[serde(default)]
+    pub loss: LossFn,
+    /// Smaller batches = more updates/epoch = better generalization
+    /// at the cost of slower per-epoch wall time.
+    /// 32k-131k is the sweet spot for 2-15M positions.
+    /// Handwavy; Below 50: overfit. Above 300: diminishing returns.
     pub batch_size: usize,
     pub epochs: usize,
     pub grad_clip: f64,
@@ -265,6 +284,7 @@ impl Default for TunerConfig {
                 beta1: 0.9,
                 beta2: 0.99,
                 weight_decay: 0.00001,
+                loss: LossFn::Mse,
                 batch_size: 32768,
                 epochs: 8000,
                 grad_clip: 1.0,

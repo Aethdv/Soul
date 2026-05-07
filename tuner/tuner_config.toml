@@ -2,12 +2,23 @@
 beta1 = 0.9
 beta2 = 0.99
 weight_decay = 0.00001
-batch_size = 32768 # 262144
+loss = "mse" # cross_entropy
+
+# positions / batch_size → ~100 u/epoch (80-150 all identical for HCE; Lion's uniform step + near-convex surface saturate quickly)
+#
+# positions  batch     u/epoch
+# 2.8M       32,768     85
+# 7.1M       65,536    108
+# 15M        131,072   114
+# 26M        262,144   100
+# 52M        524,288   100
+batch_size = 65536
+
 epochs = 2000
 grad_clip = 1.0
 k_min = 0.003
 k_max = 0.010
-volatility_threshold = 140 # skip positions where |static - search| exceeds threshold (cp).
+volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
 
 # Per-group LR multipliers for Lion sign-step.
