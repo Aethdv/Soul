@@ -274,6 +274,7 @@ fn train_loop<G, V>(
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
     let decay_mask = build_decay_mask(&all_params);
     let beta2_mask = build_beta2_mask(&all_params, config.beta2);
+    let lr_mask = build_lr_mask(&all_params, config);
 
     // Zero init - the EMA decay (0.99 per batch) extinguishes any seed value
     // before epoch 500 when auto-freeze activates, so the auto-freeze sees
@@ -399,7 +400,7 @@ fn train_loop<G, V>(
                 total_grads[i] += *g;
             }
 
-            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask);
+            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask);
 
             for value in &mut values[mob_start..mob_end] {
                 *value = value.clamp(-MOB_CLAMP, MOB_CLAMP);
@@ -720,6 +721,26 @@ fn build_beta2_mask(params: &[Tunable], default_beta2: f64) -> Vec<f64> {
                 0.95
             } else {
                 default_beta2
+            }
+        })
+        .collect()
+}
+
+fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
+    let psqt_end = psqt::LAYOUT.material_offset;
+    let mat_end = psqt::LAYOUT.mobility_open_offset;
+    let mob_end = psqt::LAYOUT.weight_offset;
+
+    (0..params.len())
+        .map(|i| {
+            if i < psqt_end {
+                config.lr_psqt
+            } else if i < mat_end {
+                config.lr_material
+            } else if i < mob_end {
+                config.lr_mobility
+            } else {
+                config.lr_other
             }
         })
         .collect()

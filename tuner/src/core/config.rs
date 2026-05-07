@@ -126,6 +126,15 @@ pub struct EvalTuneConfig {
     /// participate normally. 0 disables progressive unfreeze. Default: 0.
     #[serde(default)]
     pub unfreeze_epoch: usize,
+    /// Per-group LR multipliers for Lion sign-step scaling.
+    #[serde(default = "default_one")]
+    pub lr_psqt: f64,
+    #[serde(default = "default_lr_material")]
+    pub lr_material: f64,
+    #[serde(default = "default_lr_mobility")]
+    pub lr_mobility: f64,
+    #[serde(default = "default_one")]
+    pub lr_other: f64,
     /// Fixed RNG seed for deterministic batch ordering. When None (default), the seed
     /// is randomly generated at startup. Set to any u64 for reproducible training runs.
     #[serde(default)]
@@ -175,6 +184,18 @@ fn default_freeze_threshold() -> f64 {
 }
 fn default_freeze_consecutive() -> usize {
     2
+}
+
+fn default_one() -> f64 {
+    1.0
+}
+
+fn default_lr_material() -> f64 {
+    0.3
+}
+
+fn default_lr_mobility() -> f64 {
+    0.5
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -260,6 +281,10 @@ impl Default for TunerConfig {
                 freeze_consecutive: 2,
                 volatility_threshold: 0,
                 volatility_adaptive: true,
+                lr_psqt: 1.0,
+                lr_material: 0.3,
+                lr_mobility: 0.5,
+                lr_other: 1.0,
             },
             searchtune: SearchTuneConfig {
                 population_scale: 2.0,

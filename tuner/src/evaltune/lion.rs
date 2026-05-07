@@ -71,22 +71,23 @@ impl Lion {
         decay_mask: &[f64],
         fixed_mask: &[bool],
         beta2: &[f64],
+        lr_mask: &[f64],
     ) {
         debug_assert_eq!(params.len(), momentum.len());
         debug_assert_eq!(params.len(), gradients.len());
         debug_assert_eq!(params.len(), decay_mask.len());
         debug_assert_eq!(params.len(), fixed_mask.len());
         debug_assert_eq!(params.len(), beta2.len());
-
+        debug_assert_eq!(params.len(), lr_mask.len());
         for i in 0..params.len() {
             if fixed_mask[i] {
                 continue;
             }
-
             let p = params[i];
             let m = momentum[i];
             let g = gradients[i];
             let d = decay_mask[i];
+            let eff_lr = self.lr * lr_mask[i];
 
             // 1. Interpolation: c = β₁ · m + (1 - β₁) · g
             let c = self.interp.mul_add(m, (1.0 - self.interp) * g);
@@ -111,14 +112,13 @@ impl Lion {
             // Validated neutral-ish at SPRT (−0.67 ± 5.39 Elo, 8240 games).
             // <https://asylum.red/test/4378/>
             // Probably revisit at NNUE scale.
-            let decayed = self.lr.mul_add(-self.wd * d * p, p);
+            let decayed = eff_lr.mul_add(-self.wd * d * p, p);
             let updated = if c.abs() < 1e-9 {
                 decayed
             } else if m.signum() != g.signum() && m.abs() > 1e-6 {
                 decayed
             } else {
-                let sign = c.signum();
-                decayed - self.lr * sign
+                decayed - eff_lr * c.signum()
             };
 
             // 3. Optional weight clipping
@@ -151,16 +151,19 @@ mod tests {
         let grads_neg = vec![-1.0];
         let opt = Lion::with_clipping(0.9, 1.0, 0.0, -2.0, 2.0);
         let mut momentum_neg = vec![-0.5];
+        let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
 
-        opt.update(&mut params, &mut momentum_neg, &grads_neg, &decay_mask, &fixed_mask, &beta2);
+        let lr_mask = vec![1.0; params.len()];
+        opt.update(&mut params, &mut momentum_neg, &grads_neg, &decay_mask, &fixed_mask, &beta2, &lr_mask);
         assert!((params[0] - 2.0).abs() < 1e-9, "Should be clipped to max: {}", params[0]);
 
         // Test sparse path clipping
         let mut params_sparse = vec![10.0];
         let mut momentum_sparse = vec![0.0];
         let grads_sparse = vec![0.0];
-        opt.update(&mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2);
+        let lr_mask2 = vec![1.0; params_sparse.len()];
+        opt.update(&mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2, &lr_mask2);
         assert!((params_sparse[0] - 2.0).abs() < 1e-9, "Sparse update should still clip: {}", params_sparse[0]);
     }
 
@@ -173,8 +176,9 @@ mod tests {
         let fixed_mask = vec![false];
 
         let opt = Lion::new(0.9, 0.1, 0.0);
+        let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
 
         // c = β₁ · m + (1 - β₁) · g = 0.9 · 0.0 + 0.1 · 0.0 = 0 :p
         assert!((params[0] - 100.0).abs() < 0.01, "No clipping: {}", params[0]);
@@ -191,8 +195,9 @@ mod tests {
 
         // lr=1.0, wd=0.05, d=1.0 → decay = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
         let opt = Lion::new(0.9, 1.0, 0.05);
+        let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
 
         let expected = 10.0 - 0.5;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
@@ -211,8 +216,9 @@ mod tests {
         // sign update = 0.2 · sign(0.1) = 0.2
         // net: 1.0 - 0.001 - 0.2 = 0.799
         let opt = Lion::new(0.9, 0.2, 0.01);
+        let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
 
         let expected = 1.0 - 0.001 - 0.2;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
@@ -230,8 +236,9 @@ mod tests {
         // c = 0.9·0.5 + 0.1·(-1.0) = 0.45 - 0.1 = 0.35 > 0 → would normally update
         // but m.signum() ≠ g.signum() → skip sign step
         let opt = Lion::new(0.9, 0.1, 0.0);
+        let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
 
         // No weight decay (wd=0, d=1.0), sign update skipped → no change.
         assert!((params[0] - 5.0).abs() < 1e-9, "Expected no change, got {}", params[0]);
