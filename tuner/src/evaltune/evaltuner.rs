@@ -11,7 +11,7 @@ use soul::{
     tools::dataset::FeatureSlots,
 };
 
-use super::{lion::Lion, loader, report::*, storage::*, tape, training::*};
+use super::{lion::Lion, loader, report::*, storage::*, training::*};
 use crate::core::{
     config::{EvalTuneConfig, LrScheduleConfig},
     logger::JsonLogger,
@@ -69,7 +69,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     }
     println!("Total positions: \x1b[32m{}\x1b[0m", all_entries.len());
 
-    run_encoded_with_entries(all_entries, config, resume_path);
+    train_entries(all_entries, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n\x1b[93mDone in {elapsed:.2}s\x1b[0m");
@@ -88,22 +88,7 @@ unsafe fn enable_ftz_daz() {
     }
 }
 
-/// Training loop for the `.soul.zst` encoded dataset path.
-///
-/// Encoded entries carry pre-computed features — no attack generation or board
-/// analysis at training time. Uses `TrainableEntry` trait dispatch for gradient
-/// computation.
-fn run_encoded(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&str>) {
-    let mut entries = Vec::new();
-    for path in paths {
-        println!("Loading encoded dataset: {path}");
-        let mut file_entries = loader::load_encoded(path).expect("Failed to load .soul dataset");
-        entries.append(&mut file_entries);
-    }
-    run_encoded_with_entries(entries, config, resume_path);
-}
-
-fn run_encoded_with_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
+fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
 
     fastrand::shuffle(&mut entries);
 
@@ -121,25 +106,11 @@ fn run_encoded_with_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTu
     let train_count = entries.len() - val_count;
     let (train, val) = entries.split_at(train_count);
 
-    // W/D/L breakdown over the full dataset (white-relative)
-    let (ww, bw, dr) = entries.iter().fold((0, 0, 0), |(w, b, d), entry| {
-        let stm_white = (entry.stm_and_ep & 0x80) == 0;
-        let r = entry.result;
-        let white_result = if stm_white { r } else { 2 - r };
-
-        if white_result >= 2 {
-            (w + 1, b, d)
-        } else if white_result == 0 {
-            (w, b + 1, d)
-        } else {
-            (w, b, d + 1)
-        }
+    print_dataset_stats(train, val, entries.len(), |e: &loader::SoulEntry| {
+        let stm_white = (e.stm_and_ep & 0x80) == 0;
+        let r = f64::from(e.result) / 2.0;
+        if stm_white { r } else { 1.0 - r }
     });
-
-    println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", entries.len(), train.len(), val.len());
-    println!("  White wins: \x1b[32m{ww}\x1b[0m");
-    println!("  Black wins: \x1b[32m{bw}\x1b[0m");
-    println!("  Draws:      \x1b[32m{dr}\x1b[0m");
 
     // Shared reference for the closure captures below.
     // `train` and `slots` are parallel arrays indexed by the same subscript.
@@ -209,92 +180,7 @@ fn run_encoded_with_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTu
 /// Computes full mobility, king safety, and zone defense from scratch for each position.
 /// Uses `eval_linear_grad` for direct gradient extraction — exploiting the eval's linearity
 /// to compute feature coefficients directly instead of propagating gradient arrays.
-fn run_raw(paths: &[String], config: &EvalTuneConfig, resume_path: Option<&str>) {
-    let mut entries = Vec::new();
-    for path in paths {
-        println!("Loading:    \x1b[33m{path}\x1b[0m");
-        match loader::load_epd(path) {
-            Ok(e) => entries.extend(e),
-            Err(e) => {
-                eprintln!("\x1b[31mFailed: {e}\x1b[0m");
-                return;
-            },
-        }
-    }
 
-    if config.wdl_schedule.is_active() {
-        println!("\x1b[93m[!] Warning: WDL blend > 0.0 requested on raw dataset.\x1b[0m");
-        println!("\x1b[93m    Raw EPD entries lack search scores; blend will be ignored.\x1b[0m");
-    }
-
-    fastrand::shuffle(&mut entries);
-
-    let val_count = entries.len() / 10;
-    let train_count = entries.len() - val_count;
-    let (train, val) = entries.split_at(train_count);
-
-    print_dataset_stats(train, val, entries.len(), |e| e.result);
-
-    // Batch gradient closure: uses eval_linear_grad (exploits eval linearity)
-    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
-        let reduce_res = batch_indices
-            .par_chunks(256)
-            .fold(
-                || (vec![0.0; values.len()], 0.0),
-                |(mut g, mut loss), chunk| {
-                    for &i in chunk {
-                        let entry = &train[i];
-                        let target = entry.target(k, blend);
-                        let sq_err = tape::eval_linear_grad(&entry.board, values, target, k, &mut g);
-                        loss += sq_err;
-                    }
-                    (g, loss)
-                },
-            )
-            .reduce(|| (vec![0.0; values.len()], 0.0), grad_combine);
-
-        reduce_res.pipe_grads(grads)
-    };
-
-    // Validation eval closure
-    let val_eval = |values: &[f64], k: f64, _: f64| -> f64 {
-        val.par_iter()
-            .map(|e: &loader::Entry| {
-                let score = e.eval(values);
-                let sig = sigmoid(score, k);
-                let target = e.target(k, 0.0);
-                let err = sig - target;
-                err * err
-            })
-            .sum::<f64>()
-            / val.len() as f64
-    };
-
-    // ── Sanity check: Split-Brain Gradient Trap ──
-    //
-    // Verifies that the optimized linear gradient extraction (tape::eval_linear_grad)
-    // matches the reference dual-number fused evaluation (tape::eval_dual_fused).
-    //
-    // If these drift, the eval logic in src/engine/eval.rs and the gradient logic
-    // in tuner/src/evaltune/tape.rs have diverged — fixing it then is mandatory.
-    let all_params = eval_params::collect_parameters();
-    let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
-
-    for entry in train.iter().take(10) {
-        let target = entry.target(1.0, 0.0);
-        let mut linear_g = vec![0.0; default_values.len()];
-        let mut dual_g = vec![0.0; default_values.len()];
-
-        tape::eval_linear_grad(&entry.board, &default_values, target, 1.0, &mut linear_g);
-        tape::eval_dual_fused(&entry.board, &default_values, target, 1.0, &mut dual_g);
-
-        for (i, (lin, dual)) in linear_g.iter().zip(dual_g.iter()).enumerate() {
-            assert!((lin - dual).abs() < 1e-4, "Gradient drift detected at index {}! linear: {}, dual: {}", i, lin, dual);
-        }
-    }
-
-    train_loop(train.len(), "Raw (full attack gen)", config, resume_path, batch_grad, val_eval);
-}
 
 // ──────── Shared training infrastructure ────────
 
@@ -321,25 +207,15 @@ fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Ve
 }
 
 fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
-    let train_count = train.len();
-    let val_count = val.len();
-    println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", total, train_count, val_count);
+    println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", total, train.len(), val.len());
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
-        if (r - 1.0).abs() < 1e-4 {
-            (w + 1, b, d)
-        } else if r.abs() < 1e-4 {
-            (w, b + 1, d)
-        } else {
-            (w, b, d + 1)
-        }
+        if (r - 1.0).abs() < 1e-4 { (w + 1, b, d) } else if r.abs() < 1e-4 { (w, b + 1, d) } else { (w, b, d + 1) }
     });
     println!("  White wins: \x1b[32m{ww}\x1b[0m");
     println!("  Black wins: \x1b[32m{bw}\x1b[0m");
     println!("  Draws:      \x1b[32m{dr}\x1b[0m");
-
-    assert!(!train.is_empty(), "Dataset cannot be empty!");
 }
 
 /// ── Shared training loop ──
