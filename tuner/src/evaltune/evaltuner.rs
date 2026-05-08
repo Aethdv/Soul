@@ -87,7 +87,9 @@ unsafe fn enable_ftz_daz() {
 }
 
 fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
-    fastrand::shuffle(&mut entries);
+    let rng_seed = config.seed.unwrap_or_else(|| fastrand::u64(..));
+    let mut rng = fastrand::Rng::with_seed(rng_seed);
+    rng.shuffle(&mut entries);
 
     // Populate cached features at startup: reconstruct a Position from each
     // nibble-encoded entry, compute mobility / king safety / x-ray, and store
@@ -187,7 +189,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
             / val.len() as f64
     };
 
-    train_loop(train.len(), "Encoded (feature cache)", config, resume_path, batch_grad, val_eval);
+    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, batch_grad, val_eval);
 }
 
 // ──────── Shared training infrastructure ────────
@@ -240,6 +242,7 @@ fn train_loop<G, V>(
     mode_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
+    rng_seed: u64,
     batch_grad: G,
     val_eval: V,
 ) where
@@ -249,11 +252,10 @@ fn train_loop<G, V>(
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
 
-    let (start_epoch, mut lr_scale, mut values, mut momentum, rng_seed) = resume_path.map_or_else(
+    let (start_epoch, mut lr_scale, mut values, mut momentum) = resume_path.map_or_else(
         || {
             let momentum = vec![0.0; default_values.len()];
-            let seed = config.seed.unwrap_or_else(|| fastrand::u64(..));
-            (1, 1.0_f64, default_values.clone(), momentum, seed)
+            (1, 1.0_f64, default_values.clone(), momentum)
         },
         |path| {
             println!("Resuming from checkpoint: \x1b[33m{path}\x1b[0m");
@@ -261,7 +263,7 @@ fn train_loop<G, V>(
                 eprintln!("Failed to load checkpoint: {e}");
                 std::process::exit(1);
             });
-            (data.epoch, data.lr_scale, data.values, data.momentum, data.rng_seed)
+            (data.epoch, data.lr_scale, data.values, data.momentum)
         },
     );
 
