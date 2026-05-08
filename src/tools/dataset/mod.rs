@@ -14,7 +14,6 @@ mod quant;
 
 pub use gradient::{FeatureSlots, accumulate_gradient_cached, eval_soul_cached};
 pub use io::{MAGIC_V5, MAGIC_V6, append_encoded, load_encoded, parse_epd_entry, parse_epd_str, save_encoded};
-pub use quant::compute_openness_factors;
 
 /// 32-byte entry — minimal ground truth: board state + labels.
 ///

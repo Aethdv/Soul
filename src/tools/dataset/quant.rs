@@ -12,7 +12,6 @@ use crate::{
         board::Position,
         defs::{Color, PieceType, Square},
     },
-    engine::mobility::{OPEN_UNITY, compute_openness_raw},
     tools::dataset::SoulEntry,
 };
 
@@ -192,34 +191,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     }
     fen.push_str(" 0 1");
     fen
-}
-
-/// Positional openness from a nibble-encoded entry.
-/// Returns `(openness, closedness)` where `closedness = 1.0 - openness`.
-pub fn compute_openness_factors(entry: &SoulEntry) -> (f64, f64) {
-    let mut white_pawns = 0u64;
-    let mut black_pawns = 0u64;
-    let mut occ = entry.occupancy;
-    let mut idx = 0usize;
-
-    while occ != 0 {
-        let sq = occ.trailing_zeros() as u8;
-        occ &= occ - 1;
-        let nibble = next_nibble(&entry.pieces, &mut idx);
-
-        if (nibble & 0x07) == 0 {
-            let bit = 1u64 << sq;
-            if (nibble & 0x08) != 0 {
-                black_pawns |= bit;
-            } else {
-                white_pawns |= bit;
-            }
-        }
-    }
-
-    let open_i32 = compute_openness_raw(white_pawns, black_pawns);
-    let openness = f64::from(open_i32) / f64::from(OPEN_UNITY);
-    (openness, 1.0 - openness)
 }
 
 #[inline]
