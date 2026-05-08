@@ -118,27 +118,30 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     let vol_adaptive = config.volatility_adaptive;
     let loss_fn = config.loss;
 
-    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> f64 {
+    let passes_vol_filter = |entry: &loader::SoulEntry, static_eval: i16| -> bool {
+        if vol_threshold == 0 || entry.score == i16::MAX {
+            return true;
+        }
+        let t = if vol_adaptive {
+            let short = 10i16.saturating_sub(entry.occupancy.count_ones() as i16);
+            vol_threshold + short.saturating_mul(2)
+        } else {
+            vol_threshold
+        };
+        (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
+    };
+
+    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> (f64, usize) {
         let reduce_res = batch_indices
             .par_chunks(256)
             .fold(
-                || (vec![0.0; values.len()], 0.0),
-                |(mut g, mut loss), chunk| {
+                || (vec![0.0; values.len()], 0.0, 0usize),
+                |(mut g, mut loss, mut count), chunk| {
                     for &i in chunk {
                         let entry = &train[i];
 
-                        if vol_threshold > 0 && entry.score != i16::MAX {
-                            let threshold = if vol_adaptive {
-                                let pieces = entry.occupancy.count_ones();
-                                let short = 10i16.saturating_sub(pieces as i16);
-                                vol_threshold + short.saturating_mul(2)
-                            } else {
-                                vol_threshold
-                            };
-                            let delta = (i32::from(slots_ref.static_eval[i]) - i32::from(entry.score)).abs();
-                            if delta > threshold as i32 {
-                                continue;
-                            }
+                        if !passes_vol_filter(entry, slots_ref.static_eval[i]) {
+                            continue;
                         }
 
                         let target = entry.target(k, blend);
@@ -159,35 +162,51 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                                 loader::accumulate_gradient_cached(entry, slots_ref, i, values, d, &mut g);
                             },
                         }
+                        count += 1;
                     }
-                    (g, loss)
+                    (g, loss, count)
                 },
             )
-            .reduce(|| (vec![0.0; values.len()], 0.0), grad_combine);
+            .reduce(
+                || (vec![0.0; values.len()], 0.0, 0usize),
+                |(g1, l1, c1), (g2, l2, c2)| {
+                    let (g, l) = grad_combine((g1, l1), (g2, l2));
+                    (g, l, c1 + c2)
+                },
+            );
 
         reduce_res.pipe_grads(grads)
     };
 
     let val_eval = |values: &[f64], k: f64, blend: f64| -> f64 {
-        val.par_iter()
+        let (sum, count) = val
+            .par_iter()
             .enumerate()
-            .map(|(idx, entry): (usize, &loader::SoulEntry)| {
-                let score = loader::eval_soul_cached(entry, slots_ref, train_count + idx, values);
-                let sig = sigmoid(score, k);
-                let target = entry.target(k, blend);
-                match loss_fn {
-                    LossFn::CrossEntropy => {
-                        let s = sig.clamp(1e-7, 1.0 - 1e-7);
-                        -(target * s.ln() + (1.0 - target) * (1.0 - s).ln())
-                    },
-                    LossFn::Mse => {
-                        let err = sig - target;
-                        err * err
-                    },
-                }
-            })
-            .sum::<f64>()
-            / val.len() as f64
+            .fold(
+                || (0.0_f64, 0usize),
+                |(mut sum, mut count), (idx, entry): (usize, &loader::SoulEntry)| {
+                    if !passes_vol_filter(entry, slots_ref.static_eval[train_count + idx]) {
+                        return (sum, count);
+                    }
+                    let score = loader::eval_soul_cached(entry, slots_ref, train_count + idx, values);
+                    let sig = sigmoid(score, k);
+                    let target = entry.target(k, blend);
+                    match loss_fn {
+                        LossFn::CrossEntropy => {
+                            let s = sig.clamp(1e-7, 1.0 - 1e-7);
+                            sum -= target * s.ln() + (1.0 - target) * (1.0 - s).ln();
+                        },
+                        LossFn::Mse => {
+                            let err = sig - target;
+                            sum = err.mul_add(err, sum);
+                        },
+                    }
+                    count += 1;
+                    (sum, count)
+                },
+            )
+            .reduce(|| (0.0_f64, 0usize), |(s1, c1), (s2, c2)| (s1 + s2, c1 + c2));
+        if count > 0 { sum / count as f64 } else { 0.0 }
     };
 
     train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, batch_grad, val_eval);
@@ -197,16 +216,16 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 
 /// Scatter rayon-reduced gradients into the caller's accumulator.
 trait PipeGrads {
-    fn pipe_grads(self, out: &mut [f64]) -> f64;
+    fn pipe_grads(self, out: &mut [f64]) -> (f64, usize);
 }
 
-impl PipeGrads for (Vec<f64>, f64) {
-    fn pipe_grads(self, out: &mut [f64]) -> f64 {
-        let (grads, loss) = self;
+impl PipeGrads for (Vec<f64>, f64, usize) {
+    fn pipe_grads(self, out: &mut [f64]) -> (f64, usize) {
+        let (grads, loss, count) = self;
         for (o, g) in out.iter_mut().zip(grads.iter()) {
             *o += g;
         }
-        loss
+        (loss, count)
     }
 }
 
@@ -247,7 +266,7 @@ fn train_loop<G, V>(
     batch_grad: G,
     val_eval: V,
 ) where
-    G: Fn(&[usize], &[f64], f64, f64, &mut [f64]) -> f64,
+    G: Fn(&[usize], &[f64], f64, f64, &mut [f64]) -> (f64, usize),
     V: Fn(&[f64], f64, f64) -> f64,
 {
     let all_params = eval_params::collect_parameters();
@@ -397,15 +416,17 @@ fn train_loop<G, V>(
         rng.shuffle(&mut indices);
 
         let mut train_loss = 0.0;
+        let mut train_count = 0usize;
         let mut total_grads = vec![0.0; values.len()];
 
         for batch in indices.chunks(config.batch_size) {
             let mut grads = vec![0.0; values.len()];
-            let batch_loss = batch_grad(batch, &values, k, blend, &mut grads);
+            let (batch_loss, batch_count) = batch_grad(batch, &values, k, blend, &mut grads);
 
             train_loss += batch_loss;
+            train_count += batch_count;
 
-            let n = batch.len() as f64;
+            let n = batch_count.max(1) as f64;
             let norm: f64 = grads.iter().map(|g| g * g).sum::<f64>().sqrt();
             let avg_norm = norm / n;
 
@@ -477,7 +498,7 @@ fn train_loop<G, V>(
 
         let val_loss = val_eval(&ema_values, k, blend);
         let ref_loss = val_eval(&ema_values, k_ref, 0.0);
-        let train_loss = train_loss / train_len as f64;
+        let train_loss = train_loss / train_count.max(1) as f64;
 
         // ── Validation Plateau Detection ──
         // Reduce LR if validation loss stalls for Constant schedule.
