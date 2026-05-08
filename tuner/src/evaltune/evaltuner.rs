@@ -178,11 +178,11 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                     LossFn::CrossEntropy => {
                         let s = sig.clamp(1e-7, 1.0 - 1e-7);
                         -(target * s.ln() + (1.0 - target) * (1.0 - s).ln())
-                    }
+                    },
                     LossFn::Mse => {
                         let err = sig - target;
                         err * err
-                    }
+                    },
                 }
             })
             .sum::<f64>()
