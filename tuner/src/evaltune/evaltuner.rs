@@ -130,7 +130,8 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                         if vol_threshold > 0 && entry.score != i16::MAX {
                             let threshold = if vol_adaptive {
                                 let pieces = entry.occupancy.count_ones();
-                                vol_threshold + (pieces.saturating_sub(10) as i16).saturating_mul(2)
+                                let short = 10i16.saturating_sub(pieces as i16);
+                                vol_threshold + short.saturating_mul(2)
                             } else {
                                 vol_threshold
                             };
