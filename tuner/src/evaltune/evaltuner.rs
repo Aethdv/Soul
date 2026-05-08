@@ -172,8 +172,16 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                 let score = loader::eval_soul_cached(entry, slots_ref, train_count + idx, values);
                 let sig = sigmoid(score, k);
                 let target = entry.target(k, blend);
-                let err = sig - target;
-                err * err
+                match loss_fn {
+                    LossFn::CrossEntropy => {
+                        let s = sig.clamp(1e-7, 1.0 - 1e-7);
+                        -(target * s.ln() + (1.0 - target) * (1.0 - s).ln())
+                    }
+                    LossFn::Mse => {
+                        let err = sig - target;
+                        err * err
+                    }
+                }
             })
             .sum::<f64>()
             / val.len() as f64
