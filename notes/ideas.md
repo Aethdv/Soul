@@ -1,24 +1,5 @@
 ## Worth Trying.
 
-### Lion LR Partitioning
-
-Scale LR per parameter group by update frequency.
-Dense groups — updated on every position — get `lr * 0.1`; sparse PSQT gets full `lr`.
-
-Lion's uniform step is quietly wrong for heterogeneous update frequencies, and this is the simplest fix that doesn't involve gating math or cossim.
-Just a multiplier in the group config. Not tested yet — feels like it should matter, but I've been wrong about that before.
-
----
-
-### Volatility Filter (training-time position skipping)
-
-Adaptive `|static_eval − search_eval|` threshold at training time; position gets skipped if delta exceeds threshold, threshold scales with piece count.
-Filters out positions where search diverges wildly from static eval — probably mostly tactical chaos, which is noise for an HCE tuner anyway.
-
-V6 SoulEntry doesn't store `static_eval`, so.. re-compute during feature extraction pass. Annoying but not hard.
-
----
-
 ### Eval-Derived Outcome Classification
 
 Random-restart positions all get `result=0.5` right now — blend=1.0 needs to carry everything.
