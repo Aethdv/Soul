@@ -1,8 +1,13 @@
 [evaltune]
 beta1 = 0.9
 beta2 = 0.99
+grad_clip = 1.0
+k_min = 0.003
+k_max = 0.010
+
+# Weight Decay prevents parameter drift under Lion's uniform sign-step.
+# lr × wd = 3e-7 per step; bump by 2-3× only when params drift significantly from their starting values over training.
 weight_decay = 0.00001
-loss = "mse" # cross_entropy
 
 # positions / batch_size → ~100 u/epoch (80-150 all identical for HCE; Lion's uniform step + near-convex surface saturate quickly)
 #
@@ -15,9 +20,8 @@ loss = "mse" # cross_entropy
 batch_size = 65536
 
 epochs = 2000
-grad_clip = 1.0
-k_min = 0.003
-k_max = 0.010
+loss = "mse" # cross_entropy
+
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
 
