@@ -241,7 +241,7 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     }
 
     let xray_offset = psqt::LAYOUT.xray_offset;
-    score += f64::from(slots.xray_ortho[idx]) * values[xray_offset];
+    score += f64::from(slots.xray_ortho[idx]) * values[xray_offset] * mg_w;
 
     let bp_offset = psqt::LAYOUT.bishop_pair_offset;
     let bp = f64::from(slots.bishop_pair[idx]);
