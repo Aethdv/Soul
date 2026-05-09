@@ -17,9 +17,9 @@ weight_decay = 0.00001
 # 15M        131,072   114
 # 26M        262,144   100
 # 52M        524,288   100
-batch_size = 262144
+batch_size = 32768
 
-epochs = 800
+epochs = 2000
 loss = "mse" # cross_entropy
 
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
