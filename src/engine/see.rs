@@ -1,72 +1,43 @@
 //! Static Exchange Evaluation.
 //!
-//! `see_ge(pos, mv, threshold)` answers, in time linear in the number of
-//! attackers on a single square: *if both sides trade optimally on the
-//! destination square of `mv`, will the moving side's net material be at
-//! least `threshold`?*
+//! `see_ge(pos, mv, threshold)` answers in time linear in the attacker
+//! count: will the moving side net at least `threshold` material if both
+//! sides recapture optimally on `mv`'s destination?
 //!
-//! Used in qsearch to prune losing captures, and available to main search
-//! for the good/bad-capture split, SEE pruning, and ProbCut filtering.
+//! Used in qsearch to prune losing captures; available to main search for
+//! the good/bad-capture split, SEE pruning, and ProbCut.
 //!
-//! # Design
+//! # Notes
 //!
-//! * **Negamax in place.** One `balance` integer whose perspective flips
-//!   on every recapture — no scratch array, no post-loop minimax pass.
-//!   `balance` always represents "what the side to move still needs to
-//!   gain to beat the previous player's outcome"; a non-positive value
-//!   means they can't improve and the chain terminates.
-//!
-//! * **Match on move type at the entry.** Captures, en passant,
-//!   promotions, and castling have distinct initial-balance setups. A
-//!   single branch up front makes each variant's cost explicit, and all
-//!   variants then share the same exchange loop.
-//!
-//! * **King = 0 material sentinel.** The king can never be captured, so
-//!   it has no SEE material value. Its role is a post-loop safety check:
-//!   if a king would be the capturing piece while the opposing side still
-//!   has any attacker on the square, the capture is illegal (moving into
-//!   check) and the chain stops short with the previous side's net intact.
-//!   Cleaner than a magic "10000" sentinel that has to be big enough to
-//!   dominate every real trade.
-//!
-//! * **Hardcoded piece values.** SEE is a correctness boundary, not an
-//!   evaluation signal. A wrong SEE is worse than no SEE, so these values
-//!   are intentionally independent of `eval_params` and untouchable by the tuner.
-//!
-//! * **`us` flip-bool.** Rather than tracking perspective through parity
-//!   counts, a single bool flipped at the end of every iteration encodes
-//!   "has control of the trade flipped away from the caller an odd number
-//!   of times?". Each exit path then returns either `us` or `!us` with no
-//!   arithmetic. The asymmetric break-check `balance < us as i32` encodes
-//!   the tie-break rule: when `us=false`, a zero-net recapture is played
-//!   (break-even is fine); when `us=true`, it isn't (break-even means the
-//!   opponent passes and the caller keeps the prior gain).
+//! One `balance` integer, perspective-flipped per recapture — no scratch
+//! array, no post-loop minimax pass. Move type is dispatched once at
+//! entry; captures, en passant, promotions, and castling each set their
+//! own initial balance before sharing the exchange loop. The king carries
+//! zero material: if it would capture while an opponent attacker remains,
+//! the chain stops short — illegal recapture, not a trade. A `us` bool
+//! tracks who owns the trade; when flipped, break-even isn't good enough.
 
-use crate::core::{
-    board::{
-        Position,
-        attacks::all_attackers_to,
-        bitboard::{atk_bishop, atk_rook},
+use crate::{
+    core::{
+        board::{
+            Position,
+            attacks::all_attackers_to,
+            bitboard::{atk_bishop, atk_rook},
+        },
+        defs::{Bitboard, PieceType, Square},
+        moves::Move,
     },
-    defs::{Bitboard, PieceType, Square},
-    moves::Move,
+    engine::eval_params::MG_MATERIAL,
 };
 
-/// Hardcoded material values for SEE. Same vanilla as the rest of Soul —
-/// one table, one concept, nothing to keep in sync with `eval_params`
-/// because the tuner can't touch either. Kept deliberately *simple*: if
-/// and when an SPRT shows N/B or R/Q deltas are worth a few Elo here, the
-/// one-line edit lives in exactly this block.
-/// `King = 0` because the king is never captured; its participation is
-/// governed by the post-loop safety check.
+/// `King = 0` because the king is never captured.
 const SEE_VALUE: [i32; 8] = {
     let mut v = [0i32; 8];
-    v[PieceType::Pawn.as_usize()] = 100;
-    v[PieceType::Knight.as_usize()] = 300;
-    v[PieceType::Bishop.as_usize()] = 300;
-    v[PieceType::Rook.as_usize()] = 500;
-    v[PieceType::Queen.as_usize()] = 900;
-    // King intentionally left at 0 — see module docs.
+    v[PieceType::Pawn.as_usize()] = MG_MATERIAL[0];
+    v[PieceType::Knight.as_usize()] = MG_MATERIAL[1];
+    v[PieceType::Bishop.as_usize()] = MG_MATERIAL[2];
+    v[PieceType::Rook.as_usize()] = MG_MATERIAL[3];
+    v[PieceType::Queen.as_usize()] = MG_MATERIAL[4];
     v
 };
 

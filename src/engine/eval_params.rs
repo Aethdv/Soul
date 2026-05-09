@@ -428,12 +428,12 @@ define_psqt_params! {
 }
 define_simple_params! {
     MATERIAL = [
-         CS( 100,  100), // Pawn
-         CS( 300,  300), // Knight
-         CS( 300,  300), // Bishop
-         CS( 500,  500), // Rook
-         CS( 900,  900), // Queen
-         CS(   0,    0), // King
+         S( 100,  100), // Pawn
+         S( 300,  300), // Knight
+         S( 300,  300), // Bishop
+         S( 500,  500), // Rook
+         S( 900,  900), // Queen
+         S(   0,    0), // King
     ],
 }
 define_simd_params! {
