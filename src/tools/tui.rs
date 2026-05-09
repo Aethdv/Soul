@@ -98,12 +98,13 @@ pub fn fmt_nps(nps: u64) -> String {
     }
 }
 
-pub fn fmt_score_uci(score: i32) -> String {
-    if score.abs() > MATE_BOUND {
-        let mate_in = if score > 0 { (MATE - score + 1) / 2 } else { -(MATE + score + 1) / 2 };
+pub fn fmt_score_uci(score: i32, stm: usize) -> String {
+    let ws = if stm == 1 { -score } else { score };
+    if ws.abs() > MATE_BOUND {
+        let mate_in = if ws > 0 { (MATE - ws + 1) / 2 } else { -(MATE + ws + 1) / 2 };
         format!("mate {mate_in}")
     } else {
-        format!("cp {score}")
+        format!("cp {ws}")
     }
 }
 
@@ -440,7 +441,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             "info depth {} seldepth {} score {}{} nodes {} nps {} time {} hashfull {} pv",
             data.depth,
             data.sel_depth,
-            fmt_score_uci(data.score),
+            fmt_score_uci(data.score, data.stm),
             wdl_str,
             data.nodes,
             data.nps,
