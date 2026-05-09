@@ -17,9 +17,9 @@ weight_decay = 0.00001
 # 15M        131,072   114
 # 26M        262,144   100
 # 52M        524,288   100
-batch_size = 65536
+batch_size = 32768
 
-epochs = 2000
+epochs = 4000
 loss = "mse" # mse
 
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
@@ -36,7 +36,7 @@ lr_other = 1.0
 type = "sd"
 base = 0.03
 min = 0.0001
-stable_ratio = 0.5
+stable_ratio = 0.75
 
 # type = "cosine"
 # base = 0.1
