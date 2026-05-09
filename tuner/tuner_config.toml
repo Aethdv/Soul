@@ -17,12 +17,12 @@ weight_decay = 0.00001
 # 15M        131,072   114
 # 26M        262,144   100
 # 52M        524,288   100
-batch_size = 32768
+batch_size = 262144
 
 epochs = 2000
 loss = "cross_entropy" # mse
 
-volatility_threshold = 140 # skip positions where |static - search| exceeds threshold (cp).
+volatility_threshold = 200 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
 
 # Per-group LR multipliers for Lion sign-step.
