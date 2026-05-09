@@ -20,7 +20,7 @@ weight_decay = 0.00001
 batch_size = 65536
 
 epochs = 2000
-loss = "cross_entropy" # mse
+loss = "mse" # mse
 
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
@@ -29,7 +29,7 @@ volatility_adaptive = true # scales with piece count.
 # at 1.0 full LR
 lr_psqt = 1.0
 lr_material = 1.0
-lr_mobility = 0.7
+lr_mobility = 1.0
 lr_other = 1.0
 
 [evaltune.lr_schedule]
