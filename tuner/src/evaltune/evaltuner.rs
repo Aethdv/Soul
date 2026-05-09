@@ -47,7 +47,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
             println!("Loading encoded dataset: {path}");
             let mut file_entries = loader::load_encoded(path).expect("Failed to load .soul dataset");
             all_entries.append(&mut file_entries);
-        } else if path.ends_with(".viri") {
+        } else if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
             match loader::parse_viri_file(path) {
                 Ok(mut viri_entries) => all_entries.append(&mut viri_entries),

@@ -34,7 +34,7 @@ macro_rules! load_or_bail {
 }
 
 fn load_any_dataset(path: &str) -> std::io::Result<Vec<SoulEntry>> {
-    if path.ends_with(".viri") {
+    if path.ends_with(".viri") || path.ends_with(".vf") {
         dataset::parse_viri_file(path)
     } else {
         dataset::load_encoded(path)
