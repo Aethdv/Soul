@@ -11,9 +11,11 @@ pub mod cli;
 mod gradient;
 mod io;
 mod quant;
+pub mod viri_format;
 
 pub use gradient::{FeatureSlots, accumulate_gradient_cached, eval_soul_cached};
 pub use io::{MAGIC_V5, MAGIC_V6, append_encoded, load_encoded, parse_epd_entry, parse_epd_str, save_encoded};
+pub use viri_format::parse_viri_file;
 
 /// 32-byte entry — minimal ground truth: board state + labels.
 ///

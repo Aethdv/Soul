@@ -19,11 +19,11 @@ use crate::{
 const SEP_THICK: &str = unsafe { std::str::from_utf8_unchecked(&[b'='; 80]) };
 const SEP_THIN: &str = unsafe { std::str::from_utf8_unchecked(&[b'-'; 80]) };
 
-/// Loads a dataset or prints the error and returns from the caller.
+/// Loads a dataset (Soul binary or viriformat) or prints the error and returns.
 /// Must be a macro — a function's `return` can't unwind a foreign scope.
 macro_rules! load_or_bail {
     ($path:expr) => {
-        match dataset::load_encoded($path) {
+        match load_any_dataset($path) {
             Ok(entries) => entries,
             Err(e) => {
                 eprintln!("Error loading dataset: {e}");
@@ -31,6 +31,14 @@ macro_rules! load_or_bail {
             },
         }
     };
+}
+
+fn load_any_dataset(path: &str) -> std::io::Result<Vec<SoulEntry>> {
+    if path.ends_with(".viri") {
+        dataset::parse_viri_file(path)
+    } else {
+        dataset::load_encoded(path)
+    }
 }
 
 /// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
@@ -52,7 +60,11 @@ pub fn run(args: &[&str]) {
         ["encode", input, output, ..] => encode(input, output),
         ["encode", ..] => eprintln!("Usage: soul dataset encode <input.epd> <output.soul>"),
 
-        ["deltas", path, ..] => dump_scores(path),
+        ["deltas", path, ..] => {
+            for p in path.split(',').map(str::trim) {
+                dump_scores(p);
+            }
+        },
         ["deltas"] => eprintln!("Usage: soul dataset deltas <path>"),
 
         [unknown, ..] => {
