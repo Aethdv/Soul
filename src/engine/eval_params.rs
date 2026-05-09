@@ -133,26 +133,6 @@ macro_rules! define_psqt_params {
                     }
                 )*
 
-                // ── Material params ──
-                for (i, param) in MATERIAL.iter().enumerate() {
-                    params.push(Tunable {
-                        value: param.mg as f64,
-                        name: format!("MG_MATERIAL[{i}]"),
-                        idx: 0,
-                        is_fixed: true,
-                        freeze_resistant: false,
-                    });
-                }
-                for (i, param) in MATERIAL.iter().enumerate() {
-                    params.push(Tunable {
-                        value: param.eg as f64,
-                        name: format!("EG_MATERIAL[{i}]"),
-                        idx: 0,
-                        is_fixed: true,
-                        freeze_resistant: false,
-                    });
-                }
-
                 params
             }
         }
@@ -190,6 +170,33 @@ macro_rules! define_simple_params {
                     ),*
                 ];
             )*
+
+            fn collect_simple_params() -> Vec<Tunable> {
+                let mut params = Vec::new();
+                $(
+                    for (i, param) in $name.iter().enumerate() {
+                        let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
+                        params.push(Tunable {
+                            value: param.mg as f64,
+                            name: format!("MG_{}[{i}]", stringify!($name)),
+                            idx: 0,
+                            is_fixed,
+                            freeze_resistant: false,
+                        });
+                    }
+                    for (i, param) in $name.iter().enumerate() {
+                        let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
+                        params.push(Tunable {
+                            value: param.eg as f64,
+                            name: format!("EG_{}[{i}]", stringify!($name)),
+                            idx: 0,
+                            is_fixed,
+                            freeze_resistant: false,
+                        });
+                    }
+                )*
+                params
+            }
         }
     };
 }
@@ -328,6 +335,12 @@ pub fn collect_parameters() -> Vec<Tunable> {
 
     let psqts = collect_psqt_params();
     for mut p in psqts {
+        p.idx = all.len();
+        all.push(p);
+    }
+
+    let simples = collect_simple_params();
+    for mut p in simples {
         p.idx = all.len();
         all.push(p);
     }
