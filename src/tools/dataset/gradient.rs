@@ -24,6 +24,7 @@ pub struct FeatureSlots {
     pub safety_us: Vec<[u8; 4]>,
     pub safety_them: Vec<[u8; 4]>,
     pub xray_ortho: Vec<i8>,
+    pub bishop_pair: Vec<i8>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -35,6 +36,7 @@ impl FeatureSlots {
             safety_us: Vec::with_capacity(cap),
             safety_them: Vec::with_capacity(cap),
             xray_ortho: Vec::with_capacity(cap),
+            bishop_pair: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -74,6 +76,11 @@ impl FeatureSlots {
         let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
         let stm_xray = if pos.stm == Color::White { xray_val } else { -xray_val };
         self.xray_ortho.push(stm_xray as i8);
+
+        let white_bp = i8::from(pos.pieces(PieceType::Bishop, Color::White).more_than_one());
+        let black_bp = i8::from(pos.pieces(PieceType::Bishop, Color::Black).more_than_one());
+        let bp_diff = white_bp - black_bp;
+        self.bishop_pair.push(if pos.stm == Color::Black { -bp_diff } else { bp_diff });
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
@@ -155,6 +162,11 @@ pub fn accumulate_gradient_cached(
     let xray_offset = psqt::LAYOUT.xray_offset;
     grads[xray_offset] += gradient * f64::from(slots.xray_ortho[idx]) * mg_w;
 
+    let bp_offset = psqt::LAYOUT.bishop_pair_offset;
+    let bp = f64::from(slots.bishop_pair[idx]);
+    grads[bp_offset] += gradient * bp * mg_w;
+    grads[bp_offset + 1] += gradient * bp * eg_w;
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
@@ -230,6 +242,12 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
 
     let xray_offset = psqt::LAYOUT.xray_offset;
     score += f64::from(slots.xray_ortho[idx]) * values[xray_offset];
+
+    let bp_offset = psqt::LAYOUT.bishop_pair_offset;
+    let bp = f64::from(slots.bishop_pair[idx]);
+    let t_phase = f64::from(crate::core::defs::TOTAL_PHASE);
+    let bp_tapered = values[bp_offset] * (mg_w * t_phase) + values[bp_offset + 1] * (eg_w * t_phase);
+    score += (bp_tapered * bp / t_phase).trunc();
 
     score
 }
