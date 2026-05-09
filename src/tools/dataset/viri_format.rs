@@ -1,22 +1,25 @@
 //! Viriformat parser.
 //!
 //! Each file consists of concatenated games. A game is:
-//! - 32-byte PackedBoard header (position + result + initial score)
+//! - 32-byte PackedBoard header (position + result)
 //! - Zero or more (Move, Score) pairs — 4 bytes each (2+2)
 //! - Four-byte zero sentinel
 //!
-//! Training entries are extracted for every position in every game.
+//! Scores in the (Move, Score) pairs are white-relative, converted to
+//! STM-relative on the way into SoulEntry. The header's score field is a
+//! stale placeholder — real evals live in the move pairs.
 
 use std::io::{self, Read};
 
-use crate::core::{
-    board::{Position, WHITE_OO, WHITE_OOO, BLACK_OO, BLACK_OOO, ROOK_W_KS, ROOK_W_QS, ROOK_B_KS, ROOK_B_QS},
-    defs::{Color, PieceType, Square},
-    moves::Move,
-};
-use crate::weave::Vi16x8;
-
 use super::SoulEntry;
+use crate::{
+    core::{
+        board::{BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO},
+        defs::{Color, PieceType, Square},
+        moves::Move,
+    },
+    weave::Vi16x8,
+};
 
 const PACKED_BOARD_SIZE: usize = 32;
 const SENTINEL: [u8; 4] = [0, 0, 0, 0];
@@ -33,18 +36,9 @@ pub fn parse_viri_file(path: &str) -> io::Result<Vec<SoulEntry>> {
         let header = &data[pos..pos + PACKED_BOARD_SIZE];
         pos += PACKED_BOARD_SIZE;
 
-        let Some((mut position, initial_score, game_result)) = parse_packed_board(header) else {
+        let Some((mut position, game_result)) = parse_packed_board(header) else {
             break;
         };
-
-        let stm = position.stm;
-
-        entries.push(SoulEntry::from_board(
-            &position,
-            f64::from(stm_result(game_result, stm)) / 2.0,
-            None,
-            Some(relative_score(initial_score, stm)),
-        ));
 
         loop {
             if pos + 4 > data.len() {
@@ -64,7 +58,6 @@ pub fn parse_viri_file(path: &str) -> io::Result<Vec<SoulEntry>> {
                 break;
             };
 
-            // The score belongs to the position BEFORE the move.
             entries.push(SoulEntry::from_board(
                 &position,
                 f64::from(stm_result(game_result, position.stm)) / 2.0,
@@ -89,26 +82,22 @@ fn relative_score(viri_score: i16, stm: Color) -> i32 {
 /// Convert a white-relative viri result (0=black win, 1=draw, 2=white win)
 /// to an STM-relative result (0=loss, 1=draw, 2=win).
 fn stm_result(viri_result: u8, stm: Color) -> u8 {
-    if stm == Color::Black {
-        2 - viri_result
-    } else {
-        viri_result
-    }
+    if stm == Color::Black { 2 - viri_result } else { viri_result }
 }
 
-fn parse_packed_board(data: &[u8]) -> Option<(Position, i16, u8)> {
+fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
     if data.len() < PACKED_BOARD_SIZE {
         return None;
     }
 
     let occupancy = u64::from_le_bytes(data[0..8].try_into().ok()?);
     let pieces = &data[8..24]; // [u4; 32] packed as [u8; 16]
-    let stm_ep     = data[24];
-    let _halfmove  = data[25];
-    let _fullmove  = u16::from_le_bytes([data[26], data[27]]);
-    let score      = i16::from_le_bytes([data[28], data[29]]);
-    let result     = data[30];
-    let _extra     = data[31];
+    let stm_ep = data[24];
+    let _halfmove = data[25];
+    let _fullmove = u16::from_le_bytes([data[26], data[27]]);
+    let _score = i16::from_le_bytes([data[28], data[29]]);
+    let result = data[30];
+    let _extra = data[31];
 
     if result > 2 {
         return None;
@@ -123,10 +112,10 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, i16, u8)> {
     pos.en_passant = en_passant;
 
     // Set castling-rook home squares for standard chess (FRC handled later).
-    pos.castling_rooks[ROOK_W_KS] = Square(7);   // h1
-    pos.castling_rooks[ROOK_W_QS] = Square(0);   // a1
-    pos.castling_rooks[ROOK_B_KS] = Square(63);  // h8
-    pos.castling_rooks[ROOK_B_QS] = Square(56);  // a8
+    pos.castling_rooks[ROOK_W_KS] = Square(7); // h1
+    pos.castling_rooks[ROOK_W_QS] = Square(0); // a1
+    pos.castling_rooks[ROOK_B_KS] = Square(63); // h8
+    pos.castling_rooks[ROOK_B_QS] = Square(56); // a8
 
     let mut white_king = None;
     let mut black_king = None;
@@ -142,11 +131,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, i16, u8)> {
         if piece_idx >= 32 {
             break;
         }
-        let nibble = if piece_idx.is_multiple_of(2) {
-            pieces[piece_idx / 2] & 0x0F
-        } else {
-            pieces[piece_idx / 2] >> 4
-        };
+        let nibble = if piece_idx.is_multiple_of(2) { pieces[piece_idx / 2] & 0x0F } else { pieces[piece_idx / 2] >> 4 };
         piece_idx += 1;
 
         let viri_type = nibble & 0x07;
@@ -209,13 +194,13 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, i16, u8)> {
 
     // Mark as FRC if any castling rook is off its standard home square.
     pos.is_frc = pos.castling_rooks[ROOK_W_KS] != Square(7)
-              || pos.castling_rooks[ROOK_W_QS] != Square(0)
-              || pos.castling_rooks[ROOK_B_KS] != Square(63)
-              || pos.castling_rooks[ROOK_B_QS] != Square(56);
+        || pos.castling_rooks[ROOK_W_QS] != Square(0)
+        || pos.castling_rooks[ROOK_B_KS] != Square(63)
+        || pos.castling_rooks[ROOK_B_QS] != Square(56);
 
     pos.hash = pos.calc_zobrist();
 
-    Some((pos, score, result))
+    Some((pos, result))
 }
 
 /// Convert a viriformat 16-bit move to a Soul `Move`.
@@ -229,9 +214,9 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, i16, u8)> {
 /// Castling is king-takes-rook (same as Soul's internal encoding).
 fn viri_to_soul_move(viri_move: u16, pos: &Position) -> Option<Move> {
     let from = Square((viri_move & 0x3F) as u8);
-    let to   = Square(((viri_move >> 6) & 0x3F) as u8);
+    let to = Square(((viri_move >> 6) & 0x3F) as u8);
     let promo_piece = (viri_move >> 12) & 0x3;
-    let move_type   = (viri_move >> 14) & 0x3;
+    let move_type = (viri_move >> 14) & 0x3;
 
     if from.0 >= 64 || to.0 >= 64 {
         return None;
@@ -247,10 +232,7 @@ fn viri_to_soul_move(viri_move: u16, pos: &Position) -> Option<Move> {
         0 => {
             if capture {
                 Move::CAPTURE
-            } else if moving_piece == PieceType::Pawn
-                && from.file() == to.file()
-                && from.rank().abs_diff(to.rank()) == 2
-            {
+            } else if moving_piece == PieceType::Pawn && from.file() == to.file() && from.rank().abs_diff(to.rank()) == 2 {
                 Move::DOUBLE_PUSH
             } else {
                 Move::QUIET
