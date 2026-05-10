@@ -27,10 +27,6 @@ pub struct Checkpoint {
     pub rng_seed: u64,
 }
 
-fn default_lr_scale() -> f64 {
-    1.0
-}
-
 /// A frozen parameter snapshot at a specific epoch.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -168,4 +164,8 @@ pub fn update_snapshots(
     }
 
     admitted
+}
+
+fn default_lr_scale() -> f64 {
+    1.0
 }
