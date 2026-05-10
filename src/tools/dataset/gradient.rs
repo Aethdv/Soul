@@ -226,8 +226,7 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let us_attacker_w = values[attacker_offset + us.attackers.min(5)];
     let them_attacker_w = values[attacker_offset + them.attackers.min(5)];
 
-    let safety_diff = us.score(shield_w, ortho_w, diag_w, us_attacker_w)
-                    - them.score(shield_w, ortho_w, diag_w, them_attacker_w);
+    let safety_diff = us.score(shield_w, ortho_w, diag_w, us_attacker_w) - them.score(shield_w, ortho_w, diag_w, them_attacker_w);
     let xray_offset = psqt::LAYOUT.xray_offset;
     let xray_val = f64::from(slots.xray_ortho[idx]) * values[xray_offset];
     let safety_xray = (safety_diff + xray_val) * mg_w;
