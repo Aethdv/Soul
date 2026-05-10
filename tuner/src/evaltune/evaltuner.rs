@@ -92,6 +92,48 @@ unsafe fn enable_ftz_daz() {
     }
 }
 
+/// K line search via golden-section search.
+///
+/// At each step the interval `[lo, hi]` is narrowed by the golden ratio `C ≈ 0.618`.
+/// Two interior probes `a` and `b` are maintained; whichever probe loses becomes the
+/// new boundary, and only one new probe is evaluated per iteration.
+///
+/// `range` tracks the current interval width. The probe offset from each boundary is
+/// `C * range` (not `range`) because after shrinking, the reused probe already sits
+/// at `C²` of the *old* width from the surviving boundary — placing the fresh probe
+/// at `C` of the *new* width mirrors it correctly.
+pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
+    const C: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
+
+    let mut lo = lo;
+    let mut hi = hi;
+    let mut range = hi - lo;
+    let mut a = hi - C * range;
+    let mut b = lo + C * range;
+    let mut fa = eval(a);
+    let mut fb = eval(b);
+
+    while range > tol {
+        if fa < fb {
+            hi = b;
+            range *= C;
+            b = a;
+            fb = fa;
+            a = hi - C * range;
+            fa = eval(a);
+        } else {
+            lo = a;
+            range *= C;
+            a = b;
+            fa = fb;
+            b = lo + C * range;
+            fb = eval(b);
+        }
+    }
+
+    (lo + hi) / 2.0
+}
+
 fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
     let rng_seed = config.seed.unwrap_or_else(|| fastrand::u64(..));
     let mut rng = fastrand::Rng::with_seed(rng_seed);
@@ -648,48 +690,6 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
             writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = frozen_width).ok();
         }
     }
-}
-
-/// K line search via golden-section search.
-///
-/// At each step the interval `[lo, hi]` is narrowed by the golden ratio `C ≈ 0.618`.
-/// Two interior probes `a` and `b` are maintained; whichever probe loses becomes the
-/// new boundary, and only one new probe is evaluated per iteration.
-///
-/// `range` tracks the current interval width. The probe offset from each boundary is
-/// `C * range` (not `range`) because after shrinking, the reused probe already sits
-/// at `C²` of the *old* width from the surviving boundary — placing the fresh probe
-/// at `C` of the *new* width mirrors it correctly.
-pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
-    const C: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
-
-    let mut lo = lo;
-    let mut hi = hi;
-    let mut range = hi - lo;
-    let mut a = hi - C * range;
-    let mut b = lo + C * range;
-    let mut fa = eval(a);
-    let mut fb = eval(b);
-
-    while range > tol {
-        if fa < fb {
-            hi = b;
-            range *= C;
-            b = a;
-            fb = fa;
-            a = hi - C * range;
-            fa = eval(a);
-        } else {
-            lo = a;
-            range *= C;
-            a = b;
-            fa = fb;
-            b = lo + C * range;
-            fb = eval(b);
-        }
-    }
-
-    (lo + hi) / 2.0
 }
 
 fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
