@@ -44,12 +44,6 @@ impl Lion {
         Self { interp, lr, wd, clip: None }
     }
 
-    /// Create Lion with weight clipping enabled.
-    #[must_use]
-    pub const fn with_clipping(interp: f64, lr: f64, wd: f64, min: f64, max: f64) -> Self {
-        Self { interp, lr, wd, clip: Some((min, max)) }
-    }
-
     /// Enable weight clipping on an existing instance.
     #[must_use]
     pub const fn clipped(mut self, min: f64, max: f64) -> Self {
@@ -150,7 +144,7 @@ mod tests {
         let fixed_mask = vec![false];
 
         let grads_neg = vec![-1.0];
-        let opt = Lion::with_clipping(0.9, 1.0, 0.0, -2.0, 2.0);
+        let opt = Lion::new(0.9, 1.0, 0.0).clipped(-2.0, 2.0);
         let mut momentum_neg = vec![-0.5];
         let beta2 = vec![0.99];
 
