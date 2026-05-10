@@ -384,7 +384,7 @@ fn train_loop<G, V>(
         let blend = wdl_scheduler.blend(epoch, config.epochs);
 
         // ── Periodic K factor re-optimization ──
-        if epoch % 500 == 0 {
+        if epoch % 200 == 0 {
             k = find_optimal_k(&ema_values, config, |v, kk| val_eval(v, kk, blend));
             println!("  Reoptimized K: {k:.6}");
             if let Some(ref mut w) = logger {
@@ -648,32 +648,46 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
 }
 
 /// K line search via golden-section search.
+///
+/// At each step the interval `[lo, hi]` is narrowed by the golden ratio `C ≈ 0.618`.
+/// Two interior probes `a` and `b` are maintained; whichever probe loses becomes the
+/// new boundary, and only one new probe is evaluated per iteration.
+///
+/// `range` tracks the current interval width. The probe offset from each boundary is
+/// `C * range` (not `range`) because after shrinking, the reused probe already sits
+/// at `C²` of the *old* width from the surviving boundary — placing the fresh probe
+/// at `C` of the *new* width mirrors it correctly.
 fn find_optimal_k<F: Fn(&[f64], f64) -> f64>(values: &[f64], config: &EvalTuneConfig, eval_fn: F) -> f64 {
-    let phi = (5.0_f64.sqrt() - 1.0) / 2.0;
+    const C: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
+
     let mut lo = config.k_min;
     let mut hi = config.k_max;
-    let tol = 1e-6 * (hi - lo).max(1e-9);
+    let tol = 1e-6 * (hi - lo);
 
-    let mut a = hi - phi * (hi - lo);
-    let mut b = lo + phi * (hi - lo);
+    let mut range = hi - lo;
+    let mut a = hi - C * range;
+    let mut b = lo + C * range;
     let mut fa = eval_fn(values, a);
     let mut fb = eval_fn(values, b);
 
-    while (hi - lo).abs() > tol {
+    while range > tol {
         if fa < fb {
             hi = b;
+            range *= C;
             b = a;
             fb = fa;
-            a = hi - phi * (hi - lo);
+            a = hi - C * range;
             fa = eval_fn(values, a);
         } else {
             lo = a;
+            range *= C;
             a = b;
             fa = fb;
-            b = lo + phi * (hi - lo);
+            b = lo + C * range;
             fb = eval_fn(values, b);
         }
     }
+
     (lo + hi) / 2.0
 }
 
