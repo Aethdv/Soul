@@ -302,7 +302,8 @@ fn train_loop<G, V>(
     // raw centipawn scores to win/draw/loss outcomes
     println!("Optimizing K...");
     let init_blend = wdl_scheduler.blend(1, config.epochs);
-    let mut k = golden_search_k(&values, config, |v, kk| val_eval(v, kk, init_blend));
+    let mut k =
+        golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| val_eval(&values, kk, init_blend));
     let win_rate_100cp = sigmoid(100.0, k);
     println!("K Factor:   \x1b[36m{k:.6}\x1b[0m (100cp -> {:.1}%)   ", win_rate_100cp * 100.0);
 
@@ -385,7 +386,9 @@ fn train_loop<G, V>(
 
         // ── Periodic K factor re-optimization ──
         if epoch % 200 == 0 {
-            k = golden_search_k(&ema_values, config, |v, kk| val_eval(v, kk, blend));
+            k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
+                val_eval(&ema_values, kk, blend)
+            });
             println!("  Reoptimized K: {k:.6}");
             if let Some(ref mut w) = logger {
                 writeln!(w, "# K re-opt @ epoch {epoch}: {k:.6}").ok();
@@ -657,18 +660,16 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
 /// `C * range` (not `range`) because after shrinking, the reused probe already sits
 /// at `C²` of the *old* width from the surviving boundary — placing the fresh probe
 /// at `C` of the *new* width mirrors it correctly.
-fn golden_search_k<F: Fn(&[f64], f64) -> f64>(values: &[f64], config: &EvalTuneConfig, eval_fn: F) -> f64 {
+pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
     const C: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
 
-    let mut lo = config.k_min;
-    let mut hi = config.k_max;
-    let tol = 1e-6 * (hi - lo);
-
+    let mut lo = lo;
+    let mut hi = hi;
     let mut range = hi - lo;
     let mut a = hi - C * range;
     let mut b = lo + C * range;
-    let mut fa = eval_fn(values, a);
-    let mut fb = eval_fn(values, b);
+    let mut fa = eval(a);
+    let mut fb = eval(b);
 
     while range > tol {
         if fa < fb {
@@ -677,14 +678,14 @@ fn golden_search_k<F: Fn(&[f64], f64) -> f64>(values: &[f64], config: &EvalTuneC
             b = a;
             fb = fa;
             a = hi - C * range;
-            fa = eval_fn(values, a);
+            fa = eval(a);
         } else {
             lo = a;
             range *= C;
             a = b;
             fa = fb;
             b = lo + C * range;
-            fb = eval_fn(values, b);
+            fb = eval(b);
         }
     }
 

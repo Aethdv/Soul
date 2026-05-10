@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use soul::{core::psqt, engine::eval_params};
 
+use super::evaltuner::golden_search_k;
 use crate::evaltune::{loader, training};
 
 /// Run the ablation report over `dataset_paths`.
@@ -69,7 +70,7 @@ fn run_generic<T: training::TunableData>(entries: &[T], values: &[f64]) {
     let groups = build_groups();
 
     println!("Optimizing K...");
-    let k = find_k(entries, values);
+    let k = golden_search_k(0.001, 0.012, 1e-8, |k| compute_loss(entries, values, k));
     let baseline = compute_loss(entries, values, k);
     println!("  K = {k:.6}    baseline MSE = {baseline:.6}\n");
 
@@ -140,37 +141,6 @@ fn build_groups() -> Vec<Group> {
     groups.extend(terms.iter().map(|&(name, off, len)| Group { name, range: off..off + len }));
 
     groups
-}
-
-/// Golden-section search for the sigmoid scaling constant that minimises MSE.
-fn find_k<T: training::TunableData>(entries: &[T], values: &[f64]) -> f64 {
-    let phi = (5.0f64.sqrt() - 1.0) / 2.0;
-    let (mut lo, mut hi) = (0.001, 0.012);
-
-    let mse = |k| compute_loss(entries, values, k);
-
-    let mut a = hi - phi * (hi - lo);
-    let mut b = lo + phi * (hi - lo);
-    let mut fa = mse(a);
-    let mut fb = mse(b);
-
-    while (hi - lo) > 1e-8 {
-        if fa < fb {
-            hi = b;
-            b = a;
-            fb = fa;
-            a = hi - phi * (hi - lo);
-            fa = mse(a);
-        } else {
-            lo = a;
-            a = b;
-            fa = fb;
-            b = lo + phi * (hi - lo);
-            fb = mse(b);
-        }
-    }
-
-    (lo + hi) / 2.0
 }
 
 /// MSE over the dataset for a given parameter set and K.
