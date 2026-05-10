@@ -33,14 +33,6 @@ macro_rules! load_or_bail {
     };
 }
 
-fn load_any_dataset(path: &str) -> std::io::Result<Vec<SoulEntry>> {
-    if path.ends_with(".viri") || path.ends_with(".vf") {
-        dataset::parse_viri_file(path)
-    } else {
-        dataset::load_encoded(path)
-    }
-}
-
 /// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
 /// The `encode` arm is split into two patterns — the match itself proves
 /// the argument count, replacing the original's `if args.len() < 3` guard.
@@ -71,6 +63,14 @@ pub fn run(args: &[&str]) {
             eprintln!("Unknown dataset command: {unknown}");
             help();
         },
+    }
+}
+
+fn load_any_dataset(path: &str) -> std::io::Result<Vec<SoulEntry>> {
+    if path.ends_with(".viri") || path.ends_with(".vf") {
+        dataset::parse_viri_file(path)
+    } else {
+        dataset::load_encoded(path)
     }
 }
 

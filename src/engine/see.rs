@@ -41,11 +41,6 @@ const SEE_VALUE: [i32; 8] = {
     v
 };
 
-#[inline(always)]
-fn val(pt: PieceType) -> i32 {
-    SEE_VALUE[pt.as_usize()]
-}
-
 /// Is the static exchange on `mv`'s destination square at least
 /// `threshold` centipawns for the side making `mv`?
 ///
@@ -192,6 +187,11 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
 
         us = !us;
     }
+}
+
+#[inline(always)]
+fn val(pt: PieceType) -> i32 {
+    SEE_VALUE[pt.as_usize()]
 }
 
 /// LSB of a bitboard, or `None` if empty. Separates the emptiness test
