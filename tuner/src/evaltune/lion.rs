@@ -79,6 +79,7 @@ impl Lion {
         debug_assert_eq!(params.len(), fixed_mask.len());
         debug_assert_eq!(params.len(), beta2.len());
         debug_assert_eq!(params.len(), lr_mask.len());
+
         for i in 0..params.len() {
             if fixed_mask[i] {
                 continue;
