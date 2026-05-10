@@ -226,7 +226,12 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let us_attacker_w = values[attacker_offset + us.attackers.min(5)];
     let them_attacker_w = values[attacker_offset + them.attackers.min(5)];
 
-    score += (us.score(shield_w, ortho_w, diag_w, us_attacker_w) - them.score(shield_w, ortho_w, diag_w, them_attacker_w)) * mg_w;
+    let safety_diff = us.score(shield_w, ortho_w, diag_w, us_attacker_w)
+                    - them.score(shield_w, ortho_w, diag_w, them_attacker_w);
+    let xray_offset = psqt::LAYOUT.xray_offset;
+    let xray_val = f64::from(slots.xray_ortho[idx]) * values[xray_offset];
+    let safety_xray = (safety_diff + xray_val) * mg_w;
+    score += safety_xray.trunc();
 
     let (openness_f, closedness_f) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
@@ -240,14 +245,9 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
         score += diff * mobility_w;
     }
 
-    let xray_offset = psqt::LAYOUT.xray_offset;
-    score += f64::from(slots.xray_ortho[idx]) * values[xray_offset] * mg_w;
-
     let bp_offset = psqt::LAYOUT.bishop_pair_offset;
     let bp = f64::from(slots.bishop_pair[idx]);
-    let t_phase = f64::from(crate::core::defs::TOTAL_PHASE);
-    let bp_tapered = values[bp_offset] * (mg_w * t_phase) + values[bp_offset + 1] * (eg_w * t_phase);
-    score += (bp_tapered * bp / t_phase).trunc();
+    score += (bp * (values[bp_offset] * mg_w + values[bp_offset + 1] * eg_w)).trunc();
 
     score
 }
