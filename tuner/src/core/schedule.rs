@@ -238,7 +238,7 @@ impl LrScheduler for WarmupStableDecay {
 
 /// Stable-Decay: LR stays flat, then decays linearly to min.
 /// Lion's sign-step benefits from a prolonged exploration window at full
-/// step size before settling — warmup is unnecessary for non-adaptive optimisers.
+/// step size before settling — warmup is unnecessary for non-adaptive optimizers.
 #[derive(Clone, Copy, Debug)]
 pub struct StableDecay {
     pub base: f64,

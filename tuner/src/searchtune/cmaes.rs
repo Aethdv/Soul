@@ -33,7 +33,7 @@
 //! 3. Orthogonal Mirrored Sampling
 //!    Instead of independent standard normal samples, we generate an orthogonal basis
 //!    via Gram-Schmidt and evaluate each direction as a mirrored pair (`+z` and `-z`).
-//!    Orthogonality maximises the volume covered by the population in parameter space,
+//!    Orthogonality maximizes the volume covered by the population in parameter space,
 //!    reducing redundant sampling. Mirroring cancels the odd-order bias in the mean
 //!    update, halving the variance of the mean shift estimate for the same evaluation
 //!    budget.
@@ -658,7 +658,7 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
                 }
             }
 
-            // Normalise the direction vector
+            // Normalize the direction vector
             let norm: f64 = z.iter().map(|x| x * x).sum::<f64>().sqrt();
             if norm > 1e-10 {
                 for x in &mut z {

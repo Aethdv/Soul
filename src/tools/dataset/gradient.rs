@@ -260,7 +260,7 @@ struct BoardFeatures {
     piece_count: usize,
 }
 
-/// Extract perspective-normalised board features from a nibble-encoded entry.
+/// Extract perspective-normalized board features from a nibble-encoded entry.
 ///
 /// The entry stores raw colors (bit 3 = 0=White, 1=Black).
 /// We normalize to the side-to-move's perspective:

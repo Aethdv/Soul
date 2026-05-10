@@ -128,7 +128,7 @@ impl TrainableEntry for loader::SoulEntry {
         let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / confidence_threshold).min(1.0) };
 
         let expected = sigmoid(score, k);
-        // result in {0,1,2} → normalise to [0.0, 1.0] for sigmoid target.
+        // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
         (1.0 - instance_blend).mul_add(f64::from(self.result) / 2.0, instance_blend * expected)
     }
 

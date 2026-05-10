@@ -4,7 +4,7 @@
 //! nibble-array encoding. The i-th nibble (LSB to MSB) in `pieces` describes
 //! the piece on the i-th set bit of `occupancy`.
 //!
-//! Nibble layout: bits 0-2 = type (pawn=0..king=5, 6=castling rook), bit 3 = colour (0=W,1=B).
+//! Nibble layout: bits 0-2 = type (pawn=0..king=5, 6=castling rook), bit 3 = color (0=W,1=B).
 //! Unused nibbles are zero.
 
 use crate::{
@@ -17,9 +17,9 @@ use crate::{
 
 /// Encode a board position into a [`SoulEntry`].
 ///
-/// Board state is stored in raw (non-normalised) form;
-/// occupancy bitboard + nibble-array of piece types/colours.
-/// The tuner normalises the perspective during feature extraction.
+/// Board state is stored in raw (non-normalized) form;
+/// occupancy bitboard + nibble-array of piece types/colors.
+/// The tuner normalizes the perspective during feature extraction.
 pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, search_score: Option<i32>) -> SoulEntry {
     let mut pieces = [0u8; 16];
     let mut idx = 0usize;

@@ -894,7 +894,7 @@ impl Worker {
                 // loses material.
                 //
                 // Captures scale linearly: SEE is an accurate verdict on
-                // a capture (the value is realised right there at the
+                // a capture (the value is realized right there at the
                 // destination square) so the tolerance grows modestly
                 // with depth — we just give deeper searches some slack
                 // in case the tree refutes an apparent loss.

@@ -21,7 +21,7 @@ pub use viri_format::parse_viri_file;
 ///
 /// Occupancy + nibble array: the i-th nibble (LSB-to-MSB) in `pieces` encodes
 /// the piece on the i-th set bit of `occupancy`.
-/// Nibble layout: bits 0-2 = type (pawn=0..king=5), bit 3 = colour (0=White, 1=Black).
+/// Nibble layout: bits 0-2 = type (pawn=0..king=5), bit 3 = color (0=White, 1=Black).
 /// Unused nibbles (past popcount) are zero.
 ///
 /// Fields are ordered from largest alignment requirement (`align 8`) down to

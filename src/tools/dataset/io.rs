@@ -89,7 +89,7 @@ fn v5_to_v6(raw: &[u8]) -> SoulEntry {
     let original_stm = raw[89];
     let piece_count = raw[88] as usize;
 
-    // Map each square to its nibble (pt | colour_bit) and build occupancy.
+    // Map each square to its nibble (pt | color_bit) and build occupancy.
     let mut nibbles = [0u8; 64];
     let mut occupancy = 0u64;
 
@@ -102,9 +102,9 @@ fn v5_to_v6(raw: &[u8]) -> SoulEntry {
         if pt > 5 {
             continue;
         }
-        let v5_color = upper & 0x08; // 0=Us/White, 8=Them/Black in V5 normalisation
+        let v5_color = upper & 0x08; // 0=Us/White, 8=Them/Black in V5 normalization
 
-        // Undo V5 STM-perspective normalisation.
+        // Undo V5 STM-perspective normalization.
         let mut sq = sq_val;
         if original_stm == 1 {
             sq ^= 0x38; // flip_rank
@@ -170,7 +170,7 @@ fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
 
 /// Parses a single EPD line into a `(Position, result)` pair.
 ///
-/// Two notation families are recognised:
+/// Two notation families are recognized:
 ///
 ///   * Pipe-delimited — `fen | eval | wdl`. The third field is the
 ///     WDL outcome as a float (1.0 = white wins, 0.0 = black wins).

@@ -34,7 +34,7 @@ struct SliceStats {
 pub fn run_correlation() {
     let values: Vec<f64> = eval_params::collect_parameters().iter().map(|p| p.value).collect();
 
-    let slices = analyse_all(&values);
+    let slices = analyze_all(&values);
 
     if write_report(&slices).is_err() {
         eprintln!("Failed to write correlation-report.txt");
@@ -49,7 +49,7 @@ pub fn run_correlation() {
     }
 }
 
-fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
+fn analyze_all(values: &[f64]) -> Vec<SliceStats> {
     let mut slices = Vec::with_capacity(PIECES.len() * PHASES.len());
 
     for (p_idx, &piece) in PIECES.iter().enumerate() {
@@ -57,14 +57,14 @@ fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
 
         for (ph, &phase) in PHASES.iter().enumerate() {
             let v = &values[base + ph * HALF..base + ph * HALF + HALF];
-            slices.push(analyse_slice(v, piece, phase));
+            slices.push(analyze_slice(v, piece, phase));
         }
     }
 
     slices
 }
 
-fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceStats {
+fn analyze_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceStats {
     let mut pairs = Vec::new();
 
     for rank in 0..RANKS {

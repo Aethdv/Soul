@@ -213,7 +213,7 @@ impl PieceType {
     }
 
     /// Parse a FEN piece letter.
-    /// Case-insensitive: anything unrecognised → `None`.
+    /// Case-insensitive: anything unrecognized → `None`.
     #[inline(always)]
     pub const fn from_char(ch: char) -> Self {
         match ch {
