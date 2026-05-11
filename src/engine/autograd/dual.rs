@@ -18,7 +18,7 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssi
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
 use crate::weave::Vf32x8;
 
-/// 30 real slots (2 acc lanes + 28 params) padded to 32 for alignment.
+/// 30 slots (2 acc lanes + 28 params) padded to 32 for alignment.
 pub const DUAL_N: usize = 32;
 
 /// A dual number: value + gradient vector + active-slot bitmask.
