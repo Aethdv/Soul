@@ -5,11 +5,9 @@
 
 use crate::core::defs::{Color, PieceType, Square};
 
-// ──────── Zobrist Hashing ────────
-//
 // A high-speed, incremental hashing technique invented by Albert Zobrist in 1970.
 // We generate a unique 64-bit random number for every possible feature of a chess board
-// (e.g., "White Pawn on e4", "Black can castle Kingside", "e6 is an en passant target").
+// (e.g. "White Pawn on e4", "Black can castle Kingside", "e6 is an en passant target").
 //
 // The hash of a full position is simply the XOR sum of all its features.
 // To move a piece, we XOR out the feature at its origin, and XOR in the feature

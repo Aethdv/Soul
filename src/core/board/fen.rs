@@ -71,7 +71,7 @@ impl Display for Fen<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let pos = self.0;
 
-        // ── Piece placement (ranks 8 → 1) ──
+        // Piece placement (ranks 8 → 1)
         for rank in (0..8u8).rev() {
             if rank < 7 {
                 f.write_char('/')?;
@@ -98,14 +98,14 @@ impl Display for Fen<'_> {
             }
         }
 
-        // ── Side to move ──
+        // Side to move
         if pos.stm == Color::White {
             f.write_str(" w ")?;
         } else {
             f.write_str(" b ")?;
         };
 
-        // ── Castling availability ──
+        // Castling availability
         if pos.castling_rights == 0 {
             f.write_char('-')?;
         } else {
@@ -122,14 +122,14 @@ impl Display for Fen<'_> {
             }
         }
 
-        // ── En passant target ──
+        // En passant target
         f.write_char(' ')?;
         match pos.en_passant {
             Some(sq) => f.write_str(&sq.to_algebraic())?,
             None => f.write_char('-')?,
         }
 
-        // ── Move clocks ──
+        // Move clocks
         write!(f, " {} {}", pos.halfmove_clock, pos.fullmove_number)
     }
 }

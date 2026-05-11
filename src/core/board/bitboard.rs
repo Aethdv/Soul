@@ -17,7 +17,19 @@
 
 use crate::core::defs::{Bitboard, Color, FILE_A, FILE_H, FILE_MASKS, NOT_AB, NOT_GH, RANK_MASKS, Square};
 
-// ──────── Magic entry — per square metadata for sliding-piece lookups ────────
+/// Pawn captures, indexed by `[color][square]`.
+pub static PAWN_ATTACKS: [[Bitboard; 64]; 2] = init_pawn_attacks();
+/// Knight jumps, indexed by `[square]`. Occupancy-independent.
+pub static KNIGHT_ATTACKS: [Bitboard; 64] = init_knight_attacks();
+/// King steps, indexed by `[square]`. Occupancy-independent.
+pub static KING_ATTACKS: [Bitboard; 64] = init_king_attacks();
+/// Rook rays on an empty board (full rank ∪ file, minus self).
+pub static PSEUDO_ROOK_ATTACKS: [Bitboard; 64] = init_pseudo_rook_attacks();
+/// Bishop rays on an empty board (all four diagonals through the square).
+pub static PSEUDO_BISHOP_ATTACKS: [Bitboard; 64] = init_pseudo_bishop_attacks();
+
+// Build-time generated tables: ROOKS, BISHOPS, ATTACK_TABLE, LINES, BETWEEN.
+include!(concat!(env!("OUT_DIR"), "/magics.rs"));
 
 /// Per-square lookup key for slider attacks.
 ///
@@ -40,24 +52,6 @@ pub struct MagicEntry {
     pub offset: u32,
 }
 
-// Build-time generated tables: ROOKS, BISHOPS, ATTACK_TABLE, LINES, BETWEEN.
-include!(concat!(env!("OUT_DIR"), "/magics.rs"));
-
-// ──────── Leaper attack tables — computed entirely at compile time ────────
-
-/// Pawn captures, indexed by `[color][square]`.
-pub static PAWN_ATTACKS: [[Bitboard; 64]; 2] = init_pawn_attacks();
-/// Knight jumps, indexed by `[square]`. Occupancy-independent.
-pub static KNIGHT_ATTACKS: [Bitboard; 64] = init_knight_attacks();
-/// King steps, indexed by `[square]`. Occupancy-independent.
-pub static KING_ATTACKS: [Bitboard; 64] = init_king_attacks();
-/// Rook rays on an empty board (full rank ∪ file, minus self).
-pub static PSEUDO_ROOK_ATTACKS: [Bitboard; 64] = init_pseudo_rook_attacks();
-/// Bishop rays on an empty board (all four diagonals through the square).
-pub static PSEUDO_BISHOP_ATTACKS: [Bitboard; 64] = init_pseudo_bishop_attacks();
-
-// ──────── Magic index — one macro to rule both hardware paths ────────
-
 /// Resolve the `ATTACK_TABLE` index for a sliding piece on square `sq`
 /// with board occupancy `occ`.
 ///
@@ -78,8 +72,6 @@ macro_rules! magic_index {
     }};
 }
 
-// ──────── Leaper attacks ────────
-
 /// Pawn capture mask for a single pawn of the given color.
 #[inline(always)]
 pub fn atk_pawn(sq: Square, color: Color) -> Bitboard {
@@ -91,14 +83,6 @@ pub fn atk_pawn(sq: Square, color: Color) -> Bitboard {
 pub fn atk_knight(square: Square) -> Bitboard {
     KNIGHT_ATTACKS[square]
 }
-
-/// King attack mask — one step in each compass direction.
-#[inline(always)]
-pub fn atk_king(square: Square) -> Bitboard {
-    KING_ATTACKS[square]
-}
-
-// ──────── Slider attacks ────────
 
 /// Bishop attacks along diagonals, blocked by `occupancy`.
 #[inline(always)]
@@ -114,7 +98,11 @@ pub fn atk_rook(square: Square, occupancy: Bitboard) -> Bitboard {
     Bitboard(ATTACK_TABLE[idx])
 }
 
-// ──────── Line & between masks (build-time generated) ────────
+/// King attack mask — one step in each compass direction.
+#[inline(always)]
+pub fn atk_king(square: Square) -> Bitboard {
+    KING_ATTACKS[square]
+}
 
 /// The full line through both squares (rank, file, or diagonal).
 /// Returns empty if the squares aren't collinear. Used for pin detection.
@@ -130,10 +118,7 @@ pub fn between_bb(sq1: Square, sq2: Square) -> Bitboard {
     Bitboard(BETWEEN[sq1][sq2])
 }
 
-// ──────── Compile-time table generation ────────
-
-/// ── Pawn capture masks ──
-/// For both colors.
+/// Pawn capture masks for both colors.
 ///
 /// ```text
 ///   White pawn on d4:          Black pawn on d5:
@@ -155,7 +140,7 @@ const fn init_pawn_attacks() -> [[Bitboard; 64]; 2] {
     table
 }
 
-/// ── Knight attack masks ──
+/// Knight attack masks.
 /// The eight L-shaped destinations.
 ///
 /// ```text
@@ -185,7 +170,7 @@ const fn init_knight_attacks() -> [Bitboard; 64] {
     table
 }
 
-/// ── King attack masks ──
+/// King attack masks.
 /// One step in each compass direction.
 ///
 /// ```text
@@ -213,7 +198,7 @@ const fn init_king_attacks() -> [Bitboard; 64] {
     table
 }
 
-/// ── Rook pseudo-attacks ──
+/// Rook pseudo-attacks.
 /// Full rank ∪ full file through the square, minus self.
 /// Useful for quick "could a rook ever reach that square?" filtering.
 const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
@@ -233,7 +218,7 @@ const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
     table
 }
 
-/// ── Bishop pseudo-attacks ──
+/// Bishop pseudo-attacks.
 /// All four diagonal rays through the square.
 /// Useful for quick "could a bishop ever reach that square?" filtering.
 const fn init_pseudo_bishop_attacks() -> [Bitboard; 64] {

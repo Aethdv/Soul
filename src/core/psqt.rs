@@ -48,8 +48,6 @@ pub const fn mirror_sq(sq: usize) -> usize {
     (rank << 2) + MIRROR_FILE[file]
 }
 
-// ──────── Private Initialization & Helpers ────────
-
 #[inline]
 const fn init_psqt() -> [AlignedTable; 14] {
     let mut tables = [AlignedTable([[0; 8]; 64]); 14];

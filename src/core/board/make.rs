@@ -10,8 +10,6 @@ use crate::{
     weave::Vi16x8,
 };
 
-// ──────── Board Mutation & State Transitions ────────
-
 /// Applies a move to the position, incrementally maintaining the Zobrist hash
 /// and accumulator. Returns a [`StateInfo`] snapshot for perfect rollback.
 #[inline(always)]
@@ -72,8 +70,6 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
     state
 }
 
-// ──────── Unmake Move ────────
-
 /// Reverses a move, perfectly restoring the prior position.
 ///
 /// The accumulator must be bulk-restored from the snapshot by the caller
@@ -111,8 +107,6 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
         pos.add_piece(to ^ 8, PieceType::Pawn, opp);
     }
 }
-
-// ──────── Accumulator ────────
 
 /// Incrementally updates the accumulator with PSQT vector deltas.
 ///
@@ -153,8 +147,6 @@ pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceT
     }
 }
 
-// ──────── Board Mutation ────────
-
 /// Compile-time add/remove of a piece on the board.
 /// The const generic eliminates the branch entirely — zero-cost abstraction.
 #[inline(always)]
@@ -186,15 +178,13 @@ pub fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square)
     update_piece::<true>(pos, rook_from, PieceType::Rook, stm);
 }
 
-// ──────── Castling Geometry ────────
-
 /// Resolves the final landing squares for a castling move.
 ///
 /// Our move encoding stores the rook's home square in `mv.to()` — this is FRC-safe
 /// since the rook can live on any file. From the relative positions of king and rook
 /// we derive:
-///   O-O-O  →  king lands on c-file, rook on d-file
-///   O-O    →  king lands on g-file, rook on f-file
+///   O-O-O → king lands on c-file, rook on d-file
+///   O-O   → king lands on g-file, rook on f-file
 #[inline(always)]
 fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Square) {
     let queenside = rook_sq.file() < king_sq.file();
@@ -204,8 +194,6 @@ fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Square) {
         Square::from_coords(if queenside { 3 } else { 5 }, rank),
     )
 }
-
-// ──────── Castling Internals ────────
 
 /// Executes castling on the board and patches the Zobrist hash.
 ///
@@ -228,8 +216,6 @@ fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm:
     pos.add_piece(rook_to, PieceType::Rook, stm);
     pos.hash ^= zobrist::key_piece(PieceType::Rook, stm, rook_to);
 }
-
-// ──────── Post-Move State Maintenance ────────
 
 /// Revokes castling rights touched by the move's origin and destination.
 ///
