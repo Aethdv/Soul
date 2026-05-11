@@ -12,13 +12,49 @@ use std::{
     time::Instant,
 };
 
+use parking_lot::Mutex;
+
 use crate::{
-    core::{board::Position, defs::Protocol, error::EngineError},
-    engine::{
-        search::{Limits, Searcher},
-        tt,
+    core::{
+        board::{Position, STARTPOS},
+        defs::{Color, Protocol},
+        error::EngineError,
+        zobrist::key_side,
     },
+    engine::{
+        history::History,
+        movegen::gen_legal_moves,
+        search::{Limits, SearchConfig, SearchDisplay, Searcher},
+        search_params::SearchParams,
+        tt::TranspositionTable,
+    },
+    weave::Vi16x8,
 };
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+enum Mode {
+    Normal,  // thinks on its turn
+    Force,   // only verifies moves, never searches
+    Analyze, // searches infinitely
+}
+
+struct XBoardState {
+    board: Position,
+    accumulator: Vi16x8,
+    history: Vec<u64>,
+    persistent_history: Arc<Mutex<History>>,
+    tt: Arc<TranspositionTable>,
+    mode: Mode,
+    stop_signal: Arc<AtomicBool>,
+    search_thread: Option<JoinHandle<()>>,
+    limits: Limits,
+    hash_size: usize,
+    overhead: u64,
+    show_wdl: bool,
+    engine_side: Option<Color>,
+    is_frc: bool,
+    nps: Option<u64>,
+}
 
 pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
     let mut state = XBoardState::new();
@@ -43,42 +79,17 @@ pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum Mode {
-    Normal,  // thinks on its turn
-    Force,   // only verifies moves, never searches
-    Analyze, // searches infinitely
-}
-
-struct XBoardState {
-    board: Position,
-    accumulator: crate::weave::Vi16x8,
-    history: Vec<u64>,
-    persistent_history: Arc<parking_lot::Mutex<crate::engine::history::History>>,
-    tt: Arc<tt::TranspositionTable>,
-    mode: Mode,
-    stop_signal: Arc<AtomicBool>,
-    search_thread: Option<JoinHandle<()>>,
-    limits: Limits,
-    hash_size: usize,
-    overhead: u64,
-    show_wdl: bool,
-    engine_side: Option<crate::core::defs::Color>,
-    is_frc: bool,
-    nps: Option<u64>,
-}
-
 impl XBoardState {
     fn new() -> Self {
-        let board = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let board = Position::from_fen(STARTPOS);
         let history = vec![board.hash];
 
         Self {
             accumulator: board.get_initial_accumulator(),
             board,
             history,
-            persistent_history: Arc::new(parking_lot::Mutex::new(crate::engine::history::History::new())),
-            tt: Arc::new(tt::TranspositionTable::new(16)),
+            persistent_history: Arc::new(Mutex::new(History::new())),
+            tt: Arc::new(TranspositionTable::new(16)),
             mode: Mode::Normal,
             stop_signal: Arc::new(AtomicBool::new(false)),
             search_thread: None,
@@ -131,10 +142,6 @@ impl XBoardState {
         let tt = self.tt.clone();
 
         self.search_thread = Some(thread::spawn(move || {
-            use crate::engine::{
-                search::{SearchConfig, SearchDisplay},
-                search_params::SearchParams,
-            };
             let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
             let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             let mut ctx = Searcher::new(&cfg, &board, &history, persistent_history, tt);
@@ -156,14 +163,14 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
         "new" => {
             state.stop_search();
-            state.board = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+            state.board = Position::from_fen(STARTPOS);
             state.board.is_frc = state.is_frc;
             state.accumulator = state.board.get_initial_accumulator();
             state.history.clear();
             state.history.push(state.board.hash);
             state.tt.clear();
             state.mode = Mode::Normal;
-            state.engine_side = Some(crate::core::defs::Color::Black);
+            state.engine_side = Some(Color::Black);
             state.limits = Limits { protocol: Protocol::XBoard, ..Default::default() };
         },
         "force" => {
@@ -189,18 +196,18 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
         "white" => {
             state.stop_search();
-            state.engine_side = Some(crate::core::defs::Color::Black);
-            if state.board.stm != crate::core::defs::Color::White {
-                state.board.stm = crate::core::defs::Color::White;
-                state.board.hash ^= crate::core::zobrist::key_side();
+            state.engine_side = Some(Color::Black);
+            if state.board.stm != Color::White {
+                state.board.stm = Color::White;
+                state.board.hash ^= key_side();
             }
         },
         "black" => {
             state.stop_search();
-            state.engine_side = Some(crate::core::defs::Color::White);
-            if state.board.stm != crate::core::defs::Color::Black {
-                state.board.stm = crate::core::defs::Color::Black;
-                state.board.hash ^= crate::core::zobrist::key_side();
+            state.engine_side = Some(Color::White);
+            if state.board.stm != Color::Black {
+                state.board.stm = Color::Black;
+                state.board.hash ^= key_side();
             }
         },
         "level" => cmd_level(state, args),
@@ -233,7 +240,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 && let Ok(mb) = arg.parse::<usize>()
             {
                 state.hash_size = mb;
-                state.tt = Arc::new(tt::TranspositionTable::new(mb));
+                state.tt = Arc::new(TranspositionTable::new(mb));
             }
         },
         "cores" => {
@@ -275,7 +282,7 @@ fn print_features() {
 }
 
 fn cmd_move(state: &mut XBoardState, move_str: &str) {
-    let legal = crate::engine::movegen::gen_legal_moves(&state.board);
+    let legal = gen_legal_moves(&state.board);
 
     if let Some(mv) = legal
         .iter()
@@ -357,7 +364,7 @@ fn cmd_time<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str
         && let Ok(cs) = arg.parse::<u64>()
     {
         let ms = cs * 10;
-        if state.board.stm == crate::core::defs::Color::White {
+        if state.board.stm == Color::White {
             state.limits.wtime = ms;
         } else {
             state.limits.btime = ms;
@@ -370,7 +377,7 @@ fn cmd_otim<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str
         && let Ok(cs) = arg.parse::<u64>()
     {
         let ms = cs * 10;
-        if state.board.stm == crate::core::defs::Color::White {
+        if state.board.stm == Color::White {
             state.limits.btime = ms;
         } else {
             state.limits.wtime = ms;
@@ -394,7 +401,7 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
-                state.tt = Arc::new(tt::TranspositionTable::new(mb));
+                state.tt = Arc::new(TranspositionTable::new(mb));
             }
         },
         "overhead" => {
