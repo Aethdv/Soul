@@ -1065,8 +1065,6 @@ impl Worker {
     /// # Safety
     /// The move `mv` MUST be legal. Root legality is filtered during move list
     /// generation; interior legality is filtered by the MovePicker loop.
-    ///
-    /// Returns `Ok(())` on success, or `Err` if the search was aborted mid-flight.
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
