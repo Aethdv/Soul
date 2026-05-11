@@ -64,49 +64,6 @@ where I: Iterator<Item = &'a str> {
     finish_position(pos)
 }
 
-fn finish_position(mut pos: Position) -> Result<Position, FenError> {
-    // 1. King Existence Invariant
-    let kings = pos.role_bb[PieceType::King];
-    if (kings & pos.side_bb[Color::White]).popcount() != 1 {
-        return Err(FenError::MissingKing { color: "white" });
-    }
-    if (kings & pos.side_bb[Color::Black]).popcount() != 1 {
-        return Err(FenError::MissingKing { color: "black" });
-    }
-
-    // 2. Pawn Rank Invariant (Pawns cannot exist on 1st/8th ranks)
-    let illegal_pawns = pos.role_bb[PieceType::Pawn] & (crate::core::primitives::RANK_1 | crate::core::primitives::RANK_8);
-    if illegal_pawns.is_not_empty() {
-        let sq = illegal_pawns.lsb();
-        let color = if pos.side_bb[Color::White].check_bit(sq) { Color::White } else { Color::Black };
-        return Err(FenError::InvalidPiece { ch: PieceType::Pawn.to_char(color), rank: sq.rank(), file: sq.file() });
-    }
-
-    // 3. Illegal Check Invariant (Side-not-to-move cannot be in check)
-    let us = pos.stm;
-    let them = us.opposite();
-    let their_king_sq = (pos.role_bb[PieceType::King] & pos.side_bb[them]).lsb();
-
-    // In Soul, is_attacked::<false> is the most efficient way to check this.
-    if pos.is_attacked::<false>(their_king_sq, us, Bitboard::EMPTY) {
-        return Err(FenError::IllegalCheck);
-    }
-
-    // 4. Castling/Rook Consistency (Crucial for DFRC/Shredder-FEN)
-    for slot in 0..4 {
-        let bit = 1 << slot;
-        if pos.castling_rights & bit != 0 {
-            let rsq = pos.castling_rooks[slot];
-            if pos.piece_at(rsq) != PieceType::Rook {
-                return Err(FenError::InvalidCastlingRights { sq: rsq.to_algebraic() });
-            }
-        }
-    }
-
-    pos.hash = pos.calc_zobrist();
-    Ok(pos)
-}
-
 /// A wrapper for streaming FEN serialization without intermediate allocations.
 pub struct Fen<'a>(pub &'a Position);
 
@@ -238,6 +195,49 @@ pub fn pretty_print(pos: &Position) {
     println!("     a  b  c  d  e  f  g  h\n");
 }
 // ──────── Private Constants & Helpers ────────
+
+fn finish_position(mut pos: Position) -> Result<Position, FenError> {
+    // 1. King Existence Invariant
+    let kings = pos.role_bb[PieceType::King];
+    if (kings & pos.side_bb[Color::White]).popcount() != 1 {
+        return Err(FenError::MissingKing { color: "white" });
+    }
+    if (kings & pos.side_bb[Color::Black]).popcount() != 1 {
+        return Err(FenError::MissingKing { color: "black" });
+    }
+
+    // 2. Pawn Rank Invariant (Pawns cannot exist on 1st/8th ranks)
+    let illegal_pawns = pos.role_bb[PieceType::Pawn] & (crate::core::primitives::RANK_1 | crate::core::primitives::RANK_8);
+    if illegal_pawns.is_not_empty() {
+        let sq = illegal_pawns.lsb();
+        let color = if pos.side_bb[Color::White].check_bit(sq) { Color::White } else { Color::Black };
+        return Err(FenError::InvalidPiece { ch: PieceType::Pawn.to_char(color), rank: sq.rank(), file: sq.file() });
+    }
+
+    // 3. Illegal Check Invariant (Side-not-to-move cannot be in check)
+    let us = pos.stm;
+    let them = us.opposite();
+    let their_king_sq = (pos.role_bb[PieceType::King] & pos.side_bb[them]).lsb();
+
+    // In Soul, is_attacked::<false> is the most efficient way to check this.
+    if pos.is_attacked::<false>(their_king_sq, us, Bitboard::EMPTY) {
+        return Err(FenError::IllegalCheck);
+    }
+
+    // 4. Castling/Rook Consistency (Crucial for DFRC/Shredder-FEN)
+    for slot in 0..4 {
+        let bit = 1 << slot;
+        if pos.castling_rights & bit != 0 {
+            let rsq = pos.castling_rooks[slot];
+            if pos.piece_at(rsq) != PieceType::Rook {
+                return Err(FenError::InvalidCastlingRights { sq: rsq.to_algebraic() });
+            }
+        }
+    }
+
+    pos.hash = pos.calc_zobrist();
+    Ok(pos)
+}
 
 /// Per-right metadata for FEN serialization and display.
 ///

@@ -77,73 +77,6 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
     Ok(entries)
 }
 
-/// V5 → V6 conversion; directly construct the 32-byte nibble layout
-/// from the legacy PackedPiece encoding without any intermediate FEN or
-/// position reconstruction.
-fn v5_to_v6(raw: &[u8]) -> SoulEntry {
-    // V5 `repr(C)` layout, fields top to bottom:
-    let result = f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-    let search_score = i16::from_le_bytes([raw[70], raw[71]]);
-    let castling_stm = raw[90];
-    let ep_square = raw[91];
-    let original_stm = raw[89];
-    let piece_count = raw[88] as usize;
-
-    // Map each square to its nibble (pt | color_bit) and build occupancy.
-    let mut nibbles = [0u8; 64];
-    let mut occupancy = 0u64;
-
-    for i in 0..piece_count.min(32) {
-        let off = 4 + i * 2;
-        let p = u16::from_le_bytes([raw[off], raw[off + 1]]);
-        let sq_val = (p & 0x3F) as u8;
-        let upper = (p >> 6) as usize;
-        let pt = upper & 0x07;
-        if pt > 5 {
-            continue;
-        }
-        let v5_color = upper & 0x08; // 0=Us/White, 8=Them/Black in V5 normalization
-
-        // Undo V5 STM-perspective normalization.
-        let mut sq = sq_val;
-        if original_stm == 1 {
-            sq ^= 0x38; // flip_rank
-        }
-        let real_black = if original_stm == 0 { v5_color != 0 } else { v5_color == 0 };
-        let color_bit = if real_black { 0x08u8 } else { 0x00u8 };
-
-        nibbles[sq as usize] = pt as u8 | color_bit;
-        occupancy |= 1u64 << (sq as u64);
-    }
-
-    // Pack nibbles in occupancy-LSB order.
-    let mut pieces = [0u8; 16];
-    let mut occ = occupancy;
-    let mut idx = 0usize;
-    while occ != 0 {
-        let sq = occ.trailing_zeros() as usize;
-        occ &= occ - 1;
-        pieces[idx / 2] |= nibbles[sq] << ((idx & 1) * 4);
-        idx += 1;
-    }
-
-    // V5 castling is STM-relative; convert to absolute FEN byte.
-    let castling = if original_stm == 0 { castling_stm } else { (castling_stm >> 2) | ((castling_stm & 0x3) << 2) };
-
-    // V5 ep square is STM-relative (rank-flipped for Black); undo to absolute.
-    let ep = if ep_square >= 64 || original_stm == 0 { ep_square } else { ep_square ^ 0x38 };
-
-    SoulEntry {
-        occupancy,
-        pieces,
-        score: search_score,
-        result: (f64::from(result) * 2.0) as u8,
-        stm_and_ep: (original_stm << 7) | (ep & 0x7F),
-        castling,
-        _pad: [0u8; 3],
-    }
-}
-
 /// Creates (or overwrites) a compressed dataset file.
 pub fn save_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
     write_frame(std::fs::File::create(path)?, entries)
@@ -154,16 +87,6 @@ pub fn save_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
 pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
     let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     write_frame(file, entries)
-}
-
-/// Writes a single encoded frame (magic + count + payload) through a zstd compressor.
-fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
-    let mut enc = zstd::Encoder::new(writer, 3)?;
-    enc.write_all(MAGIC_V6)?;
-    enc.write_all(&(entries.len() as u64).to_le_bytes())?;
-    enc.write_all(entries.as_bytes())?;
-    enc.finish()?;
-    Ok(())
 }
 
 // ──────── EPD text codec ────────
@@ -241,4 +164,79 @@ pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
     let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
     Some(SoulEntry::from_board(&board, stm_wdl, None, None))
+}
+
+// ──────── Private Helpers ────────
+
+fn v5_to_v6(raw: &[u8]) -> SoulEntry {
+    // V5 `repr(C)` layout, fields top to bottom:
+    let result = f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+    let search_score = i16::from_le_bytes([raw[70], raw[71]]);
+    let castling_stm = raw[90];
+    let ep_square = raw[91];
+    let original_stm = raw[89];
+    let piece_count = raw[88] as usize;
+
+    // Map each square to its nibble (pt | color_bit) and build occupancy.
+    let mut nibbles = [0u8; 64];
+    let mut occupancy = 0u64;
+
+    for i in 0..piece_count.min(32) {
+        let off = 4 + i * 2;
+        let p = u16::from_le_bytes([raw[off], raw[off + 1]]);
+        let sq_val = (p & 0x3F) as u8;
+        let upper = (p >> 6) as usize;
+        let pt = upper & 0x07;
+        if pt > 5 {
+            continue;
+        }
+        let v5_color = upper & 0x08; // 0=Us/White, 8=Them/Black in V5 normalization
+
+        // Undo V5 STM-perspective normalization.
+        let mut sq = sq_val;
+        if original_stm == 1 {
+            sq ^= 0x38; // flip_rank
+        }
+        let real_black = if original_stm == 0 { v5_color != 0 } else { v5_color == 0 };
+        let color_bit = if real_black { 0x08u8 } else { 0x00u8 };
+
+        nibbles[sq as usize] = pt as u8 | color_bit;
+        occupancy |= 1u64 << (sq as u64);
+    }
+
+    // Pack nibbles in occupancy-LSB order.
+    let mut pieces = [0u8; 16];
+    let mut occ = occupancy;
+    let mut idx = 0usize;
+    while occ != 0 {
+        let sq = occ.trailing_zeros() as usize;
+        occ &= occ - 1;
+        pieces[idx / 2] |= nibbles[sq] << ((idx & 1) * 4);
+        idx += 1;
+    }
+
+    // V5 castling is STM-relative; convert to absolute FEN byte.
+    let castling = if original_stm == 0 { castling_stm } else { (castling_stm >> 2) | ((castling_stm & 0x3) << 2) };
+
+    // V5 ep square is STM-relative (rank-flipped for Black); undo to absolute.
+    let ep = if ep_square >= 64 || original_stm == 0 { ep_square } else { ep_square ^ 0x38 };
+
+    SoulEntry {
+        occupancy,
+        pieces,
+        score: search_score,
+        result: (f64::from(result) * 2.0) as u8,
+        stm_and_ep: (original_stm << 7) | (ep & 0x7F),
+        castling,
+        _pad: [0u8; 3],
+    }
+}
+
+fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
+    let mut enc = zstd::Encoder::new(writer, 3)?;
+    enc.write_all(MAGIC_V6)?;
+    enc.write_all(&(entries.len() as u64).to_le_bytes())?;
+    enc.write_all(entries.as_bytes())?;
+    enc.finish()?;
+    Ok(())
 }
