@@ -1,7 +1,7 @@
 //! Safe abstraction macros for debug-checked performance invariants.
 
-/// Macro to perform unchecked indexing in release builds,
-/// but checked indexing in debug builds.
+/// Unchecked indexing in release, bounds-checked in debug.
+///
 /// Usage: `debug_index!(collection, index)`
 #[macro_export]
 macro_rules! debug_index {
@@ -21,18 +21,14 @@ macro_rules! debug_index {
     }};
 }
 
-/// Macro to perform mutable indexing with debug bounds checks.
+/// Unchecked mutated indexing in release, bounds-checked in debug.
 ///
-/// In debug builds: standard checked indexing for panic-on-OOB.
-/// In release builds: raw pointer arithmetic — NOT `get_unchecked_mut`.
-///
-/// Why not `get_unchecked_mut`? Both produce a `&mut T`, but this macro
-/// derives the reference through `as_mut_ptr()` (an immutable borrow of the
-/// field to obtain a raw pointer) followed by pointer arithmetic and
-/// dereference. LLVM sees the `&mut T` as originating from a local pointer,
-/// not directly from a field borrow, which can avoid forcing reloads of
-/// sibling fields on every call — though whether this optimization fires
-/// depends on LLVM's aliasing analysis at the given optimization level.
+/// Why not `get_unchecked_mut`?
+/// Both produce a `&mut T`, but this macro derives the reference through `as_mut_ptr()`
+/// (an immutable borrow of the field to obtain a raw pointer) followed by pointer arithmetic
+/// and dereference. LLVM sees the `&mut T` as originating from a local pointer,
+/// not directly from a field borrow, which can avoid forcing reloads of sibling fields on
+/// every call — though whether this optimization fires depends on LLVM's aliasing analysis.
 ///
 /// Usage: `debug_index_mut!(collection, index)`
 #[macro_export]
@@ -53,8 +49,8 @@ macro_rules! debug_index_mut {
     }};
 }
 
-/// Macro to perform unchecked swap in release builds,
-/// but checked swap in debug builds.
+/// Unchecked swap in release, bounds-checked swap in debug.
+///
 /// Usage: `debug_swap!(collection, i, j)`
 #[macro_export]
 macro_rules! debug_swap {
