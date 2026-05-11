@@ -16,13 +16,13 @@ use soul::{
         board::{Position, STARTPOS},
         defs::{MAX_DEPTH, Protocol},
     },
-    engine,
     engine::{
-        search::{Limits, SearchDisplay, Searcher},
+        history::History,
+        search::{Limits, SearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
+        tt::TranspositionTable,
     },
     protocols, tools,
-    tt::TranspositionTable,
 };
 
 #[allow(clippy::too_many_lines)]
