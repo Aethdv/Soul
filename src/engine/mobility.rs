@@ -13,17 +13,17 @@ use crate::{
             spatial::SpatialTensor,
         },
         defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
+        psqt::LAYOUT,
     },
     engine::{
-        autograd::EvalMath,
+        autograd::traits::{EnvVec4, EnvVec8, EvalMath},
         combiner::Accumulators,
         eval::{EvalParams, SharedFeatures},
         eval_params::ATTACKER_WEIGHTS,
         term::{LinearTerm, TaperPair},
     },
+    weave::Vf64x4,
 };
-
-// ──────── Position Openness ────────
 
 // Pawn rams (locked head-to-head) and total pawn count yield an openness scalar.
 // In scoring, this blends between "closed" and "open" weight vectors.
@@ -38,11 +38,84 @@ pub const PAWN_SCALE: i32 = 20; // 0.02 · 1024
 /// Fixed-point precision (1.0 ≡ 1024).
 pub const OPEN_UNITY: i32 = 1024;
 
+/// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.
+///
+/// - `mobility`: safe squares controlled, with contested squares counted twice.
+/// - `shadow_mobility`: safe x-ray (battery) squares we control.
+/// - `threats`: enemy pieces our direct attacks touch.
+/// - `shadow_threats`: enemy pieces our x-rays touch.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SideMetrics {
+    pub mobility: i32,
+    pub shadow_mobility: i32,
+    pub threats: i32,
+    pub shadow_threats: i32,
+}
+
+/// Complete mobility snapshot for one position, computed once and consumed by
+/// both the engine (score diff) and the tuner (raw feature extraction).
+#[derive(Clone, Default, Debug)]
+pub struct MobilityData {
+    pub metrics_us: SideMetrics,
+    pub metrics_them: SideMetrics,
+    pub safety_us: SafetyMetrics,
+    pub safety_them: SafetyMetrics,
+}
+
+/// Raw king-zone features for one side.
+///
+/// Kept separate so the tuner can regress independent gradients against each component.
+/// The engine folds them into a single score via [`Self::score()`].
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SafetyMetrics {
+    /// Enemy pieces hitting the king ring (capped to weight-table bounds).
+    pub attackers: usize,
+    /// King-zone squares attacked by them but not defended by us.
+    pub weak: i32,
+    /// Friendly pawns adjacent to the king.
+    pub shield: i32,
+    /// Rook-reachable squares from the king (open lines = exposure).
+    pub ortho_exposure: i32,
+    /// Bishop-reachable squares from the king.
+    pub diag_exposure: i32,
+}
+
+impl SafetyMetrics {
+    /// Collapses raw features into a single weighted score.
+    /// Positive → well-sheltered king, negative ⇒ under fire.
+    #[inline]
+    pub fn score<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T, w_atk: T) -> T {
+        let shelter = T::from_i32(self.shield) * w_shield;
+        let exposure = T::from_i32(self.ortho_exposure) * w_ortho + T::from_i32(self.diag_exposure) * w_diag;
+
+        // Attackers scale non-linearly — a second attacker is more than twice as
+        // dangerous. w_atk is indexed by attacker count; `weak / 10` keeps resolution
+        // high for the tuner (0.1 cp increments) while staying integer in eval.
+        // DualNode passes gradient through .trunc() unmodified (straight-through).
+        let pressure = ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc();
+
+        shelter - exposure - pressure
+    }
+
+    /// Analyzes the king neighborhood
+    /// and records how exposed or defended it is.
+    #[inline(always)]
+    fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
+        let zone = atk_king(ksq);
+        Self {
+            // Clamp to weight-table bounds — five-plus attackers all map to the maximum danger entry.
+            attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER_WEIGHTS.len() - 1),
+            weak: (zone & atk_them & !atk_us).popcount() as i32,
+            shield: (zone & our_pawns).popcount() as i32,
+            ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
+            diag_exposure: atk_bishop(ksq, occ).popcount() as i32,
+        }
+    }
+}
+
 pub struct Mobility;
 
 impl Mobility {
-    /// Attack maps, king-safety features, and scored metrics for both sides.
-    /// The returned [`MobilityData`] is self-contained.
     #[inline]
     pub fn compute_all(
         pos: &Position,
@@ -65,9 +138,8 @@ impl Mobility {
     }
 
     /// Tapered, openness-interpolated score differential from `color`'s perspective.
-    /// Uses SIMD vector operations via the `EvalMath::Vec4` trait for the final blend.
     #[inline(always)]
-    pub fn evaluate_score_diff<T: crate::engine::autograd::traits::EvalMath<Scalar = T>>(
+    pub fn evaluate_score_diff<T: EvalMath<Scalar = T>>(
         metrics_us: &SideMetrics,
         metrics_them: &SideMetrics,
         openness: i32,
@@ -77,8 +149,6 @@ impl Mobility {
         w_eg_o: T::Vec4,
         w_eg_c: T::Vec4,
     ) -> T {
-        use crate::engine::autograd::traits::{EnvVec4, EnvVec8};
-
         let diff = T::Vec4::from_lanes(
             T::from_i32(metrics_us.mobility - metrics_them.mobility),
             T::from_i32(metrics_us.shadow_mobility - metrics_them.shadow_mobility),
@@ -94,19 +164,11 @@ impl Mobility {
         let w_mg = (w_mg_o * o + w_mg_c * c + half).srai::<10>();
         let w_eg = (w_eg_o * o + w_eg_c * c + half).srai::<10>();
 
-        // Vec8 madd to compute (diff · w_mg) + (diff · w_eg) in parallel.
-        // pack_i16 places [M0..M3] twice into diff_packed and [W_MG0..W_MG3] / [W_EG0..W_EG3] into w_packed.
-        // The SSE _mm_madd_epi16 instruction computes adjacent pairwise sums:
-        // [ (D0·W0 + D1·W1), (D2·W2 + D3·W3), ... ]
-        // For i32, this directly maps to pmaddwd.
-        // For Autograd, it constructs tracing nodes.
+        // Interpolate open/closed, then combine MG+EG via SIMD dot products.
         let w_packed = w_mg.pack_i16(w_eg);
         let diff_packed = diff.pack_i16(diff);
         let madd = diff_packed.madd(w_packed);
 
-        // Extract and sum the remaining pairs to complete the 4-element dot products.
-        // madd.extract::<0>() + madd.extract::<1>() computes the full MG dot product.
-        // madd.extract::<2>() + madd.extract::<3>() computes the full EG dot product.
         let mg_sum = madd.extract::<0>() + madd.extract::<1>();
         let eg_sum = madd.extract::<2>() + madd.extract::<3>();
 
@@ -140,14 +202,6 @@ pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
         .clamp(0, OPEN_UNITY)
 }
 
-// ──────── Eval Terms ────────
-//
-// Each term owns its forward (`apply`) and backward (`scatter`) math;
-// co-located so the score formula and its derivative stay in lockstep.
-// Edit one, edit the other; no cross-file hunting.
-
-/// Mobility differential: safe squares · open/closed · MG/EG · 4 lanes.
-/// Writes `acc.mobility`; `scatter` walks the mobility slots.
 pub struct MobilityTerm;
 
 impl LinearTerm for MobilityTerm {
@@ -164,17 +218,15 @@ impl LinearTerm for MobilityTerm {
     /// # Derivation
     ///
     /// `evaluate_score_diff` interpolates open/closed weight vectors by
-    /// `openness`, then tapers MG↔EG. For lane `j`:
+    /// `openness`, then tapers MG→EG. For lane `j`:
     ///
-    ///   `∂score/∂mg_mob_open[j]    = d_mg · diff[j] · (openness / 1024)`
-    ///   `∂score/∂mg_mob_closed[j]  = d_mg · diff[j] · (closedness / 1024)`
+    ///   `∂score/∂mg_mob_open[j]   = d_mg · diff[j] · (openness / 1024)`
+    ///   `∂score/∂mg_mob_closed[j] = d_mg · diff[j] · (closedness / 1024)`
     ///
     /// Same pattern for EG weights with `d_eg`. The combiner pre-multiplies
     /// `d_mg = d · t_mg` and `d_eg = d · t_eg` so scatter skips the reshape.
     #[inline]
     fn scatter(features: &SharedFeatures, upstream: TaperPair, grads: &mut [f64]) {
-        use crate::{core::psqt::LAYOUT, weave::Vf64x4};
-
         let lo = LAYOUT.mobility_open_offset;
         let lc = LAYOUT.mobility_closed_offset;
 
@@ -214,9 +266,6 @@ impl LinearTerm for MobilityTerm {
     }
 }
 
-/// Shelter, ortho/diag exposure, attacker-weight curve.
-/// Writes `acc.safety_us` and `acc.safety_them` from the same pair of
-/// `SafetyMetrics::score` calls; `scatter` emits 3 shared + 6 attacker slots.
 pub struct KingSafetyTerm;
 
 impl LinearTerm for KingSafetyTerm {
@@ -253,8 +302,6 @@ impl LinearTerm for KingSafetyTerm {
     /// (opposite sign for `idx_them`). Shared indices sum.
     #[inline]
     fn scatter(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
-        use crate::core::psqt::LAYOUT;
-
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
 
@@ -285,113 +332,6 @@ impl LinearTerm for KingSafetyTerm {
         }
     }
 }
-
-// ──────── Mobility Data ────────
-
-/// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.
-///
-/// - `mobility`: safe squares controlled, with contested squares counted twice.
-/// - `shadow_mobility`: safe x-ray (battery) squares we control.
-/// - `threats`: enemy pieces our direct attacks touch.
-/// - `shadow_threats`: enemy pieces our x-rays touch.
-#[derive(Clone, Copy, Default, Debug)]
-pub struct SideMetrics {
-    pub mobility: i32,
-    pub shadow_mobility: i32,
-    pub threats: i32,
-    pub shadow_threats: i32,
-}
-
-/// Complete mobility snapshot for one position, computed once and consumed by
-/// both the engine (score diff) and the tuner (raw feature extraction).
-#[derive(Clone, Default, Debug)]
-pub struct MobilityData {
-    pub metrics_us: SideMetrics,
-    pub metrics_them: SideMetrics,
-    pub safety_us: SafetyMetrics,
-    pub safety_them: SafetyMetrics,
-}
-
-// ──────── King Safety Features ────────
-
-/// Raw king-zone features for one side.
-///
-/// Kept separate so the tuner can regress independent gradients against each component.
-/// The engine folds them into a single score via [`Self::score()`].
-#[derive(Clone, Copy, Default, Debug)]
-pub struct SafetyMetrics {
-    /// Enemy pieces hitting the king ring (capped to weight-table bounds).
-    pub attackers: usize,
-    /// King-zone squares attacked by them but not defended by us.
-    pub weak: i32,
-    /// Friendly pawns adjacent to the king.
-    pub shield: i32,
-    /// Rook-reachable squares from the king (open lines = exposure).
-    pub ortho_exposure: i32,
-    /// Bishop-reachable squares from the king.
-    pub diag_exposure: i32,
-}
-
-impl SafetyMetrics {
-    /// Collapses raw features into a single weighted score.
-    /// Positive ⇒ well-sheltered king, negative ⇒ under fire.
-    #[inline]
-    pub fn score<T: crate::engine::autograd::traits::EvalMath<Scalar = T>>(
-        &self,
-        w_shield: T,
-        w_ortho: T,
-        w_diag: T,
-        w_atk: T,
-    ) -> T {
-        let shelter = T::from_i32(self.shield) * w_shield;
-        let exposure = T::from_i32(self.ortho_exposure) * w_ortho + T::from_i32(self.diag_exposure) * w_diag;
-
-        // ──────── Non-linear Attacker Pressure ────────
-        //
-        // King safety isn't linear:
-        // A second attacker is more than twice as dangerous as the first.
-        // We model this as an accelerating danger curve where the w_atk
-        // (indexed by the number of attackers) scales a base penalty,
-        // which is then amplified by the number of weak squares.
-        //
-        // Semantic bridge: we divide by 10 to keep the internal resolution
-        // high for the tuner (which sees 0.1 increments) while maintaining
-        // integer performance in the search eval.
-        //   pressure = (Weight[attackers] · weak_squares) / 10
-        //
-        // The division by 10 is a semantic bridge.
-        // Our tuner (CMA-ES) works with high-precision floating point weights,
-        // but the engine uses centipawn integers.
-        // This scale factor allows the tuner to find subtle gradients
-        // (e.g. a weight of 122 mapping to 12.2 cp) without losing resolution
-        // in the engine's integer math.
-        //
-        // NOTE: For DualNode (autograd), .trunc() explicitly passes the gradient
-        // through unmodified (Straight-Through Estimator). This assumes the local
-        // gradient of the stair-step function is 1.0, which scales the effective
-        // learning rate for w_atk relative to floating-point reality.
-        let pressure = ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc();
-
-        shelter - exposure - pressure
-    }
-
-    /// Analyzes the king neighborhood
-    /// and records how exposed or defended it is.
-    #[inline(always)]
-    fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
-        let zone = atk_king(ksq);
-        Self {
-            // Clamp to weight-table bounds — five-plus attackers all map to the maximum danger entry.
-            attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER_WEIGHTS.len() - 1),
-            weak: (zone & atk_them & !atk_us).popcount() as i32,
-            shield: (zone & our_pawns).popcount() as i32,
-            ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
-            diag_exposure: atk_bishop(ksq, occ).popcount() as i32,
-        }
-    }
-}
-
-// ──────── Internal Evaluation Context ────────
 
 /// Pre-computed attack maps for both sides. Built once per evaluation and
 /// threaded through every sub-computation to avoid redundant slider work.
@@ -542,9 +482,6 @@ fn king_sq(king_bb: Bitboard) -> Square {
     king_bb.lsb()
 }
 
-// ──────── Per-Side Scoring ────────
-
-/// Computes a side's base metrics: `[mobility, shadow_mobility, threats, shadow_threats]`.
 #[inline(always)]
 fn score_side(
     them: Bitboard,
@@ -556,17 +493,13 @@ fn score_side(
 ) -> SideMetrics {
     // "Safe" squares are those we control that aren't under enemy pawn fire.
     let safe = area_us & !enemy_pawn_atk;
-
     // Mobility rewards exclusive territorial control more than shared space.
     // We count all safe squares, but double count those that they don't reach.
     let mobility = (safe & !area_them).popcount() as i32 + safe.popcount() as i32;
-
     // Shadow mobility (battery squares)
     let shadow_mobility = (xray_us & !enemy_pawn_atk).popcount() as i32;
-
     // Direct piece threats (excluding king)
     let threats = (atk_us & them).popcount() as i32;
-
     // Shadow threats (X-ray threats)
     let shadow_threats = (xray_us & them).popcount() as i32;
 
