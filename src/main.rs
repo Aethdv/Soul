@@ -5,17 +5,25 @@
 
 use std::{
     io::{self, BufRead},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
+    env::args,
+    time::Instant,
+    process,
 };
 
 use soul::{
     core::board::{Position, STARTPOS},
     engine, protocols, tools,
+    core::defs::{MAX_DEPTH, Protocol},
+    engine::search::{SearchDisplay, Limits, Searcher},
+    tt::TranspositionTable,
 };
+
+use soul::engine::search_params::SearchParams;
 
 #[allow(clippy::too_many_lines)]
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = args().collect();
 
     // Handle commands
     if args.len() > 1 {
@@ -48,7 +56,7 @@ fn main() {
                 tools::speedtest::run(limit);
             },
             "genfens" => {
-                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let stop = Arc::new(AtomicBool::new(false));
                 let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::genfens::run(&genfens_args, &stop);
             },
@@ -61,33 +69,33 @@ fn main() {
                 protocols::uci::run_cli_go(&limit_args);
             },
             "gopretty" => {
-                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(soul::core::defs::MAX_DEPTH);
+                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(MAX_DEPTH);
 
                 let board = Position::from_fen(STARTPOS);
-                let limits = engine::search::Limits { depth, protocol: soul::core::defs::Protocol::Uci, ..Default::default() };
+                let limits = Limits { depth, protocol: Protocol::Uci, ..Default::default() };
 
-                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let display = engine::search::SearchDisplay {
+                let stop = Arc::new(AtomicBool::new(false));
+                let display = SearchDisplay {
                     show_wdl: true,
                     go_pretty: true,
                     pretty_print: false,
                     show_currmove: true,
                     use_ansi: true,
                 };
-                let cfg = engine::search::SearchConfig::new_full(
+                let cfg = SearchConfig::new_full(
                     limits,
-                    std::time::Instant::now(),
+                    Instant::now(),
                     stop,
                     0,
                     display,
-                    engine::search_params::SearchParams::default(),
+                    SearchParams::default(),
                 );
-                let mut searcher = engine::search::Searcher::new(
+                let mut searcher = Searcher::new(
                     &cfg,
                     &board,
                     &[],
-                    engine::history::History::new(),
-                    Arc::new(engine::tt::TranspositionTable::new(16)),
+                    History::new(),
+                    Arc::new(TranspositionTable::new(16)),
                 );
                 searcher.iterative_deepening();
                 if let Some(best_move) = searcher.best_move() {
@@ -96,7 +104,7 @@ fn main() {
             },
             _ => {
                 eprintln!("Unknown command. Try 'help' for usage.");
-                std::process::exit(1);
+                process::exit(1);
             },
         }
     } else {
