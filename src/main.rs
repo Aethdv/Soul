@@ -4,22 +4,26 @@
 //! or enters an interactive protocol loop (UCI/XBoard) on stdin.
 
 use std::{
-    io::{self, BufRead},
-    sync::{Arc, atomic::AtomicBool},
     env::args,
-    time::Instant,
+    io::{self, BufRead},
     process,
+    sync::{Arc, atomic::AtomicBool},
+    time::Instant,
 };
 
 use soul::{
-    core::board::{Position, STARTPOS},
-    engine, protocols, tools,
-    core::defs::{MAX_DEPTH, Protocol},
-    engine::search::{SearchDisplay, Limits, Searcher},
+    core::{
+        board::{Position, STARTPOS},
+        defs::{MAX_DEPTH, Protocol},
+    },
+    engine,
+    engine::{
+        search::{Limits, SearchDisplay, Searcher},
+        search_params::SearchParams,
+    },
+    protocols, tools,
     tt::TranspositionTable,
 };
-
-use soul::engine::search_params::SearchParams;
 
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -75,28 +79,10 @@ fn main() {
                 let limits = Limits { depth, protocol: Protocol::Uci, ..Default::default() };
 
                 let stop = Arc::new(AtomicBool::new(false));
-                let display = SearchDisplay {
-                    show_wdl: true,
-                    go_pretty: true,
-                    pretty_print: false,
-                    show_currmove: true,
-                    use_ansi: true,
-                };
-                let cfg = SearchConfig::new_full(
-                    limits,
-                    Instant::now(),
-                    stop,
-                    0,
-                    display,
-                    SearchParams::default(),
-                );
-                let mut searcher = Searcher::new(
-                    &cfg,
-                    &board,
-                    &[],
-                    History::new(),
-                    Arc::new(TranspositionTable::new(16)),
-                );
+                let display =
+                    SearchDisplay { show_wdl: true, go_pretty: true, pretty_print: false, show_currmove: true, use_ansi: true };
+                let cfg = SearchConfig::new_full(limits, Instant::now(), stop, 0, display, SearchParams::default());
+                let mut searcher = Searcher::new(&cfg, &board, &[], History::new(), Arc::new(TranspositionTable::new(16)));
                 searcher.iterative_deepening();
                 if let Some(best_move) = searcher.best_move() {
                     println!("bestmove {}", best_move.to_uci(board.is_frc));
