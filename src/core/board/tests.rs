@@ -13,8 +13,6 @@ use crate::{
     engine::movegen::gen_legal_moves,
 };
 
-// ──────── FEN Round-Trip ────────
-
 #[test]
 fn fen_roundtrip_startpos() {
     let pos = Position::from_fen(STARTPOS);
@@ -41,8 +39,6 @@ fn fen_roundtrip_complex() {
         assert_eq!(pos.hash, pos2.hash, "FEN round-trip hash mismatch for: {fen}");
     }
 }
-
-// ──────── Zobrist Incremental Consistency ────────
 
 #[test]
 fn zobrist_make_unmake_identity() {
@@ -85,8 +81,6 @@ fn zobrist_incremental_matches_full() {
         assert_eq!(pos.hash, expected, "Incremental hash diverged after {uci}: got {:#x}, expected {:#x}", pos.hash, expected);
     }
 }
-
-// ──────── Accumulator Incremental Consistency ────────
 
 #[test]
 fn zobrist_long_sequence() {
@@ -131,8 +125,6 @@ fn accumulator_incremental_matches_full() {
     }
 }
 
-// ──────── Castling ────────
-
 #[test]
 fn castling_kingside_white() {
     let mut pos = Position::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq -");
@@ -172,8 +164,6 @@ fn castling_queenside_black() {
     assert_eq!(pos.piece_at(Square(56)), PieceType::Rook, "Rook not restored to a8");
 }
 
-// ──────── En Passant ────────
-
 #[test]
 fn en_passant_capture() {
     let mut pos = Position::from_fen("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1");
@@ -194,8 +184,6 @@ fn en_passant_capture() {
     assert_eq!(pos.piece_at(Square::from_coords(4, 4)), PieceType::Pawn, "EP victim not restored");
 }
 
-// ──────── Promotion ────────
-
 #[test]
 fn promotion_queen() {
     let mut pos = Position::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
@@ -213,8 +201,6 @@ fn promotion_queen() {
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.piece_at(Square::from_coords(0, 6)), PieceType::Pawn, "Pawn not restored after promotion unmake");
 }
-
-// ──────── Draw Detection ────────
 
 #[test]
 fn draw_by_material_kvk() {
@@ -247,8 +233,6 @@ fn threefold_repetition() {
     let history = vec![pos.hash, 999, pos.hash, 888, pos.hash];
     assert!(pos.is_threefold_repetition(&history));
 }
-
-// ──────── Move Encoding ────────
 
 #[test]
 fn move_encoding_roundtrip() {
@@ -316,8 +300,6 @@ fn move_promotion_piece_types() {
     assert_eq!(quiet.promo(), None);
 }
 
-// ──────── Material Count ────────
-
 #[test]
 fn material_count_startpos() {
     let pos = Position::from_fen(STARTPOS);
@@ -330,8 +312,6 @@ fn material_count_bare_kings() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
     assert_eq!(pos.material_count(), 0, "Bare kings should have 0 material");
 }
-
-// ──────── Position Piece Queries ────────
 
 #[test]
 fn startpos_piece_layout() {
@@ -348,8 +328,6 @@ fn startpos_piece_layout() {
 
     assert_eq!(pos.stm, Color::White);
 }
-
-// ──────── Evaluation Sanity ────────
 
 #[test]
 fn eval_startpos_zero() {
@@ -393,8 +371,6 @@ fn eval_strict_symmetry() {
 
     assert_eq!(w_score, b_score);
 }
-
-// ──────── History Heuristic ────────
 
 #[test]
 fn history_gravity_bounds() {
@@ -465,8 +441,6 @@ fn history_clear() {
     );
 }
 
-// ──────── Phase Extraction ────────
-
 #[test]
 fn phase_startpos() {
     use crate::engine::eval::extract_phase;
@@ -489,8 +463,6 @@ fn phase_endgame() {
     assert_eq!(phase, 0, "Bare kings should have phase 0");
 }
 
-// ──────── WDL Model ────────
-
 #[test]
 fn wdl_monotonicity() {
     use crate::engine::wdl::wdl_model;
@@ -508,8 +480,6 @@ fn wdl_monotonicity() {
         last_l = l;
     }
 }
-
-// ──────── Squares & Coordinates ────────
 
 #[test]
 fn square_coordinate_mapping() {
@@ -530,8 +500,6 @@ fn square_coordinate_mapping() {
     assert_eq!(a1.flip_file().0, 7); // h1
 }
 
-// ──────── Pin Detection ────────
-
 #[test]
 fn pinned_pieces_detection() {
     // 1. Orthogonal Pin
@@ -548,8 +516,6 @@ fn pinned_pieces_detection() {
     let pinned_b = pos.pinned_pieces(Color::Black);
     assert!(pinned_b.is_empty(), "Black should have no pinned pieces");
 }
-
-// ──────── Insufficient Material (Advanced) ────────
 
 #[test]
 fn draw_by_material_kb_vs_k() {
@@ -571,8 +537,6 @@ fn fifty_move_draw_detection() {
     let pos2 = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 99 50");
     assert!(!pos2.is_fifty_move_draw(), "halfmove=99 is not yet a draw");
 }
-
-// ──────── Move Side Effects ────────
 
 #[test]
 fn double_push_sets_en_passant() {
@@ -606,8 +570,6 @@ fn promotion_capture_and_undo() {
     assert_eq!(pos.piece_at(Square::from_coords(2, 7)), PieceType::Rook, "Rook not restored to c8");
     assert_eq!(pos.hash, original_hash, "Hash not restored after promotion capture unmake");
 }
-
-// ──────── Checkmate & Stalemate ────────
 
 #[test]
 fn checkmate_no_legal_moves() {
@@ -657,8 +619,6 @@ fn stalemate_no_legal_moves() {
     assert!(pos.checkers().is_empty(), "Should NOT be in check in stalemate");
 }
 
-// ──────── Standard Perft Tests ────────
-
 #[test]
 fn perft_suite() {
     let cases = [
@@ -695,8 +655,6 @@ fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x
     }
     total
 }
-
-// ──────── Castling Rights Management ────────
 
 #[test]
 fn king_move_removes_castling_rights() {
@@ -742,8 +700,6 @@ fn rook_capture_removes_castling_rights() {
     assert_eq!(pos.castling_rights, original_rights, "Castling rights should be restored after rook-capture unmake");
 }
 
-// ──────── Legality ────────
-
 #[test]
 fn castling_legality_checks() {
     // 1. Cannot castle out of check
@@ -762,8 +718,6 @@ fn castling_legality_checks() {
     let moves = gen_legal_moves(&pos);
     assert!(!moves.iter().any(|m| m.is_castling() && m.to().0 == 7), "Should not castle into check on g1");
 }
-
-// ──────── Helpers ────────
 
 fn find_uci_move(pos: &Position, uci: &str) -> Move {
     let moves = gen_legal_moves(pos);

@@ -182,7 +182,7 @@ impl SpatialTensor {
         Self { ortho_direct, ortho_xray, diag_direct, diag_xray }
     }
 
-    // ── Accessors ──
+    // ──────── Accessors ────────
 
     #[inline]
     pub fn w_ortho_direct(&self) -> u64 {
