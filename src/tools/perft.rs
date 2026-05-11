@@ -9,6 +9,8 @@ use std::{
 
 use crate::{core::board::Position, engine::movegen::gen_legal_moves, weave::Vi16x8};
 
+const BULK_COUNTING: bool = false;
+
 pub fn run(board: &Position, depth: u8, divide: bool) {
     let start = Instant::now();
     let mut board_clone = *board;
@@ -42,8 +44,6 @@ pub fn run(board: &Position, depth: u8, divide: bool) {
     }
     io::stdout().flush().ok();
 }
-
-const BULK_COUNTING: bool = false;
 
 pub fn perft(board: &mut Position, depth: u8, acc: &mut Vi16x8) -> u64 {
     if depth == 0 {

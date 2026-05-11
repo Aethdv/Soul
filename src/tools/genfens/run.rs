@@ -8,11 +8,17 @@
 //! the conductor: load books, dispatch work, flush to disk, print stats.
 
 use std::{
-    io::Write,
+    fs::File,
+    io::{BufRead, BufReader, Read, Result, Write, stdout},
+    num::NonZero,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc::channel,
     },
+    thread::{available_parallelism, sleep, spawn},
+    time::Duration,
 };
 
 use super::{
@@ -20,7 +26,11 @@ use super::{
     stats::{GlobalStats, get_rss_kb},
     worker::WorkerState,
 };
-use crate::tools::dataset::{SoulEntry, append_encoded, load_encoded, parse_epd_str};
+use crate::{
+    cli::Help,
+    core::{board::Position, util::format_comma as format_num},
+    tools::dataset::{MAGIC_V5, MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
+};
 
 const GREEN: &str = "\x1b[92m";
 const YELLOW: &str = "\x1b[93m";
@@ -33,7 +43,7 @@ const BADGE_BAD: &str = "\x1b[91m[BAD]\x1b[0m";
 
 /// Dashboard refresh interval.
 /// 10 Hz is smooth enough without burning CPU on terminal writes.
-const DASHBOARD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of lines the dashboard occupies. We print this many newlines on
 /// first render, then cursor-up by this amount on every subsequent frame.
@@ -69,7 +79,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // Use half the available cores by default — datagen is I/O-light and
     // compute-heavy, but leaving cores free keeps the system responsive
     // during multi-hour runs.
-    let all_cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let all_cores = available_parallelism().map_or(1, NonZero::get);
     let num_threads = config.thread_count.unwrap_or_else(|| (all_cores / 2).max(1));
 
     let global = Arc::new(GlobalStats::new());
@@ -99,12 +109,12 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         let stop_mon = stop.clone();
         let finish_mon = finished.clone();
 
-        std::thread::spawn(move || {
+        spawn(move || {
             let mut first_frame = true;
             while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
                 let snap = Snapshot::capture(&global_mon, &gen_mon, target, rr);
                 render_dashboard(&snap, &mut first_frame);
-                std::thread::sleep(DASHBOARD_INTERVAL);
+                sleep(DASHBOARD_INTERVAL);
             }
         });
     }
@@ -112,7 +122,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // ── Persistent worker threads ──
     // Each worker owns its TT and history table for the entire run.
     // One allocation per worker, no churn between games.
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<SoulEntry>>();
+    let (tx, rx) = channel::<Vec<SoulEntry>>();
     let mut handles = Vec::with_capacity(num_threads);
 
     for _ in 0..num_threads {
@@ -120,7 +130,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         let tx = tx.clone();
         let stop_w = stop.clone();
         let target_u = target;
-        handles.push(std::thread::spawn(move || {
+        handles.push(spawn(move || {
             loop {
                 if stop_w.load(Ordering::Relaxed) || worker.global.saved.load(Ordering::Relaxed) >= target_u {
                     break;
@@ -169,8 +179,6 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let _ = config.save();
 }
 
-// ──────── Display helpers ────────
-
 /// Formats elapsed seconds into the most natural unit.
 /// Datagen runs range from minutes to days, so we adapt the display.
 fn format_eta(seconds: f64) -> String {
@@ -183,8 +191,6 @@ fn format_eta(seconds: f64) -> String {
         _ => format!("{m}m {s}s"),
     }
 }
-
-use crate::core::util::format_comma as format_num;
 
 /// Safe division that returns 0.0 instead of NaN/Inf.
 /// Percentage math shows up everywhere in datagen stats.
@@ -199,11 +205,9 @@ fn pct(part: u64, whole: u64) -> f64 {
     safe_div(part as f64, whole as f64) * 100.0
 }
 
-// ──────── Stats snapshot ────────
-
 /// A consistent point-in-time capture of all atomic counters.
 ///
-/// Both the live dashboard and the final report need the same ~15 metrics.
+/// Both the live dashboard and the final report need the same metrics.
 /// Rather than scattering `load(Relaxed)` calls everywhere and duplicating
 /// all the derived calculations, we capture once and compute from the snapshot.
 struct Snapshot {
@@ -304,8 +308,6 @@ impl Snapshot {
     }
 }
 
-// ──────── Dashboard ────────
-
 /// Renders the live progress dashboard using ANSI cursor movement.
 /// Overwrites the same 10 lines in-place for a clean, flicker-free display.
 fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
@@ -357,7 +359,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     println!("\r\x1b[KElapsed:         {}", format_eta(snap.elapsed));
     println!("\r\x1b[KETA:             {}", format_eta(snap.eta_secs()));
 
-    let _ = std::io::stdout().flush();
+    let _ = stdout().flush();
 }
 
 /// Prints the final generation report — the definitive summary of a run.
@@ -417,8 +419,6 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!();
     println!("  Search Failures:  {}", format_num(snap.search_fail));
 }
-
-// ──────── Book loading ────────
 
 /// Loads opening positions from one or more EPD/FEN files.
 /// Returns the merged set of starting positions for selfplay games.
@@ -506,18 +506,8 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Genfe
     let _ = config.save();
 }
 
-// ── Resume support ──
-
-/// Reads the number of positions already present in an output file.
-/// V3+ format stores the count in the header for 𝒪(1) lookup.
-/// Older formats require a full deserialization pass.
+/// Reads the position count from a V5/V6 header. Unknown formats return 0.
 fn load_existing_count(path: &str) -> usize {
-    use std::{
-        fs::File,
-        io::{BufReader, Read},
-        path::Path,
-    };
-
     if !Path::new(path).exists() {
         return 0;
     }
@@ -530,22 +520,17 @@ fn load_existing_count(path: &str) -> usize {
         return 0;
     }
 
-    if &magic == crate::tools::dataset::MAGIC_V5 || &magic == crate::tools::dataset::MAGIC_V6 {
+    if &magic == MAGIC_V5 || &magic == MAGIC_V6 {
         let mut buf = [0u8; 8];
         if reader.read_exact(&mut buf).is_ok() {
             return u64::from_le_bytes(buf) as usize;
         }
-        return 0;
     }
 
-    // Pre-V3: no header count — have to deserialize the whole file.
-    // "Expensive", but only happens once on resume.
-    load_encoded(path).map_or(0, |v| v.len())
+    0
 }
 
 fn print_help() {
-    use crate::cli::Help;
-
     let h = Help::new(22);
 
     h.header("Usage:");
@@ -707,7 +692,7 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                 print_help();
                 std::process::exit(0);
             },
-            _ => {}, // Unknown flags silently ignored — engine convention.
+            _ => {}, // Unknown flags silently ignored.
         }
     }
 
@@ -762,12 +747,7 @@ fn parse_suffix(s: &str) -> Option<u64> {
 
 /// Loads opening positions from an EPD file, falling back to raw FEN parsing.
 /// Both formats are common in the chess datagen ecosystem.
-fn load_epd_fens(path: &str) -> std::io::Result<Vec<String>> {
-    use std::{
-        fs::File,
-        io::{BufRead, BufReader},
-    };
-
+fn load_epd_fens(path: &str) -> Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut fens = Vec::new();
@@ -778,7 +758,7 @@ fn load_epd_fens(path: &str) -> std::io::Result<Vec<String>> {
         if let Some((board, _)) = parse_epd_str(&line) {
             // EPD parsed successfully — re-export as FEN to normalize formatting.
             fens.push(board.as_fen());
-        } else if crate::core::board::Position::try_from_fen(&line).is_ok() {
+        } else if Position::try_from_fen(&line).is_ok() {
             // Fallback: raw FEN line (no EPD operations field).
             fens.push(line);
         }

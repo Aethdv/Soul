@@ -1,6 +1,12 @@
 //! Configuration parameters for self-play data generation.
 
-use std::{fs::File, io::Write, path::Path};
+use std::{
+    fs::{File, read_to_string, rename},
+    io::{Error, ErrorKind, Result, Write},
+    path::Path,
+};
+
+use crate::core::defs::MAX_DEPTH;
 
 pub const CONFIG_FILENAME: &str = "genfens_config.json";
 
@@ -75,23 +81,22 @@ impl Default for GenfensConfig {
 }
 
 impl GenfensConfig {
-    pub fn load() -> std::io::Result<Self> {
+    pub fn load() -> Result<Self> {
         let path = CONFIG_FILENAME;
         if !Path::new(path).exists() {
             return Ok(Self::default());
         }
-        let content = std::fs::read_to_string(path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid config: {e}")))
+        let content = read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|e| Error::new(ErrorKind::InvalidData, format!("Invalid config: {e}")))
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
+    pub fn save(&self) -> Result<()> {
         let tmp_path = format!("{CONFIG_FILENAME}.tmp");
         let content = serde_json::to_string_pretty(self)?;
         let mut tmp_file = File::create(&tmp_path)?;
 
         tmp_file.write_all(content.as_bytes())?;
-        std::fs::rename(&tmp_path, CONFIG_FILENAME)?;
+        rename(&tmp_path, CONFIG_FILENAME)?;
         Ok(())
     }
 
@@ -132,7 +137,7 @@ impl From<GenfensArgs> for GenfensConfig {
     fn from(args: GenfensArgs) -> Self {
         let depth = match args.depth {
             Some(d) => d,
-            None if args.soft_nodes.is_some() || args.hard_nodes.is_some() => crate::core::defs::MAX_DEPTH,
+            None if args.soft_nodes.is_some() || args.hard_nodes.is_some() => MAX_DEPTH,
             None => 6,
         };
 

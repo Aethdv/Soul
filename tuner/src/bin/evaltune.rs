@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use soul::cli::Help;
 use tuner::{
     core::config::{DEFAULT_WDL_END, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
@@ -243,7 +244,7 @@ fn main() {
 }
 
 fn print_help() {
-    let h = soul::cli::Help::new(28);
+    let h = Help::new(28);
 
     h.header("Evaluation Parameter Tuning via Evolved Sign Momentum");
     h.separator();

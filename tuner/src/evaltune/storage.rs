@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use soul::engine::eval_params::Tunable;
 
-use crate::core::error::CheckpointError;
+use crate::core::{error::CheckpointError, fnv::Fnv1a};
 
 pub const CHECKPOINT_VERSION: u32 = 2;
 
@@ -123,7 +123,7 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 
 /// FNV-1a hash over parameter names to detect layout changes.
 pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
-    let mut fnv = crate::core::fnv::Fnv1a::new();
+    let mut fnv = Fnv1a::new();
     for t in tunables {
         fnv.write_bytes(t.name.as_bytes());
     }

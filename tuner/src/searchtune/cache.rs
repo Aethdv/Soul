@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use soul::engine::search_params::{PARAM_DEFS, SearchParams};
 
 use super::{pentanomial::Pentanomial, selfplay};
+use crate::core::fnv::Fnv1a;
 
 /// Zero-allocation, continuous-to-discrete FNV-1a cache hash.
 ///
@@ -12,7 +13,7 @@ use super::{pentanomial::Pentanomial, selfplay};
 /// (where CMA-ES tests 0.500 and 0.501, producing the exact same engine config,
 /// but generating fictitious gradient noise from random game outcomes).
 fn hash_discrete_params(candidate_norm: &[f64], opponent_norm: &[f64], openings: &[String]) -> u64 {
-    let mut fnv = crate::core::fnv::Fnv1a::new();
+    let mut fnv = Fnv1a::new();
 
     // Hash candidate
     for (i, &v) in candidate_norm.iter().enumerate() {

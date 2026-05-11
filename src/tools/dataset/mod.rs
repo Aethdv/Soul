@@ -42,15 +42,7 @@ const _: () = assert!(size_of::<SoulEntry>() == 32);
 
 impl Default for SoulEntry {
     fn default() -> Self {
-        Self {
-            occupancy: 0,
-            pieces: [0u8; 16],
-            score: 0,
-            result: 0,
-            stm_and_ep: 64, // 64 = en passant none, STM White
-            castling: 0,
-            _pad: [0u8; 3],
-        }
+        Self { occupancy: 0, pieces: [0u8; 16], score: 0, result: 0, stm_and_ep: 64, castling: 0, _pad: [0u8; 3] }
     }
 }
 

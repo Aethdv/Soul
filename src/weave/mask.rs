@@ -1,11 +1,13 @@
 //! SIMD predication masks for branchless operations.
 
-#![rustfmt::skip]
 // Typed SIMD wrappers — not CamelCase by design.
 #![allow(non_camel_case_types)]
 
-use core::arch::x86_64::*;
-use core::ops::{BitAnd, BitOr, BitXor, Not};
+use core::{
+    arch::x86_64::*,
+    ops::{BitAnd, BitOr, BitXor, Not},
+};
+
 use super::*;
 
 #[derive(Copy, Clone, Debug)]

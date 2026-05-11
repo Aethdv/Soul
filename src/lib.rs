@@ -10,7 +10,6 @@
 #![feature(adt_const_params)]
 #![feature(stdarch_const_x86)]
 #![feature(stmt_expr_attributes)]
-#![feature(custom_inner_attributes)]
 #![feature(const_trait_impl)]
 #![feature(const_convert)]
 #![feature(const_ops)]

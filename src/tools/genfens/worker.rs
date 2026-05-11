@@ -3,9 +3,12 @@
 //! Runs full games from opening book positions to checkmate or draw, filtering
 //! out highly tactical or noisy positions before saving to the dataset.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering::Relaxed},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    },
+    time::Instant,
 };
 
 use super::{config::GenfensConfig, stats::GlobalStats};
@@ -18,16 +21,15 @@ use crate::{
     engine::{
         adjudication::check_adjudication,
         eval::{evaluate_fast, extract_phase},
-        history,
+        history::History,
         movegen::gen_legal_moves,
-        search::{Limits, SearchConfig as EngineSearchConfig, Searcher},
+        search::{Limits, SearchConfig as EngineSearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
-        tt,
+        tt::TranspositionTable,
     },
     tools::dataset::SoulEntry,
+    weave::Vi16x8,
 };
-
-// ──────── Self-Play Worker ────────
 
 /// A self-play worker that generates NNUE training data one game at a time.
 ///
@@ -36,7 +38,7 @@ use crate::{
 /// and back-propagates the final WDL result once the game concludes.
 pub struct WorkerState {
     pub board: Position,
-    pub accumulator: crate::weave::Vi16x8,
+    pub accumulator: Vi16x8,
     /// Position hashes fed to the searcher (in-search repetition detection).
     pub search_history: Vec<u64>,
     /// Full game hash trail (threefold repetition detection).
@@ -49,10 +51,10 @@ pub struct WorkerState {
     pub config: GenfensConfig,
     pub rng: fastrand::Rng,
     pub global: Arc<GlobalStats>,
-    pub tt: Arc<tt::TranspositionTable>,
+    pub tt: Arc<TranspositionTable>,
     /// Persistent history table — reused across positions within a game,
     /// cleared between games. Avoids per-position heap allocation.
-    pub history_table: history::History,
+    pub history_table: History,
     /// Track if the last move made was a capture or promotion to filter out
     /// tactically "hot" positions reached via a trade.
     pub last_move_was_tactical: bool,
@@ -82,8 +84,8 @@ impl Clone for WorkerState {
             config: self.config.clone(),
             rng: fastrand::Rng::new(),
             global: Arc::clone(&self.global),
-            tt: Arc::new(tt::TranspositionTable::new(16)),
-            history_table: history::History::new(),
+            tt: Arc::new(TranspositionTable::new(16)),
+            history_table: History::new(),
             last_move_was_tactical: false,
             win_adj_counter: 0,
             draw_adj_counter: 0,
@@ -109,8 +111,8 @@ impl WorkerState {
             pending: Vec::with_capacity(config.buffer_size),
             confirmed: Vec::with_capacity(config.buffer_size),
             book,
-            tt: Arc::new(tt::TranspositionTable::new(16)),
-            history_table: history::History::new(),
+            tt: Arc::new(TranspositionTable::new(16)),
+            history_table: History::new(),
             config,
             rng: fastrand::Rng::new(),
             global,
@@ -235,8 +237,6 @@ impl WorkerState {
             self.local_plies += 1;
 
             let moves = gen_legal_moves(&self.board);
-
-            // ──────── Draw Detection ────────
 
             // ── Checkmate / Stalemate ──
             if moves.is_empty() {
@@ -443,10 +443,10 @@ impl WorkerState {
 
         let cfg = EngineSearchConfig::new_full(
             limits,
-            std::time::Instant::now(),
+            Instant::now(),
             NEVER_STOP.with(Arc::clone),
             0,
-            crate::engine::search::SearchDisplay::SILENT,
+            SearchDisplay::SILENT,
             SearchParams::default(),
         );
 

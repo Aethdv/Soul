@@ -1,6 +1,11 @@
 //! Mathematical traits for generic evaluation and automatic differentiation.
 
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use std::{
+    arch::x86_64::_mm_cvtsi32_si128,
+    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+};
+
+use crate::weave::{Vi16x8, Vi32x4};
 
 /// The unified mathematical interface for evaluation and tuning.
 ///
@@ -99,8 +104,8 @@ pub trait EnvVec8: Sized + Copy {
 
 impl EvalMath for i32 {
     type Scalar = i32;
-    type Vec4 = crate::weave::Vi32x4;
-    type Vec8 = crate::weave::Vi16x8;
+    type Vec4 = Vi32x4;
+    type Vec8 = Vi16x8;
     type Array6 = [i32; 6];
 
     #[inline(always)]
@@ -166,13 +171,13 @@ impl EvalMath for i32 {
     }
 
     #[inline(always)]
-    fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4 {
+    fn from_vi32x4(v: Vi32x4) -> Self::Vec4 {
         v
     }
 
     #[inline(always)]
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 {
-        crate::weave::Vi32x4::from_array(arr)
+        Vi32x4::from_array(arr)
     }
 
     #[inline(always)]
@@ -200,7 +205,7 @@ impl EvalMath for i32 {
         // the bottom of an XMM register. _mm_madd_epi16 then performs a horizontal
         // pairwise dot product: (acc.mg · phase) + (acc.eg · eg_phase),
         // collapsing the tapered evaluation into a single instruction.
-        let weights = crate::weave::Vi16x8(unsafe { core::arch::x86_64::_mm_cvtsi32_si128(packed as i32) });
+        let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed as i32) });
         acc.madd(weights).extract::<0>() / 24
     }
 }
@@ -269,7 +274,7 @@ impl EvalMath for f64 {
     }
 
     #[inline(always)]
-    fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4 {
+    fn from_vi32x4(v: Vi32x4) -> Self::Vec4 {
         let arr = v.to_array();
         F64Vec4([arr[0] as f64, arr[1] as f64, arr[2] as f64, arr[3] as f64])
     }
@@ -407,9 +412,9 @@ impl EnvVec8 for F64Vec8 {
     }
 }
 
-impl EnvVec4 for crate::weave::Vi32x4 {
+impl EnvVec4 for Vi32x4 {
     type Scalar = i32;
-    type Vec8 = crate::weave::Vi16x8;
+    type Vec8 = Vi16x8;
 
     #[inline(always)]
     fn zero() -> Self {
@@ -437,9 +442,9 @@ impl EnvVec4 for crate::weave::Vi32x4 {
     }
 }
 
-impl EnvVec8 for crate::weave::Vi16x8 {
+impl EnvVec8 for Vi16x8 {
     type Scalar = i32;
-    type Vec4 = crate::weave::Vi32x4;
+    type Vec4 = Vi32x4;
 
     #[inline(always)]
     fn zero() -> Self {

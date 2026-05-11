@@ -11,6 +11,7 @@
 //! to eliminate runtime branches in the hot path.
 
 use std::{
+    cmp::Reverse,
     collections::VecDeque,
     hint::{likely, unlikely},
     io::Write,
@@ -30,16 +31,17 @@ use crate::{
     },
     engine::{
         eval::evaluate,
-        history::{self, ContContext},
+        history::{self, ContContext, History},
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
         search_params::SearchParams,
         see::see_ge,
         tm::TimeManager,
         tt,
+        tt::TranspositionTable,
     },
-    tools::tui,
-    weave::Vu64x4,
+    tools::{perft::perft, tui},
+    weave::{Vi16x8, Vu64x4},
 };
 
 pub const NODE_CHECK_INTERVAL: u64 = 2048;
@@ -121,16 +123,16 @@ pub struct Searcher<'cfg> {
     pub iter_depth: i32,
     pub last_print: u128,
     pub pv_history: VecDeque<(u128, Line, i32)>,
-    pub history_table: history::History,
-    pub tt: Arc<tt::TranspositionTable>,
+    pub history_table: History,
+    pub tt: Arc<TranspositionTable>,
 }
 
 #[repr(align(32))]
 pub struct Worker {
     pub pos: Position,
-    pub accumulator: crate::weave::Vi16x8,
+    pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 1]>,
-    pub history: history::History,
+    pub history: History,
     /// Set while a null-move verification search is on the stack.
     /// Suppresses nested NMP, which would otherwise recurse forever on
     /// the same position at ever-shrinking depth.
@@ -147,7 +149,7 @@ impl<'cfg> Searcher<'cfg> {
     ///   2. Natural anytime algorithm: always have a best move ready from the
     ///      last completed iteration.
     #[inline]
-    pub fn iterative_deepening(&mut self) -> history::History {
+    pub fn iterative_deepening(&mut self) -> History {
         self.nodes = 0;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
@@ -156,7 +158,6 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         if let Some(perft_depth) = self.cfg.limits.perft {
-            use crate::tools::perft::perft;
             let mut board = self.root_pos;
             let mut acc = board.get_initial_accumulator();
             println!("Nodes searched: {}", perft(&mut board, perft_depth, &mut acc));
@@ -270,7 +271,7 @@ impl<'cfg> Searcher<'cfg> {
             }
 
             // best move floats to front — feeds next iteration's ordering.
-            self.root_moves.sort_by_key(|m| std::cmp::Reverse(m.score));
+            self.root_moves.sort_by_key(|m| Reverse(m.score));
 
             if self.is_stopped() {
                 break;
@@ -352,8 +353,8 @@ impl<'cfg> Searcher<'cfg> {
         cfg: &'cfg SearchConfig,
         pos: &Position,
         history: &[u64],
-        history_table: history::History,
-        tt: Arc<tt::TranspositionTable>,
+        history_table: History,
+        tt: Arc<TranspositionTable>,
     ) -> Self {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         let tm = TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
@@ -392,7 +393,7 @@ impl<'cfg> Searcher<'cfg> {
     }
 
     #[inline]
-    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], history_table: history::History) {
+    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], history_table: History) {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
 
         self.zobrist_trail.clear();
@@ -1364,8 +1365,6 @@ impl Worker {
         Ok(best_eval)
     }
 
-    // ──────── Heuristics & State Queries ────────
-
     /// Fifty move rule, insufficient material, or repetition → immediate draw.
     ///
     /// NOTE: checked before move generation, so a theoretical checkmate on
@@ -1428,8 +1427,6 @@ impl Worker {
         remainder.contains(&key)
     }
 }
-
-// ──────── Supporting Structs ────────
 
 /// Display configuration for search output.
 #[derive(Clone, Copy, Default)]

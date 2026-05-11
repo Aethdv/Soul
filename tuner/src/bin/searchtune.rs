@@ -1,7 +1,7 @@
 #![feature(custom_inner_attributes)]
-#![rustfmt::skip]
 
 use clap::{Parser, Subcommand};
+use soul::cli::Help;
 use tuner::searchtune;
 
 #[derive(Parser)]
@@ -74,11 +74,10 @@ fn main() {
     match args.command {
         Some(Commands::Help) => print_help(),
         None => {
-            let mut tuner_config = tuner::core::config::TunerConfig::from_file(&args.config)
-                .unwrap_or_else(|e| {
-                    eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
-                    tuner::core::config::TunerConfig::default()
-                });
+            let mut tuner_config = tuner::core::config::TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
+                eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
+                tuner::core::config::TunerConfig::default()
+            });
 
             if let Some(epochs) = args.epochs {
                 tuner_config.searchtune.epochs = epochs;
@@ -111,11 +110,7 @@ fn main() {
                 tuner_config.searchtune.active_softness = soft;
             }
 
-            searchtune::run(
-                &args.openings,
-                &tuner_config.searchtune,
-                args.resume
-            );
+            searchtune::run(&args.openings, &tuner_config.searchtune, args.resume);
         },
     }
 }
@@ -123,7 +118,7 @@ fn main() {
 /// Manual help text. MUST be kept in sync with `Args` struct above.
 /// If you add/remove a flag there, mirror it here or nobody will ever find it.
 fn print_help() {
-    let h = soul::cli::Help::new(34);
+    let h = Help::new(34);
 
     h.header("Search Parameter Tuning via Soft Active CMA-ES");
     h.separator();

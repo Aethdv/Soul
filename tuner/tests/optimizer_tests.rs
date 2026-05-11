@@ -1,5 +1,4 @@
 #![feature(custom_inner_attributes)]
-#![rustfmt::skip]
 
 use tuner::{evaltune::lion::Lion, searchtune::cmaes::CmaEs};
 
@@ -7,11 +6,11 @@ use tuner::{evaltune::lion::Lion, searchtune::cmaes::CmaEs};
 fn test_lion_quadratic_convergence() {
     // Test Lion on simple quadratic: f(x) = sum(x_i²)
     let n = 10;
-    let mut params   = vec![10.0; n];
+    let mut params = vec![10.0; n];
     let mut momentum = vec![0.0; n];
-    let decay_mask   = vec![1.0; n];
-    let fixed_mask   = vec![false; n];
-    let beta2        = vec![0.99; n];
+    let decay_mask = vec![1.0; n];
+    let fixed_mask = vec![false; n];
+    let beta2 = vec![0.99; n];
 
     let mut optimizer = Lion::new(0.9, 0.1, 0.0);
 
@@ -22,7 +21,8 @@ fn test_lion_quadratic_convergence() {
         let decay = 1.0 - (iter as f64 / 200.0);
         optimizer.set_lr(0.1 * decay.max(0.05));
 
-        optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+        let lr_mask = vec![1.0; params.len()];
+        optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
     }
 
     let final_norm: f64 = params.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -34,21 +34,22 @@ fn test_lion_quadratic_convergence() {
 
 #[test]
 fn test_lion_respects_fixed_mask() {
-    let mut params   = vec![1.0, 2.0, 3.0];
+    let mut params = vec![1.0, 2.0, 3.0];
     let mut momentum = vec![0.0; 3];
-    let grads        = vec![1.0, 1.0, 1.0];
-    let decay_mask   = vec![1.0; 3];
-    let fixed_mask   = vec![false, true, false];
-    let beta2        = vec![0.99; 3];
+    let grads = vec![1.0, 1.0, 1.0];
+    let decay_mask = vec![1.0; 3];
+    let fixed_mask = vec![false, true, false];
+    let beta2 = vec![0.99; 3];
 
     let original_middle = params[1];
 
     let optimizer = Lion::new(0.9, 0.1, 0.0);
-    optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2);
+    let lr_mask = vec![1.0; params.len()];
+    optimizer.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
 
     assert_eq!(params[1], original_middle, "Fixed parameter should not change");
-    assert_ne!(params[0], 1.0,             "Unfixed parameter should change");
-    assert_ne!(params[2], 3.0,             "Unfixed parameter should change");
+    assert_ne!(params[0], 1.0, "Unfixed parameter should change");
+    assert_ne!(params[2], 3.0, "Unfixed parameter should change");
 }
 
 #[test]
@@ -57,7 +58,7 @@ fn test_cmaes_sphere_function() {
     let n = 5;
     let mut cmaes = CmaEs::new(n, 1.5);
     cmaes.set_mean(&vec![3.0; n]); // Start away from optimum
-    let mut rng   = fastrand::Rng::new();
+    let mut rng = fastrand::Rng::new();
 
     for _generation in 0..50 {
         let pop = cmaes.sample_population(&mut rng);
@@ -84,36 +85,15 @@ fn test_pentanomial_symmetry() {
     use tuner::searchtune::pentanomial::Pentanomial;
 
     // WW-DD-LL should give 50% score
-    let penta1 = Pentanomial {
-        ww: 10,
-        dd: 0,
-        ll: 10,
-        wd: 0,
-        wl: 0,
-        ld: 0,
-    };
+    let penta1 = Pentanomial { ww: 10, dd: 0, ll: 10, wd: 0, wl: 0, ld: 0 };
     assert!((penta1.score() - 0.5).abs() < 0.01, "Symmetric W/L should give 50%");
 
     // All WW should give 100%
-    let penta2 = Pentanomial {
-        ww: 20,
-        dd: 0,
-        ll: 0,
-        wd: 0,
-        wl: 0,
-        ld: 0,
-    };
+    let penta2 = Pentanomial { ww: 20, dd: 0, ll: 0, wd: 0, wl: 0, ld: 0 };
     assert!((penta2.score() - 1.0).abs() < 0.01, "All wins should give 100%");
 
     // WD-LD should give 50%
-    let penta3 = Pentanomial {
-        ww: 0,
-        dd: 0,
-        ll: 0,
-        wd: 10,
-        wl: 0,
-        ld: 10,
-    };
+    let penta3 = Pentanomial { ww: 0, dd: 0, ll: 0, wd: 10, wl: 0, ld: 10 };
     assert!((penta3.score() - 0.5).abs() < 0.01, "WD-LD should give 50%");
 
     // WL only: Win-Loss pairs score exactly 0.5 each, same as DD
@@ -126,25 +106,11 @@ fn test_fisher_std_err() {
     use tuner::searchtune::pentanomial::Pentanomial;
 
     // High certainty (many games)
-    let p_certain = Pentanomial {
-        ww: 100,
-        dd: 0,
-        ll: 100,
-        wd: 0,
-        wl: 0,
-        ld: 0,
-    };
+    let p_certain = Pentanomial { ww: 100, dd: 0, ll: 100, wd: 0, wl: 0, ld: 0 };
     let se_certain = p_certain.fisher_std_err();
 
     // Low certainty (few games)
-    let p_uncertain = Pentanomial {
-        ww: 1,
-        dd: 0,
-        ll: 1,
-        wd: 0,
-        wl: 0,
-        ld: 0,
-    };
+    let p_uncertain = Pentanomial { ww: 1, dd: 0, ll: 1, wd: 0, wl: 0, ld: 0 };
     let se_uncertain = p_uncertain.fisher_std_err();
 
     assert!(se_certain < se_uncertain, "More games should imply lower SE");

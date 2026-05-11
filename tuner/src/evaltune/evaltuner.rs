@@ -6,7 +6,7 @@ use std::{
 
 use rayon::prelude::*;
 use soul::{
-    core::psqt,
+    core::{defs::Color, psqt},
     engine::eval_params::{self, Tunable},
     tools::dataset::FeatureSlots,
 };
@@ -58,7 +58,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
             match loader::load_epd(path) {
                 Ok(epd_entries) => {
                     for e in &epd_entries {
-                        let stm_result = if e.board.stm == soul::core::defs::Color::Black { 1.0 - e.result } else { e.result };
+                        let stm_result = if e.board.stm == Color::Black { 1.0 - e.result } else { e.result };
                         all_entries.push(loader::SoulEntry::from_board(&e.board, stm_result, None, Some(i16::MAX as i32)));
                     }
                 },

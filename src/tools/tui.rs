@@ -11,7 +11,7 @@ use crate::{
         defs::{MATE, MATE_BOUND, PieceType, Protocol, Square},
         moves::Move,
     },
-    engine::{search::Line, wdl},
+    engine::{movegen::gen_legal_moves, search::Line, wdl},
 };
 
 type Rgb = (u8, u8, u8);
@@ -218,8 +218,6 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let _ = std::io::stdout().flush();
 }
 
-// ──────── Private Helpers ────────
-
 #[inline]
 fn tui_fg(c: Rgb, enabled: bool) -> String {
     if enabled { format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
@@ -383,7 +381,6 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
     let mut acc = board.get_initial_accumulator();
     let undo = board.make_move(mv, &mut acc);
     if board.checkers().is_not_empty() {
-        use crate::engine::movegen::gen_legal_moves;
         let responses = gen_legal_moves(board);
         san.push(if responses.is_empty() { '#' } else { '+' });
     }
@@ -459,7 +456,6 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
 
         let s = match (temp_board.as_mut(), temp_acc.as_mut()) {
             (Some(b), Some(a)) => {
-                use crate::engine::movegen::gen_legal_moves;
                 let legal = gen_legal_moves(b);
                 let san = to_san(b, mv, legal.as_slice());
                 b.make_move(mv, a);

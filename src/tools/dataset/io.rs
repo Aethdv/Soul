@@ -19,7 +19,7 @@ pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
 const V5_SIZE: usize = 96;
 
 // ──────── Binary codec ────────
-
+//
 /// Loads every [`SoulEntry`] from a zstd-compressed dataset.
 ///
 /// V5 files are transparently upgraded on load — the legacy 96-byte entries
@@ -122,7 +122,7 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
         // Fewer than three fields, or bad FEN → fall through to classic heuristics.
     }
 
-    // ── Classic EPD result detection ──
+    // Classic EPD result detection
     let (result, fen_raw) = if let Some(stripped) = line.strip_suffix("1-0") {
         (1.0, stripped.to_string())
     } else if let Some(stripped) = line.strip_suffix("0-1") {
@@ -165,8 +165,6 @@ pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
     Some(SoulEntry::from_board(&board, stm_wdl, None, None))
 }
-
-// ──────── Private Helpers ────────
 
 fn v5_to_v6(raw: &[u8]) -> SoulEntry {
     // V5 `repr(C)` layout, fields top to bottom:
