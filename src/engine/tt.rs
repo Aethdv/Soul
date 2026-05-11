@@ -1,3 +1,13 @@
+//! Transposition table — size-bounded hash table for position memoization.
+//!
+//! # Notes
+//!
+//! Lockless single-threaded design: probe and store take `&self` and
+//! mutate entries through raw pointers. The 64-bit full-key match prevents
+//! hash collisions from corrupting position data. Replacement is depth-
+//! preferred with exact-position upgrades; qsearch stores are conservative
+//! to avoid evicting deeper negamax entries.
+
 use crate::core::{
     defs::{MATE, MAX_PLY},
     moves::Move,
@@ -25,7 +35,6 @@ pub struct TtEntry {
     pub key: u64,
     /// Best move found in this position
     pub mv: u16,
-    /// Search score
     pub score: i16,
     pub depth: u8,
     pub bound: u8,
@@ -52,7 +61,6 @@ impl TranspositionTable {
         tt
     }
 
-    /// Resizes the table to the specified size in MB.
     pub fn resize(&mut self, size_mb: usize) {
         let bytes = size_mb.max(1) * 1024 * 1024;
         let count = (bytes / std::mem::size_of::<TtEntry>()).max(1);
@@ -65,7 +73,7 @@ impl TranspositionTable {
         self.entries[..sample].iter().filter(|e| e.bound != BOUND_NONE).count() * 1000 / sample.max(1)
     }
 
-    /// Clears the table cleanly. Safe because of boxed lifetime.
+    /// Safe because of boxed lifetime.
     pub fn clear(&self) {
         if self.entries.is_empty() {
             return;
@@ -76,7 +84,6 @@ impl TranspositionTable {
         }
     }
 
-    /// Prefetches the memory for the given Zobrist key into the CPU cache.
     #[inline(always)]
     pub fn prefetch(&self, hash: u64) {
         if self.entries.is_empty() {
@@ -91,7 +98,6 @@ impl TranspositionTable {
         }
     }
 
-    /// Retrieves an entry for the given position if it exists.
     #[inline(always)]
     pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8)> {
         if self.entries.is_empty() {
@@ -111,7 +117,6 @@ impl TranspositionTable {
         None
     }
 
-    /// Stores a new entry in the table.
     #[inline(always)]
     pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8) {
         if self.entries.is_empty() {
