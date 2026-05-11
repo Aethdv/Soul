@@ -258,7 +258,7 @@ pub fn gen_tactical_moves(board: &Position) -> MoveList {
     list
 }
 
-/// Pseudo-Legal Generation
+/// ── Pseudo-Legal Generation ──
 ///
 /// Const-generic on color: the compiler monomorphizes into two copies with
 /// all direction and rank logic resolved at compile time. No branches for
@@ -387,8 +387,6 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
     }
 }
 
-// ──────── Knights, Sliders, King ────────
-
 /// Generate all pseudo-legal knight moves (captures and quiets).
 #[inline]
 fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
@@ -441,9 +439,9 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
     }
 }
 
-/// Castling — Chess960-compatible.
+/// ── Castling — Chess960-compatible ──
 ///
-/// Encoded as king→rook (not king→destination) so it generalises to
+/// Encoded as king→rook (not king→destination) so it generalizes to
 /// Fischer Random positions where the rook can start on either side.
 ///
 /// Three requirements, all checked here during generation:
