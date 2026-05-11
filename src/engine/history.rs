@@ -62,8 +62,6 @@ impl ContinuationHistory {
     }
 }
 
-// ──────── Capture History ────────
-
 /// Capture history: `[side][attacker][to][victim] -> i16`.
 ///
 /// Tracks which captures historically caused beta cutoffs, indexed by the
@@ -116,8 +114,6 @@ impl CaptureHistory {
         i
     }
 }
-
-// ──────── Correction History ────────
 
 /// Hash-keyed evaluator bias correction.
 ///
@@ -225,10 +221,6 @@ impl History {
         self.capt.clear();
     }
 
-    /// Retrieve the history score for a move.
-    ///
-    /// Used in `MovePicker` to prioritize moves that previously caused beta cutoffs.
-    /// The scores are updated in `Searcher` using the soft-gravity mechanism.
     #[inline(always)]
     pub fn score_quiet(
         &self,
@@ -316,18 +308,11 @@ impl History {
         self.np_correction.update(stm, stm_np_hash, diff, depth);
     }
 
-    /// Retrieve the capture history score for a capture move.
-    ///
-    /// Indexed by `[stm][attacker][to][victim]`. For en passant, callers
-    /// must pass `victim = PieceType::Pawn`. Promotion-captures do not
-    /// participate (callers should not invoke this for them).
     #[inline(always)]
     pub fn score_capture(&self, stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> i32 {
         i32::from(self.capt.get(stm, attacker, to, victim))
     }
 
-    /// Update the capture history entry for a capture move using soft gravity.
-    /// Same indexing semantics as `score_capture`.
     #[inline(always)]
     pub fn update_capture(&mut self, stm: Color, attacker: PieceType, to: Square, victim: PieceType, bonus: i32) {
         Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus);
