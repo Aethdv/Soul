@@ -1,25 +1,21 @@
-//! Score combination layer.
+//! Evaluation score combination — collapses per-bucket term outputs
+//! into the final scalar eval.
 //!
 //! # Architecture
 //!
-//! Evaluation runs in two stages:
+//! Two stages:
+//! 1) Terms fill [`Accumulators`] buckets.
 //!
-//! 1. Terms produce per-bucket scores, written into [`Accumulators`].
-//!    Each term reads `SharedFeatures` and writes one or more bucket fields.
-//! 2. Combiner reads the filled accumulators and produces the final
-//!    single-scalar evaluation. All non-linearities beyond the per-term
-//!    internal shape (mobility's openness/phase blend, king safety's
-//!    attacker-pressure curve) live here.
+//! 2) A [`Combiner`] collapses them. Separating these lets the tuner propagate one
+//!    upstream derivative per bucket through each term's scatter,
+//!    rather than baking the combiner shape into every term.
 //!
-//! Splitting these stages is what lets the tuner propagate a single
-//! upstream derivative per bucket through each term's scatter, rather
-//! than baking the combiner shape into every term.
+//! # Notes
 //!
-//! Soul's current combiner ([`LinearCombiner`]) is linear in the tunable
-//! parameters; the only operation beyond summation is a multiplicative
-//! taper that folds the raw king-safety block into the phase blend.
-//! Future combiners (sigmoid over king danger, winnable eg-scale) slot
-//! in by implementing [`Combiner`] without touching any term.
+//! The current combiner ([`LinearCombiner`]) sums pre-tapered buckets
+//! and applies a phase taper only to the king-safety block. Future
+//! combiners (sigmoid danger, winnable eg-scale) implement [`Combiner`]
+//! without touching any term.
 
 use crate::{
     core::defs::TOTAL_PHASE,
@@ -29,35 +25,23 @@ use crate::{
     },
 };
 
-/// Per-bucket evaluation scores, filled by the term layer prior to combination.
-/// Every field is a score contribution in the same units;
-/// either pre-tapered (mg_eg, mobility)
-/// or raw awaiting combiner taper (safety_us, safety_them, xray).
+/// Per-bucket score accumulators filled by the term layer before combination.
+///
+/// Fields are either **pre-tapered** (`mg_eg`, `mobility`, `bonus`) — the mg/eg blend
+/// happened inside the term — or **raw** (`safety_us`, `safety_them`, `xray`), tapered
+/// together by the combiner as a single `(us - them + xray) * phase / TOTAL_PHASE` block.
 pub struct Accumulators<T: EvalMath> {
-    /// Tapered material + PSQT score, read straight from the SIMD accumulator.
-    /// Pre-tapered because the accumulator owns the mg/eg blend via `EvalMath::tapered`.
+    /// Material + PSQT, read from the SIMD accumulator.
     pub mg_eg: T,
-    /// Tapered mobility differential.
-    /// Pre-tapered because the openness interpolation and phase blend both happen inside
-    /// `madd`-packed i16 SIMD lanes — extracting them into the combiner would lose the vectorization.
+    /// Mobility differential, blended inside the SIMD lanes to preserve vectorization.
     pub mobility: T,
-    /// Shared pre-tapered bucket for simple linear bonuses.
-    /// Each such term `+=` its own `mg · phase + eg · eg_phase` contribution;
-    /// scatter writes that term's own param slots.
-    /// Lets new tapered bonuses land as one-line `register_terms!`
-    /// additions rather than bucket expansions.
+    /// Simple linear bonuses; each term adds its own `mg * phase + eg * eg_phase` share.
     pub bonus: T,
-    /// Raw king-safety score from "us"'s perspective, untapered.
-    /// Combiner applies `phase / TOTAL_PHASE` to the `us - them + xray`
-    /// differential so the whole king-safety block shares one taper.
+    /// Raw king-safety score for the side to move.
     pub safety_us: T,
-    /// Raw king-safety score from "them"'s perspective, untapered.
+    /// Raw king-safety score for the opponent.
     pub safety_them: T,
-    /// X-ray king-ring differential, untapered.
-    /// Sits in the same taper block as `safety_us`/`safety_them`.
-    /// Separate bucket because its feature (orthogonal x-ray count)
-    /// is unrelated to the safety metrics, so future terms can route
-    /// elsewhere without disturbing the safety path.
+    /// Raw x-ray king-ring differential; separate bucket so it can be rerouted independently.
     pub xray: T,
 }
 
@@ -69,25 +53,11 @@ pub struct Accumulators<T: EvalMath> {
 pub trait Combiner {
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T) -> T;
 
-    /// Produce per-term upstream derivatives given the loss derivative
-    /// (STM sign folded in) and the game phase. Future non-linear combiners
-    /// also write gradients for their own tunable params into `grads`;
-    /// [`LinearCombiner`] has none, so `grads` is unused here.
+    /// Returns per-bucket upstream gradients given the loss derivative and game phase.
+    /// Non-linear combiners also write their own param gradients into `grads`.
     fn backward(phase: f64, d_loss: f64, grads: &mut [f64]) -> BucketUpstreams;
 }
 
-/// Soul's current combiner — linear sum with a single multiplicative taper
-/// over the king-safety block.
-///
-/// ```text
-/// final = mg_eg
-///       + mobility
-///       + trunc((safety_us − safety_them + xray) · phase / TOTAL_PHASE)
-/// ```
-///
-/// "Linear" refers to parameter dependence; phase is position-derived
-/// non-tunable data, so `safety_tapered` is a fixed fraction of a
-/// parameter-linear sum.
 pub struct LinearCombiner;
 
 impl Combiner for LinearCombiner {
