@@ -35,7 +35,7 @@ use crate::{
         history::{self, ContContext, History},
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
-        search_params::SearchParams,
+        search_params::*,
         see::see_ge,
         tm::TimeManager,
         tt,
@@ -448,7 +448,7 @@ impl<'cfg> Searcher<'cfg> {
             }
 
             // ── Aspiration Windows (~42 Elo) ──
-            let mut delta = self.cfg.search_params.asp_initial;
+            let mut delta = asp_initial();
             let mut alpha = if depth >= 4 { (self.prev_score - delta).max(-INF) } else { -INF };
             let mut beta = if depth >= 4 { (self.prev_score + delta).min(INF) } else { INF };
 
@@ -493,7 +493,6 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            let sp = &self.cfg.search_params;
             let new_score = self.root_moves[0].score;
 
             // ── Best-Move Stability TM (~20 Elo) ──
@@ -506,11 +505,11 @@ impl<'cfg> Searcher<'cfg> {
             //
             // Gated below `bm_stab_depth` — early iterations haven't
             // accumulated enough node signal for the ratio to be meaningful.
-            if depth >= sp.bm_stab_depth {
+            if depth >= bm_stab_depth() {
                 let best_nodes = self.root_moves[0].nodes;
                 let total_nodes = self.nodes.max(1);
-                let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
-                let percent = (sp.bm_stab_base as u64).saturating_sub(effort_discount).max(sp.bm_stab_floor as u64);
+                let effort_discount = bm_stab_scale() as u64 * best_nodes / total_nodes;
+                let percent = (bm_stab_base() as u64).saturating_sub(effort_discount).max(bm_stab_floor() as u64);
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
@@ -522,8 +521,8 @@ impl<'cfg> Searcher<'cfg> {
             // so bank the time). Diff is clamped to ±scale so the factor stays
             // in [0.5, 2.0]. Gated below `score_drop_depth` because aspiration
             // churn at low depth produces noise, not signal.
-            let score_factor = if depth >= sp.score_drop_depth {
-                let scale = sp.score_factor_scale as f64;
+            let score_factor = if depth >= score_drop_depth() {
+                let scale = score_factor_scale() as f64;
                 let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
                 2.0_f64.powf(diff / scale)
             } else {
@@ -873,9 +872,7 @@ impl Worker {
             tt::SCORE_NONE
         } else {
             let correction =
-                self.history
-                    .correction(self.pos.stm, pawn_hash, stm_np_hash, searcher.cfg.search_params.np_corr_weight)
-                    / history::CORRECTION_SCALE;
+                self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
@@ -884,10 +881,11 @@ impl Worker {
         // Position is already so good that even after subtracting a generous
         // margin, we're still above beta. The opponent wouldn't have let us
         // get here — just return the eval and move on.
+        #[rustfmt::skip]
         if !in_check
             && !N::PV
-            && depth <= searcher.cfg.search_params.rfp_depth
-            && static_eval - searcher.cfg.search_params.rfp_margin * depth >= beta
+            && depth <= rfp_depth()
+            && static_eval - rfp_margin() * depth >= beta
         {
             return Ok(static_eval);
         }
@@ -895,10 +893,11 @@ impl Worker {
         // ── Razoring (~17 Elo) ──
         // Position is so far below alpha that a full-depth search is unlikely
         // to recover. Drop straight into qsearch to confirm.
+        #[rustfmt::skip]
         if !in_check
             && !N::PV
-            && depth <= searcher.cfg.search_params.razoring_depth
-            && static_eval + searcher.cfg.search_params.razoring_margin * depth < alpha
+            && depth <= razoring_depth()
+            && static_eval + razoring_margin() * depth < alpha
         {
             let score = self.qsearch::<N>(searcher, alpha, beta, ply, None, 0)?;
             if score <= alpha {
@@ -917,9 +916,8 @@ impl Worker {
             && static_eval >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
-            let sp = &searcher.cfg.search_params;
-            let eval_r = ((static_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
-            let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
+            let eval_r = ((static_eval - beta) / nmp_eval_divisor()).min(nmp_eval_max());
+            let r = nmp_base_r() + depth / nmp_depth_divisor() + eval_r;
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
@@ -948,7 +946,7 @@ impl Worker {
                 // the cutoff is real; if it fails low, we were about to prune
                 // a zugzwang or a tactic the null search couldn't see — let
                 // the regular move loop handle it.
-                if depth <= sp.nmp_verif_min_depth {
+                if depth <= nmp_verif_min_depth() {
                     return Ok(null_score);
                 }
 
@@ -1057,8 +1055,8 @@ impl Worker {
                     && mv.is_quiet()
                     && !N::PV
                     && res.move_count >= 1
-                    && depth <= searcher.cfg.search_params.fp_depth
-                    && static_eval + searcher.cfg.search_params.fp_margin * depth <= res.alpha
+                    && depth <= fp_depth()
+                    && static_eval + fp_margin() * depth <= res.alpha
                 {
                     continue;
                 }
@@ -1069,8 +1067,8 @@ impl Worker {
                 if !in_check
                     && mv.is_quiet()
                     && !N::PV
-                    && depth <= searcher.cfg.search_params.lmp_depth
-                    && res.move_count as i32 >= searcher.cfg.search_params.lmp_base + depth * depth
+                    && depth <= lmp_depth()
+                    && res.move_count as i32 >= lmp_base() + depth * depth
                 {
                     continue;
                 }
@@ -1097,11 +1095,11 @@ impl Worker {
                     && res.move_count >= 1
                     && mv != self.stack[ply].killers[0]
                     && mv != self.stack[ply].killers[1]
-                    && depth <= searcher.cfg.search_params.hist_prune_depth
+                    && depth <= hist_prune_depth()
                 {
                     let pt = self.pos.expect_piece_at(mv.from());
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
-                    if hist < -searcher.cfg.search_params.hist_prune_margin * depth {
+                    if hist < -hist_prune_margin() * depth {
                         continue;
                     }
                 }
@@ -1124,11 +1122,7 @@ impl Worker {
                 // only prune "this is obviously moving into a trap" cases
                 // at shallow depth.
                 if !in_check && !N::PV && res.move_count >= 1 {
-                    let margin = if mv.is_capture() {
-                        -searcher.cfg.search_params.see_capture_margin * depth
-                    } else {
-                        -searcher.cfg.search_params.see_quiet_margin * depth * depth
-                    };
+                    let margin = if mv.is_capture() { -see_capture_margin() * depth } else { -see_quiet_margin() * depth * depth };
                     if !see_ge(&self.pos, mv, margin) {
                         continue;
                     }
@@ -1470,9 +1464,7 @@ impl Worker {
             let pawn_hash = self.pos.calc_pawn_hash();
             let stm_np_hash = self.pos.calc_non_pawn_hash(self.pos.stm);
             let correction =
-                self.history
-                    .correction(self.pos.stm, pawn_hash, stm_np_hash, searcher.cfg.search_params.np_corr_weight)
-                    / history::CORRECTION_SCALE;
+                self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 return Ok(eval);
@@ -1489,7 +1481,7 @@ impl Worker {
                 .into_iter()
                 .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
                 .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
-            if eval + best_capturable + searcher.cfg.search_params.delta_margin < alpha {
+            if eval + best_capturable + delta_margin() < alpha {
                 return Ok(alpha);
             }
 
@@ -1504,7 +1496,7 @@ impl Worker {
 
         let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, in_check);
 
-        let recapture_only = !in_check && qs_ply >= searcher.cfg.search_params.qs_recapture_ply;
+        let recapture_only = !in_check && qs_ply >= qs_recapture_ply();
 
         while let Some(mv) = picker.next(&self.pos, &self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {

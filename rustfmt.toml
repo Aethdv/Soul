@@ -5,6 +5,7 @@ style_edition = "2024"
 unstable_features = true
 
 array_width = 110
+attr_fn_like_width = 110
 
 brace_style = "SameLineWhere"
 blank_lines_upper_bound = 1

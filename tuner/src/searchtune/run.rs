@@ -433,7 +433,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
                 // Feed the grounding match back to the cache too
                 let weight = 1.0 / (2.5f64.powi(2) + 1.0);
-                elo_cache.add(best_params.clone(), SearchParams::default().to_normalized(), verified_elo, weight);
+                elo_cache.add(best_params.clone(), SearchParams::to_normalized(), verified_elo, weight);
             }
 
             h2h_result = Some((h2h_elo > 0.0, h2h_elo));
