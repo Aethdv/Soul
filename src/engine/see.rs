@@ -207,7 +207,12 @@ mod tests {
     //! of these cases with a one-line failure.
 
     use super::*;
-    use crate::{core::board::Position, engine::movegen::gen_legal_moves};
+    use crate::{core::board::Position, engine::eval_params::MG_MATERIAL, engine::movegen::gen_legal_moves};
+
+    const fn p() -> i32 { MG_MATERIAL[PieceType::Pawn as usize] }
+    const fn n() -> i32 { MG_MATERIAL[PieceType::Knight as usize] }
+    const fn r() -> i32 { MG_MATERIAL[PieceType::Rook as usize] }
+    const fn q() -> i32 { MG_MATERIAL[PieceType::Queen as usize] }
 
     /// Resolve a UCI move string against the legal move list.
     fn legal_move(pos: &Position, uci: &str) -> Move {
@@ -232,36 +237,34 @@ mod tests {
         );
     }
 
-    // ──────── Single-step trades ────────
-
     #[test]
     fn rook_takes_undefended_pawn() {
         // RxP, no recapture → +P
-        assert_see("7k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", 100);
+        assert_see("7k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", p());
     }
 
     #[test]
     fn rook_takes_pawn_defended_by_rook() {
         // RxP, RxR → +P − R
-        assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", -400);
+        assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", p() - r());
     }
 
     #[test]
     fn pawn_takes_knight_undefended() {
         // PxN → +N
-        assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", 300);
+        assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", n());
     }
 
     #[test]
     fn pawn_takes_knight_defended_by_pawn() {
         // PxN, PxP → +N − P
-        assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", 200);
+        assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", n() - p());
     }
 
     #[test]
     fn queen_takes_pawn_defended_by_pawn() {
         // QxP, PxQ → +P − Q (catastrophic)
-        assert_see("7k/8/8/8/2p5/3p4/4Q3/7K w - - 0 1", "e2d3", -800);
+        assert_see("7k/8/8/8/2p5/3p4/4Q3/7K w - - 0 1", "e2d3", p() - q());
     }
 
     #[test]
@@ -270,21 +273,17 @@ mod tests {
         assert_see("7k/4n3/8/3n4/8/2N5/8/7K w - - 0 1", "c3d5", 0);
     }
 
-    // ──────── X-ray reveal ────────
-
     #[test]
     fn rook_battery_xray_chain() {
         // (W) Re2xPe5, (B) Re7xRe5, (W) Re1xRe5 via x-ray, (B) Re8xRe5 via x-ray.
-        // Sequence: +P − R + R − R = − 400
-        assert_see("4r3/4r2k/8/4p3/8/8/4R3/4R2K w - - 0 1", "e2e5", -400);
+        // Sequence: +P − R + R − R = P − R
+        assert_see("4r3/4r2k/8/4p3/8/8/4R3/4R2K w - - 0 1", "e2e5", p() - r());
     }
-
-    // ──────── En passant ────────
 
     #[test]
     fn en_passant_undefended() {
         // EP capture, no recapture → +P
-        assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", 100);
+        assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", p());
     }
 
     #[test]
@@ -293,23 +292,21 @@ mod tests {
         assert_see("1n2k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", 0);
     }
 
-    // ──────── Promotions ────────
-
     #[test]
     fn quiet_queen_promotion_undefended() {
         // Pawn becomes queen on an empty square: +Q − P
-        assert_see("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", 800);
+        assert_see("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", q() - p());
     }
 
     #[test]
     fn quiet_queen_promotion_defended_by_knight() {
         // Promote (+Q − P), opponent captures the new queen (− Q) → − P
-        assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -100);
+        assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -p());
     }
 
     #[test]
     fn capture_promotion_undefended() {
         // PxN with promotion: +N + (Q − P)
-        assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", 1100);
+        assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", n() + q() - p());
     }
 }
