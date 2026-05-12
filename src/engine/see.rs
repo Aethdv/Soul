@@ -207,12 +207,23 @@ mod tests {
     //! of these cases with a one-line failure.
 
     use super::*;
-    use crate::{core::board::Position, engine::eval_params::MG_MATERIAL, engine::movegen::gen_legal_moves};
+    use crate::{
+        core::board::Position,
+        engine::{eval_params::MG_MATERIAL, movegen::gen_legal_moves},
+    };
 
-    const fn p() -> i32 { MG_MATERIAL[PieceType::Pawn as usize] }
-    const fn n() -> i32 { MG_MATERIAL[PieceType::Knight as usize] }
-    const fn r() -> i32 { MG_MATERIAL[PieceType::Rook as usize] }
-    const fn q() -> i32 { MG_MATERIAL[PieceType::Queen as usize] }
+    macro_rules! pc {
+            ($($n:ident = $p:expr;)*) => {
+                $(const fn $n() -> i32 { MG_MATERIAL[$p as usize] })*
+            };
+        }
+
+    pc! {
+        p = PieceType::Pawn;
+        n = PieceType::Knight;
+        r = PieceType::Rook;
+        q = PieceType::Queen;
+    }
 
     /// Resolve a UCI move string against the legal move list.
     fn legal_move(pos: &Position, uci: &str) -> Move {

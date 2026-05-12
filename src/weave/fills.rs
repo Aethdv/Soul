@@ -15,8 +15,6 @@
 //! and x-ray batteries of all sliders simultaneously in a single branchless sweep,
 //! getting rid of piece-iteration loops entirely in the hot eval path.
 
-#![allow(non_camel_case_types)]
-
 use super::*;
 
 /// Kogge-Stone occluded fill: left shift variant (North, East, NE, NW).

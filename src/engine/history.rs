@@ -321,7 +321,7 @@ impl History {
 
 impl Default for History {
     /// Returns a zero-cost sentinel. The cont table is an empty Box (0 bytes).
-    /// Only use as a placeholder for `std::mem::take` — never score moves against this.
+    /// Only use as a placeholder for `mem::take` — never score moves against this.
     fn default() -> Self {
         Self {
             table: [[[0; 64]; 6]; 2],

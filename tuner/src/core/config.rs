@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
+pub const DEFAULT_WDL_END: f64 = 0.3;
+
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum LossFn {
@@ -191,7 +193,6 @@ fn default_ema_decay() -> f64 {
 fn default_true() -> bool {
     true
 }
-pub const DEFAULT_WDL_END: f64 = 0.3;
 fn default_freeze_start() -> usize {
     500
 }

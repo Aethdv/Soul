@@ -2,8 +2,6 @@
 //!
 //! Provides safely typed wrappers around `__m128i` for parallel evaluation math.
 
-#![allow(non_camel_case_types)]
-
 use core::{
     arch::x86_64::*,
     ops::{Add, AddAssign, BitAnd, BitOr, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Shr, Sub, SubAssign},

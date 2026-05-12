@@ -1,7 +1,5 @@
 use std::io::Error;
 
-use crate::thiserror;
-
 #[derive(Debug, thiserror::Error)]
 pub enum CheckpointError {
     #[error("I/O error: {0}")]

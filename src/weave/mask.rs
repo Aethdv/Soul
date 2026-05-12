@@ -1,7 +1,5 @@
 //! SIMD predication masks for branchless operations.
 
-#![allow(non_camel_case_types)]
-
 use core::{
     arch::x86_64::*,
     ops::{BitAnd, BitOr, BitXor, Not},

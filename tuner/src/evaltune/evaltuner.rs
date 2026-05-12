@@ -1,6 +1,7 @@
 use std::{
     fs::File,
-    io::{BufWriter, Write},
+    io::{self, BufWriter, Write},
+    path,
     time::Instant,
 };
 
@@ -648,7 +649,7 @@ fn train_loop<G, V>(
 /// Sensitivity Analysis — writes `sensitivity-report.txt`.
 fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
     let Ok(mut f) = std::fs::File::create("sensitivity-report.txt") else { return };
-    let mut w = std::io::BufWriter::new(&mut f);
+    let mut w = io::BufWriter::new(&mut f);
     writeln!(w, "Sensitivity Analysis").ok();
     writeln!(w).ok();
     let mut sensitivities = Vec::new();
@@ -716,11 +717,11 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
             .split(',')
             .map(str::trim)
             .map(|s| {
-                if std::path::Path::new(s).exists() {
+                if path::Path::new(s).exists() {
                     s.to_string()
                 } else {
                     let data_prefixed = format!("data/{s}");
-                    if std::path::Path::new(&data_prefixed).exists() { data_prefixed } else { s.to_string() }
+                    if path::Path::new(&data_prefixed).exists() { data_prefixed } else { s.to_string() }
                 }
             })
             .collect();

@@ -3,8 +3,6 @@
 //! Provides safely typed wrappers around `__m256i` for parallel bitboard and
 //! accumulator operations.
 
-#![allow(non_camel_case_types)]
-
 use core::{
     arch::x86_64::*,
     ops::{

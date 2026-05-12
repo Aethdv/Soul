@@ -6,8 +6,8 @@
 
 use crate::{
     core::{
-        board::{Position, STARTPOS},
-        defs::{Color, PieceType, Square},
+        board::{BLACK_OO, BLACK_OOO, Position, STARTPOS, WHITE_OO, WHITE_OOO},
+        defs::{Color, PieceType, Square, TOTAL_PHASE},
         moves::Move,
     },
     engine::movegen::gen_legal_moves,
@@ -449,7 +449,7 @@ fn phase_startpos() {
     let acc = pos.get_initial_accumulator();
     let phase = extract_phase(&acc);
 
-    assert_eq!(phase, crate::core::defs::TOTAL_PHASE, "Startpos should have full phase (24)");
+    assert_eq!(phase, TOTAL_PHASE, "Startpos should have full phase (24)");
 }
 
 #[test]
@@ -665,16 +665,8 @@ fn king_move_removes_castling_rights() {
     let mv = find_uci_move(&pos, "e1d1");
     let undo = pos.make_move(mv, &mut acc);
 
-    assert_eq!(
-        pos.castling_rights & (crate::core::board::WHITE_OO | crate::core::board::WHITE_OOO),
-        0,
-        "White should lose all castling rights after moving the King"
-    );
-    assert_ne!(
-        pos.castling_rights & (crate::core::board::BLACK_OO | crate::core::board::BLACK_OOO),
-        0,
-        "Black should retain castling rights"
-    );
+    assert_eq!(pos.castling_rights & (WHITE_OO | WHITE_OOO), 0, "White should lose all castling rights after moving the King");
+    assert_ne!(pos.castling_rights & (BLACK_OO | BLACK_OOO), 0, "Black should retain castling rights");
 
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.castling_rights, original_rights, "Castling rights should be restored after unmake");
@@ -689,12 +681,8 @@ fn rook_capture_removes_castling_rights() {
     let mv = find_uci_move(&pos, "g7h8");
     let undo = pos.make_move(mv, &mut acc);
 
-    assert_eq!(
-        pos.castling_rights & crate::core::board::BLACK_OO,
-        0,
-        "Black should lose kingside rights after rook is captured"
-    );
-    assert_ne!(pos.castling_rights & crate::core::board::BLACK_OOO, 0, "Black should keep queenside rights");
+    assert_eq!(pos.castling_rights & BLACK_OO, 0, "Black should lose kingside rights after rook is captured");
+    assert_ne!(pos.castling_rights & BLACK_OOO, 0, "Black should keep queenside rights");
 
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.castling_rights, original_rights, "Castling rights should be restored after rook-capture unmake");

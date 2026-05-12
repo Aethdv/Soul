@@ -153,8 +153,6 @@ pub struct Position {
     pub fullmove_number: u16,
 }
 
-// ──────── Irreversible State Snapshots ────────
-//
 // Moves that destroy information:
 // castling rights, the fifty-move counter, en passant availability, captured pieces.
 // We snapshot these irreversible fields before each move so unmake_move
@@ -294,8 +292,6 @@ impl Position {
         acc
     }
 
-    // ──────── Game Rules & State Queries ────────
-
     /// Detects threefold repetition within the reversible move horizon.
     ///
     /// Only the last `halfmove_clock + 1` positions matter — anything before
@@ -415,8 +411,6 @@ impl Position {
         true
     }
 
-    // ──────── Board Representation & Pieces ────────
-
     /// Serialize the current position back to a FEN string.
     pub fn as_fen(&self) -> String {
         fen::as_fen(self)
@@ -484,8 +478,6 @@ impl Position {
         self.role_bb[pt as usize].popcount() as i32
     }
 
-    // ──────── Attack & Threat Detection ────────
-
     /// Is `sq` attacked by any piece of `attacker`'s color?
     ///
     /// `VIRTUAL = true` removes `mask_out` from occupancy,
@@ -539,8 +531,6 @@ impl Position {
     pub fn king_blockers(&self) -> Bitboard {
         attacks::pinned_pieces(self, self.stm)
     }
-
-    // ──────── Technical Auxiliaries ────────
 
     #[inline(always)]
     pub fn set_piece_type(&mut self, sq: Square, pt: PieceType) {

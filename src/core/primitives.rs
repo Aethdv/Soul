@@ -2,7 +2,12 @@
 //!
 //! Provides the fundamental representations for chess board geometry.
 
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr, Sub, SubAssign};
+use std::{
+    fmt,
+    ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr, Sub, SubAssign},
+};
+
+use crate::core::defs::Direction;
 
 pub const FILE_A: Bitboard = Bitboard(0x0101_0101_0101_0101);
 pub const FILE_B: Bitboard = FILE_A << 1;
@@ -48,8 +53,6 @@ pub struct Square(pub u8);
 const _: () = assert!(std::mem::size_of::<Square>() == 1);
 const _: () = assert!(std::mem::size_of::<Option<Square>>() == 2);
 const _: () = assert!(std::mem::size_of::<Bitboard>() == 8);
-
-// ──────── Bitboard methods ────────
 
 impl Bitboard {
     /// Empty bitboard with no bits set.
@@ -157,8 +160,7 @@ impl Bitboard {
     }
 
     #[inline(always)]
-    pub const fn shift(self, dir: crate::core::defs::Direction) -> Self {
-        use crate::core::defs::Direction;
+    pub const fn shift(self, dir: Direction) -> Self {
         match dir {
             Direction::North => Bitboard(self.0 << 8),
             Direction::South => Bitboard(self.0 >> 8),
@@ -169,6 +171,240 @@ impl Bitboard {
             Direction::SouthEast => Bitboard((self.0 & !FILE_H.0) >> 7),
             Direction::SouthWest => Bitboard((self.0 & !FILE_A.0) >> 9),
         }
+    }
+}
+impl Square {
+    /// Creates a [`Square`] from a raw index.
+    ///
+    /// # Panics
+    /// if `sq >= 64`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(sq: u8) -> Self {
+        debug_assert!(sq < 64, "Square index out of range");
+        Self(sq)
+    }
+
+    /// Creates a [`Square`] from file and rank indices (both in `0..8`).
+    ///
+    /// # Panics
+    /// In debug if either index is out of range.
+    #[inline(always)]
+    #[must_use]
+    pub const fn from_coords(file: u8, rank: u8) -> Self {
+        debug_assert!(file < 8 && rank < 8, "file or rank out of range");
+        Self((rank << 3) | file)
+    }
+
+    /// Returns the file index (0 = A-file, 7 = H-file).
+    #[inline(always)]
+    #[must_use]
+    pub const fn file(self) -> u8 {
+        self.0 & 7
+    }
+
+    /// Returns the rank index (0 = 1st rank, 7 = 8th rank).
+    #[inline(always)]
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        self.0 >> 3
+    }
+
+    /// Returns `true` if the index is in `0..64`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.0 < 64
+    }
+
+    /// Returns `self` if valid, otherwise panics.
+    #[inline]
+    #[must_use]
+    pub const fn checked(self) -> Self {
+        if !self.is_valid() {
+            panic!("Invalid square index");
+        }
+        self
+    }
+
+    /// Returns a [`Bitboard`] with exactly this square's bit set.
+    #[inline(always)]
+    #[must_use]
+    pub const fn bitboard(self) -> Bitboard {
+        Bitboard(1u64 << self.0)
+    }
+
+    /// Returns a new square offset by `off` indices.
+    ///
+    /// # Panics
+    /// In debug if the result falls outside `0..64`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn offset_unchecked(self, off: i8) -> Self {
+        let result = (self.0 as i8 + off) as u8;
+        debug_assert!(result < 64, "Square::offset produced invalid square");
+        Self(result)
+    }
+
+    /// Returns this index as `usize`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Mirrors vertically (rank → 7 − rank). E.g. e1 ↔ e8.
+    #[inline(always)]
+    #[must_use]
+    pub const fn flip_rank(self) -> Self {
+        Self(self.0 ^ 56)
+    }
+
+    /// Mirrors horizontally (file → 7 − file). E.g. a4 ↔ h4.
+    #[inline(always)]
+    #[must_use]
+    pub const fn flip_file(self) -> Self {
+        Self(self.0 ^ 7)
+    }
+
+    /// Returns the algebraic notation as an owned string (e.g. `"e4"`).
+    #[must_use]
+    pub fn to_algebraic(self) -> String {
+        let file = (b'a' + self.file()) as char;
+        let rank = (b'1' + self.rank()) as char;
+        format!("{file}{rank}")
+    }
+}
+
+impl const From<u8> for Square {
+    #[inline(always)]
+    fn from(val: u8) -> Self {
+        Self(val)
+    }
+}
+
+impl const From<Square> for u8 {
+    #[inline(always)]
+    fn from(sq: Square) -> Self {
+        sq.0
+    }
+}
+
+impl const From<Square> for u16 {
+    #[inline(always)]
+    fn from(sq: Square) -> Self {
+        sq.0 as u16
+    }
+}
+
+impl const From<Square> for u64 {
+    #[inline(always)]
+    fn from(sq: Square) -> Self {
+        sq.0 as u64
+    }
+}
+
+impl const From<Square> for usize {
+    #[inline(always)]
+    fn from(sq: Square) -> Self {
+        sq.0 as usize
+    }
+}
+
+impl const Shl<Square> for u64 {
+    type Output = u64;
+    #[inline(always)]
+    fn shl(self, rhs: Square) -> u64 {
+        self << rhs.0
+    }
+}
+
+impl const Shr<Square> for u64 {
+    type Output = u64;
+    #[inline(always)]
+    fn shr(self, rhs: Square) -> u64 {
+        self >> rhs.0
+    }
+}
+
+impl PartialEq<u8> for Square {
+    #[inline(always)]
+    fn eq(&self, other: &u8) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Square> for u8 {
+    #[inline(always)]
+    fn eq(&self, other: &Square) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialOrd<u8> for Square {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &u8) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl PartialOrd<Square> for u8 {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Square) -> Option<std::cmp::Ordering> {
+        self.partial_cmp(&other.0)
+    }
+}
+
+impl const BitXor<u8> for Square {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, rhs: u8) -> Self {
+        Self(self.0 ^ rhs)
+    }
+}
+
+impl const BitXor for Square {
+    type Output = Self;
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self(self.0 ^ rhs.0)
+    }
+}
+
+impl fmt::Display for Square {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let file = (b'a' + self.file()) as char;
+        let rank = (b'1' + self.rank()) as char;
+        write!(f, "{file}{rank}")
+    }
+}
+
+/// Error returned when parsing a [`Square`] from algebraic notation fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseSquareError;
+
+impl fmt::Display for ParseSquareError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid square: expected format 'e4' (file a-h, rank 1-8)")
+    }
+}
+
+impl std::error::Error for ParseSquareError {}
+
+impl std::str::FromStr for Square {
+    type Err = ParseSquareError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 2 {
+            return Err(ParseSquareError);
+        }
+        let file = bytes[0].wrapping_sub(b'a');
+        let rank = bytes[1].wrapping_sub(b'1');
+        if file >= 8 || rank >= 8 {
+            return Err(ParseSquareError);
+        }
+        Ok(Self::from_coords(file, rank))
     }
 }
 
@@ -205,8 +441,6 @@ impl IntoIterator for Bitboard {
     }
 }
 
-// ──────── Bitboard Conversions ────────
-
 impl const From<u64> for Bitboard {
     #[inline(always)]
     fn from(val: u64) -> Self {
@@ -228,8 +462,6 @@ impl const From<Square> for Bitboard {
         sq.bitboard()
     }
 }
-
-// ──────── Operators ────────
 
 macro_rules! impl_bb_op {
     ($trait:ident, $func:ident, $assign_trait:ident, $assign_func:ident) => {
@@ -336,17 +568,15 @@ impl SubAssign<u64> for Bitboard {
     }
 }
 
-// ──────── Formatting ────────
-
-impl std::fmt::Debug for Bitboard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Bitboard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Bitboard({:#018x})", self.0)
     }
 }
 
-impl std::fmt::Display for Bitboard {
+impl fmt::Display for Bitboard {
     /// Renders an 8×8 grid (`X` = set, `.` = empty) with rank 8 at the top.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for rank in (0u8..8).rev() {
             for file in 0u8..8 {
                 if file > 0 {
@@ -360,248 +590,5 @@ impl std::fmt::Display for Bitboard {
             }
         }
         Ok(())
-    }
-}
-
-// ──────── Construction ────────
-
-impl Square {
-    /// Creates a [`Square`] from a raw index.
-    ///
-    /// # Panics
-    /// if `sq >= 64`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn new(sq: u8) -> Self {
-        debug_assert!(sq < 64, "Square index out of range");
-        Self(sq)
-    }
-
-    /// Creates a [`Square`] from file and rank indices (both in `0..8`).
-    ///
-    /// # Panics
-    /// In debug if either index is out of range.
-    #[inline(always)]
-    #[must_use]
-    pub const fn from_coords(file: u8, rank: u8) -> Self {
-        debug_assert!(file < 8 && rank < 8, "file or rank out of range");
-        Self((rank << 3) | file)
-    }
-
-    /// Returns the file index (0 = A-file, 7 = H-file).
-    #[inline(always)]
-    #[must_use]
-    pub const fn file(self) -> u8 {
-        self.0 & 7
-    }
-
-    /// Returns the rank index (0 = 1st rank, 7 = 8th rank).
-    #[inline(always)]
-    #[must_use]
-    pub const fn rank(self) -> u8 {
-        self.0 >> 3
-    }
-
-    /// Returns `true` if the index is in `0..64`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.0 < 64
-    }
-
-    /// Returns `self` if valid, otherwise panics.
-    #[inline]
-    #[must_use]
-    pub const fn checked(self) -> Self {
-        if !self.is_valid() {
-            panic!("Invalid square index");
-        }
-        self
-    }
-
-    /// Returns a [`Bitboard`] with exactly this square's bit set.
-    #[inline(always)]
-    #[must_use]
-    pub const fn bitboard(self) -> Bitboard {
-        Bitboard(1u64 << self.0)
-    }
-
-    /// Returns a new square offset by `off` indices.
-    ///
-    /// # Panics
-    /// In debug if the result falls outside `0..64`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn offset_unchecked(self, off: i8) -> Self {
-        let result = (self.0 as i8 + off) as u8;
-        debug_assert!(result < 64, "Square::offset produced invalid square");
-        Self(result)
-    }
-
-    /// Returns this index as `usize`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
-    }
-
-    /// Mirrors vertically (rank → 7 − rank). E.g. e1 ↔ e8.
-    #[inline(always)]
-    #[must_use]
-    pub const fn flip_rank(self) -> Self {
-        Self(self.0 ^ 56)
-    }
-
-    /// Mirrors horizontally (file → 7 − file). E.g. a4 ↔ h4.
-    #[inline(always)]
-    #[must_use]
-    pub const fn flip_file(self) -> Self {
-        Self(self.0 ^ 7)
-    }
-
-    /// Returns the algebraic notation as an owned string (e.g. `"e4"`).
-    #[must_use]
-    pub fn to_algebraic(self) -> String {
-        let file = (b'a' + self.file()) as char;
-        let rank = (b'1' + self.rank()) as char;
-        format!("{file}{rank}")
-    }
-}
-
-// ──────── Square Conversions ────────
-
-impl const From<u8> for Square {
-    #[inline(always)]
-    fn from(val: u8) -> Self {
-        Self(val)
-    }
-}
-
-impl const From<Square> for u8 {
-    #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0
-    }
-}
-
-impl const From<Square> for u16 {
-    #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0 as u16
-    }
-}
-
-impl const From<Square> for u64 {
-    #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0 as u64
-    }
-}
-
-impl const From<Square> for usize {
-    #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0 as usize
-    }
-}
-
-// ──────── Square Operators ────────
-
-impl const Shl<Square> for u64 {
-    type Output = u64;
-    #[inline(always)]
-    fn shl(self, rhs: Square) -> u64 {
-        self << rhs.0
-    }
-}
-
-impl const Shr<Square> for u64 {
-    type Output = u64;
-    #[inline(always)]
-    fn shr(self, rhs: Square) -> u64 {
-        self >> rhs.0
-    }
-}
-
-impl PartialEq<u8> for Square {
-    #[inline(always)]
-    fn eq(&self, other: &u8) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<Square> for u8 {
-    #[inline(always)]
-    fn eq(&self, other: &Square) -> bool {
-        *self == other.0
-    }
-}
-
-impl PartialOrd<u8> for Square {
-    #[inline(always)]
-    fn partial_cmp(&self, other: &u8) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(other)
-    }
-}
-
-impl PartialOrd<Square> for u8 {
-    #[inline(always)]
-    fn partial_cmp(&self, other: &Square) -> Option<std::cmp::Ordering> {
-        self.partial_cmp(&other.0)
-    }
-}
-
-impl const BitXor<u8> for Square {
-    type Output = Self;
-    #[inline(always)]
-    fn bitxor(self, rhs: u8) -> Self {
-        Self(self.0 ^ rhs)
-    }
-}
-
-impl const BitXor for Square {
-    type Output = Self;
-    #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self {
-        Self(self.0 ^ rhs.0)
-    }
-}
-
-// ──────── Square Formatting ────────
-
-impl std::fmt::Display for Square {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let file = (b'a' + self.file()) as char;
-        let rank = (b'1' + self.rank()) as char;
-        write!(f, "{file}{rank}")
-    }
-}
-
-/// Error returned when parsing a [`Square`] from algebraic notation fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseSquareError;
-
-impl std::fmt::Display for ParseSquareError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("invalid square: expected format 'e4' (file a-h, rank 1-8)")
-    }
-}
-
-impl std::error::Error for ParseSquareError {}
-
-impl std::str::FromStr for Square {
-    type Err = ParseSquareError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = s.as_bytes();
-        if bytes.len() != 2 {
-            return Err(ParseSquareError);
-        }
-        let file = bytes[0].wrapping_sub(b'a');
-        let rank = bytes[1].wrapping_sub(b'1');
-        if file >= 8 || rank >= 8 {
-            return Err(ParseSquareError);
-        }
-        Ok(Self::from_coords(file, rank))
     }
 }

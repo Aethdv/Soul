@@ -4,6 +4,7 @@
 //! out highly tactical or noisy positions before saving to the dataset.
 
 use std::{
+    mem,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering::Relaxed},
@@ -421,7 +422,7 @@ impl WorkerState {
         self.local_plies = 0;
 
         let mut out = Vec::new();
-        std::mem::swap(&mut self.confirmed, &mut out);
+        mem::swap(&mut self.confirmed, &mut out);
         out
     }
 
@@ -453,7 +454,7 @@ impl WorkerState {
         // Move history out with a zero-cost default (empty cont Box).
         // The history accumulates across positions within a game for better ordering.
         let mut searcher =
-            Searcher::new(&cfg, &self.board, &self.search_history, std::mem::take(&mut self.history_table), Arc::clone(&self.tt));
+            Searcher::new(&cfg, &self.board, &self.search_history, mem::take(&mut self.history_table), Arc::clone(&self.tt));
         searcher.iterative_deepening();
         let best_score = searcher.best_score().unwrap_or(0);
         let best_move = searcher.best_move();

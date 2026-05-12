@@ -255,7 +255,7 @@ fn print_help() {
     h.header("Commands");
     h.command_args("encode", "<in> <out>", "Pre-encode EPD → .soul.zst");
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
-    h.command_args("correlation", "", "Analyse PSQT square adjacency roughness");
+    h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.separator();
 
     h.header("Options");

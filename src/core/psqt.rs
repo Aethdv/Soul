@@ -98,7 +98,6 @@ const fn init_psqt() -> [AlignedTable; 14] {
                 eg_val_b = i16::MAX as i32;
             }
 
-            // ── Black Perspective (negated) ──
             // NOTE: PSQT values for Black are mirrored using 'sq'.
             // This allows us to use the same tables built from White's perspective,
             // as piece movement symmetry holds when ranks are flipped.

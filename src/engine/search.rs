@@ -14,6 +14,7 @@ use std::{
     cmp::Reverse,
     collections::VecDeque,
     hint::{likely, unlikely},
+    io,
     io::Write,
     sync::{
         Arc,
@@ -369,7 +370,7 @@ impl<'cfg> Searcher<'cfg> {
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
             print!("\x1b[2J\x1b[H");
-            let _ = std::io::stdout().flush();
+            let _ = io::stdout().flush();
         }
 
         if let Some(perft_depth) = self.cfg.limits.perft {
@@ -557,7 +558,7 @@ impl<'cfg> Searcher<'cfg> {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
                 Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
             }
-            let _ = std::io::stdout().flush();
+            let _ = io::stdout().flush();
         }
 
         worker.history

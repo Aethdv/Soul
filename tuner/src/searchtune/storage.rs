@@ -1,7 +1,9 @@
+//! Checkpoint serialization for CMA-ES state.
+
 use std::{
     collections::BTreeMap,
     fs::{File, rename},
-    io::{BufReader, ErrorKind, Write},
+    io::{self, BufReader, BufWriter, ErrorKind, Write},
 };
 
 use serde::{Deserialize, Serialize};
@@ -52,7 +54,7 @@ impl Checkpoint {
         let cp: Self = serde_json::from_reader(reader)?;
 
         if cp.version != CHECKPOINT_VERSION {
-            return Err(std::io::Error::new(
+            return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 format!("Checkpoint version mismatch! (Expected: {}, Found: {})", CHECKPOINT_VERSION, cp.version),
             )

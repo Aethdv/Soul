@@ -29,6 +29,17 @@ pub enum GameResult {
     Loss,
 }
 
+impl GameResult {
+    #[must_use]
+    pub const fn flip(self) -> Self {
+        match self {
+            Self::Win => Self::Loss,
+            Self::Draw => Self::Draw,
+            Self::Loss => Self::Win,
+        }
+    }
+}
+
 impl Pentanomial {
     #[inline]
     #[must_use]
@@ -305,17 +316,6 @@ pub fn pair_to_pentanomial(first: GameResult, second: GameResult) -> Pentanomial
         (Loss, Loss) => p.ll = 1,
     }
     p
-}
-
-impl GameResult {
-    #[must_use]
-    pub const fn flip(self) -> Self {
-        match self {
-            Self::Win => Self::Loss,
-            Self::Draw => Self::Draw,
-            Self::Loss => Self::Win,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,10 @@
 //! have `active = 0`, enabling short-circuit paths that skip gradient
 //! computation entirely when one operand is constant.
 
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use std::{
+    fmt,
+    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+};
 
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
 use crate::weave::Vf32x8;
@@ -62,8 +65,8 @@ impl DualNode {
     }
 }
 
-impl std::fmt::Debug for DualNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for DualNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Dual({:.4}, active={:#010x})", self.val, self.active)
     }
 }

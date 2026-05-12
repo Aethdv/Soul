@@ -3,7 +3,7 @@
 //! Provides ANSI-colored CLI output for interactive use, displaying Principal Variations (PV),
 //! node counts, and static evaluation breakdown.
 
-use std::{fmt::Write, io::Write as _};
+use std::{fmt::Write, io, io::Write as _};
 
 use crate::{
     core::{
@@ -113,7 +113,7 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
         Protocol::Uci => print_uci(data, pretty),
         Protocol::XBoard => print_xboard(data),
     }
-    let _ = std::io::stdout().flush();
+    let _ = io::stdout().flush();
 }
 
 /// Pretty TUI output for `GoPretty` mode with WDL bars and history.
@@ -215,7 +215,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     if data.use_ansi {
         print!("\x1b[J"); // Clear to end of screen
     }
-    let _ = std::io::stdout().flush();
+    let _ = io::stdout().flush();
 }
 
 #[inline]

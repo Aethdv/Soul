@@ -6,14 +6,6 @@ use soul::engine::search_params::{PARAM_DEFS, SearchParams};
 use super::{pentanomial::Pentanomial, selfplay};
 use crate::core::fnv::Fnv1a;
 
-#[derive(Clone)]
-struct CachedEntry {
-    penta: Pentanomial,
-    c_nodes: u64,
-    b_nodes: u64,
-    pairs: usize,
-}
-
 /// Thread-safe memoization layer for self-play matches.
 ///
 /// Running millions of engine nodes is the absolute bottleneck of parameter tuning.
@@ -29,12 +21,6 @@ pub struct MatchCache {
     tc: String,
 }
 
-struct CacheInner {
-    entries: HashMap<u64, CachedEntry>,
-    hits: usize,
-    misses: usize,
-}
-
 pub struct MatchRequest<'a> {
     pub params: SearchParams,
     pub normalized: &'a [f64],
@@ -42,6 +28,22 @@ pub struct MatchRequest<'a> {
     pub opponent_normalized: &'a [f64],
     pub openings: &'a [String],
     pub min_pairs: usize,
+}
+
+// ──────── Private types ────────
+
+#[derive(Clone)]
+struct CachedEntry {
+    penta: Pentanomial,
+    c_nodes: u64,
+    b_nodes: u64,
+    pairs: usize,
+}
+
+struct CacheInner {
+    entries: HashMap<u64, CachedEntry>,
+    hits: usize,
+    misses: usize,
 }
 
 impl MatchCache {

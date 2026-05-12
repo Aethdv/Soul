@@ -70,6 +70,21 @@ pub enum EngineError {
     Timeout { ms: u64 },
 }
 
+impl EngineError {
+    /// Create `SearchPanic` from a thread join error.
+    #[cold]
+    pub fn from_panic(err: &(dyn std::any::Any + Send)) -> Self {
+        let msg = if let Some(s) = err.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic payload".to_string()
+        };
+        Self::SearchPanic(msg)
+    }
+}
+
 /// Option parsing errors for setoption commands.
 #[derive(Debug, Error)]
 pub enum OptionError {
@@ -101,19 +116,3 @@ pub enum SoulError {
 
 /// Convenient Result alias for engine operations.
 pub type SoulResult<T> = Result<T, SoulError>;
-
-// Helper to extract panic message from a dynamic trait object.
-impl EngineError {
-    /// Create `SearchPanic` from a thread join error.
-    #[cold]
-    pub fn from_panic(err: &(dyn std::any::Any + Send)) -> Self {
-        let msg = if let Some(s) = err.downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = err.downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "unknown panic payload".to_string()
-        };
-        Self::SearchPanic(msg)
-    }
-}

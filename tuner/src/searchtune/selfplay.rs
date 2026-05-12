@@ -131,7 +131,7 @@ fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64
     for (p, c_nodes, b_nodes) in results {
         penta.merge(&p);
         total_candidate_nodes += c_nodes;
-        total_basealine_nodes += b_nodes;
+        total_baseline_nodes += b_nodes;
     }
     (penta, total_candidate_nodes, total_baseline_nodes)
 }

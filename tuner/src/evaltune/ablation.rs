@@ -4,8 +4,8 @@ use soul::{core::psqt, engine::eval_params};
 
 use super::evaltuner::golden_search_k;
 use crate::evaltune::{
-    loader::{Entry, SoulEntry},
-    training::TunableData,
+    loader::{self, Entry, SoulEntry},
+    training::{self, TunableData},
 };
 
 /// Run the ablation report over `dataset_paths`.

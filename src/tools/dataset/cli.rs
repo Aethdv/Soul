@@ -5,7 +5,7 @@
 
 use std::{
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, Write},
     path::Path,
 };
 
@@ -66,7 +66,7 @@ pub fn run(args: &[&str]) {
     }
 }
 
-fn load_any_dataset(path: &str) -> std::io::Result<Vec<SoulEntry>> {
+fn load_any_dataset(path: &str) -> io::Result<Vec<SoulEntry>> {
     if path.ends_with(".viri") || path.ends_with(".vf") {
         dataset::parse_viri_file(path)
     } else {
@@ -105,7 +105,7 @@ fn inspect(path: &str, count: usize) {
     // Lock stdout once, wrap in BufWriter.
     // Without this, each writeln! independently acquires the mutex AND flushes on a tty,
     // measurably painful when dumping hundreds of entries through less.
-    let stdout = std::io::stdout();
+    let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
     let _ = writeln!(out, "Inspecting first {show} entries of {}:", entries.len());

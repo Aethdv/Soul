@@ -86,6 +86,13 @@ impl Drop for BatchedAtomicCounter<'_> {
 #[repr(C, align(64))]
 pub struct Align64<T>(pub T);
 
+impl<T> Align64<T> {
+    #[inline]
+    pub const fn new(val: T) -> Self {
+        Self(val)
+    }
+}
+
 impl<T> Deref for Align64<T> {
     type Target = T;
     #[inline(always)]
@@ -98,13 +105,6 @@ impl<T> DerefMut for Align64<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    }
-}
-
-impl<T> Align64<T> {
-    #[inline]
-    pub const fn new(val: T) -> Self {
-        Self(val)
     }
 }
 

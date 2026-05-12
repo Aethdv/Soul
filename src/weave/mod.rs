@@ -1,7 +1,5 @@
 //! Hardware-specific SIMD intrinsics and vectorization routines.
 
-#![allow(clippy::module_inception)]
-
 #[cfg(not(target_feature = "avx2"))]
 compile_error!(
     "Soul architecture relies on AVX2 SIMD intrinsics. \

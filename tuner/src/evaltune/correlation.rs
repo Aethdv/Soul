@@ -1,6 +1,7 @@
 use std::{
     fs::File,
-    io::{BufWriter, Result, Write},
+    io,
+    io::{BufWriter, Write},
 };
 
 use soul::engine::eval_params;
