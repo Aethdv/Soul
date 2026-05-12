@@ -4,6 +4,8 @@
 //! the tuner to "look up" nearby historical evaluations instead of re-playing
 //! expensive matches.
 
+pub const PRIOR_WEIGHT: f64 = 0.05;
+
 /// A spatial memory of all historically evaluated Elo measurements.
 ///
 /// Playing test matches yields Elo estimates with massive error bars.
@@ -17,8 +19,6 @@ pub struct EloEntry {
     pub elo: f64,
     pub weight: f64,
 }
-
-pub const PRIOR_WEIGHT: f64 = 0.05;
 
 #[derive(Default)]
 pub struct EloCache {

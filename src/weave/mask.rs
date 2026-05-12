@@ -1,6 +1,5 @@
 //! SIMD predication masks for branchless operations.
 
-// Typed SIMD wrappers — not CamelCase by design.
 #![allow(non_camel_case_types)]
 
 use core::{
@@ -13,8 +12,6 @@ use super::*;
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
 pub struct VMask(pub __m256i);
-
-// ──────── VMask — Predication Mask ────────
 
 impl VMask {
     #[inline(always)]

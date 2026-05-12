@@ -1,10 +1,12 @@
 use std::{
     collections::BTreeMap,
     fs::{File, rename},
-    io::BufReader,
+    io::{BufReader, ErrorKind, Write},
 };
 
 use serde::{Deserialize, Serialize};
+
+use crate::core::error::CheckpointError;
 
 pub const CHECKPOINT_FILE: &str = "searchtune_checkpoint.json";
 pub const CHECKPOINT_VERSION: u32 = 1;
@@ -31,19 +33,19 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
-    pub fn save(&self) -> Result<(), crate::core::error::CheckpointError> {
+    pub fn save(&self) -> Result<(), CheckpointError> {
         let tmp_file = format!("{CHECKPOINT_FILE}.tmp");
-        let mut writer = std::io::BufWriter::new(std::fs::File::create(&tmp_file)?);
+        let mut writer = BufWriter::new(File::create(&tmp_file)?);
         serde_json::to_writer(&mut writer, self)?;
-        std::io::Write::flush(&mut writer)?;
+        Write::flush(&mut writer)?;
         rename(&tmp_file, CHECKPOINT_FILE)?;
         Ok(())
     }
 
-    pub fn load() -> Result<Option<Self>, crate::core::error::CheckpointError> {
+    pub fn load() -> Result<Option<Self>, CheckpointError> {
         let file = match File::open(CHECKPOINT_FILE) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
         let reader = BufReader::new(file);
@@ -51,7 +53,7 @@ impl Checkpoint {
 
         if cp.version != CHECKPOINT_VERSION {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+                ErrorKind::InvalidData,
                 format!("Checkpoint version mismatch! (Expected: {}, Found: {})", CHECKPOINT_VERSION, cp.version),
             )
             .into());

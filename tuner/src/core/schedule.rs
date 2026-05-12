@@ -24,8 +24,6 @@ pub trait LrScheduler: Send + Sync {
     }
 }
 
-// ── Constant LR ──
-
 /// Fixed learning rate throughout training.
 #[derive(Clone, Copy, Debug)]
 pub struct Constant {
@@ -48,8 +46,6 @@ impl LrScheduler for Constant {
         format!("Constant({})", self.value)
     }
 }
-
-// ── Linear Decay ──
 
 /// Linear interpolation from start to end over training.
 #[derive(Clone, Copy, Debug)]
@@ -77,8 +73,6 @@ impl LrScheduler for Linear {
     }
 }
 
-// ── Exponential Decay ──
-
 /// Exponential decay: LR = start · gamma^epoch.
 #[derive(Clone, Copy, Debug)]
 pub struct Exponential {
@@ -103,8 +97,6 @@ impl LrScheduler for Exponential {
         format!("Exponential({} × {}^n)", self.start, self.gamma)
     }
 }
-
-// ── Step Decay ──
 
 /// Multiplicative step decay: LR = start · gamma^(epoch / step).
 #[derive(Clone, Copy, Debug)]
@@ -132,8 +124,6 @@ impl LrScheduler for StepDecay {
         format!("StepDecay({} × {}^(n/{}))", self.start, self.gamma, self.step_epochs)
     }
 }
-
-// ── Cosine Annealing ──
 
 /// Cosine annealing with configurable cycle count (SGDR when cycles > 1).
 #[derive(Clone, Copy, Debug)]
@@ -187,8 +177,6 @@ impl LrScheduler for CosineAnnealing {
     }
 }
 
-// ── Warmup-Stable-Decay (WSD) ──
-
 /// Warmup-Stable-Decay: LR ramps up, stays flat, then decays linearly to min.
 #[derive(Clone, Copy, Debug)]
 pub struct WarmupStableDecay {
@@ -234,8 +222,6 @@ impl LrScheduler for WarmupStableDecay {
     }
 }
 
-// ── Stable-Decay (SD) ──
-
 /// Stable-Decay: LR stays flat, then decays linearly to min.
 /// Lion's sign-step benefits from a prolonged exploration window at full
 /// step size before settling — warmup is unnecessary for non-adaptive optimizers.
@@ -269,8 +255,6 @@ impl LrScheduler for StableDecay {
         format!("StableDecay({} → {}, stable: {:.0}%)", self.base, self.min, self.stable_ratio * 100.0)
     }
 }
-
-// ──────── Combinators ────────
 
 /// Linear warmup wrapper: scales inner scheduler from 0 to 1 over first N epochs.
 ///
@@ -320,8 +304,6 @@ impl<A: LrScheduler, B: LrScheduler> LrScheduler for Sequence<A, B> {
         format!("Sequence({} → {} @{})", self.first.describe(), self.second.describe(), self.switch_epoch)
     }
 }
-
-// ──────── WDL Schedulers ────────
 
 /// WDL blend scheduler: controls blend between game result (0.0) and WDL probs (1.0).
 pub trait WdlScheduler: Send + Sync {

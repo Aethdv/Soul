@@ -1,8 +1,6 @@
-#![feature(custom_inner_attributes)]
-
 use clap::{Parser, Subcommand};
 use soul::cli::Help;
-use tuner::searchtune;
+use tuner::{core::config::TunerConfig, searchtune};
 
 #[derive(Parser)]
 #[command(
@@ -74,9 +72,9 @@ fn main() {
     match args.command {
         Some(Commands::Help) => print_help(),
         None => {
-            let mut tuner_config = tuner::core::config::TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
+            let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
                 eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
-                tuner::core::config::TunerConfig::default()
+                TunerConfig::default()
             });
 
             if let Some(epochs) = args.epochs {

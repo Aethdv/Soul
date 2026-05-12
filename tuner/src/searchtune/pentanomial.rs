@@ -22,6 +22,13 @@ pub struct Pentanomial {
     pub ww: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameResult {
+    Win,
+    Draw,
+    Loss,
+}
+
 impl Pentanomial {
     #[inline]
     #[must_use]
@@ -242,11 +249,11 @@ impl Pentanomial {
         // We explicitly multiply by 0.0 for the LL (Loss-Loss) case.
         // While mathematically redundant, it documents the scoring mapping and
         // ensures the weight of every Pentanomial bucket is accounted for.
-        let sum_sq = (f64::from(self.ll) * 0.0)    // LL: 0.0 pts
-            + (f64::from(self.ld) * 0.25)         // LD: 0.5 pts
-            + (f64::from(self.dd) * 1.0)          // DD: 1.0 pts
-            + (f64::from(self.wl) * 1.0)          // WL: 1.0 pts
-            + (f64::from(self.wd) * 2.25)         // WD: 1.5 pts
+        let sum_sq = (f64::from(self.ll) * 0.0) // LL: 0.0 pts
+            + (f64::from(self.ld) * 0.25)       // LD: 0.5 pts
+            + (f64::from(self.dd) * 1.0)        // DD: 1.0 pts
+            + (f64::from(self.wl) * 1.0)        // WL: 1.0 pts
+            + (f64::from(self.wd) * 2.25)       // WD: 1.5 pts
             + (f64::from(self.ww) * 4.0); // WW: 2.0 pts
 
         let mean_pair = self.score() * 2.0;
@@ -284,24 +291,6 @@ impl Pentanomial {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GameResult {
-    Win,
-    Draw,
-    Loss,
-}
-
-impl GameResult {
-    #[must_use]
-    pub const fn flip(self) -> Self {
-        match self {
-            Self::Win => Self::Loss,
-            Self::Draw => Self::Draw,
-            Self::Loss => Self::Win,
-        }
-    }
-}
-
 #[must_use]
 pub fn pair_to_pentanomial(first: GameResult, second: GameResult) -> Pentanomial {
     use GameResult::{Draw, Loss, Win};
@@ -316,6 +305,17 @@ pub fn pair_to_pentanomial(first: GameResult, second: GameResult) -> Pentanomial
         (Loss, Loss) => p.ll = 1,
     }
     p
+}
+
+impl GameResult {
+    #[must_use]
+    pub const fn flip(self) -> Self {
+        match self {
+            Self::Win => Self::Loss,
+            Self::Draw => Self::Draw,
+            Self::Loss => Self::Win,
+        }
+    }
 }
 
 #[cfg(test)]

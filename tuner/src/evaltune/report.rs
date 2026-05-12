@@ -1,4 +1,7 @@
-use std::io::{BufWriter, Write};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
 
 use soul::{core::psqt, engine::eval_params::Tunable};
 
@@ -26,7 +29,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
     let best = best_snap.error;
     print_params(all_params, initial_values, &best_values);
 
-    if let Ok(mut f) = std::fs::File::create("top-snapshots.txt") {
+    if let Ok(mut f) = File::create("top-snapshots.txt") {
         let mut w = BufWriter::new(&mut f);
         writeln!(w, "Top {count} snapshots (sorted by L_val):").ok();
         for (i, snap) in snapshots.iter().enumerate() {
@@ -34,7 +37,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
         }
     }
 
-    if let Ok(log_file) = std::fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
+    if let Ok(log_file) = fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
         let mut w = BufWriter::new(log_file);
         writeln!(w, "\n{0} Final EMA Parameters (Epoch {final_epoch}) {0}", "──").ok();
         write_params(&mut w, all_params, values, None);
@@ -46,7 +49,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
 
 /// Prints parameters to stdout with ANSI green highlighting for changed values.
 pub fn print_params(params: &[Tunable], initial: &[f64], values: &[f64]) {
-    let mut out = std::io::stdout().lock();
+    let mut out = io::stdout().lock();
     write_params(&mut out, params, values, Some(initial));
 }
 

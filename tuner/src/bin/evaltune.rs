@@ -1,8 +1,11 @@
+use std::process;
+
 use clap::{Parser, Subcommand};
 use soul::cli::Help;
 use tuner::{
     core::config::{DEFAULT_WDL_END, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
+    evaltune::{ablation, correlation, loader},
 };
 
 #[derive(Parser)]
@@ -90,16 +93,16 @@ fn main() {
     match args.command {
         Some(Commands::Help) => print_help(),
         Some(Commands::Encode { input, output }) => {
-            if let Err(e) = evaltune::loader::encode_epd(&input, &output) {
+            if let Err(e) = loader::encode_epd(&input, &output) {
                 eprintln!("Error: {e}");
-                std::process::exit(1);
+                process::exit(1);
             }
         },
         Some(Commands::Ablation { data }) => {
-            evaltune::ablation::run_ablation(&data);
+            ablation::run_ablation(&data);
         },
         Some(Commands::Correlation) => {
-            evaltune::correlation::run_correlation();
+            correlation::run_correlation();
         },
         None => {
             let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {

@@ -260,8 +260,6 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, batch_grad, val_eval);
 }
 
-// ──────── Shared training infrastructure ────────
-
 /// Scatter rayon-reduced gradients into the caller's accumulator.
 trait PipeGrads {
     fn pipe_grads(self, out: &mut [f64]) -> (f64, usize);

@@ -1,6 +1,6 @@
 //! Global configuration structures for the tuning pipeline.
 
-use std::fs;
+use std::{error::Error, fs};
 
 use serde::Deserialize;
 
@@ -262,7 +262,7 @@ pub struct GeneralConfig {
 impl TunerConfig {
     /// # Errors
     /// if file verification fails or TOML parsing fails.
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn Error>> {
         let contents = fs::read_to_string(path).map_err(|e| {
             eprintln!("\x1b[31m[!] Failed to read config file '{}': {}\x1b[0m", path, e);
             e

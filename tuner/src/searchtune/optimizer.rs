@@ -4,6 +4,8 @@
 //! which is used to rank sampled candidates before expensive self-play evaluation.
 //! EI naturally balances exploitation (high mean) and exploration (high uncertainty).
 
+use std::f64::consts::SQRT_2;
+
 /// Rank candidates by Expected Improvement (descending).
 #[must_use]
 pub fn rank_with_ei(means: &[f64], std_errs: &[f64], best_elo: f64) -> Vec<usize> {
@@ -62,5 +64,5 @@ fn approx_erf(x: f64) -> f64 {
 /// Gaussian Cumulative Distribution Function,
 /// using Abramowitz & Stegun 7.1.26 approximation
 fn normal_cdf(x: f64) -> f64 {
-    0.5 * (1.0 + approx_erf(x / std::f64::consts::SQRT_2))
+    0.5 * (1.0 + approx_erf(x / SQRT_2))
 }

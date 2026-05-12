@@ -1,6 +1,9 @@
 use std::{
+    fs,
     fs::File,
+    io,
     io::{BufRead, BufReader, Write},
+    mem,
     path::Path,
     time::Instant,
 };
@@ -18,7 +21,7 @@ pub struct Entry {
 
 /// Loads a raw EPD dataset into a list of [`Entry`].
 /// Supports both plain text and zstd-compressed EPD files.
-pub fn load_epd(path: &str) -> std::io::Result<Vec<Entry>> {
+pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
     let file = File::open(path)?;
     let reader = open_reader(file, Path::new(path))?;
 
@@ -39,7 +42,7 @@ pub fn load_epd(path: &str) -> std::io::Result<Vec<Entry>> {
 ///
 /// # Errors
 /// Returns an error if the input file cannot be read or the output cannot be written.
-pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
+pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
     let file = File::open(input)?;
     let reader = open_reader(file, Path::new(input))?;
 
@@ -60,7 +63,7 @@ pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
 
         if last_print.elapsed().as_millis() > 500 {
             print!("\r\x1b[K  Processed {} positions...", encoded.len());
-            let _ = std::io::stdout().flush();
+            let _ = io::stdout().flush();
             last_print = Instant::now();
         }
     }
@@ -71,18 +74,18 @@ pub fn encode_epd(input: &str, output: &str) -> std::io::Result<()> {
     println!("Writing encoded file: {path}");
     save_encoded(&path, &encoded)?;
 
-    let orig_size = encoded.len() * std::mem::size_of::<SoulEntry>();
-    let comp_size = std::fs::metadata(&path)?.len();
+    let orig_size = encoded.len() * mem::size_of::<SoulEntry>();
+    let comp_size = fs::metadata(&path)?.len();
     let ratio = orig_size as f64 / comp_size as f64;
 
     println!("Done! {} entries ({orig_size} bytes → {comp_size} bytes, {ratio:.1}x compression)", encoded.len());
-    println!("Entry size: {} bytes", std::mem::size_of::<SoulEntry>());
+    println!("Entry size: {} bytes", mem::size_of::<SoulEntry>());
 
     Ok(())
 }
 
 /// Opens a file for buffered line reading, transparently decompressing zstd if needed.
-fn open_reader(file: File, path: &Path) -> std::io::Result<Box<dyn BufRead>> {
+fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
     if path.extension().is_some_and(|e| e == "zst") {
         Ok(Box::new(BufReader::new(zstd::Decoder::new(file)?)))
     } else {

@@ -2,6 +2,8 @@
 
 use std::{sync::atomic::AtomicU64, time::Instant};
 
+use crate::core::util::Align64;
+
 pub fn get_rss_kb() -> u64 {
     match std::fs::read_to_string("/proc/self/status") {
         Ok(content) => {
@@ -15,8 +17,6 @@ pub fn get_rss_kb() -> u64 {
         Err(_) => 0,
     }
 }
-
-use crate::core::util::Align64;
 
 /// Global statistics tracking for the self-play workers.
 ///

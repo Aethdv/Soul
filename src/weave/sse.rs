@@ -2,13 +2,13 @@
 //!
 //! Provides safely typed wrappers around `__m128i` for parallel evaluation math.
 
-// Typed SIMD wrappers (e.g. Vi32x4, Vi16x8) — not CamelCase by design.
 #![allow(non_camel_case_types)]
 
 use core::{
     arch::x86_64::*,
-    ops::{Add, AddAssign, BitAnd, BitOr, BitXor, Mul, MulAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, BitAnd, BitOr, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Shr, Sub, SubAssign},
 };
+use std::mem;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
@@ -17,8 +17,6 @@ pub struct Vi16x8(pub __m128i);
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
 pub struct Vi32x4(pub __m128i);
-
-// ──────── Vi16x8 — Packed 8·i16 Operations (SSE) ────────
 
 impl Vi16x8 {
     #[inline(always)]
@@ -63,7 +61,7 @@ impl Vi16x8 {
     pub fn to_array(self) -> [i16; 8] {
         // SAFETY: Transmuting a 128-bit SIMD vector to an array of 8x 16-bit integers.
         // The sizes match exactly and alignment constraints are satisfied.
-        unsafe { std::mem::transmute(self.0) }
+        unsafe { mem::transmute(self.0) }
     }
 
     #[inline(always)]
@@ -200,8 +198,6 @@ impl BitXor for Vi16x8 {
     }
 }
 
-// ──────── Vi32x4 — Packed 4·i32 Operations (SSE) ────────
-
 impl Vi32x4 {
     #[inline(always)]
     pub const fn new(v: [i32; 4]) -> Self {
@@ -271,7 +267,7 @@ impl Vi32x4 {
     pub fn to_array(self) -> [i32; 4] {
         // SAFETY: Transmuting a 128-bit SIMD vector to an array of 4x 32-bit integers.
         // The sizes match exactly and alignment constraints are satisfied.
-        unsafe { std::mem::transmute(self.0) }
+        unsafe { mem::transmute(self.0) }
     }
 
     #[inline(always)]
@@ -328,7 +324,7 @@ impl MulAssign for Vi32x4 {
     }
 }
 
-impl std::ops::Shr<i32> for Vi32x4 {
+impl Shr<i32> for Vi32x4 {
     type Output = Self;
     #[inline(always)]
     fn shr(self, rhs: i32) -> Self {
@@ -342,8 +338,6 @@ impl std::ops::Shr<i32> for Vi32x4 {
         }
     }
 }
-
-// ──────── Vf32x4 — Packed 4×f32 Operations ────────
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
@@ -424,7 +418,7 @@ impl MulAssign for Vf32x4 {
     }
 }
 
-impl core::ops::Div for Vf32x4 {
+impl Div for Vf32x4 {
     type Output = Self;
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
@@ -432,22 +426,20 @@ impl core::ops::Div for Vf32x4 {
     }
 }
 
-impl core::ops::DivAssign for Vf32x4 {
+impl DivAssign for Vf32x4 {
     #[inline(always)]
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
     }
 }
 
-impl core::ops::Neg for Vf32x4 {
+impl Neg for Vf32x4 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self {
         Self(unsafe { _mm_sub_ps(_mm_setzero_ps(), self.0) })
     }
 }
-
-// ──────── Vf64x2 — Packed 2×f64 Operations ────────
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
@@ -528,7 +520,7 @@ impl MulAssign for Vf64x2 {
     }
 }
 
-impl core::ops::Div for Vf64x2 {
+impl Div for Vf64x2 {
     type Output = Self;
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
@@ -536,14 +528,14 @@ impl core::ops::Div for Vf64x2 {
     }
 }
 
-impl core::ops::DivAssign for Vf64x2 {
+impl DivAssign for Vf64x2 {
     #[inline(always)]
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
     }
 }
 
-impl core::ops::Neg for Vf64x2 {
+impl Neg for Vf64x2 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self {

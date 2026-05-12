@@ -1,9 +1,12 @@
-use std::ops::Range;
+use std::{mem, ops::Range};
 
 use soul::{core::psqt, engine::eval_params};
 
 use super::evaltuner::golden_search_k;
-use crate::evaltune::{loader, training};
+use crate::evaltune::{
+    loader::{Entry, SoulEntry},
+    training::TunableData,
+};
 
 /// Run the ablation report over `dataset_paths`.
 /// Supports .soul/.soul.zst and .epd/.txt, auto-detected.
@@ -12,8 +15,8 @@ pub fn run_ablation(dataset_paths: &[String]) {
 
     println!("Loading dataset...");
 
-    let mut soul_entries: Vec<loader::SoulEntry> = Vec::new();
-    let mut epd_entries: Vec<loader::Entry> = Vec::new();
+    let mut soul_entries: Vec<SoulEntry> = Vec::new();
+    let mut epd_entries: Vec<Entry> = Vec::new();
 
     for path in dataset_paths {
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {
@@ -64,7 +67,7 @@ struct AblationResult {
 }
 
 /// Run ablation on a loaded dataset; find K, baseline, zero each group.
-fn run_generic<T: training::TunableData>(entries: &[T], values: &[f64]) {
+fn run_generic<T: TunableData>(entries: &[T], values: &[f64]) {
     let groups = build_groups();
 
     println!("Optimizing K...");
@@ -77,7 +80,7 @@ fn run_generic<T: training::TunableData>(entries: &[T], values: &[f64]) {
 
     for group in &groups {
         // Zero this group, measure impact, restore.
-        let orig: Vec<f64> = group.range.clone().map(|i| std::mem::replace(&mut params[i], 0.0)).collect();
+        let orig: Vec<f64> = group.range.clone().map(|i| mem::replace(&mut params[i], 0.0)).collect();
 
         let delta = compute_loss(entries, &params, k) - baseline;
 
@@ -142,7 +145,7 @@ fn build_groups() -> Vec<Group> {
 }
 
 /// MSE over the dataset for a given parameter set and K.
-fn compute_loss<T: training::TunableData>(entries: &[T], values: &[f64], k: f64) -> f64 {
+fn compute_loss<T: TunableData>(entries: &[T], values: &[f64], k: f64) -> f64 {
     let n = entries.len() as f64;
     entries
         .iter()

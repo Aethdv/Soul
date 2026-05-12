@@ -8,6 +8,8 @@
 //! preferred with exact-position upgrades; qsearch stores are conservative
 //! to avoid evicting deeper negamax entries.
 
+use std::{arch, mem, ptr};
+
 use crate::core::{
     defs::{MATE, MAX_PLY},
     moves::Move,
@@ -63,7 +65,7 @@ impl TranspositionTable {
 
     pub fn resize(&mut self, size_mb: usize) {
         let bytes = size_mb.max(1) * 1024 * 1024;
-        let count = (bytes / std::mem::size_of::<TtEntry>()).max(1);
+        let count = (bytes / mem::size_of::<TtEntry>()).max(1);
         self.entries = vec![TtEntry::default(); count].into_boxed_slice();
     }
 
@@ -80,7 +82,7 @@ impl TranspositionTable {
         }
         let ptr = self.entries.as_ptr() as *mut TtEntry;
         unsafe {
-            std::ptr::write_bytes(ptr, 0, self.entries.len());
+            ptr::write_bytes(ptr, 0, self.entries.len());
         }
     }
 
@@ -94,7 +96,7 @@ impl TranspositionTable {
         unsafe {
             let ptr = self.entries.as_ptr().add(idx) as *const i8;
             #[cfg(target_arch = "x86_64")]
-            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(ptr);
+            arch::x86_64::_mm_prefetch::<{ arch::x86_64::_MM_HINT_T0 }>(ptr);
         }
     }
 

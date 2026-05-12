@@ -2,6 +2,7 @@
 
 use std::{
     arch::x86_64::_mm_cvtsi32_si128,
+    ops,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
@@ -32,7 +33,7 @@ pub trait EvalMath:
     type Scalar;
     type Vec4: EnvVec4<Scalar = Self::Scalar, Vec8 = Self::Vec8>;
     type Vec8: EnvVec8<Scalar = Self::Scalar, Vec4 = Self::Vec4>;
-    type Array6: std::ops::Index<usize, Output = Self>;
+    type Array6: ops::Index<usize, Output = Self>;
 
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self;
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4;
@@ -314,7 +315,7 @@ pub struct F64Vec4(pub [f64; 4]);
 #[derive(Clone, Copy)]
 pub struct F64Vec8(pub [f64; 8]);
 
-impl std::ops::Add for F64Vec4 {
+impl Add for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
@@ -322,7 +323,7 @@ impl std::ops::Add for F64Vec4 {
     }
 }
 
-impl std::ops::Sub for F64Vec4 {
+impl Sub for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
@@ -330,7 +331,7 @@ impl std::ops::Sub for F64Vec4 {
     }
 }
 
-impl std::ops::Mul for F64Vec4 {
+impl Mul for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self::Output {
