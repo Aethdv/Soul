@@ -12,7 +12,7 @@ use crate::core::{
     },
     defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
     error::FenError,
-    primitives::{RANK_1, Rank_8},
+    primitives::{RANK_1, RANK_8},
 };
 
 /// `(bitmask, rook-slot index, standard char, Shredder-FEN base)`.
