@@ -198,7 +198,7 @@ pub struct RootMove {
     pub mv: Move,
     pub score: i32,
     pub pv: Box<Line>,
-    /// Cumulative subtree nodes across all ID iterations.The best move's
+    /// Cumulative subtree nodes across all ID iterations. The best move's
     /// share of total nodes feeds the stability factor in time management.
     pub nodes: u64,
 }
@@ -435,6 +435,10 @@ impl<'cfg> Searcher<'cfg> {
             // Between iterations:
             // Bail if soft limits say we probably
             // can't finish the next depth in time.
+            //
+            // `prev_depth_time * 2` is a rough branching-factor proxy;
+            // each additional ply typically costs about twice the previous one,
+            // so if we can't afford that estimate we stop before starting it.
             if depth > 1
                 && (elapsed >= self.tm.soft_limit().as_millis() as u64
                     || elapsed + (prev_depth_time * 2) > self.tm.hard_limit().as_millis() as u64
@@ -940,12 +944,12 @@ impl Worker {
                 let null_score = if score > MATE_BOUND { beta } else { score };
 
                 // ── Verification Search ──
-                // Below the threshold, trust the cutoff outright — cheap and
-                // almost always correct. Above it, re-search the same position
-                // without null-move at reduced depth. If that also fails high,
-                // the cutoff is real; if it fails low, we were about to prune
-                // a zugzwang or a tactic the null search couldn't see — let
-                // the regular move loop handle it.
+                // At or below `nmp_verif_min_depth`, trust the cutoff outright.
+                // Cheap nodes are almost never zugzwangs. Above the threshold,
+                // re-search the same position without a null move at reduced depth.
+                // If that also fails high, the cutoff is real; if it fails low we
+                // were about to prune a zugzwang or a tactic the null search
+                // couldn't see — fall through to the regular move loop.
                 if depth <= nmp_verif_min_depth() {
                     return Ok(null_score);
                 }
@@ -1007,6 +1011,10 @@ impl Worker {
             self.stack[ply].quiet_count = 0;
             self.stack[ply].capture_count = 0;
 
+            // Continuation history contexts: the piece-to-square pair of
+            // the move played 1, 2, and 4 plies ago from this node.
+            // These index into separate cont-hist tables and let the move
+            // picker incorporate recent positional context into quiet ordering.
             let cont1 = if ply > 0 {
                 ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
             } else {
@@ -1274,8 +1282,9 @@ impl Worker {
     /// Make a move, search it, unmake it. The "heartbeat" of alpha-beta.
     ///
     /// # Safety
-    /// The move `mv` MUST be legal. Root legality is filtered during move list
-    /// generation; interior legality is filtered by the MovePicker loop.
+    /// The move `mv` MUST be legal. Root legality is guaranteed by the root
+    /// move list generated at search start; interior legality is verified by
+    /// the explicit `is_legal` call in the move loop before each invocation.
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
@@ -1340,7 +1349,11 @@ impl Worker {
 
             if eval > res.alpha {
                 res.alpha = eval;
-                // Disjoint borrow of the stack for the hot path (copies PV into current ply)
+                // Borrow checker requires a disjoint split; we need a mutable
+                // reference to stack[ply].pv and a shared one to stack[ply+1].pv
+                // simultaneously. Rust can't prove `ply` and `ply+1` don't alias
+                // through two separate borrows of `self.stack`, so split_at_mut
+                // gives us two non-overlapping slices as proof.
                 let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
                 let child_pv = &next_stack[0].pv;
                 let child_len = child_pv.len.min(MAX_PLY - 1);
