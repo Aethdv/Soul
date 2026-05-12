@@ -270,8 +270,6 @@ impl Pentanomial {
         self.ww += other.ww;
     }
 
-    // ──────── Private Helpers ────────
-
     /// Extracts the raw geometric draw tendency.
     fn draw_rate(&self) -> f64 {
         let total = self.total();

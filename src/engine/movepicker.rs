@@ -34,6 +34,9 @@ use crate::{
     },
 };
 
+// Ensure move bit-packing assumes correctly.
+const _: () = assert!(std::mem::size_of::<Move>() == 2);
+
 // ── Staged Move Picker ──
 //
 // Generates moves lazily to maximize alpha-beta cutoffs.
@@ -78,9 +81,6 @@ pub struct MovePicker {
     is_qsearch: bool,
     in_check: bool,
 }
-
-// Ensure move bit-packing assumes correctly.
-const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
 impl MovePicker {
     #[inline]
@@ -144,7 +144,6 @@ impl MovePicker {
 
                 Stage::GenCaptures => {
                     self.gen_captures(board, history);
-                    // ── Stage Segregation ──
                     // We sort captures independently of quiet moves.
                     // Even if a strong quiet move has a high history score,
                     // it will never override a capture because they are processed
@@ -229,8 +228,7 @@ impl MovePicker {
         }
     }
 
-    // ──────── Capture Generation ────────
-
+    #[inline]
     fn gen_captures(&mut self, board: &Position, history: &History) {
         let stm = board.stm;
         let us = board.side_bb[stm];
@@ -385,8 +383,6 @@ impl MovePicker {
         s as MoveScore
     }
 
-    // ──────── Quiet Move Generation ────────
-
     /// Generate only quiet queen promotions for QSearch.
     #[inline]
     fn gen_qsearch_quiets(&mut self, board: &Position, history: &History) {
@@ -436,8 +432,6 @@ impl MovePicker {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
         let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1, self.cont2, self.cont4);
-
-        // ──────── Move Ordering Heuristics ────────
 
         // Combined history values stay well inside `[-32768, 32768]` in practice.
         // Soft-gravity attractors prevent any single table from sitting near its
@@ -530,8 +524,6 @@ impl MovePicker {
         }
     }
 
-    // ──────── Castling (Standard + Chess960) ────────
-
     #[inline]
     fn gen_castling(&mut self, board: &Position, us: Bitboard, occ: Bitboard, history: &History) {
         let king_bb = board.role_bb[PieceType::King] & us;
@@ -592,8 +584,6 @@ impl MovePicker {
             self.add_quiet(board, Move::new(ksq, rsq, flag), history);
         }
     }
-
-    // ──────── Bit-Unpacking & Attack Lookups ────────
 
     /// Extracts the move from the packed item at `i`.
     #[inline(always)]

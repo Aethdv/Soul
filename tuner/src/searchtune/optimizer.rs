@@ -33,8 +33,6 @@ pub fn expected_improvement(mean: f64, sigma: f64, best: f64) -> f64 {
     (mean - best).mul_add(cdf, sigma * phi)
 }
 
-// ──────── Private Helpers ────────
-
 /// Gaussian Probability Density Function
 fn normal_pdf(x: f64) -> f64 {
     let inv_sqrt_2pi = 0.398_942_280_401_432_7;

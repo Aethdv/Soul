@@ -1,6 +1,9 @@
 //! FEN (Forsyth-Edwards Notation) parsing and serialization.
 
-use std::fmt::{self, Display, Formatter, Write as _};
+use std::{
+    fmt::{self, Display, Formatter, Write as _},
+    iter::Peekable,
+};
 
 use crate::core::{
     board::{
@@ -9,14 +12,30 @@ use crate::core::{
     },
     defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
     error::FenError,
+    primitives::{RANK_1, Rank_8},
 };
+
+/// `(bitmask, rook-slot index, standard char, Shredder-FEN base)`.
+/// Adding the rook's file to the Shredder base yields the correct file letter
+/// (`A`–`H` for white, `a`–`h` for black).
+const CASTLING_FEN: [(u8, usize, char, u8); 4] =
+    [(WHITE_OO, 0, 'K', b'A'), (WHITE_OOO, 1, 'Q', b'A'), (BLACK_OO, 2, 'k', b'a'), (BLACK_OOO, 3, 'q', b'a')];
+
+/// Standard rook home squares.
+/// Indexed by the same slot order as [`CASTLING_FEN`].
+const STANDARD_ROOK_HOMES: [Square; 4] = [
+    Square(7),  // h1 — white O-O
+    Square(0),  // a1 — white O-O-O
+    Square(63), // h8 — black O-O
+    Square(56), // a8 — black O-O-O
+];
 
 /// Constructs a [`Position`] from an iterator over whitespace-split FEN tokens.
 ///
 /// Expects up to six fields (piece placement, side-to-move, castling,
 /// en passant, half-move clock, full-move number).
 /// The last three gracefully default when absent or malformed.
-pub fn try_from_tokens<'a, I>(tokens: &mut std::iter::Peekable<I>) -> Result<Position, FenError>
+pub fn try_from_tokens<'a, I>(tokens: &mut Peekable<I>) -> Result<Position, FenError>
 where I: Iterator<Item = &'a str> {
     let mut pos = Position::new();
 
@@ -194,7 +213,6 @@ pub fn pretty_print(pos: &Position) {
     println!("   +------------------------+");
     println!("     a  b  c  d  e  f  g  h\n");
 }
-// ──────── Private Constants & Helpers ────────
 
 fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     // 1. King Existence Invariant
@@ -207,7 +225,7 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     }
 
     // 2. Pawn Rank Invariant (Pawns cannot exist on 1st/8th ranks)
-    let illegal_pawns = pos.role_bb[PieceType::Pawn] & (crate::core::primitives::RANK_1 | crate::core::primitives::RANK_8);
+    let illegal_pawns = pos.role_bb[PieceType::Pawn] & (RANK_1 | RANK_8);
     if illegal_pawns.is_not_empty() {
         let sq = illegal_pawns.lsb();
         let color = if pos.side_bb[Color::White].check_bit(sq) { Color::White } else { Color::Black };
@@ -238,24 +256,6 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     pos.hash = pos.calc_zobrist();
     Ok(pos)
 }
-
-/// Per-right metadata for FEN serialization and display.
-///
-/// Each entry:
-/// `(bitmask, rook-slot index, standard char, Shredder-FEN base)`.
-/// Adding the rook's file to the Shredder base yields the correct file letter
-/// (`A`–`H` for white, `a`–`h` for black).
-const CASTLING_FEN: [(u8, usize, char, u8); 4] =
-    [(WHITE_OO, 0, 'K', b'A'), (WHITE_OOO, 1, 'Q', b'A'), (BLACK_OO, 2, 'k', b'a'), (BLACK_OOO, 3, 'q', b'a')];
-
-/// Standard rook home squares,
-/// indexed by the same slot order as [`CASTLING_FEN`].
-const STANDARD_ROOK_HOMES: [Square; 4] = [
-    Square(7),  // h1 — white O-O
-    Square(0),  // a1 — white O-O-O
-    Square(63), // h8 — black O-O
-    Square(56), // a8 — black O-O-O
-];
 
 /// Which side occupies `sq`?
 /// Only meaningful when the square holds a piece.

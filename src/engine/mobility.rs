@@ -38,6 +38,20 @@ pub const PAWN_SCALE: i32 = 20; // 0.02 · 1024
 /// Fixed-point precision (1.0 ≡ 1024).
 pub const OPEN_UNITY: i32 = 1024;
 
+pub struct Mobility;
+pub struct MobilityTerm;
+pub struct KingSafetyTerm;
+
+/// Complete mobility snapshot for one position, computed once and consumed by
+/// both the engine (score diff) and the tuner (raw feature extraction).
+#[derive(Clone, Default, Debug)]
+pub struct MobilityData {
+    pub metrics_us: SideMetrics,
+    pub metrics_them: SideMetrics,
+    pub safety_us: SafetyMetrics,
+    pub safety_them: SafetyMetrics,
+}
+
 /// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.
 ///
 /// - `mobility`: safe squares controlled, with contested squares counted twice.
@@ -50,16 +64,6 @@ pub struct SideMetrics {
     pub shadow_mobility: i32,
     pub threats: i32,
     pub shadow_threats: i32,
-}
-
-/// Complete mobility snapshot for one position, computed once and consumed by
-/// both the engine (score diff) and the tuner (raw feature extraction).
-#[derive(Clone, Default, Debug)]
-pub struct MobilityData {
-    pub metrics_us: SideMetrics,
-    pub metrics_them: SideMetrics,
-    pub safety_us: SafetyMetrics,
-    pub safety_them: SafetyMetrics,
 }
 
 /// Raw king-zone features for one side.
@@ -78,6 +82,53 @@ pub struct SafetyMetrics {
     pub ortho_exposure: i32,
     /// Bishop-reachable squares from the king.
     pub diag_exposure: i32,
+}
+
+/// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
+///
+/// `us_pawns` and `them_pawns` are the raw u64 bitboards for each side's pawns.
+/// Rams are pawns directly facing the opponent (shifted one rank forward).
+#[inline]
+pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
+    let rams = (us_pawns << 8) & them_pawns;
+    (OPEN_UNITY - RAM_SCALE * rams.count_ones() as i32 - PAWN_SCALE * (us_pawns | them_pawns).count_ones() as i32)
+        .clamp(0, OPEN_UNITY)
+}
+
+/// Pre-computed attack maps for both sides. Built once per evaluation and
+/// threaded through every sub-computation to avoid redundant slider work.
+struct EvalCtx {
+    /// Piece + pawn attacks, excluding king.
+    /// Used for danger assessment — your own king's reach
+    /// doesn't help assault the opponent's king zone.
+    atk_us: Bitboard,
+    atk_them: Bitboard,
+
+    /// Full control:
+    /// piece + pawn + king attacks.
+    /// Used for mobility and piece-protection calculations
+    /// where the king's influence matters.
+    area_us: Bitboard,
+    area_them: Bitboard,
+
+    /// Pawn-only attack maps, cached to avoid recomputation.
+    pawn_atk_us: Bitboard,
+    pawn_atk_them: Bitboard,
+
+    ksq_us: Square,
+    ksq_them: Square,
+
+    /// Pawn occupancy (used for shield evaluation, not attacks).
+    pawn_us: Bitboard,
+    pawn_them: Bitboard,
+
+    us: Bitboard,
+    them: Bitboard,
+    occ: Bitboard,
+
+    /// Shadow/X-ray attack maps.
+    xray_us: Bitboard,
+    xray_them: Bitboard,
 }
 
 impl SafetyMetrics {
@@ -112,8 +163,6 @@ impl SafetyMetrics {
         }
     }
 }
-
-pub struct Mobility;
 
 impl Mobility {
     #[inline]
@@ -191,19 +240,6 @@ impl Mobility {
     }
 }
 
-/// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
-///
-/// `us_pawns` and `them_pawns` are the raw u64 bitboards for each side's pawns.
-/// Rams are pawns directly facing the opponent (shifted one rank forward).
-#[inline]
-pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
-    let rams = (us_pawns << 8) & them_pawns;
-    (OPEN_UNITY - RAM_SCALE * rams.count_ones() as i32 - PAWN_SCALE * (us_pawns | them_pawns).count_ones() as i32)
-        .clamp(0, OPEN_UNITY)
-}
-
-pub struct MobilityTerm;
-
 impl LinearTerm for MobilityTerm {
     type Upstream = TaperPair;
 
@@ -265,8 +301,6 @@ impl LinearTerm for MobilityTerm {
         }
     }
 }
-
-pub struct KingSafetyTerm;
 
 impl LinearTerm for KingSafetyTerm {
     /// Scalar upstream; combiner's single MG taper already folds in loss
@@ -331,42 +365,6 @@ impl LinearTerm for KingSafetyTerm {
             }
         }
     }
-}
-
-/// Pre-computed attack maps for both sides. Built once per evaluation and
-/// threaded through every sub-computation to avoid redundant slider work.
-struct EvalCtx {
-    /// Piece + pawn attacks, excluding king.
-    /// Used for danger assessment — your own king's reach
-    /// doesn't help assault the opponent's king zone.
-    atk_us: Bitboard,
-    atk_them: Bitboard,
-
-    /// Full control:
-    /// piece + pawn + king attacks.
-    /// Used for mobility and piece-protection calculations
-    /// where the king's influence matters.
-    area_us: Bitboard,
-    area_them: Bitboard,
-
-    /// Pawn-only attack maps, cached to avoid recomputation.
-    pawn_atk_us: Bitboard,
-    pawn_atk_them: Bitboard,
-
-    ksq_us: Square,
-    ksq_them: Square,
-
-    /// Pawn occupancy (used for shield evaluation, not attacks).
-    pawn_us: Bitboard,
-    pawn_them: Bitboard,
-
-    us: Bitboard,
-    them: Bitboard,
-    occ: Bitboard,
-
-    /// Shadow/X-ray attack maps.
-    xray_us: Bitboard,
-    xray_them: Bitboard,
 }
 
 impl EvalCtx {

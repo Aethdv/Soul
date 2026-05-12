@@ -8,21 +8,75 @@
 
 use crate::core::defs::{Color, PieceType, Square};
 
+pub const CORRECTION_SIZE: usize = 16384;
+pub const CORRECTION_SCALE: i32 = 256;
+pub const CORRECTION_LIMIT: i32 = 256 * 32;
+
+/// Combined history tables for move ordering.
+#[derive(Clone)]
+pub struct History {
+    /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
+    table: [[[i16; 64]; 6]; 2],
+    /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
+    butterfly: [[i16; 4096]; 2], // ~20 Elo
+    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
+    cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
+    /// `[side][pawn_hash & 0x3FFF]`
+    correction: CorrectionHistory, // ~53 Elo
+    /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
+    np_correction: CorrectionHistory, // ~18 Elo
+    /// `[side][attacker][to][victim]`
+    capt: CaptureHistory, // ~8 Elo
+}
+
 #[derive(Clone, Copy)]
 pub struct ContContext {
     pub pt: PieceType,
     pub to: Square,
 }
 
+#[derive(Clone)]
+pub struct ContinuationHistory {
+    data: Box<[i16]>,
+}
+
+/// Capture history: `[side][attacker][to][victim] -> i16`.
+///
+/// Tracks which captures historically caused beta cutoffs, indexed by the
+/// attacker piece type, the destination square, and the victim piece type.
+/// Plain captures and en passant participate; promotion-captures do NOT
+/// (they bypass the normal MVV-LVA path in the picker and are already
+/// strongly ordered by promotion piece, so we keep both sides of the table
+/// consistent by skipping them entirely).
+#[derive(Clone)]
+pub struct CaptureHistory {
+    data: Box<[i16]>,
+}
+
+/// Hash-keyed evaluator bias correction.
+///
+/// Observes the delta between static eval and search result, then applies
+/// a weighted moving average so future evals of positions sharing the same
+/// key are nudged toward the truth. Especially valuable for HCE,
+/// where the evaluator has no mechanism to learn its own systematic errors.
+///
+/// The key is caller-supplied — any Zobrist slice that isolates a bias
+/// worth tracking (pawn structure, non-pawn material, etc.).
+/// A single table instance is tied to one key schema; `History` composes several
+/// and blends their corrections at lookup time.
+///
+/// Layout: `[side][key & (N-1)]`. Entries are centipawn corrections
+/// scaled by `CORRECTION_SCALE` for fixed-point precision, bounded by
+/// `CORRECTION_LIMIT` so no single outlier can dominate.
+#[derive(Clone)]
+pub struct CorrectionHistory {
+    data: Box<[i32]>,
+}
+
 impl Default for ContContext {
     fn default() -> Self {
         Self { pt: PieceType::None, to: Square(0) }
     }
-}
-
-#[derive(Clone)]
-pub struct ContinuationHistory {
-    data: Box<[i16]>,
 }
 
 impl Default for ContinuationHistory {
@@ -60,19 +114,6 @@ impl ContinuationHistory {
         i = i * 64 + to.0 as usize;
         i
     }
-}
-
-/// Capture history: `[side][attacker][to][victim] -> i16`.
-///
-/// Tracks which captures historically caused beta cutoffs, indexed by the
-/// attacker piece type, the destination square, and the victim piece type.
-/// Plain captures and en passant participate; promotion-captures do NOT
-/// (they bypass the normal MVV-LVA path in the picker and are already
-/// strongly ordered by promotion piece, so we keep both sides of the table
-/// consistent by skipping them entirely).
-#[derive(Clone)]
-pub struct CaptureHistory {
-    data: Box<[i16]>,
 }
 
 impl Default for CaptureHistory {
@@ -115,30 +156,6 @@ impl CaptureHistory {
     }
 }
 
-/// Hash-keyed evaluator bias correction.
-///
-/// Observes the delta between static eval and search result, then applies
-/// a weighted moving average so future evals of positions sharing the same
-/// key are nudged toward the truth. Especially valuable for HCE,
-/// where the evaluator has no mechanism to learn its own systematic errors.
-///
-/// The key is caller-supplied — any Zobrist slice that isolates a bias
-/// worth tracking (pawn structure, non-pawn material, etc.).
-/// A single table instance is tied to one key schema; `History` composes several
-/// and blends their corrections at lookup time.
-///
-/// Layout: `[side][key & (N-1)]`. Entries are centipawn corrections
-/// scaled by `CORRECTION_SCALE` for fixed-point precision, bounded by
-/// `CORRECTION_LIMIT` so no single outlier can dominate.
-#[derive(Clone)]
-pub struct CorrectionHistory {
-    data: Box<[i32]>,
-}
-
-pub const CORRECTION_SIZE: usize = 16384;
-pub const CORRECTION_SCALE: i32 = 256;
-pub const CORRECTION_LIMIT: i32 = 256 * 32;
-
 const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 
 impl CorrectionHistory {
@@ -178,23 +195,6 @@ impl Default for CorrectionHistory {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Combined history tables for move ordering.
-#[derive(Clone)]
-pub struct History {
-    /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
-    table: [[[i16; 64]; 6]; 2],
-    /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
-    butterfly: [[i16; 4096]; 2], // ~20 Elo
-    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
-    cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
-    /// `[side][pawn_hash & 0x3FFF]`
-    correction: CorrectionHistory, // ~53 Elo
-    /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
-    np_correction: CorrectionHistory, // ~18 Elo
-    /// `[side][attacker][to][victim]`
-    capt: CaptureHistory, // ~8 Elo
 }
 
 impl History {

@@ -119,8 +119,6 @@ pub fn load_openings(path: &str) -> Result<Vec<String>, std::io::Error> {
     Ok(fens)
 }
 
-// ──────── Private Helpers ────────
-
 fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64, u64) {
     let mut penta = Pentanomial::default();
     let mut total_candidate_nodes = 0u64;

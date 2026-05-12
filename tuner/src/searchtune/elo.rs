@@ -154,8 +154,6 @@ impl EloCache {
         self.entries.is_empty()
     }
 
-    // ──────── Private Helpers ────────
-
     /// Euclidean distance in normalized space
     #[inline(always)]
     fn distance(a: &[f64], b: &[f64]) -> f64 {

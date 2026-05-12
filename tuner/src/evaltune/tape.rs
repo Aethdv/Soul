@@ -460,8 +460,6 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }
 
-// ────── Private Helpers ──────
-
 /// Compute raw game phase as the dot product of piece counts and phase weights.
 #[inline(always)]
 fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {

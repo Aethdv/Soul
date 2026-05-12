@@ -52,8 +52,6 @@ pub fn run_ablation(dataset_paths: &[String]) {
     }
 }
 
-// ──── Private ────
-
 /// A named parameter group to ablate as a unit.
 struct Group {
     name: &'static str,

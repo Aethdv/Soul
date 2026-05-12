@@ -106,8 +106,6 @@ impl TimeManager {
     }
 }
 
-// ──────── Private ────────
-
 /// Resolve the `(soft, hard)` budget pair for the side to move.
 ///
 /// Walks the precedence ladder documented at the module level. The clocked

@@ -13,6 +13,12 @@ use crate::core::{
     moves::{Move, MoveList},
 };
 
+/// Queen first — correct in 99.9% of positions.
+/// Knight underpromotion (the sneaky fork) is next.
+const QUIET_PROMOS: [u16; 4] = [Move::PROM_Q, Move::PROM_R, Move::PROM_B, Move::PROM_N];
+/// Same priority ordering for promotion-captures.
+const CAPTURE_PROMOS: [u16; 4] = [Move::PROM_Q_CAPTURE, Move::PROM_R_CAPTURE, Move::PROM_B_CAPTURE, Move::PROM_N_CAPTURE];
+
 // Move Generation — pseudo-legal generation followed by legality filter.
 //
 // Why not generate legal moves directly?
@@ -47,6 +53,30 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
     }
 
     legal
+}
+
+/// Const-generic on color: the compiler monomorphizes into two copies with
+/// all direction and rank logic resolved at compile time. No branches for
+/// "which way do pawns go?" — it's baked into the binary.
+#[inline]
+pub fn gen_pseudo_moves(board: &Position) -> MoveList {
+    let mut list = MoveList::new();
+    match board.stm {
+        Color::White => gen_all::<{ Color::White }, false>(board, &mut list),
+        Color::Black => gen_all::<{ Color::Black }, false>(board, &mut list),
+    }
+    list
+}
+
+/// Generate only strictly tactical pseudo-legal moves (captures and promotions).
+#[inline]
+pub fn gen_tactical_moves(board: &Position) -> MoveList {
+    let mut list = MoveList::new();
+    match board.stm {
+        Color::White => gen_all::<{ Color::White }, true>(board, &mut list),
+        Color::Black => gen_all::<{ Color::Black }, true>(board, &mut list),
+    }
+    list
 }
 
 /// Validates that a TT move is pseudo-legal for the current position.
@@ -245,32 +275,6 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     }
 
     true
-}
-
-/// Generate only strictly tactical pseudo-legal moves (captures and promotions).
-#[inline]
-pub fn gen_tactical_moves(board: &Position) -> MoveList {
-    let mut list = MoveList::new();
-    match board.stm {
-        Color::White => gen_all::<{ Color::White }, true>(board, &mut list),
-        Color::Black => gen_all::<{ Color::Black }, true>(board, &mut list),
-    }
-    list
-}
-
-/// ── Pseudo-Legal Generation ──
-///
-/// Const-generic on color: the compiler monomorphizes into two copies with
-/// all direction and rank logic resolved at compile time. No branches for
-/// "which way do pawns go?" — it's baked into the binary.
-#[inline]
-pub fn gen_pseudo_moves(board: &Position) -> MoveList {
-    let mut list = MoveList::new();
-    match board.stm {
-        Color::White => gen_all::<{ Color::White }, false>(board, &mut list),
-        Color::Black => gen_all::<{ Color::Black }, false>(board, &mut list),
-    }
-    list
 }
 
 /// Master dispatcher for pseudo-legal generation, heavily optimized via compile-time constants.
@@ -482,15 +486,6 @@ fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList, occ: Bitb
         }
     }
 }
-
-/// Queen first — correct in 99.9% of positions.
-/// Knight underpromotion (the sneaky fork) is next.
-/// Rook and Bishop promotions are almost never optimal,
-/// but must exist for completeness.
-const QUIET_PROMOS: [u16; 4] = [Move::PROM_Q, Move::PROM_R, Move::PROM_B, Move::PROM_N];
-
-/// Same priority ordering for promotion-captures.
-const CAPTURE_PROMOS: [u16; 4] = [Move::PROM_Q_CAPTURE, Move::PROM_R_CAPTURE, Move::PROM_B_CAPTURE, Move::PROM_N_CAPTURE];
 
 /// Push all four promotion variants (Queen, Rook, Bishop, Knight) to the move list.
 ///

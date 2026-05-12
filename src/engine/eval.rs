@@ -31,12 +31,104 @@ use crate::{
     weave::Vi16x8,
 };
 
+/// Non-PSQT evaluation weights, generic over the math type.
+///
+/// - For the search hot path: `EvalParams::<i32>::from_const()`
+///   inlines to direct constant loads.
+/// - For the tuner: constructed with `AutogradNode::parameter()`
+///   so gradient flows to the values array.
+macro_rules! impl_eval_params {
+    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
+        pub struct EvalParams<T: EvalMath> {
+            $( pub $name: <T as EvalMath>::$ty, )*
+        }
+
+        impl<T: EvalMath<Scalar = T>> EvalParams<T> {
+            #[allow(dead_code)]
+            pub fn load_tunable(values: &[f64]) -> Self {
+                // Slots 0 and 1 are reserved for the PSQT accumulator gradients:
+                // slot 0 tracks the MiddleGame (MG) material/positional score,
+                // slot 1 tracks the EndGame (EG) material/positional score.
+                // The dynamically tuned EvalParams begin at slot 2.
+                let mut slot = 2;
+                paste::paste! {
+                    Self {
+                        $(
+                            $name: T::[<load_ $ty:lower>](
+                                values,
+                                $crate::engine::eval_params::LAYOUT.$offset_field + $extra,
+                                &mut slot,
+                            ),
+                        )*
+                    }
+                }
+            }
+        }
+    }
+}
+
+crate::define_tunables! {impl_eval_params}
+
+crate::register_terms! {
+    mobility::MobilityTerm => mobility,
+    mobility::KingSafetyTerm => king_safety,
+    BishopPairTerm => bonus,
+    XrayTerm => xray,
+}
+
+/// X-ray king-ring differential; shares the king-safety block's scalar upstream.
+pub struct XrayTerm;
+/// Tapered bonus for holding both bishops (~9 Elo).
+pub struct BishopPairTerm;
+
+pub struct DetailedEval {
+    pub psqt: i32,
+    pub mobility: i32,
+    pub bonus: i32,
+    pub safety: i32,
+    pub total: i32,
+}
+
+/// Macroscopic features extracted once per position — consumed by both the
+/// engine's score pass and every registered `LinearTerm::scatter` in the tuner.
+/// New eval terms that depend on fresh board state should extend this struct,
+/// not duplicate extraction.
+pub struct SharedFeatures {
+    pub openness: i32,
+    pub data: MobilityData,
+    pub xray_ortho: i32,
+    /// `+1` if white has the bishop pair and black doesn't,
+    /// `-1` for the reverse, `0` otherwise.
+    pub bishop_pair_diff: i32,
+}
+
 /// The standard integer evaluation used in the alpha-beta search.
 #[inline]
 pub fn evaluate(board: &Position, acc: &Vi16x8) -> i32 {
     let phase = extract_phase(acc);
     let params = EvalParams::<i32>::from_const();
     evaluate_generic::<i32>(board, acc, phase, &params, None)
+}
+
+/// A version of evaluate that returns individual components for debugging and visualization.
+pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
+    let phase = extract_phase(acc);
+    let params = EvalParams::<i32>::from_const();
+    let features = SharedFeatures::compute(board);
+    let buckets = fill_accumulators::<i32>(acc, phase, &features, &params);
+    let psqt = buckets.mg_eg;
+    let mobility = buckets.mobility;
+    let bonus = buckets.bonus;
+    let total = LinearCombiner::forward(&buckets, phase);
+    let safety = total - psqt - mobility - bonus;
+
+    let (p, m, b, s, t) = if board.stm == Color::White {
+        (psqt, mobility, bonus, safety, total)
+    } else {
+        (-psqt, -mobility, -bonus, -safety, -total)
+    };
+
+    DetailedEval { psqt: p, mobility: m, bonus: b, safety: s, total: t }
 }
 
 /// Stripped-down eval for volatility filtering — accumulator-only, no spatial features.
@@ -95,46 +187,41 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
     if board.stm == Color::White { score } else { -score }
 }
 
-pub struct DetailedEval {
-    pub psqt: i32,
-    pub mobility: i32,
-    pub bonus: i32,
-    pub safety: i32,
-    pub total: i32,
+#[inline(always)]
+pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
+    acc: &T::Vec8,
+    phase: T,
+    features: &SharedFeatures,
+    params: &EvalParams<T>,
+) -> T {
+    let buckets = fill_accumulators::<T>(acc, phase, features, params);
+    LinearCombiner::forward(&buckets, phase)
 }
 
-/// A version of evaluate that returns individual components for debugging and visualization.
-pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
-    let phase = extract_phase(acc);
-    let params = EvalParams::<i32>::from_const();
-    let features = SharedFeatures::compute(board);
-    let buckets = fill_accumulators::<i32>(acc, phase, &features, &params);
-    let psqt = buckets.mg_eg;
-    let mobility = buckets.mobility;
-    let bonus = buckets.bonus;
-    let total = LinearCombiner::forward(&buckets, phase);
-    let safety = total - psqt - mobility - bonus;
-
-    let (p, m, b, s, t) = if board.stm == Color::White {
-        (psqt, mobility, bonus, safety, total)
-    } else {
-        (-psqt, -mobility, -bonus, -safety, -total)
-    };
-
-    DetailedEval { psqt: p, mobility: m, bonus: b, safety: s, total: t }
+/// Extracts the game phase directly from the accumulator's dedicated lane.
+#[inline(always)]
+pub fn extract_phase(acc: &Vi16x8) -> i32 {
+    i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE)
 }
 
-/// Macroscopic features extracted once per position — consumed by both the
-/// engine's score pass and every registered `LinearTerm::scatter` in the tuner.
-/// New eval terms that depend on fresh board state should extend this struct,
-/// not duplicate extraction.
-pub struct SharedFeatures {
-    pub openness: i32,
-    pub data: MobilityData,
-    pub xray_ortho: i32,
-    /// `+1` if white has the bishop pair and black doesn't,
-    /// `-1` for the reverse, `0` otherwise.
-    pub bishop_pair_diff: i32,
+impl EvalParams<i32> {
+    /// Load from compile-time const arrays. The compiler inlines this entirely.
+    #[inline(always)]
+    pub fn from_const() -> Self {
+        Self {
+            mg_mob_open: MG_MOBILITY_OPEN,
+            mg_mob_closed: MG_MOBILITY_CLOSED,
+            eg_mob_open: EG_MOBILITY_OPEN,
+            eg_mob_closed: EG_MOBILITY_CLOSED,
+            w_shield: KING_SAFETY_WEIGHTS[0],
+            w_ortho: KING_SAFETY_WEIGHTS[1],
+            w_diag: KING_SAFETY_WEIGHTS[2],
+            atk_weights: ATTACKER_WEIGHTS,
+            w_xray_ortho: XRAY_WEIGHTS[0],
+            w_bp_mg: BISHOP_PAIR_WEIGHTS[0],
+            w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
+        }
+    }
 }
 
 impl SharedFeatures {
@@ -163,28 +250,6 @@ impl SharedFeatures {
     }
 }
 
-#[inline(always)]
-pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
-    acc: &T::Vec8,
-    phase: T,
-    features: &SharedFeatures,
-    params: &EvalParams<T>,
-) -> T {
-    let buckets = fill_accumulators::<T>(acc, phase, features, params);
-    LinearCombiner::forward(&buckets, phase)
-}
-
-/// Extracts the game phase directly from the accumulator's dedicated lane.
-#[inline(always)]
-pub fn extract_phase(acc: &Vi16x8) -> i32 {
-    i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE)
-}
-
-// ──────── Eval terms ────────
-
-/// X-ray king-ring differential; shares the king-safety block's scalar upstream.
-pub struct XrayTerm;
-
 impl term::LinearTerm for XrayTerm {
     /// Scalar upstream — x-ray is tapered MG-only inside the combiner's
     /// king-safety block, same cadence as king safety.
@@ -200,9 +265,6 @@ impl term::LinearTerm for XrayTerm {
         grads[psqt::LAYOUT.xray_offset] += upstream * features.xray_ortho as f64;
     }
 }
-
-/// Tapered bonus for holding both bishops (~9 Elo).
-pub struct BishopPairTerm;
 
 impl term::LinearTerm for BishopPairTerm {
     type Upstream = term::TaperPair;
@@ -222,15 +284,6 @@ impl term::LinearTerm for BishopPairTerm {
         grads[eval_params::LAYOUT.bishop_pair_offset + 1] += upstream.d_eg * feature;
     }
 }
-
-crate::register_terms! {
-    mobility::MobilityTerm => mobility,
-    mobility::KingSafetyTerm => king_safety,
-    BishopPairTerm => bonus,
-    XrayTerm => xray,
-}
-
-// ──────── Combiner glue ────────
 
 /// Build the per-bucket accumulator by initializing the PSQT-level `mg_eg` bucket
 /// from the SIMD accumulator, zeroing the rest, and applying every registered term.
@@ -253,64 +306,4 @@ fn fill_accumulators<T: EvalMath<Scalar = T>>(
     };
     apply_all_terms::<T>(features, params, phase, &mut buckets);
     buckets
-}
-
-// ──────── Parameter generation ────────
-
-/// Non-PSQT evaluation weights, generic over the math type.
-///
-/// - For the search hot path: `EvalParams::<i32>::from_const()`
-///   inlines to direct constant loads.
-/// - For the tuner: constructed with `AutogradNode::parameter()`
-///   so gradient flows to the values array.
-macro_rules! impl_eval_params {
-    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
-        pub struct EvalParams<T: EvalMath> {
-            $( pub $name: <T as EvalMath>::$ty, )*
-        }
-
-        impl<T: EvalMath<Scalar = T>> EvalParams<T> {
-            #[allow(dead_code)]
-            pub fn load_tunable(values: &[f64]) -> Self {
-                // Slots 0 and 1 are reserved for the PSQT accumulator gradients:
-                // slot 0 tracks the MiddleGame (MG) material/positional score,
-                // slot 1 tracks the EndGame (EG) material/positional score.
-                // The dynamically tuned EvalParams begin at slot 2.
-                let mut slot = 2;
-                paste::paste! {
-                    Self {
-                        $(
-                            $name: T::[<load_ $ty:lower>](
-                                values,
-                                $crate::engine::eval_params::LAYOUT.$offset_field + $extra,
-                                &mut slot,
-                            ),
-                        )*
-                    }
-                }
-            }
-        }
-    }
-}
-
-crate::define_tunables!(impl_eval_params);
-
-impl EvalParams<i32> {
-    /// Load from compile-time const arrays. The compiler inlines this entirely.
-    #[inline(always)]
-    pub fn from_const() -> Self {
-        Self {
-            mg_mob_open: MG_MOBILITY_OPEN,
-            mg_mob_closed: MG_MOBILITY_CLOSED,
-            eg_mob_open: EG_MOBILITY_OPEN,
-            eg_mob_closed: EG_MOBILITY_CLOSED,
-            w_shield: KING_SAFETY_WEIGHTS[0],
-            w_ortho: KING_SAFETY_WEIGHTS[1],
-            w_diag: KING_SAFETY_WEIGHTS[2],
-            atk_weights: ATTACKER_WEIGHTS,
-            w_xray_ortho: XRAY_WEIGHTS[0],
-            w_bp_mg: BISHOP_PAIR_WEIGHTS[0],
-            w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
-        }
-    }
 }

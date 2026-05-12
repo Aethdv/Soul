@@ -58,12 +58,6 @@ pub const SEARCH_LEFT: i8 = -1;
 /// Toward h-file (kingside rook)
 pub const SEARCH_RIGHT: i8 = 1;
 
-// Castling rights bitmask.
-//
-//  Packed into a single u8:
-//    bit 0 = White O-O    bit 2 = Black O-O
-//    bit 1 = White O-O-O  bit 3 = Black O-O-O
-
 pub const WHITE_OO: u8 = 1;
 pub const WHITE_OOO: u8 = 2;
 pub const BLACK_OO: u8 = 4;
@@ -160,7 +154,7 @@ pub struct Position {
 }
 
 // ──────── Irreversible State Snapshots ────────
-
+//
 // Moves that destroy information:
 // castling rights, the fifty-move counter, en passant availability, captured pieces.
 // We snapshot these irreversible fields before each move so unmake_move

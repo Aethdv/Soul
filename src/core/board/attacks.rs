@@ -42,8 +42,6 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
     (atk_bishop(sq, occ) & bq).is_not_empty()
 }
 
-// ──────── Checker & Attacker Queries ────────
-
 /// Returns a bitboard of every enemy piece
 /// currently giving check to the side-to-move's king.
 #[inline(always)]
@@ -95,8 +93,6 @@ pub fn all_attackers_to(pos: &Position, sq: Square, occ: Bitboard) -> Bitboard {
         | (atk_bishop(sq, occ) & (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]))
 }
 
-// ──────── En Passant Legality ────────
-
 /// Can any pawn of `color` legally reach `ep_sq`?
 ///
 /// Uses the symmetry trick:
@@ -111,8 +107,6 @@ pub fn can_capture_ep(pos: &Position, ep_sq: Square, color: Color) -> bool {
     let us = pos.side_bb[color];
     (atk_pawn(ep_sq, color.opposite()) & pos.role_bb[PieceType::Pawn] & us).is_not_empty()
 }
-
-// ──────── Pins & X-Rays ────────
 
 /// Identifies friendly pieces pinned to our king by enemy sliders.
 ///

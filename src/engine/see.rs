@@ -68,7 +68,6 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     //   attacker  — piece sitting on to after our move, whose value
     //               will be lost if the opponent recaptures
     let (gain, attacker) = if mv.is_en_passant() {
-        // Victim is always a pawn; our mover stays a pawn.
         (val(PieceType::Pawn), PieceType::Pawn)
     } else if let Some(promo) = mv.promo() {
         // The mover becomes promo; we earn the upgrade on top of
@@ -80,8 +79,6 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         (val(pos.piece_at(to)), pos.piece_at(from))
     };
 
-    // ── Running trade balance ──
-    //
     // `balance` is the amount the side to move still needs to gain to
     // beat the previous player's outcome. After the first assignment
     // it represents our caller's deficit relative to threshold; after
@@ -100,8 +97,6 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         return true;
     }
 
-    // ──────── Full exchange ────────
-    //
     // Rebuild occupancy with our attacker removed from from
     // (and for en passant also the victim pawn on to ^ 8),
     // then recompute the full attacker set from scratch — this picks

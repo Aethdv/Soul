@@ -136,10 +136,10 @@ pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceT
     if captured != PieceType::None {
         *acc -= psqt::get_vec(captured, to, opp);
     } else if mv.is_en_passant() {
-        // ── En Passant capture ──
         // The captured pawn is always exactly one rank from `to`:
-        //   White captures up → victim is on rank(to)-1 → to ^ 8 subtracts 8.
+        //   White captures up   → victim is on rank(to)-1 → to ^ 8 subtracts 8.
         //   Black captures down → victim is on rank(to)+1 → to ^ 8 adds 8.
+        //
         // XOR-8 toggles bit 3, which equals ±8 in index space.
         // The direction is always correct because the captured pawn occupies
         // the rank that still has its bit-3 in the opposite state from `to`.
