@@ -1,25 +1,56 @@
 [evaltune]
 beta1 = 0.9
 beta2 = 0.99
-weight_decay = 0.00001
-batch_size = 262144
-epochs = 4000
 grad_clip = 1.0
 k_min = 0.003
 k_max = 0.010
 
+# Weight Decay prevents parameter drift under Lion's uniform sign-step.
+# lr × wd = 3e-7 per step; bump by 2-3× only when params drift significantly from their starting values over training.
+weight_decay = 0.00001
+
+# positions / batch_size → ~100 u/epoch (80-150 all identical for HCE; Lion's uniform step + near-convex surface saturate quickly)
+#
+# positions  batch     u/epoch
+# 2.8M       32,768     85
+# 7.1M       65,536    108
+# 15M        131,072   114
+# 26M        262,144   100
+# 52M        524,288   100
+batch_size = 32768
+
+epochs = 4000
+loss = "mse" # cross_entropy
+
+volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
+volatility_adaptive = true # scales with piece count.
+
+# Per-group LR multipliers for Lion sign-step.
+# at 1.0 full LR
+lr_psqt = 1.0
+lr_material = 1.0
+lr_mobility = 1.0
+lr_other = 1.0
+
 [evaltune.lr_schedule]
-type = "cosine"
-base = 0.1
+type = "sd"
+base = 0.03
 min = 0.0001
-warmup_ratio = 0.1
-restarts = 1
+stable_ratio = 0.75
+
+# type = "cosine"
+# base = 0.1
+# min = 0.0001
+# warmup_ratio = 0.0
+# cycles = 1
 
 [evaltune.wdl_schedule]
-type = "stable-decay"
-start = 0.4
-end = 0.1
-stable_ratio = 0.35
+type = "constant"
+value = 1.0
+#start = 0.4
+#end = 0.1
+#stable_ratio = 0.35
+
 
 [searchtune]
 population_scale = 2.0  # λ = ceil((3·ln(n) + 4) · scale), floored at 16.

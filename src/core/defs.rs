@@ -16,8 +16,6 @@ pub type Depth = i32;
 /// Half-move distance from the root
 pub type Ply = usize;
 
-// ──────── Search limits ────────
-
 /// Upper bound on legal moves in any position (theoretical legal max being 218).
 pub const MAX_MOVES: usize = 256;
 /// Absolute deepest ply the engine will ever explore.
@@ -29,37 +27,37 @@ pub const INF: i32 = 32_000;
 pub const MATE: i32 = 30_000;
 /// Any |score| above this threshold is a forced mate, not merely a large eval.
 pub const MATE_BOUND: i32 = MATE - 100;
-
-/// Deterministic ±8 cp jitter for draw scores, keyed by the node counter.
-///
-/// Returning exactly 0 for every draw makes the search indifferent between
-/// drawing lines — it picks whichever comes first in move order and sticks.
-/// In positions with multiple drawish paths, that can mean repeating the
-/// same sequence when a slightly-less-drawn alternative exists. A small
-/// node-keyed jitter breaks the tie without perturbing non-draw scores,
-/// so the search naturally explores alternate draw routes where the
-/// opponent has a chance to stray.
-#[inline]
-pub fn draw_score(nodes: u64) -> i32 {
-    (nodes & 0xF) as i32 - 8
-}
-
-// ──────── Adjudication thresholds ────────
+/// Total game phase material: N=1, B=1, R=2, Q=4 → 2·(1+1+2+4) = 24
+pub const TOTAL_PHASE: i32 = 24;
+/// Middlegame terms
+pub const LANE_MG: usize = 0;
+/// Endgame terms
+pub const LANE_EG: usize = 1;
+/// Tapered-eval phase counter
+pub const LANE_PHASE: usize = 2;
 
 /// |score| < this for N plies → Draw
 pub const ADJ_DRAW_SCORE: i32 = 10;
+/// |score| < ADJ_DRAW_SCORE for this many consecutive plies
 pub const ADJ_DRAW_PLIES: usize = 24;
-/// Only start draw adjudication after this many plies (40 moves)
+/// Only start draw adjudication after this many plies (half-moves)
 pub const ADJ_DRAW_START_PLY: usize = 80;
-
 /// |score| > this for N plies → Win
 pub const ADJ_WIN_SCORE: i32 = 1200;
+/// |score| > ADJ_WIN_SCORE for this many consecutive plies
 pub const ADJ_WIN_PLIES: usize = 8;
-
 /// |score| > this → Instant Resignation
 pub const ADJ_RESIGN_SCORE: i32 = 3000;
 
-// ──────── Color — the two sides of the board ────────
+const _: () = assert!(LANE_MG == 0 && LANE_EG == 1, "Tapered SIMD madd requires MG and EG at lanes 0 and 1 respectively.");
+
+/// Which wire protocol the engine is currently speaking.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum Protocol {
+    #[default]
+    Uci,
+    XBoard,
+}
 
 /// White = 0, Black = 1
 ///
@@ -143,8 +141,7 @@ impl const Not for Color {
     }
 }
 
-// ──────── PieceType — the six chessmen (plus a sentinel) ────────
-
+// The six chessmen (plus a sentinel)
 /// Ordered Pawn..King by ascending material value for compact table lookups.
 /// The `None` sentinel marks empty squares:
 /// variant 7 is reserved as the niche so `Option<PieceType>`
@@ -213,7 +210,7 @@ impl PieceType {
     }
 
     /// Parse a FEN piece letter.
-    /// Case-insensitive: anything unrecognised → `None`.
+    /// Case-insensitive: anything unrecognized → `None`.
     #[inline(always)]
     pub const fn from_char(ch: char) -> Self {
         match ch {
@@ -253,8 +250,6 @@ impl const From<PieceType> for usize {
     }
 }
 
-// ──────── Direction — compass rose on a rank-file board ────────
-
 /// The eight compass directions, numbered clockwise from North.
 ///
 /// Square-index deltas (A1 = 0, H8 = 63, little-endian rank-file):
@@ -279,7 +274,7 @@ pub enum Direction {
 impl Direction {
     /// Mirror the direction for Black's viewpoint.
     /// XOR with 4 rotates the 3-bit compass index by exactly half a turn
-    /// North ↔ South, NorthEast ↔ SouthWest, etc.
+    /// North→South, NorthEast→SouthWest, etc.
     #[must_use]
     #[inline(always)]
     pub const fn relative(self, color: Color) -> Self {
@@ -301,8 +296,6 @@ impl const From<u8> for Direction {
         unsafe { std::mem::transmute(val & 7) }
     }
 }
-
-// ──────── Game Outcome ────────
 
 /// Terminal result of a game, stored from White's point of view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,7 +326,7 @@ impl GameOutcome {
     }
 
     /// Converts a side-to-move–relative score into a game outcome.
-    /// Positive score ⇒ STM is winning.
+    /// Positive score → STM is winning.
     #[inline(always)]
     pub const fn from_stm_score(score: i32, stm: Color) -> Self {
         if score > 0 {
@@ -352,20 +345,19 @@ impl GameOutcome {
     }
 }
 
-// ──────── Evaluation constants ────────
-
-/// Total game phase material: N=1, B=1, R=2, Q=4 → 2·(1+1+2+4) = 24
-pub const TOTAL_PHASE: i32 = 24;
-
-/// Lane assignments inside the SIMD accumulator used for incremental eval.
-pub const LANE_MG: usize = 0; // Middlegame terms
-pub const LANE_EG: usize = 1; // Endgame terms
-
-const _: () = assert!(LANE_MG == 0 && LANE_EG == 1, "Tapered SIMD madd requires MG and EG at lanes 0 and 1 respectively.");
-
-pub const LANE_PHASE: usize = 2; // Tapered-eval phase counter
-
-// ──────── Domain-typed array indexing ────────
+/// Deterministic ±8 cp jitter for draw scores, keyed by the node counter.
+///
+/// Returning exactly 0 for every draw makes the search indifferent between
+/// drawing lines — it picks whichever comes first in move order and sticks.
+/// In positions with multiple drawish paths, that can mean repeating the
+/// same sequence when a slightly-less-drawn alternative exists. A small
+/// node-keyed jitter breaks the tie without perturbing non-draw scores,
+/// so the search naturally explores alternate draw routes where the
+/// opponent has a chance to stray.
+#[inline]
+pub fn draw_score(nodes: u64) -> i32 {
+    (nodes & 0xF) as i32 - 8
+}
 
 /// Let chess types serve as array indices directly:
 /// `table[Color::White]`, `scores[PieceType::Knight]`, `board[Square::E4]`.
@@ -400,13 +392,3 @@ soul_index!(PieceType, 8);
 soul_index!(PieceType, 12);
 soul_index!(PieceType, 14);
 soul_index!(Square, 64);
-
-// ──────── Engine Protocols ────────
-
-/// Which wire protocol the engine is currently speaking.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub enum Protocol {
-    #[default]
-    Uci,
-    XBoard,
-}

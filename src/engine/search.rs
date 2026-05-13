@@ -11,8 +11,10 @@
 //! to eliminate runtime branches in the hot path.
 
 use std::{
+    cmp::Reverse,
     collections::VecDeque,
     hint::{likely, unlikely},
+    io,
     io::Write,
     sync::{
         Arc,
@@ -30,16 +32,17 @@ use crate::{
     },
     engine::{
         eval::evaluate,
-        history::{self, ContContext},
+        history::{self, ContContext, History},
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
-        search_params::SearchParams,
+        search_params::*,
         see::see_ge,
         tm::TimeManager,
         tt,
+        tt::TranspositionTable,
     },
-    tools::tui,
-    weave::Vu64x4,
+    tools::{perft::perft, tui},
+    weave::{Vi16x8, Vu64x4},
 };
 
 pub const NODE_CHECK_INTERVAL: u64 = 2048;
@@ -49,8 +52,16 @@ pub const NODE_CHECK_INTERVAL: u64 = 2048;
 pub const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
 pub const PRINT_UPDATE_MS: u128 = 25;
 
-/// ── Node type specialization ──
-///
+/// MAX_TRACKED_QUIETS matches MAX_MOVES today, but only because the legal quiet
+/// count is bounded by the total pseudo-legal count. If MAX_MOVES grows, this
+/// can shrink independently — we only care that quiet penalties cover all
+/// quiets searched before a cutoff, not all possible quiets in a position.
+pub const MAX_TRACKED_QUIETS: usize = 256;
+/// Captures are far fewer per position than quiets. 64 covers all realistic
+/// legal capture counts with headroom.
+pub const MAX_TRACKED_CAPTURES: usize = 64;
+
+// ── Node type specialization ──
 /// Chess search has three distinct contexts:
 /// root (first ply, owns the move list), PV, and non-PV
 /// (zero-window scouts that just need a yes/no answer).
@@ -67,6 +78,13 @@ pub trait NodeType {
 pub struct RootNode;
 pub struct PvNode;
 pub struct NonPvNode;
+
+pub struct MoveResult {
+    pub move_count: usize,
+    pub best_eval: i32,
+    pub alpha: i32,
+    pub best_move: Move,
+}
 
 impl NodeType for RootNode {
     const PV: bool = true;
@@ -87,14 +105,6 @@ impl NodeType for NonPvNode {
     const PV: bool = false;
     const ROOT: bool = false;
     type Next = NonPvNode;
-}
-
-/// Move execution result: encapsulates value, PV, and move stats.
-pub struct MoveResult {
-    pub move_count: usize,
-    pub best_eval: i32,
-    pub alpha: i32,
-    pub best_move: Move,
 }
 
 // ──────── Searcher & Worker ────────
@@ -121,24 +131,233 @@ pub struct Searcher<'cfg> {
     pub iter_depth: i32,
     pub last_print: u128,
     pub pv_history: VecDeque<(u128, Line, i32)>,
-    pub history_table: history::History,
-    pub tt: Arc<tt::TranspositionTable>,
+    pub history_table: History,
+    pub tt: Arc<TranspositionTable>,
 }
 
 #[repr(align(32))]
 pub struct Worker {
     pub pos: Position,
-    pub accumulator: crate::weave::Vi16x8,
+    pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 1]>,
-    pub history: history::History,
+    pub history: History,
     /// Set while a null-move verification search is on the stack.
     /// Suppresses nested NMP, which would otherwise recurse forever on
     /// the same position at ever-shrinking depth.
     pub is_nmp_verif: bool,
 }
 
+#[derive(Clone, Default, Debug)]
+pub struct Limits {
+    pub wtime: u64,
+    pub btime: u64,
+    pub winc: u64,
+    pub binc: u64,
+    pub movestogo: u64,
+    pub movetime: u64,
+    pub depth: i32,
+    pub nodes: u64,
+    pub softnodes: u64,
+    pub infinite: bool,
+    pub silent: bool,
+    pub protocol: Protocol,
+    pub mate: Option<i32>,
+    pub perft: Option<u8>,
+    pub searchmoves: Vec<Move>,
+}
+
+/// Display configuration for search output.
+#[derive(Clone, Copy, Default)]
+pub struct SearchDisplay {
+    pub show_wdl: bool,
+    pub go_pretty: bool,
+    pub pretty_print: bool,
+    pub show_currmove: bool,
+    pub use_ansi: bool,
+}
+
+#[derive(Clone)]
+pub struct SearchConfig {
+    pub limits: Limits,
+    pub start_time: Instant,
+    pub stop: Arc<AtomicBool>,
+    pub display: SearchDisplay,
+    pub search_params: SearchParams,
+    pub overhead: u64,
+    pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
+    pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
+    pub lmr_table: Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
+}
+
+// ── Root Move ──
+/// A legal move at ply 0 paired with its best known score.
+/// After each iteration these are sorted by score so the strongest move
+/// is searched first next time — the single most important factor for
+/// alpha-beta efficiency.
+pub struct RootMove {
+    pub mv: Move,
+    pub score: i32,
+    pub pv: Box<Line>,
+    /// Cumulative subtree nodes across all ID iterations. The best move's
+    /// share of total nodes feeds the stability factor in time management.
+    pub nodes: u64,
+}
+
+// ── Principal Variation Line ──
+/// The PV is the engine's predicted best play for both sides.
+/// When a new best move is found at any ply, we compose the line:
+/// this move first, then the child's continuation, bubbling the full
+/// sequence from leaves to root, one ply at a time.
+#[derive(Clone, Copy)]
+pub struct Line {
+    pub moves: [Move; MAX_PLY],
+    pub len: usize,
+}
+
+/// Per-ply scratch data.
+#[derive(Clone, Copy)]
+pub struct Stack {
+    pub pv: Line,
+    pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
+    pub quiet_count: usize,
+    pub capture_moves: [Move; MAX_TRACKED_CAPTURES],
+    pub capture_count: usize,
+    pub killers: [Move; 2],
+    pub moved_pt: PieceType,
+    pub moved_to: Square,
+    pub static_eval: i32,
+    pub is_null: bool,
+}
+
+/// Search was cut short — time, node limit, or external stop signal.
+#[derive(Debug)]
+pub struct SearchAborted;
+
+impl SearchDisplay {
+    pub const SILENT: Self = Self { show_wdl: false, go_pretty: false, pretty_print: false, show_currmove: false, use_ansi: false };
+    pub const DEFAULT: Self = Self { show_currmove: true, use_ansi: true, ..Self::SILENT };
+}
+
+impl SearchConfig {
+    /// Creates a configuration with default display settings.
+    pub fn new(limits: Limits, start_time: Instant, stop: Arc<AtomicBool>, overhead: u64, search_params: SearchParams) -> Self {
+        Self::new_full(limits, start_time, stop, overhead, SearchDisplay::DEFAULT, search_params)
+    }
+
+    /// Full constructor for fine-grained control over all parameters.
+    pub fn new_full(
+        limits: Limits,
+        start_time: Instant,
+        stop: Arc<AtomicBool>,
+        overhead: u64,
+        display: SearchDisplay,
+        search_params: SearchParams,
+    ) -> Self {
+        let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
+        let lmr_table = Self::build_lmr_table(&search_params);
+
+        Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
+    }
+
+    /// MVV-LVA lookup table from tunable parameters.
+    ///
+    /// Most Valuable Victim – Least Valuable Attacker:
+    /// The simplest capture ordering that works.
+    /// Prefer taking queens with pawns over taking pawns with queens.
+    fn build_mvvlva(sp: &SearchParams) -> ([i32; 8], [i32; 8]) {
+        let mut v = [0; 8];
+        let mut a = [0; 8];
+
+        macro_rules! map {
+            ($pt:ident, $v:expr, $a:expr) => {
+                v[PieceType::$pt.as_usize()] = $v;
+                a[PieceType::$pt.as_usize()] = $a;
+            };
+        }
+
+        map!(Pawn, sp.mvvlva_v_pawn, sp.mvvlva_a_pawn);
+        map!(Knight, sp.mvvlva_v_knight, sp.mvvlva_a_knight);
+        map!(Bishop, sp.mvvlva_v_bishop, sp.mvvlva_a_bishop);
+        map!(Rook, sp.mvvlva_v_rook, sp.mvvlva_a_rook);
+        map!(Queen, sp.mvvlva_v_queen, sp.mvvlva_a_queen);
+        map!(King, sp.mvvlva_v_king, sp.mvvlva_a_king);
+
+        (v, a)
+    }
+
+    /// LMR reduction table from tunable base/divisor.
+    ///
+    ///   `R(d, m) = base + ln(d) · ln(m) / divisor`
+    ///
+    /// Logarithmic in both depth and move index: deeper searches tolerate
+    /// larger reductions, and later moves deserve them. Precomputed so the
+    /// inner loop never touches a float.
+    fn build_lmr_table(sp: &SearchParams) -> Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
+        let base = sp.lmr_base as f64 / 100.0;
+        let divisor = sp.lmr_divisor as f64 / 100.0;
+
+        let mut table = Box::new([[0i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
+        for d in 1..=MAX_DEPTH as usize {
+            for m in 1..=MAX_PLY {
+                table[d][m] = (base + (d as f64).ln() * (m as f64).ln() / divisor).floor() as i8;
+            }
+        }
+        table
+    }
+}
+
+impl Line {
+    pub const fn new() -> Self {
+        Self { moves: [Move::null(); MAX_PLY], len: 0 }
+    }
+
+    /// Prepend `mv` to `tail`, forming a complete PV line.
+    pub fn compose(&mut self, mv: Move, tail: &Line) {
+        let n = tail.len.min(MAX_PLY - 1);
+        self.moves[0] = mv;
+        self.moves[1..=n].copy_from_slice(&tail.moves[..n]);
+        self.len = 1 + n;
+    }
+
+    /// Retrieve a move from the PV line if the index is within bounds.
+    #[inline(always)]
+    pub fn get(&self, idx: usize) -> Option<Move> {
+        if idx < self.len { Some(self.moves[idx]) } else { None }
+    }
+}
+
+impl Default for Line {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RootMove {
+    #[inline]
+    pub fn new(mv: Move) -> Self {
+        Self { mv, score: -INF, pv: Box::new(Line::new()), nodes: 0 }
+    }
+}
+
+impl Default for Stack {
+    fn default() -> Self {
+        Self {
+            pv: Line::new(),
+            quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
+            quiet_count: 0,
+            capture_moves: [Move::null(); MAX_TRACKED_CAPTURES],
+            capture_count: 0,
+            killers: [Move::null(); 2],
+            moved_pt: PieceType::None,
+            moved_to: Square(0),
+            static_eval: tt::SCORE_NONE,
+            is_null: false,
+        }
+    }
+}
+
 impl<'cfg> Searcher<'cfg> {
-    /// ── Iterative Deepening ──
+    // ── Iterative Deepening ──
     /// Search depth 1, then 2, then 3, ...
     ///
     /// Seems wasteful — why redo shallow work? Two reasons:
@@ -147,16 +366,15 @@ impl<'cfg> Searcher<'cfg> {
     ///   2. Natural anytime algorithm: always have a best move ready from the
     ///      last completed iteration.
     #[inline]
-    pub fn iterative_deepening(&mut self) -> history::History {
+    pub fn iterative_deepening(&mut self) -> History {
         self.nodes = 0;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
             print!("\x1b[2J\x1b[H");
-            let _ = std::io::stdout().flush();
+            let _ = io::stdout().flush();
         }
 
         if let Some(perft_depth) = self.cfg.limits.perft {
-            use crate::tools::perft::perft;
             let mut board = self.root_pos;
             let mut acc = board.get_initial_accumulator();
             println!("Nodes searched: {}", perft(&mut board, perft_depth, &mut acc));
@@ -218,6 +436,10 @@ impl<'cfg> Searcher<'cfg> {
             // Between iterations:
             // Bail if soft limits say we probably
             // can't finish the next depth in time.
+            //
+            // `prev_depth_time * 2` is a rough branching-factor proxy;
+            // each additional ply typically costs about twice the previous one,
+            // so if we can't afford that estimate we stop before starting it.
             if depth > 1
                 && (elapsed >= self.tm.soft_limit().as_millis() as u64
                     || elapsed + (prev_depth_time * 2) > self.tm.hard_limit().as_millis() as u64
@@ -231,7 +453,7 @@ impl<'cfg> Searcher<'cfg> {
             }
 
             // ── Aspiration Windows (~42 Elo) ──
-            let mut delta = self.cfg.search_params.asp_initial;
+            let mut delta = asp_initial();
             let mut alpha = if depth >= 4 { (self.prev_score - delta).max(-INF) } else { -INF };
             let mut beta = if depth >= 4 { (self.prev_score + delta).min(INF) } else { INF };
 
@@ -270,13 +492,12 @@ impl<'cfg> Searcher<'cfg> {
             }
 
             // best move floats to front — feeds next iteration's ordering.
-            self.root_moves.sort_by_key(|m| std::cmp::Reverse(m.score));
+            self.root_moves.sort_by_key(|m| Reverse(m.score));
 
             if self.is_stopped() {
                 break;
             }
 
-            let sp = &self.cfg.search_params;
             let new_score = self.root_moves[0].score;
 
             // ── Best-Move Stability TM (~20 Elo) ──
@@ -289,11 +510,11 @@ impl<'cfg> Searcher<'cfg> {
             //
             // Gated below `bm_stab_depth` — early iterations haven't
             // accumulated enough node signal for the ratio to be meaningful.
-            if depth >= sp.bm_stab_depth {
+            if depth >= bm_stab_depth() {
                 let best_nodes = self.root_moves[0].nodes;
                 let total_nodes = self.nodes.max(1);
-                let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
-                let percent = (sp.bm_stab_base as u64).saturating_sub(effort_discount).max(sp.bm_stab_floor as u64);
+                let effort_discount = bm_stab_scale() as u64 * best_nodes / total_nodes;
+                let percent = (bm_stab_base() as u64).saturating_sub(effort_discount).max(bm_stab_floor() as u64);
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
@@ -305,8 +526,8 @@ impl<'cfg> Searcher<'cfg> {
             // so bank the time). Diff is clamped to ±scale so the factor stays
             // in [0.5, 2.0]. Gated below `score_drop_depth` because aspiration
             // churn at low depth produces noise, not signal.
-            let score_factor = if depth >= sp.score_drop_depth {
-                let scale = sp.score_factor_scale as f64;
+            let score_factor = if depth >= score_drop_depth() {
+                let scale = score_factor_scale() as f64;
                 let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
                 2.0_f64.powf(diff / scale)
             } else {
@@ -341,7 +562,7 @@ impl<'cfg> Searcher<'cfg> {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
                 Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
             }
-            let _ = std::io::stdout().flush();
+            let _ = io::stdout().flush();
         }
 
         worker.history
@@ -352,8 +573,8 @@ impl<'cfg> Searcher<'cfg> {
         cfg: &'cfg SearchConfig,
         pos: &Position,
         history: &[u64],
-        history_table: history::History,
-        tt: Arc<tt::TranspositionTable>,
+        history_table: History,
+        tt: Arc<TranspositionTable>,
     ) -> Self {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         let tm = TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
@@ -392,7 +613,7 @@ impl<'cfg> Searcher<'cfg> {
     }
 
     #[inline]
-    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], history_table: history::History) {
+    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], history_table: History) {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
 
         self.zobrist_trail.clear();
@@ -415,6 +636,8 @@ impl<'cfg> Searcher<'cfg> {
         self.last_print = 0;
         self.pv_history.clear();
         self.history_table = history_table;
+        self.prev_score = -INF;
+        self.prev_pv = Line::new();
     }
 
     #[inline]
@@ -656,9 +879,7 @@ impl Worker {
             tt::SCORE_NONE
         } else {
             let correction =
-                self.history
-                    .correction(self.pos.stm, pawn_hash, stm_np_hash, searcher.cfg.search_params.np_corr_weight)
-                    / history::CORRECTION_SCALE;
+                self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
@@ -667,10 +888,11 @@ impl Worker {
         // Position is already so good that even after subtracting a generous
         // margin, we're still above beta. The opponent wouldn't have let us
         // get here — just return the eval and move on.
+        #[rustfmt::skip]
         if !in_check
             && !N::PV
-            && depth <= searcher.cfg.search_params.rfp_depth
-            && static_eval - searcher.cfg.search_params.rfp_margin * depth >= beta
+            && depth <= rfp_depth()
+            && static_eval - rfp_margin() * depth >= beta
         {
             return Ok(static_eval);
         }
@@ -678,10 +900,11 @@ impl Worker {
         // ── Razoring (~17 Elo) ──
         // Position is so far below alpha that a full-depth search is unlikely
         // to recover. Drop straight into qsearch to confirm.
+        #[rustfmt::skip]
         if !in_check
             && !N::PV
-            && depth <= searcher.cfg.search_params.razoring_depth
-            && static_eval + searcher.cfg.search_params.razoring_margin * depth < alpha
+            && depth <= razoring_depth()
+            && static_eval + razoring_margin() * depth < alpha
         {
             let score = self.qsearch::<N>(searcher, alpha, beta, ply, None, 0)?;
             if score <= alpha {
@@ -700,9 +923,8 @@ impl Worker {
             && static_eval >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
-            let sp = &searcher.cfg.search_params;
-            let eval_r = ((static_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
-            let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
+            let eval_r = ((static_eval - beta) / nmp_eval_divisor()).min(nmp_eval_max());
+            let r = nmp_base_r() + depth / nmp_depth_divisor() + eval_r;
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
@@ -725,13 +947,13 @@ impl Worker {
                 let null_score = if score > MATE_BOUND { beta } else { score };
 
                 // ── Verification Search ──
-                // Below the threshold, trust the cutoff outright — cheap and
-                // almost always correct. Above it, re-search the same position
-                // without null-move at reduced depth. If that also fails high,
-                // the cutoff is real; if it fails low, we were about to prune
-                // a zugzwang or a tactic the null search couldn't see — let
-                // the regular move loop handle it.
-                if depth <= sp.nmp_verif_min_depth {
+                // At or below `nmp_verif_min_depth`, trust the cutoff outright.
+                // Cheap nodes are almost never zugzwangs. Above the threshold,
+                // re-search the same position without a null move at reduced depth.
+                // If that also fails high, the cutoff is real; if it fails low we
+                // were about to prune a zugzwang or a tactic the null search
+                // couldn't see — fall through to the regular move loop.
+                if depth <= nmp_verif_min_depth() {
                     return Ok(null_score);
                 }
 
@@ -777,7 +999,7 @@ impl Worker {
                 let nodes_before = searcher.nodes;
                 self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction)?;
                 searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
-                if likely(res.alpha >= beta) {
+                if res.alpha >= beta {
                     break;
                 }
             }
@@ -792,6 +1014,10 @@ impl Worker {
             self.stack[ply].quiet_count = 0;
             self.stack[ply].capture_count = 0;
 
+            // Continuation history contexts: the piece-to-square pair of
+            // the move played 1, 2, and 4 plies ago from this node.
+            // These index into separate cont-hist tables and let the move
+            // picker incorporate recent positional context into quiet ordering.
             let cont1 = if ply > 0 {
                 ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
             } else {
@@ -840,8 +1066,8 @@ impl Worker {
                     && mv.is_quiet()
                     && !N::PV
                     && res.move_count >= 1
-                    && depth <= searcher.cfg.search_params.fp_depth
-                    && static_eval + searcher.cfg.search_params.fp_margin * depth <= res.alpha
+                    && depth <= fp_depth()
+                    && static_eval + fp_margin() * depth <= res.alpha
                 {
                     continue;
                 }
@@ -852,8 +1078,8 @@ impl Worker {
                 if !in_check
                     && mv.is_quiet()
                     && !N::PV
-                    && depth <= searcher.cfg.search_params.lmp_depth
-                    && res.move_count as i32 >= searcher.cfg.search_params.lmp_base + depth * depth
+                    && depth <= lmp_depth()
+                    && res.move_count as i32 >= lmp_base() + depth * depth
                 {
                     continue;
                 }
@@ -880,11 +1106,11 @@ impl Worker {
                     && res.move_count >= 1
                     && mv != self.stack[ply].killers[0]
                     && mv != self.stack[ply].killers[1]
-                    && depth <= searcher.cfg.search_params.hist_prune_depth
+                    && depth <= hist_prune_depth()
                 {
                     let pt = self.pos.expect_piece_at(mv.from());
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
-                    if hist < -searcher.cfg.search_params.hist_prune_margin * depth {
+                    if hist < -hist_prune_margin() * depth {
                         continue;
                     }
                 }
@@ -894,7 +1120,7 @@ impl Worker {
                 // loses material.
                 //
                 // Captures scale linearly: SEE is an accurate verdict on
-                // a capture (the value is realised right there at the
+                // a capture (the value is realized right there at the
                 // destination square) so the tolerance grows modestly
                 // with depth — we just give deeper searches some slack
                 // in case the tree refutes an apparent loss.
@@ -907,11 +1133,7 @@ impl Worker {
                 // only prune "this is obviously moving into a trap" cases
                 // at shallow depth.
                 if !in_check && !N::PV && res.move_count >= 1 {
-                    let margin = if mv.is_capture() {
-                        -searcher.cfg.search_params.see_capture_margin * depth
-                    } else {
-                        -searcher.cfg.search_params.see_quiet_margin * depth * depth
-                    };
+                    let margin = if mv.is_capture() { -see_capture_margin() * depth } else { -see_quiet_margin() * depth * depth };
                     if !see_ge(&self.pos, mv, margin) {
                         continue;
                     }
@@ -1063,10 +1285,9 @@ impl Worker {
     /// Make a move, search it, unmake it. The "heartbeat" of alpha-beta.
     ///
     /// # Safety
-    /// The move `mv` MUST be legal. Root legality is filtered during move list
-    /// generation; interior legality is filtered by the MovePicker loop.
-    ///
-    /// Returns `Ok(())` on success, or `Err` if the search was aborted mid-flight.
+    /// The move `mv` MUST be legal. Root legality is guaranteed by the root
+    /// move list generated at search start; interior legality is verified by
+    /// the explicit `is_legal` call in the move loop before each invocation.
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
@@ -1131,7 +1352,11 @@ impl Worker {
 
             if eval > res.alpha {
                 res.alpha = eval;
-                // Disjoint borrow of the stack for the hot path (copies PV into current ply)
+                // Borrow checker requires a disjoint split; we need a mutable
+                // reference to stack[ply].pv and a shared one to stack[ply+1].pv
+                // simultaneously. Rust can't prove `ply` and `ply+1` don't alias
+                // through two separate borrows of `self.stack`, so split_at_mut
+                // gives us two non-overlapping slices as proof.
                 let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
                 let child_pv = &next_stack[0].pv;
                 let child_len = child_pv.len.min(MAX_PLY - 1);
@@ -1146,7 +1371,7 @@ impl Worker {
         Ok(())
     }
 
-    /// ── Principal Variation Search (~14 Elo) ──
+    // ── Principal Variation Search (~14 Elo) ──
     /// Full window for the first move,
     /// zero-width scout for the rest,
     /// Re-search on surprise fail-high.
@@ -1190,7 +1415,7 @@ impl Worker {
         Ok(score)
     }
 
-    /// ── Quiescence Search (~655 Elo) ──
+    // ── Quiescence Search (~655 Elo) ──
     /// Evaluates positions only after all "noisy" (tactical/forcing) moves are resolved,
     /// preventing the horizon effect where a search stops right before a massive blunder.
     fn qsearch<N: NodeType>(
@@ -1255,9 +1480,7 @@ impl Worker {
             let pawn_hash = self.pos.calc_pawn_hash();
             let stm_np_hash = self.pos.calc_non_pawn_hash(self.pos.stm);
             let correction =
-                self.history
-                    .correction(self.pos.stm, pawn_hash, stm_np_hash, searcher.cfg.search_params.np_corr_weight)
-                    / history::CORRECTION_SCALE;
+                self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 return Ok(eval);
@@ -1274,7 +1497,7 @@ impl Worker {
                 .into_iter()
                 .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
                 .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
-            if eval + best_capturable + searcher.cfg.search_params.delta_margin < alpha {
+            if eval + best_capturable + delta_margin() < alpha {
                 return Ok(alpha);
             }
 
@@ -1289,7 +1512,7 @@ impl Worker {
 
         let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, in_check);
 
-        let recapture_only = !in_check && qs_ply >= searcher.cfg.search_params.qs_recapture_ply;
+        let recapture_only = !in_check && qs_ply >= qs_recapture_ply();
 
         while let Some(mv) = picker.next(&self.pos, &self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
@@ -1366,8 +1589,6 @@ impl Worker {
         Ok(best_eval)
     }
 
-    // ──────── Heuristics & State Queries ────────
-
     /// Fifty move rule, insufficient material, or repetition → immediate draw.
     ///
     /// NOTE: checked before move generation, so a theoretical checkmate on
@@ -1430,225 +1651,3 @@ impl Worker {
         remainder.contains(&key)
     }
 }
-
-// ──────── Supporting Structs ────────
-
-/// Display configuration for search output.
-#[derive(Clone, Copy, Default)]
-pub struct SearchDisplay {
-    pub show_wdl: bool,
-    pub go_pretty: bool,
-    pub pretty_print: bool,
-    pub show_currmove: bool,
-    pub use_ansi: bool,
-}
-
-impl SearchDisplay {
-    pub const SILENT: Self = Self { show_wdl: false, go_pretty: false, pretty_print: false, show_currmove: false, use_ansi: false };
-    pub const DEFAULT: Self = Self { show_currmove: true, use_ansi: true, ..Self::SILENT };
-}
-
-#[derive(Clone)]
-pub struct SearchConfig {
-    pub limits: Limits,
-    pub start_time: Instant,
-    pub stop: Arc<AtomicBool>,
-    pub display: SearchDisplay,
-    pub search_params: SearchParams,
-    pub overhead: u64,
-    pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
-    pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
-    pub lmr_table: Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
-}
-
-impl SearchConfig {
-    /// Creates a configuration with default display settings.
-    pub fn new(limits: Limits, start_time: Instant, stop: Arc<AtomicBool>, overhead: u64, search_params: SearchParams) -> Self {
-        Self::new_full(limits, start_time, stop, overhead, SearchDisplay::DEFAULT, search_params)
-    }
-
-    /// Full constructor for fine-grained control over all parameters.
-    pub fn new_full(
-        limits: Limits,
-        start_time: Instant,
-        stop: Arc<AtomicBool>,
-        overhead: u64,
-        display: SearchDisplay,
-        search_params: SearchParams,
-    ) -> Self {
-        let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
-        let lmr_table = Self::build_lmr_table(&search_params);
-
-        Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
-    }
-
-    /// MVV-LVA lookup table from tunable parameters.
-    ///
-    /// Most Valuable Victim – Least Valuable Attacker:
-    /// The simplest capture ordering that works.
-    /// Prefer taking queens with pawns over taking pawns with queens.
-    fn build_mvvlva(sp: &SearchParams) -> ([i32; 8], [i32; 8]) {
-        let mut v = [0; 8];
-        let mut a = [0; 8];
-
-        macro_rules! map {
-            ($pt:ident, $v:expr, $a:expr) => {
-                v[PieceType::$pt.as_usize()] = $v;
-                a[PieceType::$pt.as_usize()] = $a;
-            };
-        }
-
-        map!(Pawn, sp.mvvlva_v_pawn, sp.mvvlva_a_pawn);
-        map!(Knight, sp.mvvlva_v_knight, sp.mvvlva_a_knight);
-        map!(Bishop, sp.mvvlva_v_bishop, sp.mvvlva_a_bishop);
-        map!(Rook, sp.mvvlva_v_rook, sp.mvvlva_a_rook);
-        map!(Queen, sp.mvvlva_v_queen, sp.mvvlva_a_queen);
-        map!(King, sp.mvvlva_v_king, sp.mvvlva_a_king);
-
-        (v, a)
-    }
-
-    /// LMR reduction table from tunable base/divisor.
-    ///
-    ///   `R(d, m) = base + ln(d) · ln(m) / divisor`
-    ///
-    /// Logarithmic in both depth and move index: deeper searches tolerate
-    /// larger reductions, and later moves deserve them. Precomputed so the
-    /// inner loop never touches a float.
-    fn build_lmr_table(sp: &SearchParams) -> Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
-        let base = sp.lmr_base as f64 / 100.0;
-        let divisor = sp.lmr_divisor as f64 / 100.0;
-
-        let mut table = Box::new([[0i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
-        for d in 1..=MAX_DEPTH as usize {
-            for m in 1..=MAX_PLY {
-                table[d][m] = (base + (d as f64).ln() * (m as f64).ln() / divisor).floor() as i8;
-            }
-        }
-        table
-    }
-}
-
-#[derive(Clone, Default, Debug)]
-pub struct Limits {
-    pub wtime: u64,
-    pub btime: u64,
-    pub winc: u64,
-    pub binc: u64,
-    pub movestogo: u64,
-    pub movetime: u64,
-    pub depth: i32,
-    pub nodes: u64,
-    pub softnodes: u64,
-    pub infinite: bool,
-    pub silent: bool,
-    pub protocol: Protocol,
-    pub mate: Option<i32>,
-    pub perft: Option<u8>,
-    pub searchmoves: Vec<Move>,
-}
-
-/// ── Root Move ──
-/// A legal move at ply 0 paired with its best known score.
-/// After each iteration these are sorted by score so the strongest move
-/// is searched first next time — the single most important factor for
-/// alpha-beta efficiency.
-pub struct RootMove {
-    pub mv: Move,
-    pub score: i32,
-    pub pv: Box<Line>,
-    /// Cumulative subtree nodes across all ID iterations.The best move's
-    /// share of total nodes feeds the stability factor in time management.
-    pub nodes: u64,
-}
-
-impl RootMove {
-    #[inline]
-    pub fn new(mv: Move) -> Self {
-        Self { mv, score: -INF, pv: Box::new(Line::new()), nodes: 0 }
-    }
-}
-
-/// ── Principal Variation Line ──
-///
-/// The PV is the engine's predicted best play for both sides.
-/// When a new best move is found at any ply, we compose the line:
-/// this move first, then the child's continuation, bubbling the full
-/// sequence from leaves to root, one ply at a time.
-#[derive(Clone, Copy)]
-pub struct Line {
-    pub moves: [Move; MAX_PLY],
-    pub len: usize,
-}
-
-impl Default for Line {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Line {
-    pub const fn new() -> Self {
-        Self { moves: [Move::null(); MAX_PLY], len: 0 }
-    }
-
-    /// Prepend `mv` to `tail`, forming a complete PV line.
-    pub fn compose(&mut self, mv: Move, tail: &Line) {
-        let n = tail.len.min(MAX_PLY - 1);
-        self.moves[0] = mv;
-        self.moves[1..=n].copy_from_slice(&tail.moves[..n]);
-        self.len = 1 + n;
-    }
-
-    /// Retrieve a move from the PV line if the index is within bounds.
-    #[inline(always)]
-    pub fn get(&self, idx: usize) -> Option<Move> {
-        if idx < self.len { Some(self.moves[idx]) } else { None }
-    }
-}
-
-// MAX_TRACKED_QUIETS matches MAX_MOVES today, but only because the legal quiet
-// count is bounded by the total pseudo-legal count. If MAX_MOVES grows, this
-// can shrink independently — we only care that quiet penalties cover all
-// quiets searched before a cutoff, not all possible quiets in a position.
-pub const MAX_TRACKED_QUIETS: usize = 256;
-
-// Captures are far fewer per position than quiets. 64 covers all realistic
-// legal capture counts with headroom.
-pub const MAX_TRACKED_CAPTURES: usize = 64;
-
-/// Per-ply scratch data.
-#[derive(Clone, Copy)]
-pub struct Stack {
-    pub pv: Line,
-    pub quiet_moves: [Move; MAX_TRACKED_QUIETS],
-    pub quiet_count: usize,
-    pub capture_moves: [Move; MAX_TRACKED_CAPTURES],
-    pub capture_count: usize,
-    pub killers: [Move; 2],
-    pub moved_pt: PieceType,
-    pub moved_to: Square,
-    pub static_eval: i32,
-    pub is_null: bool,
-}
-
-impl Default for Stack {
-    fn default() -> Self {
-        Self {
-            pv: Line::new(),
-            quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
-            quiet_count: 0,
-            capture_moves: [Move::null(); MAX_TRACKED_CAPTURES],
-            capture_count: 0,
-            killers: [Move::null(); 2],
-            moved_pt: PieceType::None,
-            moved_to: Square(0),
-            static_eval: tt::SCORE_NONE,
-            is_null: false,
-        }
-    }
-}
-
-/// Search was cut short — time, node limit, or external stop signal.
-#[derive(Debug)]
-pub struct SearchAborted;

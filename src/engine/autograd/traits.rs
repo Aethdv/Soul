@@ -1,6 +1,12 @@
 //! Mathematical traits for generic evaluation and automatic differentiation.
 
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use std::{
+    arch::x86_64::_mm_cvtsi32_si128,
+    ops,
+    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+};
+
+use crate::weave::{Vi16x8, Vi32x4};
 
 /// The unified mathematical interface for evaluation and tuning.
 ///
@@ -27,7 +33,7 @@ pub trait EvalMath:
     type Scalar;
     type Vec4: EnvVec4<Scalar = Self::Scalar, Vec8 = Self::Vec8>;
     type Vec8: EnvVec8<Scalar = Self::Scalar, Vec4 = Self::Vec4>;
-    type Array6: std::ops::Index<usize, Output = Self>;
+    type Array6: ops::Index<usize, Output = Self>;
 
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self;
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4;
@@ -99,8 +105,8 @@ pub trait EnvVec8: Sized + Copy {
 
 impl EvalMath for i32 {
     type Scalar = i32;
-    type Vec4 = crate::weave::Vi32x4;
-    type Vec8 = crate::weave::Vi16x8;
+    type Vec4 = Vi32x4;
+    type Vec8 = Vi16x8;
     type Array6 = [i32; 6];
 
     #[inline(always)]
@@ -166,13 +172,13 @@ impl EvalMath for i32 {
     }
 
     #[inline(always)]
-    fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4 {
+    fn from_vi32x4(v: Vi32x4) -> Self::Vec4 {
         v
     }
 
     #[inline(always)]
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 {
-        crate::weave::Vi32x4::from_array(arr)
+        Vi32x4::from_array(arr)
     }
 
     #[inline(always)]
@@ -200,7 +206,7 @@ impl EvalMath for i32 {
         // the bottom of an XMM register. _mm_madd_epi16 then performs a horizontal
         // pairwise dot product: (acc.mg · phase) + (acc.eg · eg_phase),
         // collapsing the tapered evaluation into a single instruction.
-        let weights = crate::weave::Vi16x8(unsafe { core::arch::x86_64::_mm_cvtsi32_si128(packed as i32) });
+        let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed as i32) });
         acc.madd(weights).extract::<0>() / 24
     }
 }
@@ -269,7 +275,7 @@ impl EvalMath for f64 {
     }
 
     #[inline(always)]
-    fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4 {
+    fn from_vi32x4(v: Vi32x4) -> Self::Vec4 {
         let arr = v.to_array();
         F64Vec4([arr[0] as f64, arr[1] as f64, arr[2] as f64, arr[3] as f64])
     }
@@ -309,7 +315,7 @@ pub struct F64Vec4(pub [f64; 4]);
 #[derive(Clone, Copy)]
 pub struct F64Vec8(pub [f64; 8]);
 
-impl std::ops::Add for F64Vec4 {
+impl Add for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
@@ -317,7 +323,7 @@ impl std::ops::Add for F64Vec4 {
     }
 }
 
-impl std::ops::Sub for F64Vec4 {
+impl Sub for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
@@ -325,7 +331,7 @@ impl std::ops::Sub for F64Vec4 {
     }
 }
 
-impl std::ops::Mul for F64Vec4 {
+impl Mul for F64Vec4 {
     type Output = Self;
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self::Output {
@@ -407,9 +413,9 @@ impl EnvVec8 for F64Vec8 {
     }
 }
 
-impl EnvVec4 for crate::weave::Vi32x4 {
+impl EnvVec4 for Vi32x4 {
     type Scalar = i32;
-    type Vec8 = crate::weave::Vi16x8;
+    type Vec8 = Vi16x8;
 
     #[inline(always)]
     fn zero() -> Self {
@@ -437,9 +443,9 @@ impl EnvVec4 for crate::weave::Vi32x4 {
     }
 }
 
-impl EnvVec8 for crate::weave::Vi16x8 {
+impl EnvVec8 for Vi16x8 {
     type Scalar = i32;
-    type Vec4 = crate::weave::Vi32x4;
+    type Vec4 = Vi32x4;
 
     #[inline(always)]
     fn zero() -> Self {

@@ -11,7 +11,16 @@ use soul::{
         defs::{Color, PieceType},
         psqt,
     },
-    engine::autograd::{EnvVec8, EvalMath},
+    engine::{
+        autograd::{
+            EnvVec8, EvalMath,
+            dual::{DUAL_N, DualNode, DualVec8},
+            traits::F64Vec4,
+        },
+        combiner::{Combiner, LinearCombiner},
+        eval::{EvalParams, SharedFeatures, evaluate_generic, scatter_all_terms},
+        eval_params::LAYOUT,
+    },
 };
 
 /// Active piece entry for PSQT gradient scatter.
@@ -58,7 +67,7 @@ macro_rules! impl_scatter {
                             &mut slot,
                             outer_deriv,
                             param_grads,
-                            soul::engine::eval_params::LAYOUT.$offset_field + $extra,
+                            LAYOUT.$offset_field + $extra,
                         );
                     )*
                 }
@@ -69,43 +78,6 @@ macro_rules! impl_scatter {
 
 soul::define_tunables!(impl_scatter);
 
-#[inline(always)]
-fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
-    for piece in PieceType::ALL {
-        let pt = piece.as_usize();
-        piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
-
-        let mat_mg = values.get(psqt::LAYOUT.material_offset + pt).copied().unwrap_or(0.0);
-        let mat_eg = values.get(psqt::LAYOUT.material_offset + 6 + pt).copied().unwrap_or(0.0);
-
-        // White pieces
-        let mut bb_w = board.pieces(piece, Color::White);
-        let count_w = bb_w.popcount() as f64;
-        lane_vals[0] += count_w * mat_mg;
-        lane_vals[1] += count_w * mat_eg;
-        while bb_w.is_not_empty() {
-            let sq = bb_w.pop_lsb();
-            let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
-
-            lane_vals[0] += values.get(pt * 64 + mirror_idx).copied().unwrap_or(0.0);
-            lane_vals[1] += values.get(pt * 64 + 32 + mirror_idx).copied().unwrap_or(0.0);
-        }
-
-        // Black pieces
-        let mut bb_b = board.pieces(piece, Color::Black);
-        let count_b = bb_b.popcount() as f64;
-        lane_vals[0] -= count_b * mat_mg;
-        lane_vals[1] -= count_b * mat_eg;
-        while bb_b.is_not_empty() {
-            let sq = bb_b.pop_lsb();
-            let mirror_idx = psqt::mirror_sq(usize::from(sq));
-
-            lane_vals[0] -= values.get(pt * 64 + mirror_idx).copied().unwrap_or(0.0);
-            lane_vals[1] -= values.get(pt * 64 + 32 + mirror_idx).copied().unwrap_or(0.0);
-        }
-    }
-}
-
 /// Result of a forward-mode dual evaluation.
 ///
 /// Captures the score and raw gradient array from the dual forward pass,
@@ -115,7 +87,7 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 pub struct DualEvalResult {
     pub score: f64,
     /// Raw partial derivatives from the dual pass (29 active slots in 32).
-    pub grad: [f32; soul::engine::autograd::dual::DUAL_N],
+    pub grad: [f32; DUAL_N],
     /// Board pieces recorded during accumulation for PSQT scatter.
     pub active: [ActivePiece; 32],
     pub active_count: usize,
@@ -139,6 +111,7 @@ impl DualEvalResult {
         for i in 0..self.active_count {
             let a = &self.active[i];
             let s = f64::from(a.sign);
+
             param_grads[a.mg_idx as usize] += d_mg * s;
             param_grads[a.eg_idx as usize] += d_eg * s;
             param_grads[a.mat_mg_idx as usize] += d_mg * s;
@@ -150,11 +123,6 @@ impl DualEvalResult {
 /// Run forward-mode AD on a position. Returns a `DualEvalResult` containing
 /// the score and all information needed to scatter gradients later.
 pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
-    use soul::engine::autograd::{
-        EnvVec8,
-        dual::{DualNode, DualVec8},
-    };
-
     // PSQT + Material accumulator (plain f64, no tape)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
@@ -233,12 +201,9 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
         *dual = DualNode::constant(val);
     }
 
-    let params = soul::engine::eval::EvalParams::<DualNode>::load_tunable(values);
-
-    let features = soul::engine::eval::SharedFeatures::compute(board);
-
-    // Forward pass with dual numbers
-    let result = soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
+    let params = EvalParams::<DualNode>::load_tunable(values);
+    let features = SharedFeatures::compute(board);
+    let result = evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
 
     DualEvalResult { score: result.val, grad: result.grad, active, active_count }
 }
@@ -256,11 +221,6 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
 /// Returns the squared error for loss tracking.
 #[inline]
 pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    use soul::engine::autograd::{
-        EnvVec8,
-        dual::{DualNode, DualVec8},
-    };
-
     // PSQT + Material accumulator (plain f64 sums, no piece tracking)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
@@ -284,20 +244,17 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
         *dual = DualNode::constant(val);
     }
 
-    let params = soul::engine::eval::EvalParams::<DualNode>::load_tunable(values);
-
-    let features = soul::engine::eval::SharedFeatures::compute(board);
+    let params = EvalParams::<DualNode>::load_tunable(values);
+    let features = SharedFeatures::compute(board);
 
     // Forward pass
-    let result = soul::engine::eval::evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
+    let result = evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
     let score = result.val;
 
     // Sigmoid + loss derivative
     let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
     let err = sig - target;
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
-
-    // Scatter gradients immediately (no intermediate storage)
 
     // EvalParams gradients (slots 2..29)
     let dummy = DualEvalResult { score: 0.0, grad: result.grad, active: [ActivePiece::default(); 32], active_count: 0 };
@@ -321,8 +278,10 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 
         let mut bb_w = board.pieces(piece, Color::White);
         let count_w = bb_w.popcount() as f64;
+
         param_grads[mat_mg_idx] += d_mg * count_w;
         param_grads[mat_eg_idx] += d_eg * count_w;
+
         while bb_w.is_not_empty() {
             let sq = bb_w.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
@@ -335,8 +294,10 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 
         let mut bb_b = board.pieces(piece, Color::Black);
         let count_b = bb_b.popcount() as f64;
+
         param_grads[mat_mg_idx] -= d_mg * count_b;
         param_grads[mat_eg_idx] -= d_eg * count_b;
+
         while bb_b.is_not_empty() {
             let sq = bb_b.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
@@ -361,11 +322,6 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 /// Returns squared error for loss tracking.
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    use soul::engine::{
-        combiner::{Combiner, LinearCombiner},
-        eval::{SharedFeatures, scatter_all_terms},
-    };
-
     // ── PSQT + Material accumulator ──
     // (for lane values + PSQT scatter)
     let mut lane_vals = [0.0f64; 8];
@@ -373,13 +329,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    let mut phase_raw = 0.0;
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
-        if phase_idx < values.len() {
-            phase_raw += count * values[phase_idx];
-        }
-    }
+    let phase_raw = compute_phase(&piece_counts, values);
 
     // NOTE: dJ/dPhaseWeight is intentionally omitted from the gradient
     // scattering process below because the tuner architecture requires
@@ -425,8 +375,10 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
         let mut bb_w = board.pieces(piece, Color::White);
         let count_w = bb_w.popcount() as f64;
+
         param_grads[mat_mg_idx] += d_mg * count_w;
         param_grads[mat_eg_idx] += d_eg * count_w;
+
         while bb_w.is_not_empty() {
             let sq = bb_w.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
@@ -439,8 +391,10 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
         let mut bb_b = board.pieces(piece, Color::Black);
         let count_b = bb_b.popcount() as f64;
+
         param_grads[mat_mg_idx] -= d_mg * count_b;
         param_grads[mat_eg_idx] -= d_eg * count_b;
+
         while bb_b.is_not_empty() {
             let sq = bb_b.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
@@ -473,23 +427,14 @@ pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
 /// Used by `eval_linear_grad` to avoid redundant board iterations.
 #[allow(clippy::too_many_lines)]
 pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
-    use soul::engine::eval::evaluate_generic;
-
-    let mut trace_acc = <f64 as soul::engine::autograd::EvalMath>::Vec8::zero();
+    let mut trace_acc = <f64 as EvalMath>::Vec8::zero();
     let mut piece_counts = [0.0f64; 6];
 
     accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
 
-    let mut phase_raw = 0.0;
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
-        if phase_idx < values.len() {
-            phase_raw += count * values[phase_idx];
-        }
-    }
+    let phase_raw = compute_phase(&piece_counts, values);
     let phase = phase_raw.math_clamp(0.0, 24.0).trunc();
 
-    use soul::engine::autograd::traits::F64Vec4;
     let lo = psqt::LAYOUT.mobility_open_offset;
     let lc = psqt::LAYOUT.mobility_closed_offset;
     let ks = psqt::LAYOUT.king_safety_offset;
@@ -497,7 +442,7 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let xr = psqt::LAYOUT.xray_offset;
     let bp = psqt::LAYOUT.bishop_pair_offset;
 
-    let params = soul::engine::eval::EvalParams {
+    let params = EvalParams {
         mg_mob_open: F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
         eg_mob_open: F64Vec4([values[lo + 4], values[lo + 5], values[lo + 6], values[lo + 7]]),
         mg_mob_closed: F64Vec4([values[lc], values[lc + 1], values[lc + 2], values[lc + 3]]),
@@ -511,18 +456,83 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
         w_bp_eg: values[bp + 1],
     };
 
-    let features = soul::engine::eval::SharedFeatures::compute(board);
-
+    let features = SharedFeatures::compute(board);
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
+}
+
+/// Compute raw game phase as the dot product of piece counts and phase weights.
+#[inline(always)]
+fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
+    let mut phase_raw = 0.0;
+    for (pt, count) in piece_counts.iter().enumerate().take(6) {
+        let phase_idx = psqt::LAYOUT.weight_offset + pt;
+        if phase_idx < values.len() {
+            phase_raw += count * values[phase_idx];
+        }
+    }
+    phase_raw
+}
+
+/// Walk the board accumulating PSQT and material into MG/EG lane sums.
+#[inline(always)]
+fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
+    debug_assert!(
+        values.len() >= psqt::LAYOUT.mobility_open_offset,
+        "values too short: {} < {} (needs PSQT + material footprint)",
+        values.len(),
+        psqt::LAYOUT.mobility_open_offset
+    );
+
+    // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
+    // SIMD accumulator layout, but the f64 evaluator path never reads them.
+    for piece in PieceType::ALL {
+        let pt = piece.as_usize();
+        piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
+
+        let mat_mg = values[psqt::LAYOUT.material_offset + pt];
+        let mat_eg = values[psqt::LAYOUT.material_offset + 6 + pt];
+
+        // White pieces
+        let mut bb_w = board.pieces(piece, Color::White);
+        let count_w = bb_w.popcount() as f64;
+        lane_vals[0] += count_w * mat_mg;
+        lane_vals[1] += count_w * mat_eg;
+        while bb_w.is_not_empty() {
+            let sq = bb_w.pop_lsb();
+            let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
+
+            lane_vals[0] += values[pt * 64 + mirror_idx];
+            lane_vals[1] += values[pt * 64 + 32 + mirror_idx];
+        }
+
+        // Black pieces
+        let mut bb_b = board.pieces(piece, Color::Black);
+        let count_b = bb_b.popcount() as f64;
+
+        lane_vals[0] -= count_b * mat_mg;
+        lane_vals[1] -= count_b * mat_eg;
+
+        while bb_b.is_not_empty() {
+            let sq = bb_b.pop_lsb();
+            let mirror_idx = psqt::mirror_sq(usize::from(sq));
+
+            lane_vals[0] -= values[pt * 64 + mirror_idx];
+            lane_vals[1] -= values[pt * 64 + 32 + mirror_idx];
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::ops::Range;
 
-    use soul::core::{board::Position, psqt::LAYOUT};
+    use soul::{
+        core::{board::Position, psqt::LAYOUT},
+        tools::dataset::{FeatureSlots, SoulEntry, accumulate_gradient_cached, eval_soul_cached},
+    };
 
     use super::*;
+    use crate::evaltune::training::sigmoid;
 
     const FENS: &[&str] = &[
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -628,5 +638,72 @@ mod tests {
             "BishopPairTerm alone",
             &values_in_range(LAYOUT.bishop_pair_offset..LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len),
         );
+    }
+
+    const ENCODED_FENS: &[&str] = &[
+        // White-to-move
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        // Black-to-move
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
+        // Bishop pair imbalance
+        "r1bqkbnr/1pp2ppp/p1p5/4p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5",
+    ];
+
+    /// `accumulate_gradient` shares math with the board-based gradient paths.
+    /// A drift here corrupts every `run_encoded` session.
+    #[test]
+    fn test_encoded_path_oracle() {
+        let values = full_values();
+        let n_params = values.len();
+
+        for fen in ENCODED_FENS {
+            let pos = Position::from_fen(fen);
+            let entry = SoulEntry::from_board(&pos, TARGET, None, Some(20));
+
+            // Position → SoulEntry → to_fen → Position.
+            // If this fails, to_fen() is corrupting the board.
+            let rt_pos = Position::from_fen(&entry.to_fen());
+            let orig_score = eval_f64(&pos, &values);
+            let rt_score = eval_f64(&rt_pos, &values);
+            assert!(
+                (orig_score - rt_score).abs() < 1e-4,
+                "Round-trip score mismatch on '{fen}': orig={orig_score} reconstructed={rt_score}",
+            );
+
+            let mut slots = FeatureSlots::with_capacity(1);
+            slots.push_entry(&entry);
+
+            let board_score = eval_f64(&pos, &values);
+            let entry_score = eval_soul_cached(&entry, &slots, 0, &values);
+            assert!(
+                (board_score - entry_score).abs() < 1e-4,
+                "Score mismatch on '{fen}': board={board_score} encoded={entry_score}",
+            );
+
+            let mut dual_grads = vec![0.0f64; n_params];
+            let dual_loss = eval_dual_fused(&pos, &values, TARGET, K, &mut dual_grads);
+
+            let sig = sigmoid(entry_score, K);
+            let err = sig - TARGET;
+            let outer = 2.0 * err * sig * (1.0 - sig) * K;
+
+            let mut encoded_grads = vec![0.0f64; n_params];
+            accumulate_gradient_cached(&entry, &slots, 0, &values, outer, &mut encoded_grads);
+
+            let enc_loss = err * err;
+            assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}");
+
+            for (i, (&dual, &encoded)) in dual_grads.iter().zip(encoded_grads.iter()).enumerate() {
+                let diff = (dual - encoded).abs();
+                assert!(
+                    diff < 1e-3,
+                    "[encoded] {} scatter drift at slot {i} on '{fen}': dual={dual} encoded={encoded} diff={diff}",
+                    term_for(i),
+                );
+            }
+        }
     }
 }

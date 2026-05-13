@@ -12,10 +12,10 @@ use std::{
 use crate::{
     core::{board::Position, defs::Protocol},
     engine::{
-        history,
+        history::History,
         search::{Limits, SearchConfig, Searcher},
         search_params::SearchParams,
-        tt,
+        tt::TranspositionTable,
     },
 };
 
@@ -42,8 +42,7 @@ pub fn run(depth: i32) {
         io::stdout().flush().ok();
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
-        let mut searcher =
-            Searcher::new(&cfg, &board, &history, history::History::new(), Arc::new(tt::TranspositionTable::new(16)));
+        let mut searcher = Searcher::new(&cfg, &board, &history, History::new(), Arc::new(TranspositionTable::new(16)));
         searcher.iterative_deepening();
 
         let nodes = searcher.nodes;

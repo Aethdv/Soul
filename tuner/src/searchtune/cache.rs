@@ -4,45 +4,7 @@ use parking_lot::Mutex;
 use soul::engine::search_params::{PARAM_DEFS, SearchParams};
 
 use super::{pentanomial::Pentanomial, selfplay};
-
-/// Zero-allocation, continuous-to-discrete FNV-1a cache hash.
-///
-/// Converts the continuous `normalized` floats into the EXACT discrete `i32` values
-/// the engine will use, and hashes them. This completely eliminates plateau noise
-/// (where CMA-ES tests 0.500 and 0.501, producing the exact same engine config,
-/// but generating fictitious gradient noise from random game outcomes).
-fn hash_discrete_params(candidate_norm: &[f64], opponent_norm: &[f64], openings: &[String]) -> u64 {
-    let mut fnv = crate::core::fnv::Fnv1a::new();
-
-    // Hash candidate
-    for (i, &v) in candidate_norm.iter().enumerate() {
-        let param = &PARAM_DEFS[i];
-        let discrete_val = param.denormalize(v);
-        fnv.write_bytes(&discrete_val.to_bits().to_le_bytes());
-    }
-
-    // Hash opponent
-    for (i, &v) in opponent_norm.iter().enumerate() {
-        let param = &PARAM_DEFS[i];
-        let discrete_val = param.denormalize(v);
-        fnv.write_bytes(&discrete_val.to_bits().to_le_bytes());
-    }
-
-    // Incorporate opening hashes
-    for op in openings {
-        fnv.write_bytes(op.as_bytes());
-    }
-
-    fnv.digest()
-}
-
-#[derive(Clone)]
-struct CachedEntry {
-    penta: Pentanomial,
-    c_nodes: u64,
-    b_nodes: u64,
-    pairs: usize,
-}
+use crate::core::fnv::Fnv1a;
 
 /// Thread-safe memoization layer for self-play matches.
 ///
@@ -59,12 +21,6 @@ pub struct MatchCache {
     tc: String,
 }
 
-struct CacheInner {
-    entries: HashMap<u64, CachedEntry>,
-    hits: usize,
-    misses: usize,
-}
-
 pub struct MatchRequest<'a> {
     pub params: SearchParams,
     pub normalized: &'a [f64],
@@ -72,6 +28,22 @@ pub struct MatchRequest<'a> {
     pub opponent_normalized: &'a [f64],
     pub openings: &'a [String],
     pub min_pairs: usize,
+}
+
+// ──────── Private types ────────
+
+#[derive(Clone)]
+struct CachedEntry {
+    penta: Pentanomial,
+    c_nodes: u64,
+    b_nodes: u64,
+    pairs: usize,
+}
+
+struct CacheInner {
+    entries: HashMap<u64, CachedEntry>,
+    hits: usize,
+    misses: usize,
 }
 
 impl MatchCache {
@@ -139,4 +111,35 @@ impl MatchCache {
         let total_pairs = inner.entries.values().map(|e| e.pairs).sum();
         (inner.entries.len(), total_pairs, inner.hits, inner.misses)
     }
+}
+
+/// Zero-allocation, continuous-to-discrete FNV-1a cache hash.
+///
+/// Converts the continuous `normalized` floats into the EXACT discrete `i32` values
+/// the engine will use, and hashes them. This completely eliminates plateau noise
+/// (where CMA-ES tests 0.500 and 0.501, producing the exact same engine config,
+/// but generating fictitious gradient noise from random game outcomes).
+fn hash_discrete_params(candidate_norm: &[f64], opponent_norm: &[f64], openings: &[String]) -> u64 {
+    let mut fnv = Fnv1a::new();
+
+    // Hash candidate
+    for (i, &v) in candidate_norm.iter().enumerate() {
+        let param = &PARAM_DEFS[i];
+        let discrete_val = param.denormalize(v);
+        fnv.write_bytes(&discrete_val.to_bits().to_le_bytes());
+    }
+
+    // Hash opponent
+    for (i, &v) in opponent_norm.iter().enumerate() {
+        let param = &PARAM_DEFS[i];
+        let discrete_val = param.denormalize(v);
+        fnv.write_bytes(&discrete_val.to_bits().to_le_bytes());
+    }
+
+    // Incorporate opening hashes
+    for op in openings {
+        fnv.write_bytes(op.as_bytes());
+    }
+
+    fnv.digest()
 }

@@ -1,5 +1,9 @@
 use std::{
-    sync::{Arc, atomic::AtomicBool},
+    io::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -10,11 +14,12 @@ use soul::{
     },
     engine::{
         adjudication::check_adjudication,
-        history,
+        history::History,
         movegen::gen_legal_moves,
-        search::{Limits, Protocol, SearchConfig, Searcher},
+        search::{Limits, Protocol, SearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
         tm::TimeManager,
+        tt::TranspositionTable,
     },
 };
 
@@ -85,7 +90,7 @@ pub fn run_head_to_head(
 ///
 /// # Errors
 /// Returns an error if the I/O subsystem rejects the read request.
-pub fn load_openings(path: &str) -> Result<Vec<String>, std::io::Error> {
+pub fn load_openings(path: &str) -> Result<Vec<String>, Error> {
     use std::{
         fs::File,
         io::{BufRead, BufReader},
@@ -119,8 +124,6 @@ pub fn load_openings(path: &str) -> Result<Vec<String>, std::io::Error> {
     Ok(fens)
 }
 
-// ──────── Private Helpers ────────
-
 fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64, u64) {
     let mut penta = Pentanomial::default();
     let mut total_candidate_nodes = 0u64;
@@ -143,24 +146,16 @@ fn play_match_pair<F: Fn()>(
     // Per-game stop flag, shared between both players of the pair.
     let stop = Arc::new(AtomicBool::new(false));
 
-    let cfg_a = SearchConfig::new_full(
-        limits.clone(),
-        Instant::now(),
-        stop.clone(),
-        0,
-        soul::engine::search::SearchDisplay::SILENT,
-        params_a,
-    );
-    let cfg_b =
-        SearchConfig::new_full(limits.clone(), Instant::now(), stop, 0, soul::engine::search::SearchDisplay::SILENT, params_b);
+    let cfg_a = SearchConfig::new_full(limits.clone(), Instant::now(), stop.clone(), 0, SearchDisplay::SILENT, params_a);
+    let cfg_b = SearchConfig::new_full(limits.clone(), Instant::now(), stop, 0, SearchDisplay::SILENT, params_b);
 
     // Thread local heap-allocated stacks
     let dummy_board = Board::default();
     let dummy_hist = vec![dummy_board.hash];
-    let tt_a = std::sync::Arc::new(soul::engine::tt::TranspositionTable::new(16));
-    let tt_b = std::sync::Arc::new(soul::engine::tt::TranspositionTable::new(16));
-    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, history::History::new(), tt_a));
-    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, history::History::new(), tt_b));
+    let tt_a = Arc::new(TranspositionTable::new(16));
+    let tt_b = Arc::new(TranspositionTable::new(16));
+    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, History::new(), tt_a));
+    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, History::new(), tt_b));
 
     // Round 1: A (White) vs B (Black)
     let (result_as_white, nodes_a_1, nodes_b_1) = play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b);
@@ -230,12 +225,12 @@ fn play_game<'a>(
             return (GameResult::Draw, white_nodes, black_nodes);
         }
 
-        let move_start = std::time::Instant::now();
+        let move_start = Instant::now();
 
         let (searcher, cfg) =
             if board.stm == Color::White { (&mut *searcher_white, cfg_white) } else { (&mut *searcher_black, cfg_black) };
 
-        searcher.reset(cfg, &board, &history, history::History::new());
+        searcher.reset(cfg, &board, &history, History::new());
 
         if uses_clock {
             let mut limits = cfg.limits.clone();
@@ -246,7 +241,7 @@ fn play_game<'a>(
             searcher.tm = TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, &cfg.search_params);
         }
 
-        cfg.stop.store(false, std::sync::atomic::Ordering::Release);
+        cfg.stop.store(false, Ordering::Release);
         searcher.iterative_deepening();
 
         let score = searcher.best_score().unwrap_or(0);

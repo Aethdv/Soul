@@ -4,17 +4,10 @@ pub enum Feedback {
     /// For population-based methods.
     /// Higher score is better.
     /// `std_err` is the uncertainty (sigma) of the score.
-    Scalar {
-        score: f64,
-        raw_score: f64,
-        std_err: f64,
-    },
+    Scalar { score: f64, raw_score: f64, std_err: f64 },
 
     /// Lower loss is better: gradient points toward steepest ascent.
-    Gradient {
-        loss: f64,
-        grad: Vec<f64>,
-    },
+    Gradient { loss: f64, grad: Vec<f64> },
 }
 
 pub struct TuningConfig {

@@ -1,23 +1,24 @@
-use std::io::{BufWriter, Write};
+use std::{
+    fs,
+    fs::File,
+    io,
+    io::{BufWriter, Write},
+};
 
 use soul::{core::psqt, engine::eval_params::Tunable};
 
 use crate::evaltune::storage::Snapshot;
 
-pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64]) {
-    println!();
+pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64], final_epoch: usize) {
     let count = snapshots.len();
     if count == 0 {
         return;
     }
-    println!("Top {count} snapshots (sorted by L_val):");
-    for (i, snap) in snapshots.iter().enumerate() {
-        println!("  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error);
-    }
-    println!();
 
-    println!("Best Snapshot:");
     let best_snap = snapshots.first().unwrap();
+    let best_epoch = best_snap.epoch;
+    println!();
+    println!("Best Snapshot (Epoch {best_epoch}):");
     let mut best_values = vec![0.0; values.len()];
     for t in all_params {
         if let Some(&v) = best_snap.params.get(&t.name) {
@@ -30,21 +31,27 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
     let best = best_snap.error;
     print_params(all_params, initial_values, &best_values);
 
-    if let Ok(log_file) = std::fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
-        let mut w = BufWriter::new(log_file);
-        writeln!(w, "\n=== Top {count} Snapshots ===").ok();
+    if let Ok(mut f) = File::create("top-snapshots.txt") {
+        let mut w = BufWriter::new(&mut f);
+        writeln!(w, "Top {count} snapshots (sorted by L_val):").ok();
         for (i, snap) in snapshots.iter().enumerate() {
-            writeln!(w, "{}. Epoch {} | L_val: {:.6}", i + 1, snap.epoch, snap.error).ok();
+            writeln!(w, "  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error).ok();
         }
-        writeln!(w, "\n=== Best Snapshot Parameters (Epoch {}) ===", best_snap.epoch).ok();
+    }
+
+    if let Ok(log_file) = fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
+        let mut w = BufWriter::new(log_file);
+        writeln!(w, "\n{0} Final EMA Parameters (Epoch {final_epoch}) {0}", "──").ok();
+        write_params(&mut w, all_params, values, None);
+        writeln!(w, "\n{0} Best Snapshot Parameters (Epoch {best_epoch}) {0}", "──").ok();
         write_params(&mut w, all_params, &best_values, None);
     }
-    println!("\x1b[93mBest L_val: {best:.6} (Epoch {})\x1b[0m", best_snap.epoch);
+    println!("\x1b[93mBest L_val: {best:.6} (Epoch {best_epoch})\x1b[0m");
 }
 
 /// Prints parameters to stdout with ANSI green highlighting for changed values.
 pub fn print_params(params: &[Tunable], initial: &[f64], values: &[f64]) {
-    let mut out = std::io::stdout().lock();
+    let mut out = io::stdout().lock();
     write_params(&mut out, params, values, Some(initial));
 }
 
@@ -92,6 +99,9 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             writeln!(w).ok();
         }
         writeln!(w, "    ],").ok();
+        if p_idx < 5 {
+            writeln!(w).ok();
+        }
     }
 
     let mat = psqt::LAYOUT.material_offset;
@@ -142,9 +152,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     }
 
     if params.len() > psqt::LAYOUT.weight_offset {
-        if colored {
-            writeln!(w, "\ndefine_weight_params! {{").ok();
-        }
+        writeln!(w, "\ndefine_weight_params! {{").ok();
 
         write!(w, "    PHASE_WEIGHTS       = [").ok();
         write_weight_array(w, psqt::LAYOUT.weight_offset, 6, values, params, initial);
@@ -174,9 +182,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             writeln!(w, "], // [MG, EG]").ok();
         }
 
-        if colored {
-            writeln!(w, "}}").ok();
-        }
+        writeln!(w, "}}").ok();
     }
 
     if colored {

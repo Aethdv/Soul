@@ -45,11 +45,8 @@ pub struct TimeManager {
 }
 
 impl TimeManager {
-    /// Resolve the budget for a single move and start the clock.
-    ///
-    /// `phase` is the current game phase (0 = endgame, `TOTAL_PHASE` = opening)
-    /// and feeds the moves-to-go interpolation. `overhead` is shaved off both
-    /// budgets to leave room for I/O and GUI lag — never enough to drop a budget below 1 ms.
+    /// `phase` feeds the moves-to-go interpolation; `overhead` is shaved off both
+    /// budgets to leave room for I/O and GUI lag — never enough to drop below 1 ms.
     pub fn new(limits: &Limits, start: Instant, stm: Color, overhead: u64, phase: i32, params: &SearchParams) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, params);
         Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, score: 1.0 }
@@ -108,8 +105,6 @@ impl TimeManager {
         self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }
 }
-
-// ──────── Private ────────
 
 /// Resolve the `(soft, hard)` budget pair for the side to move.
 ///
@@ -194,7 +189,6 @@ impl Clock {
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
-    /// Hard cap: the absolute maximum time we can spend on this move.
     fn hard_ms(&self, mtg: f64) -> u64 {
         let hard_base = if self.movestogo > 0 {
             // Classical: Bound by a multiple of the per-move budget,
@@ -209,7 +203,6 @@ impl Clock {
         (hard_base as u64).saturating_add(self.inc).min(self.time)
     }
 
-    /// Soft target: the optimum time we aim to spend on this move.
     fn soft_ms(&self, mtg: f64, hard_ms: u64) -> u64 {
         let base = (self.time as f64 / mtg) as u64;
         let inc_contrib = (self.inc as f64 * 0.8) as u64;

@@ -6,16 +6,19 @@
 use std::{
     io::{self, Write},
     process::Command,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
 use crate::{
     core::{board::Position, defs::Protocol},
     engine::{
-        history,
+        history::History,
         search::{Limits, Searcher},
-        tt,
+        tt::TranspositionTable,
     },
 };
 
@@ -56,11 +59,10 @@ pub fn run(limit: usize) {
         let limits = Limits { movetime: move_time, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
         let history = vec![board.hash];
-        stop_signal.store(false, std::sync::atomic::Ordering::Release);
+        stop_signal.store(false, Ordering::Release);
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
-        let mut searcher =
-            Searcher::new(&cfg, &board, &history, history::History::new(), Arc::new(tt::TranspositionTable::new(16)));
+        let mut searcher = Searcher::new(&cfg, &board, &history, History::new(), Arc::new(TranspositionTable::new(16)));
 
         searcher.iterative_deepening();
         total_nodes += searcher.nodes;

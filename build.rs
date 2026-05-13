@@ -1,13 +1,8 @@
-#![feature(custom_inner_attributes)]
-#![rustfmt::skip]
 #![allow(clippy::cast_possible_wrap)]
 
-use std::env;
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use std::{env, fs::File, io::Write, path::Path};
 
-type Square   = u8;
+type Square = u8;
 type Bitboard = u64;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -17,16 +12,17 @@ enum PieceType {
 }
 
 struct MagicEntry {
-    mask   : u64,
-    magic  : u64,
-    shift  : u8,
-    offset : u32,
+    mask: u64,
+    magic: u64,
+    shift: u8,
+    offset: u32,
 }
 
 const FILE_A: u64 = 0x0101_0101_0101_0101;
 const FILE_H: u64 = FILE_A << 7;
 const RANK_1: u64 = 0x0000_0000_0000_00FF;
 
+#[rustfmt::skip]
 const RANK_MASKS: [u64; 8] = [
     RANK_1,
     RANK_1 << 8,
@@ -38,6 +34,7 @@ const RANK_MASKS: [u64; 8] = [
     RANK_1 << 56,
 ];
 
+#[rustfmt::skip]
 const FILE_MASKS: [u64; 8] = [
     FILE_A,
     FILE_A << 1,
@@ -52,6 +49,8 @@ const FILE_MASKS: [u64; 8] = [
 // Magic Bitboard Constants (Non-BMI2 only)
 // Precomputed magic numbers, generated with seed 0xDEAD_BEEF_CAFE_BABE.
 // Only used on non-BMI2 machines for sliding piece attack generation.
+
+#[rustfmt::skip]
 const ROOK_MAGICS: [u64; 64] = [
     0x0080_0622_8030_4000, 0x0140_0810_0420_0040, 0x9100_1009_0220_0040, 0x0080_0481_1002_0800,
     0x0080_0800_8014_0003, 0x0100_0900_0400_0802, 0x0280_0200_1100_1880, 0x0500_0224_8200_4700,
@@ -71,6 +70,7 @@ const ROOK_MAGICS: [u64; 64] = [
     0x8100_2240_0000_0820, 0x0030_0000_0009_000E, 0x2000_0000_8041_4800, 0x0002_4910_2020_2008,
 ];
 
+#[rustfmt::skip]
 const BISHOP_MAGICS: [u64; 64] = [
     0x2190_0108_0080_8202, 0x4011_0242_0400_2004, 0x0008_0801_1160_0020, 0x0008_0E00_C440_0420,
     0x8301_1040_0400_0218, 0x1603_0121_1021_0501, 0x8002_0905_6840_8008, 0x020D_0088_0588_0400,
@@ -120,7 +120,7 @@ fn calc_atk_slider_slow(pt: PieceType, square: Square, occupancy: Bitboard) -> B
     let (rank, file) = (square / 8, square % 8);
 
     let dirs: &[(i8, i8)] = match pt {
-        PieceType::Rook   => &[(1, 0), (-1, 0), (0, 1), (0, -1)],
+        PieceType::Rook => &[(1, 0), (-1, 0), (0, 1), (0, -1)],
         PieceType::Bishop => &[(1, 1), (1, -1), (-1, 1), (-1, -1)],
     };
 
@@ -131,7 +131,9 @@ fn calc_atk_slider_slow(pt: PieceType, square: Square, occupancy: Bitboard) -> B
         while (0..8).contains(&rf) && (0..8).contains(&cf) {
             let sq_bit = 1u64 << (rf * 8 + cf);
             attacks |= sq_bit;
-            if (occupancy & sq_bit) != 0 { break; }
+            if (occupancy & sq_bit) != 0 {
+                break;
+            }
             rf += dr;
             cf += df;
         }
@@ -166,10 +168,14 @@ fn main() {
     writeln!(f, "pub static ROOKS: [MagicEntry; 64] = [").unwrap();
     for entry in &rooks {
         if is_bmi2 {
-             writeln!(f, "    MagicEntry {{ mask: {:#018X}, offset: {} }},", entry.mask, entry.offset).unwrap();
+            writeln!(f, "    MagicEntry {{ mask: {:#018X}, offset: {} }},", entry.mask, entry.offset).unwrap();
         } else {
-             writeln!(f, "    MagicEntry {{ mask: {:#018X}, magic: {:#018X}, shift: {}, offset: {} }},",
-                entry.mask, entry.magic, entry.shift, entry.offset).unwrap();
+            writeln!(
+                f,
+                "    MagicEntry {{ mask: {:#018X}, magic: {:#018X}, shift: {}, offset: {} }},",
+                entry.mask, entry.magic, entry.shift, entry.offset
+            )
+            .unwrap();
         }
     }
     writeln!(f, "];").unwrap();
@@ -178,10 +184,14 @@ fn main() {
     writeln!(f, "pub static BISHOPS: [MagicEntry; 64] = [").unwrap();
     for entry in &bishops {
         if is_bmi2 {
-             writeln!(f, "    MagicEntry {{ mask: {:#018X}, offset: {} }},", entry.mask, entry.offset).unwrap();
+            writeln!(f, "    MagicEntry {{ mask: {:#018X}, offset: {} }},", entry.mask, entry.offset).unwrap();
         } else {
-             writeln!(f, "    MagicEntry {{ mask: {:#018X}, magic: {:#018X}, shift: {}, offset: {} }},",
-                entry.mask, entry.magic, entry.shift, entry.offset).unwrap();
+            writeln!(
+                f,
+                "    MagicEntry {{ mask: {:#018X}, magic: {:#018X}, shift: {}, offset: {} }},",
+                entry.mask, entry.magic, entry.shift, entry.offset
+            )
+            .unwrap();
         }
     }
     writeln!(f, "];").unwrap();
@@ -222,20 +232,20 @@ fn main() {
 }
 
 fn init_lines_between() -> ([[u64; 64]; 64], [[u64; 64]; 64]) {
-    #[allow(clippy::large_stack_arrays)]
-    let mut lines   = [[0u64; 64]; 64];
-    #[allow(clippy::large_stack_arrays)]
+    let mut lines = [[0u64; 64]; 64];
     let mut between = [[0u64; 64]; 64];
 
     for s1 in 0..64u8 {
         for s2 in 0..64u8 {
-            if s1 == s2 { continue; }
+            if s1 == s2 {
+                continue;
+            }
 
             let (r1, c1) = (s1 / 8, s1 % 8);
             let (r2, c2) = (s2 / 8, s2 % 8);
 
-            let dr = <i16>::from(r2) - <i16>::from(r1);
-            let dc = <i16>::from(c2) - <i16>::from(c1);
+            let dr = i16::from(r2) - i16::from(r1);
+            let dc = i16::from(c2) - i16::from(c1);
 
             let aligned = dr == 0 || dc == 0 || dr.abs() == dc.abs();
 
@@ -243,49 +253,46 @@ fn init_lines_between() -> ([[u64; 64]; 64], [[u64; 64]; 64]) {
                 let (step_r, step_c) = (dr.signum(), dc.signum());
                 let mut bb = 0u64;
                 for direction in [-1i16, 1] {
-                     let (mut r, mut c) = (<i16>::from(r1), <i16>::from(c1));
-                     while (0..8).contains(&r) && (0..8).contains(&c) {
-                         bb |= 1u64 << (r * 8 + c);
-                         r += direction * step_r;
-                         c += direction * step_c;
-                     }
+                    let (mut r, mut c) = (i16::from(r1), i16::from(c1));
+                    while (0..8).contains(&r) && (0..8).contains(&c) {
+                        bb |= 1u64 << (r * 8 + c);
+                        r += direction * step_r;
+                        c += direction * step_c;
+                    }
                 }
                 bb
             } else {
                 0
             };
-
-            #[allow(clippy::cast_sign_loss)]
-            {
-                lines[usize::from(s1)][usize::from(s2)] = line;
-            }
+            lines[usize::from(s1)][usize::from(s2)] = line;
         }
     }
 
     for s1 in 0..64u8 {
         for s2 in 0..64u8 {
-             if lines[s1 as usize][s2 as usize] == 0 { continue; }
+            if lines[s1 as usize][s2 as usize] == 0 {
+                continue;
+            }
 
-             let (r1, c1) = (s1 / 8, s1 % 8);
-             let (r2, c2) = (s2 / 8, s2 % 8);
+            let (r1, c1) = (s1 / 8, s1 % 8);
+            let (r2, c2) = (s2 / 8, s2 % 8);
 
-             let step_r = (<i16>::from(r2) - <i16>::from(r1)).signum();
-             let step_c = (<i16>::from(c2) - <i16>::from(c1)).signum();
+            let step_r = (i16::from(r2) - i16::from(r1)).signum();
+            let step_c = (i16::from(c2) - i16::from(c1)).signum();
 
-             let (mut r, mut c) = (<i16>::from(r1) + step_r, <i16>::from(c1) + step_c);
-             let mut mask = 0u64;
+            let (mut r, mut c) = (i16::from(r1) + step_r, i16::from(c1) + step_c);
+            let mut mask = 0u64;
 
-             while r != <i16>::from(r2) || c != <i16>::from(c2) {
-                 mask |= 1u64 << (r * 8 + c);
-                 r += step_r;
-                 c += step_c;
-             }
-             between[s1 as usize][s2 as usize] = mask;
+            while r != i16::from(r2) || c != i16::from(c2) {
+                mask |= 1u64 << (r * 8 + c);
+                r += step_r;
+                c += step_c;
+            }
+            between[s1 as usize][s2 as usize] = mask;
         }
     }
     (lines, between)
 }
-
 
 const fn xorshift64(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -294,20 +301,15 @@ const fn xorshift64(state: &mut u64) -> u64 {
     *state
 }
 
-fn init_magic(
-    square  : Square,
-    pt      : PieceType,
-    entries : &mut Vec<MagicEntry>,
-    table   : &mut Vec<u64>,
-) {
+fn init_magic(square: Square, pt: PieceType, entries: &mut Vec<MagicEntry>, table: &mut Vec<u64>) {
     let mask = match pt {
-        PieceType::Rook   => rook_mask(square),
+        PieceType::Rook => rook_mask(square),
         PieceType::Bishop => bishop_mask(square),
     };
 
-    let bits         = mask.count_ones();
+    let bits = mask.count_ones();
     let permutations = 1 << bits;
-    let shift        = 64 - <u8>::try_from(bits).unwrap();
+    let shift = 64 - u8::try_from(bits).unwrap();
 
     let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
     let is_bmi2 = target_features.contains("bmi2");
@@ -316,7 +318,7 @@ fn init_magic(
     let mut ref_attacks = Vec::with_capacity(permutations as usize);
 
     for i in 0..permutations {
-        let mut occ            = 0u64;
+        let mut occ = 0u64;
         let mut bits_processed = 0u32;
         let mut remaining_mask = mask;
 
@@ -332,9 +334,9 @@ fn init_magic(
         ref_attacks.push(calc_atk_slider_slow(pt, square, occ));
     }
 
-    let offset = <u32>::try_from(table.len()).unwrap();
+    let offset = u32::try_from(table.len()).unwrap();
     let mut magic = match pt {
-        PieceType::Rook   => ROOK_MAGICS[square as usize],
+        PieceType::Rook => ROOK_MAGICS[square as usize],
         PieceType::Bishop => BISHOP_MAGICS[square as usize],
     };
 
@@ -346,7 +348,7 @@ fn init_magic(
         let mut seed = 0xDEAD_BEEF_CAFE_BABE ^ (u64::from(square) << 32);
         loop {
             let mut test_table = vec![0u64; permutations as usize];
-            let mut collision  = false;
+            let mut collision = false;
             for i in 0..permutations as usize {
                 let idx = (occupancies[i].wrapping_mul(magic) >> shift) as usize;
                 if test_table[idx] != 0 && test_table[idx] != ref_attacks[i] {
@@ -366,10 +368,5 @@ fn init_magic(
         }
     }
 
-    entries.push(MagicEntry {
-        mask,
-        magic,
-        shift,
-        offset,
-    });
+    entries.push(MagicEntry { mask, magic, shift, offset });
 }

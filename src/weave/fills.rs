@@ -1,9 +1,6 @@
-// Typed SIMD wrappers — not CamelCase by design.
-#![allow(non_camel_case_types)]
-
 //! Kogge-Stone Parallel Prefix Fills (SIMD).
 //!
-//! # Architectural Note
+//! # Note
 //!
 //! This module is intentionally kept out of `MovePicker` and `movegen.rs`.
 //! Move generation requires discrete `(from, to)` square pairs to encode `Move`
@@ -19,8 +16,6 @@
 //! getting rid of piece-iteration loops entirely in the hot eval path.
 
 use super::*;
-
-// ──────── Kogge-Stone Parallel Prefix Fills — Pure ALU, 8 Directions ────────
 
 /// Kogge-Stone occluded fill: left shift variant (North, East, NE, NW).
 ///
@@ -108,8 +103,6 @@ kogge_fill_right_masked!(fill_southeast, 7, 14, 28, FILE_A);
 // SouthWest (-9): mask FILE_H
 kogge_fill_right_masked!(fill_southwest, 9, 18, 36, FILE_H);
 
-// ──────── Directional Single-Step Shifts (for deriving attacks from fills) ────────
-
 impl Vu64x4 {
     #[inline(always)]
     pub fn shift_north(self) -> Self {
@@ -164,8 +157,6 @@ where
     let filled = fill_fn(generator, pro);
     shift_fn(filled) & !generator
 }
-
-// ──────── Tests ────────
 
 #[cfg(test)]
 mod tests {

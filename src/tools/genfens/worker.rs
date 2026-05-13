@@ -3,31 +3,34 @@
 //! Runs full games from opening book positions to checkmate or draw, filtering
 //! out highly tactical or noisy positions before saving to the dataset.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering::Relaxed},
+use std::{
+    mem,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    },
+    time::Instant,
 };
 
 use super::{config::GenfensConfig, stats::GlobalStats};
 use crate::{
     core::{
         board::Position,
-        defs::{Color, GameOutcome},
+        defs::{Color, GameOutcome, PieceType},
         moves::Move,
     },
     engine::{
         adjudication::check_adjudication,
         eval::{evaluate_fast, extract_phase},
-        history,
+        history::History,
         movegen::gen_legal_moves,
-        search::{Limits, SearchConfig as EngineSearchConfig, Searcher},
+        search::{Limits, SearchConfig as EngineSearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
-        tt,
+        tt::TranspositionTable,
     },
     tools::dataset::SoulEntry,
+    weave::Vi16x8,
 };
-
-// ──────── Self-Play Worker ────────
 
 /// A self-play worker that generates NNUE training data one game at a time.
 ///
@@ -36,7 +39,7 @@ use crate::{
 /// and back-propagates the final WDL result once the game concludes.
 pub struct WorkerState {
     pub board: Position,
-    pub accumulator: crate::weave::Vi16x8,
+    pub accumulator: Vi16x8,
     /// Position hashes fed to the searcher (in-search repetition detection).
     pub search_history: Vec<u64>,
     /// Full game hash trail (threefold repetition detection).
@@ -49,10 +52,10 @@ pub struct WorkerState {
     pub config: GenfensConfig,
     pub rng: fastrand::Rng,
     pub global: Arc<GlobalStats>,
-    pub tt: Arc<tt::TranspositionTable>,
+    pub tt: Arc<TranspositionTable>,
     /// Persistent history table — reused across positions within a game,
     /// cleared between games. Avoids per-position heap allocation.
-    pub history_table: history::History,
+    pub history_table: History,
     /// Track if the last move made was a capture or promotion to filter out
     /// tactically "hot" positions reached via a trade.
     pub last_move_was_tactical: bool,
@@ -82,8 +85,8 @@ impl Clone for WorkerState {
             config: self.config.clone(),
             rng: fastrand::Rng::new(),
             global: Arc::clone(&self.global),
-            tt: Arc::new(tt::TranspositionTable::new(16)),
-            history_table: history::History::new(),
+            tt: Arc::new(TranspositionTable::new(16)),
+            history_table: History::new(),
             last_move_was_tactical: false,
             win_adj_counter: 0,
             draw_adj_counter: 0,
@@ -109,8 +112,8 @@ impl WorkerState {
             pending: Vec::with_capacity(config.buffer_size),
             confirmed: Vec::with_capacity(config.buffer_size),
             book,
-            tt: Arc::new(tt::TranspositionTable::new(16)),
-            history_table: history::History::new(),
+            tt: Arc::new(TranspositionTable::new(16)),
+            history_table: History::new(),
             config,
             rng: fastrand::Rng::new(),
             global,
@@ -143,11 +146,87 @@ impl WorkerState {
         self.last_move_was_tactical = false;
     }
 
+    /// Plays one game — either a full self-play game
+    /// or a single random-restart position, depending on config.
+    pub fn play_game(&mut self) -> Vec<SoulEntry> {
+        if self.config.random_restart { self.play_random_position() } else { self.play_full_game() }
+    }
+
+    /// Random-restart: pick a random book FEN, play N random moves,
+    /// run search, apply quality filters, emit one position.
+    /// Each call produces at most one entry.
+    fn play_random_position(&mut self) -> Vec<SoulEntry> {
+        self.global.attempted.fetch_add(1, Relaxed);
+
+        let opening = self.book[self.rng.usize(..self.book.len())].clone();
+        self.reset_for_new_game(&opening);
+
+        for _ in 0..self.config.random_plies {
+            let moves = gen_legal_moves(&self.board);
+            if moves.is_empty() {
+                return Vec::new();
+            }
+            let mv = moves[self.rng.usize(0..moves.len())];
+            self.board.make_move(mv, &mut self.accumulator);
+            self.search_history.push(self.board.hash);
+            self.game_history.push(self.board.hash);
+        }
+
+        if gen_legal_moves(&self.board).is_empty() {
+            return Vec::new();
+        }
+
+        let (static_eval, search_eval, search_move) = self.search_position();
+
+        let Some(best_move) = search_move else {
+            self.global.search_fail.fetch_add(1, Relaxed);
+            eprintln!("Warning: random-restart search returned no best move — skipping position");
+            return Vec::new();
+        };
+
+        let abs_eval = search_eval.abs();
+
+        let is_quiet = self.board.checkers().is_empty() && !best_move.is_tactical();
+        let within_score_window = abs_eval <= self.config.score_filter;
+
+        if !is_quiet {
+            self.global.filtered_quiet.fetch_add(1, Relaxed);
+            return Vec::new();
+        }
+        if !within_score_window {
+            self.global.filtered_score.fetch_add(1, Relaxed);
+            return Vec::new();
+        }
+
+        self.global.passed_filters.fetch_add(1, Relaxed);
+
+        // The qsearch filter catches positions where the search sees something
+        // the static eval doesn't — unresolved tactics the HCE can't learn.
+        // `eval_contradiction_limit` is not applied here because random-restart
+        // has no game outcome to contradict against; the filter only applies in
+        // full-game mode where a back-propagated outcome exists.
+        let delta = (search_eval - static_eval).abs();
+        if delta > self.config.qsearch_filter {
+            self.global.filtered_tactical.fetch_add(1, Relaxed);
+            return Vec::new();
+        }
+
+        // No game outcome — set result to the draw prior (0.5).
+        // At training time, the tuner's instance-confidence WDL blending
+        // (training.rs:107-121) treats this as a weak anchor: near-zero
+        // search scores keep the 0.5 prior, high-magnitude scores converge
+        // to sigmoid(k · score). With wdl_blend=1.0, the draw prior only
+        // sticks when the search itself is uncertain.
+        let entry = SoulEntry::from_board(&self.board, 0.5, Some(static_eval), Some(search_eval));
+        self.global.saved.fetch_add(1, Relaxed);
+        vec![entry]
+    }
+
     /// Plays one complete self-play game and returns labeled training positions.
     ///
     /// Flow: random opening → ply loop (search, adjudicate, filter, move) →
     /// back-propagate WDL result → return confirmed entries.
-    pub fn play_game(&mut self) -> Vec<SoulEntry> {
+    fn play_full_game(&mut self) -> Vec<SoulEntry> {
         let opening = self.book[self.rng.usize(..self.book.len())].clone();
         self.reset_for_new_game(&opening);
         self.global.games.fetch_add(1, Relaxed);
@@ -159,8 +238,6 @@ impl WorkerState {
             self.local_plies += 1;
 
             let moves = gen_legal_moves(&self.board);
-
-            // ──────── Draw Detection ────────
 
             // ── Checkmate / Stalemate ──
             if moves.is_empty() {
@@ -266,6 +343,33 @@ impl WorkerState {
             // Stochastic subsampling for training diversity.
             let sampled = self.config.sample_rate >= 1.0 || self.rng.f64() < self.config.sample_rate;
 
+            let ply = (self.board.fullmove_number as usize - 1) * 2 + (self.board.stm as usize);
+            let pieces: u32 = PieceType::ALL.iter().map(|&pt| self.board.piece_count(pt) as u32).sum();
+
+            let should_save = should_save && ply >= self.config.min_ply && pieces >= self.config.min_pieces;
+
+            if !should_save {
+                if ply < self.config.min_ply {
+                    self.global.filtered_ply.fetch_add(1, Relaxed);
+                } else if pieces < self.config.min_pieces {
+                    self.global.filtered_pieces.fetch_add(1, Relaxed);
+                }
+            }
+
+            // Skip positions where static eval diverges from search eval
+            // by more than the threshold. i32::MAX disables this gate.
+            let should_save = if should_save {
+                let delta = (search_eval - static_eval).abs();
+                if delta > self.config.qsearch_filter {
+                    self.global.filtered_tactical.fetch_add(1, Relaxed);
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+
             if should_save && sampled {
                 let entry = SoulEntry::from_board(
                     &self.board,
@@ -285,7 +389,27 @@ impl WorkerState {
 
         // Back-propagate game result to every saved position
         for (mut entry, stm) in self.pending.drain(..) {
-            entry.result = outcome.relative_to(stm);
+            entry.result = (outcome.relative_to(stm) * 2.0) as u8;
+
+            let search_eval = entry.score as i32;
+            let contradictory = match (outcome, stm) {
+                // STM won but eval said STM was losing badly.
+                (GameOutcome::WhiteWins, Color::White) | (GameOutcome::BlackWins, Color::Black) => {
+                    search_eval < -self.config.eval_contradiction_limit
+                },
+                // STM lost but eval said STM was winning.
+                (GameOutcome::WhiteWins, Color::Black) | (GameOutcome::BlackWins, Color::White) => {
+                    search_eval > self.config.eval_contradiction_limit
+                },
+                // Draw, but eval was decisively non-draw.
+                (GameOutcome::Draw, _) => search_eval.abs() > self.config.eval_contradiction_limit,
+            };
+
+            if contradictory {
+                self.global.filtered_incorrect.fetch_add(1, Relaxed);
+                continue;
+            }
+
             self.confirmed.push(entry);
         }
 
@@ -298,7 +422,7 @@ impl WorkerState {
         self.local_plies = 0;
 
         let mut out = Vec::new();
-        std::mem::swap(&mut self.confirmed, &mut out);
+        mem::swap(&mut self.confirmed, &mut out);
         out
     }
 
@@ -320,17 +444,17 @@ impl WorkerState {
 
         let cfg = EngineSearchConfig::new_full(
             limits,
-            std::time::Instant::now(),
+            Instant::now(),
             NEVER_STOP.with(Arc::clone),
             0,
-            crate::engine::search::SearchDisplay::SILENT,
+            SearchDisplay::SILENT,
             SearchParams::default(),
         );
 
         // Move history out with a zero-cost default (empty cont Box).
         // The history accumulates across positions within a game for better ordering.
         let mut searcher =
-            Searcher::new(&cfg, &self.board, &self.search_history, std::mem::take(&mut self.history_table), Arc::clone(&self.tt));
+            Searcher::new(&cfg, &self.board, &self.search_history, mem::take(&mut self.history_table), Arc::clone(&self.tt));
         searcher.iterative_deepening();
         let best_score = searcher.best_score().unwrap_or(0);
         let best_move = searcher.best_move();

@@ -103,7 +103,6 @@ impl SpatialTensor {
         let w_pcs = pos.side_bb[Color::White as usize].0;
         let b_pcs = pos.side_bb[Color::Black as usize].0;
 
-        // ── Generators ──
         let w_rq = (pos.role_bb[PieceType::Rook as usize] & pos.side_bb[Color::White as usize]
             | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::White as usize])
             .0
@@ -122,7 +121,6 @@ impl SpatialTensor {
             .0
             & !pinned_b;
 
-        // ── Orthogonal ──
         let gen_ortho = Vu64x4::from_lanes(w_rq, b_rq, 0, 0); // Lanes: [W_direct, B_direct, unused, unused]
         let us_pcs_ortho = Vu64x4::from_lanes(w_pcs, b_pcs, 0, 0);
 
@@ -135,8 +133,6 @@ impl SpatialTensor {
 
         let ortho_direct = gen_n | gen_s | gen_e | gen_w;
 
-        // ── X-Ray Ortho (Second Pass) ──
-        //
         // Computes "shadow" attacks that pass through exactly one friendly piece.
         // The algorithm treats squares where direct attacks hit friendly pieces as
         // NEW generators, then flood-fills from those points in the same direction.
@@ -155,7 +151,6 @@ impl SpatialTensor {
             (n | s | e | w) & !ortho_direct
         };
 
-        // ── Diagonal ──
         let gen_diag = Vu64x4::from_lanes(w_bq, b_bq, 0, 0);
         let us_pcs_diag = Vu64x4::from_lanes(w_pcs, b_pcs, 0, 0);
 
@@ -168,7 +163,6 @@ impl SpatialTensor {
 
         let diag_direct = gen_ne | gen_nw | gen_se | gen_sw;
 
-        // ── X-Ray Diag (Second Pass) ──
         let diag_xray = {
             let (ne, nw, se, sw) = (
                 fill_northeast(gen_ne & us_pcs_diag, empty).shift_ne(),
@@ -181,9 +175,6 @@ impl SpatialTensor {
 
         Self { ortho_direct, ortho_xray, diag_direct, diag_xray }
     }
-
-    // ── Accessors ──
-
     #[inline]
     pub fn w_ortho_direct(&self) -> u64 {
         self.ortho_direct.extract::<0>()

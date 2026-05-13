@@ -1,3 +1,5 @@
+use soul::core::{board::Position, defs::Color};
+
 use crate::evaltune::{loader, tape, tape::eval_f64};
 
 /// Adaptive gradient clipping based on exponentially weighted percentile estimation.
@@ -89,14 +91,17 @@ pub trait TrainableEntry: TunableData {
 }
 
 impl TunableData for loader::SoulEntry {
+    /// Evaluation via FEN round-trip — valid but slow.
+    /// Production code uses `eval_soul_cached` with `FeatureSlots`.
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {
-        loader::eval_soul(self, values)
+        let board = Position::from_fen(&self.to_fen());
+        eval_f64(&board, values)
     }
 
     #[inline]
     fn result(&self) -> f64 {
-        f64::from(self.result)
+        f64::from(self.result) / 2.0
     }
 }
 
@@ -105,30 +110,38 @@ impl TrainableEntry for loader::SoulEntry {
 
     #[inline]
     fn target(&self, k: f64, wdl_blend: f64) -> f64 {
-        // Dynamic WDL blending: Use Soul's own sigmoid (K) to estimate a score
-        // from its search evaluation, then blend with the hard result.
-        let score = f64::from(self.search_score);
+        // i16::MAX sentinel = EPD data with no search score — pure outcome.
+        if self.score == i16::MAX {
+            return f64::from(self.result) / 2.0;
+        }
+        let score = f64::from(self.score);
 
         // Instance-Confidence WDL blending:
         // Scale the global `wdl_blend` based on the magnitude of the search score.
-        // A high score (e.g., >400cp) means the engine is highly confident, so we lean
-        // more heavily on the engine's evaluation up to the max `wdl_blend`.
-        // A near-zero score means low confidence, so we trust the actual game result more.
+        // Near-zero scores (low engine confidence) fall back to the game result;
+        // high-magnitude scores trust the search eval fully.
+        //
+        // wdl_blend >= 1.0 bypasses instance-confidence entirely — the target
+        // is pure sigmoid(score). Used for random-restart data with no game outcome.
+        // 400 cp is the empirical confidence saturation point.
         let confidence_threshold = 400.0;
-        let instance_blend = wdl_blend * (score.abs() / confidence_threshold).min(1.0);
+        let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / confidence_threshold).min(1.0) };
 
         let expected = sigmoid(score, k);
-        (1.0 - instance_blend).mul_add(f64::from(self.result), instance_blend * expected)
+        // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
+        (1.0 - instance_blend).mul_add(f64::from(self.result) / 2.0, instance_blend * expected)
     }
 
     #[inline]
     fn eval_with_state(&self, values: &[f64], _: &mut Self::GradState) -> f64 {
-        loader::eval_soul(self, values)
+        self.eval(values)
     }
 
     #[inline]
-    fn accumulate_grad(&self, values: &[f64], gradient: f64, grads: &mut [f64], _: &Self::GradState) {
-        loader::accumulate_gradient(self, values, gradient, grads);
+    fn accumulate_grad(&self, _values: &[f64], _gradient: f64, _grads: &mut [f64], _: &Self::GradState) {
+        unimplemented!(
+            "SoulEntry gradient accumulation requires FeatureSlots; production code uses the cached path via eval_soul_cached / accumulate_gradient_cached"
+        );
     }
 }
 
@@ -143,7 +156,7 @@ impl TunableData for loader::Entry {
         // EPD results are from White's perspective.
         // The eval produces a score relative to the side-to-move,
         // so we flip for Black.
-        if self.board.stm == soul::core::defs::Color::Black { 1.0 - self.result } else { self.result }
+        if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
     }
 }
 

@@ -33,16 +33,72 @@ pub mod spatial;
 
 pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+pub const ROOK_W_KS: usize = 0;
+pub const ROOK_W_QS: usize = 1;
+pub const ROOK_B_KS: usize = 2;
+pub const ROOK_B_QS: usize = 3;
+
+/// King's home file in the standard starting position (e = 4).
+pub const DEFAULT_KING_FILE: u8 = 4;
+/// h-file
+pub const KINGSIDE_FILE: u8 = 7;
+/// a-file
+pub const QUEENSIDE_FILE: u8 = 0;
+/// f1, g1
+pub const W_OO_EMPTY: Bitboard = Bitboard(0x60);
+/// b1, c1, d1
+pub const W_OOO_EMPTY: Bitboard = Bitboard(0x0E);
+/// f8, g8
+pub const B_OO_EMPTY: Bitboard = Bitboard(0x6000_0000_0000_0000);
+/// b8, c8, d8
+pub const B_OOO_EMPTY: Bitboard = Bitboard(0x0E00_0000_0000_0000);
+
+/// Toward a-file (queenside rook)
+pub const SEARCH_LEFT: i8 = -1;
+/// Toward h-file (kingside rook)
+pub const SEARCH_RIGHT: i8 = 1;
+
+pub const WHITE_OO: u8 = 1;
+pub const WHITE_OOO: u8 = 2;
+pub const BLACK_OO: u8 = 4;
+pub const BLACK_OOO: u8 = 8;
+
+/// e1, h1 → g1, f1
+pub const CASTLE_W_KS: [u8; 4] = [4, 7, 6, 5];
+/// e1, a1 → c1, d1
+pub const CASTLE_W_QS: [u8; 4] = [4, 0, 2, 3];
+/// e8, h8 → g8, f8
+pub const CASTLE_B_KS: [u8; 4] = [60, 63, 62, 61];
+/// e8, a8 → c8, d8
+pub const CASTLE_B_QS: [u8; 4] = [60, 56, 58, 59];
+/// e1, f1, g1
+pub const CASTLE_W_KS_CHECK: [u8; 3] = [4, 5, 6];
+/// e1, d1, c1
+pub const CASTLE_W_QS_CHECK: [u8; 3] = [4, 3, 2];
+/// e8, f8, g8
+pub const CASTLE_B_KS_CHECK: [u8; 3] = [60, 61, 62];
+/// e8, d8, c8
+pub const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58];
+
+// Compile-time layout verification — catches silent ABI breakage.
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+
+    assert!(size_of::<Position>() == 160, "Position must be exactly 160 bytes");
+    assert!(align_of::<Position>() == 32, "Position must be 32-byte aligned");
+
+    // Hot fields packed at the front for cache locality during move gen.
+    assert!(offset_of!(Position, side_bb) == 0);
+    assert!(offset_of!(Position, role_bb) == 16);
+    assert!(offset_of!(Position, occ) == 64);
+    assert!(offset_of!(Position, hash) == 72);
+
+    assert!(size_of::<StateInfo>() == 16, "StateInfo must be exactly 16 bytes");
+    assert!(align_of::<StateInfo>() == 8);
+};
+
 pub use fen::Fen;
 
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Fen(self))
-    }
-}
-
-// ──────── Position — the complete board state ────────
-//
 //  160 bytes — spans up to three cache lines.
 //
 //  ┌──────────────────┬────────┬───────┐
@@ -91,8 +147,12 @@ pub struct Position {
     pub fullmove_number: u16,
 }
 
-// ──────── Irreversible State Snapshots ────────
-//
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Fen(self))
+    }
+}
+
 // Moves that destroy information:
 // castling rights, the fifty-move counter, en passant availability, captured pieces.
 // We snapshot these irreversible fields before each move so unmake_move
@@ -116,8 +176,6 @@ impl Default for StateInfo {
 }
 
 impl Position {
-    // ──────── Construction & Setup ────────
-
     /// An empty board — no pieces, White to move, Zobrist initialized.
     pub fn new() -> Self {
         let mut pos = Self {
@@ -155,8 +213,6 @@ impl Position {
     where I: Iterator<Item = &'a str> {
         fen::try_from_tokens(parts)
     }
-
-    // ──────── Core State Transitions ────────
 
     /// Apply `mv` to the position. Returns the undo packet needed by
     /// `unmake_move`.
@@ -235,8 +291,6 @@ impl Position {
         }
         acc
     }
-
-    // ──────── Game Rules & State Queries ────────
 
     /// Detects threefold repetition within the reversible move horizon.
     ///
@@ -357,8 +411,6 @@ impl Position {
         true
     }
 
-    // ──────── Board Representation & Pieces ────────
-
     /// Serialize the current position back to a FEN string.
     pub fn as_fen(&self) -> String {
         fen::as_fen(self)
@@ -426,8 +478,6 @@ impl Position {
         self.role_bb[pt as usize].popcount() as i32
     }
 
-    // ──────── Attack & Threat Detection ────────
-
     /// Is `sq` attacked by any piece of `attacker`'s color?
     ///
     /// `VIRTUAL = true` removes `mask_out` from occupancy,
@@ -481,8 +531,6 @@ impl Position {
     pub fn king_blockers(&self) -> Bitboard {
         attacks::pinned_pieces(self, self.stm)
     }
-
-    // ──────── Technical Auxiliaries ────────
 
     #[inline(always)]
     pub fn set_piece_type(&mut self, sq: Square, pt: PieceType) {
@@ -550,87 +598,3 @@ impl Default for Position {
         Self::new()
     }
 }
-
-// ──────── Internal State Primitives ────────
-
-// Castling rook array indices.
-pub const ROOK_W_KS: usize = 0;
-pub const ROOK_W_QS: usize = 1;
-pub const ROOK_B_KS: usize = 2;
-pub const ROOK_B_QS: usize = 3;
-
-/// King's home file in the standard starting position (e = 4).
-pub const DEFAULT_KING_FILE: u8 = 4;
-
-// Rook home files in the standard starting position.
-/// h-file
-pub const KINGSIDE_FILE: u8 = 7;
-/// a-file
-pub const QUEENSIDE_FILE: u8 = 0;
-
-// FRC rook search directions: scan from king's file toward each edge.
-/// Toward a-file (queenside rook)
-pub const SEARCH_LEFT: i8 = -1;
-/// Toward h-file (kingside rook)
-pub const SEARCH_RIGHT: i8 = 1;
-
-// ──────── Castling rights bitmask ────────
-//
-//  Packed into a single u8:
-//    bit 0 = White O-O    bit 2 = Black O-O
-//    bit 1 = White O-O-O  bit 3 = Black O-O-O
-
-pub const WHITE_OO: u8 = 1;
-pub const WHITE_OOO: u8 = 2;
-pub const BLACK_OO: u8 = 4;
-pub const BLACK_OOO: u8 = 8;
-
-// ──────── Castling emptiness masks — squares that must be empty ────────
-
-/// f1, g1
-pub const W_OO_EMPTY: Bitboard = Bitboard(0x60);
-/// b1, c1, d1
-pub const W_OOO_EMPTY: Bitboard = Bitboard(0x0E);
-/// f8, g8
-pub const B_OO_EMPTY: Bitboard = Bitboard(0x6000_0000_0000_0000);
-/// b8, c8, d8
-pub const B_OOO_EMPTY: Bitboard = Bitboard(0x0E00_0000_0000_0000);
-
-// ──────── Castling geometry — [king_from, rook_from, king_to, rook_to] ────────
-
-/// e1, h1 → g1, f1
-pub const CASTLE_W_KS: [u8; 4] = [4, 7, 6, 5];
-/// e1, a1 → c1, d1
-pub const CASTLE_W_QS: [u8; 4] = [4, 0, 2, 3];
-/// e8, h8 → g8, f8
-pub const CASTLE_B_KS: [u8; 4] = [60, 63, 62, 61];
-/// e8, a8 → c8, d8
-pub const CASTLE_B_QS: [u8; 4] = [60, 56, 58, 59];
-
-// ──────── Castling safety — king must not be attacked on these ────────
-
-/// e1, f1, g1
-pub const CASTLE_W_KS_CHECK: [u8; 3] = [4, 5, 6];
-/// e1, d1, c1
-pub const CASTLE_W_QS_CHECK: [u8; 3] = [4, 3, 2];
-/// e8, f8, g8
-pub const CASTLE_B_KS_CHECK: [u8; 3] = [60, 61, 62];
-/// e8, d8, c8
-pub const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58];
-
-// Compile-time layout verification — catches silent ABI breakage.
-const _: () = {
-    use std::mem::{align_of, offset_of, size_of};
-
-    assert!(size_of::<Position>() == 160, "Position must be exactly 160 bytes");
-    assert!(align_of::<Position>() == 32, "Position must be 32-byte aligned");
-
-    // Hot fields packed at the front for cache locality during move gen.
-    assert!(offset_of!(Position, side_bb) == 0);
-    assert!(offset_of!(Position, role_bb) == 16);
-    assert!(offset_of!(Position, occ) == 64);
-    assert!(offset_of!(Position, hash) == 72);
-
-    assert!(size_of::<StateInfo>() == 16, "StateInfo must be exactly 16 bytes");
-    assert!(align_of::<StateInfo>() == 8);
-};

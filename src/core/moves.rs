@@ -262,12 +262,6 @@ pub struct MoveList {
     len: usize,
 }
 
-impl Default for MoveList {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MoveList {
     /// Empty move list.
     #[inline(always)]
@@ -325,6 +319,12 @@ impl MoveList {
         debug_assert!(index < self.len, "MoveList::get out of bounds: {index} >= {}", self.len);
         // SAFETY: The caller must ensure index < len.
         unsafe { self.moves[index].assume_init() }
+    }
+}
+
+impl Default for MoveList {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

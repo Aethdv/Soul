@@ -3,7 +3,7 @@
 //! Provides ANSI-colored CLI output for interactive use, displaying Principal Variations (PV),
 //! node counts, and static evaluation breakdown.
 
-use std::{fmt::Write, io::Write as _};
+use std::{fmt::Write, io, io::Write as _};
 
 use crate::{
     core::{
@@ -11,7 +11,7 @@ use crate::{
         defs::{MATE, MATE_BOUND, PieceType, Protocol, Square},
         moves::Move,
     },
-    engine::{search::Line, wdl},
+    engine::{movegen::gen_legal_moves, search::Line, wdl},
 };
 
 type Rgb = (u8, u8, u8);
@@ -98,12 +98,13 @@ pub fn fmt_nps(nps: u64) -> String {
     }
 }
 
-pub fn fmt_score_uci(score: i32) -> String {
-    if score.abs() > MATE_BOUND {
-        let mate_in = if score > 0 { (MATE - score + 1) / 2 } else { -(MATE + score + 1) / 2 };
+pub fn fmt_score_uci(score: i32, stm: usize) -> String {
+    let ws = if stm == 1 { -score } else { score };
+    if ws.abs() > MATE_BOUND {
+        let mate_in = if ws > 0 { (MATE - ws + 1) / 2 } else { -(MATE + ws + 1) / 2 };
         format!("mate {mate_in}")
     } else {
-        format!("cp {score}")
+        format!("cp {ws}")
     }
 }
 
@@ -112,7 +113,7 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
         Protocol::Uci => print_uci(data, pretty),
         Protocol::XBoard => print_xboard(data),
     }
-    let _ = std::io::stdout().flush();
+    let _ = io::stdout().flush();
 }
 
 /// Pretty TUI output for `GoPretty` mode with WDL bars and history.
@@ -214,10 +215,8 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     if data.use_ansi {
         print!("\x1b[J"); // Clear to end of screen
     }
-    let _ = std::io::stdout().flush();
+    let _ = io::stdout().flush();
 }
-
-// ──────── Private Helpers ────────
 
 #[inline]
 fn tui_fg(c: Rgb, enabled: bool) -> String {
@@ -382,7 +381,6 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
     let mut acc = board.get_initial_accumulator();
     let undo = board.make_move(mv, &mut acc);
     if board.checkers().is_not_empty() {
-        use crate::engine::movegen::gen_legal_moves;
         let responses = gen_legal_moves(board);
         san.push(if responses.is_empty() { '#' } else { '+' });
     }
@@ -440,7 +438,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             "info depth {} seldepth {} score {}{} nodes {} nps {} time {} hashfull {} pv",
             data.depth,
             data.sel_depth,
-            fmt_score_uci(data.score),
+            fmt_score_uci(data.score, data.stm),
             wdl_str,
             data.nodes,
             data.nps,
@@ -458,7 +456,6 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
 
         let s = match (temp_board.as_mut(), temp_acc.as_mut()) {
             (Some(b), Some(a)) => {
-                use crate::engine::movegen::gen_legal_moves;
                 let legal = gen_legal_moves(b);
                 let san = to_san(b, mv, legal.as_slice());
                 b.make_move(mv, a);

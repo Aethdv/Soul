@@ -2,6 +2,8 @@
 
 use std::{sync::atomic::AtomicU64, time::Instant};
 
+use crate::core::util::Align64;
+
 pub fn get_rss_kb() -> u64 {
     match std::fs::read_to_string("/proc/self/status") {
         Ok(content) => {
@@ -15,8 +17,6 @@ pub fn get_rss_kb() -> u64 {
         Err(_) => 0,
     }
 }
-
-use crate::core::util::Align64;
 
 /// Global statistics tracking for the self-play workers.
 ///
@@ -33,6 +33,14 @@ pub struct GlobalStats {
     pub filtered_quiet: Align64<AtomicU64>,
     /// Positions filtered because |search_eval| exceeded the score window.
     pub filtered_score: Align64<AtomicU64>,
+    /// Positions filtered: ply count too low.
+    pub filtered_ply: Align64<AtomicU64>,
+    /// Positions filtered: too few pieces remaining.
+    pub filtered_pieces: Align64<AtomicU64>,
+    /// Positions filtered: eval contradicted game outcome.
+    pub filtered_incorrect: Align64<AtomicU64>,
+    /// Positions filtered: |search - static| delta exceeded the qsearch threshold.
+    pub filtered_tactical: Align64<AtomicU64>,
     /// Number of times the search aborted mid-game due to depth boundaries or extreme scores.
     pub search_fail: Align64<AtomicU64>,
     /// Total number of raw chess games completed.
@@ -71,6 +79,10 @@ impl GlobalStats {
             passed_filters: Align64::new(AtomicU64::new(0)),
             filtered_quiet: Align64::new(AtomicU64::new(0)),
             filtered_score: Align64::new(AtomicU64::new(0)),
+            filtered_ply: Align64::new(AtomicU64::new(0)),
+            filtered_pieces: Align64::new(AtomicU64::new(0)),
+            filtered_incorrect: Align64::new(AtomicU64::new(0)),
+            filtered_tactical: Align64::new(AtomicU64::new(0)),
             search_fail: Align64::new(AtomicU64::new(0)),
             games: Align64::new(AtomicU64::new(0)),
             plies: Align64::new(AtomicU64::new(0)),

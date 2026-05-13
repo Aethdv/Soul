@@ -3,12 +3,12 @@
 //! Provides safely typed wrappers around `__m256i` for parallel bitboard and
 //! accumulator operations.
 
-// Typed SIMD wrappers (e.g. Vi16x8, Vu64x4) — not CamelCase by design.
-#![allow(non_camel_case_types)]
-
 use core::{
     arch::x86_64::*,
-    ops::{Add, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, Mul, Not, Sub},
+    ops::{
+        Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign, Neg, Not,
+        Sub, SubAssign,
+    },
 };
 
 use super::*;
@@ -73,8 +73,6 @@ impl Add for Vi32x8 {
         Self(unsafe { _mm256_add_epi32(self.0, rhs.0) })
     }
 }
-
-// ──────── Vu64x4 — Packed 4×u64 Operations ────────
 
 impl Vu64x4 {
     #[inline(always)]
@@ -162,6 +160,7 @@ impl Vu64x4 {
                 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
                 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
             );
+
             let mask_lo = _mm256_set1_epi8(0x0F);
             let zero = _mm256_setzero_si256();
 
@@ -211,8 +210,6 @@ impl Sub for Vu64x4 {
         Self(unsafe { _mm256_sub_epi64(self.0, rhs.0) })
     }
 }
-
-// ──────── Bitwise operators for Vu64x4 ────────
 
 impl BitAnd for Vu64x4 {
     type Output = Self;
@@ -269,8 +266,6 @@ impl Not for Vu64x4 {
         self ^ Self::ones()
     }
 }
-
-// ──────── Vi16x16 — Packed 16×i16 Operations ────────
 
 impl Vi16x16 {
     #[inline(always)]
@@ -423,8 +418,6 @@ impl Not for Vi16x16 {
     }
 }
 
-// ──────── Vf32x8 — Packed 8×f32 Operations ────────
-
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
 pub struct Vf32x8(pub __m256);
@@ -467,7 +460,7 @@ impl Add for Vf32x8 {
     }
 }
 
-impl core::ops::AddAssign for Vf32x8 {
+impl AddAssign for Vf32x8 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs;
@@ -482,14 +475,14 @@ impl Sub for Vf32x8 {
     }
 }
 
-impl core::ops::SubAssign for Vf32x8 {
+impl SubAssign for Vf32x8 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         *self = *self - rhs;
     }
 }
 
-impl core::ops::Mul for Vf32x8 {
+impl Mul for Vf32x8 {
     type Output = Self;
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
@@ -497,14 +490,14 @@ impl core::ops::Mul for Vf32x8 {
     }
 }
 
-impl core::ops::MulAssign for Vf32x8 {
+impl MulAssign for Vf32x8 {
     #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
 }
 
-impl core::ops::Div for Vf32x8 {
+impl Div for Vf32x8 {
     type Output = Self;
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
@@ -512,14 +505,14 @@ impl core::ops::Div for Vf32x8 {
     }
 }
 
-impl core::ops::DivAssign for Vf32x8 {
+impl DivAssign for Vf32x8 {
     #[inline(always)]
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
     }
 }
 
-impl core::ops::Neg for Vf32x8 {
+impl Neg for Vf32x8 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self {
@@ -533,8 +526,6 @@ impl From<[f32; 8]> for Vf32x8 {
         unsafe { Self::loadu(arr.as_ptr()) }
     }
 }
-
-// ──────── Vf64x4 — Packed 4×f64 Operations ────────
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
@@ -578,7 +569,7 @@ impl Add for Vf64x4 {
     }
 }
 
-impl core::ops::AddAssign for Vf64x4 {
+impl AddAssign for Vf64x4 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs;
@@ -593,7 +584,7 @@ impl Sub for Vf64x4 {
     }
 }
 
-impl core::ops::SubAssign for Vf64x4 {
+impl SubAssign for Vf64x4 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         *self = *self - rhs;
@@ -608,7 +599,7 @@ impl Mul for Vf64x4 {
     }
 }
 
-impl core::ops::MulAssign for Vf64x4 {
+impl MulAssign for Vf64x4 {
     #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
@@ -623,14 +614,14 @@ impl Div for Vf64x4 {
     }
 }
 
-impl core::ops::DivAssign for Vf64x4 {
+impl DivAssign for Vf64x4 {
     #[inline(always)]
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
     }
 }
 
-impl core::ops::Neg for Vf64x4 {
+impl Neg for Vf64x4 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self {

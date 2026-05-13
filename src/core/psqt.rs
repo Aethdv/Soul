@@ -3,6 +3,8 @@
 //! Precomputes the static material and positional values for each piece on every square,
 //! packing them into SIMD-aligned structures for fast incremental updates.
 
+use std::{arch, mem};
+
 pub use crate::engine::eval_params::LAYOUT;
 use crate::{
     core::defs::{Color, PieceType, Square},
@@ -21,7 +23,7 @@ use crate::{
 #[derive(Clone, Copy)]
 pub struct AlignedTable(pub [[i16; 8]; 64]);
 
-const _: () = assert!(std::mem::size_of::<[i16; 8]>().is_multiple_of(16), "SIMD accumulator must be 16-byte aligned");
+const _: () = assert!(mem::size_of::<[i16; 8]>().is_multiple_of(16), "SIMD accumulator must be 16-byte aligned");
 
 pub static PSQT: [AlignedTable; 14] = init_psqt();
 
@@ -35,7 +37,7 @@ pub fn get_vec(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
     // SAFETY: PSQT is aligned to 32 bytes (via AlignedTable).
     // Access inner array .0 for indexing.
     let entry = unsafe { PSQT.get_unchecked(idx).0.get_unchecked(usize::from(sq)) };
-    Vi16x8(unsafe { core::arch::x86_64::_mm_load_si128(entry.as_ptr() as *const _) })
+    Vi16x8(unsafe { arch::x86_64::_mm_load_si128(entry.as_ptr() as *const _) })
 }
 
 /// Mirror square horizontally: files E-H map to D-A
@@ -47,8 +49,6 @@ pub const fn mirror_sq(sq: usize) -> usize {
     let rank = sq >> 3;
     (rank << 2) + MIRROR_FILE[file]
 }
-
-// ──────── Private Initialization & Helpers ────────
 
 #[inline]
 const fn init_psqt() -> [AlignedTable; 14] {
@@ -98,7 +98,6 @@ const fn init_psqt() -> [AlignedTable; 14] {
                 eg_val_b = i16::MAX as i32;
             }
 
-            // ── Black Perspective (negated) ──
             // NOTE: PSQT values for Black are mirrored using 'sq'.
             // This allows us to use the same tables built from White's perspective,
             // as piece movement symmetry holds when ranks are flipped.

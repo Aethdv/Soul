@@ -1,6 +1,12 @@
 //! Configuration parameters for self-play data generation.
 
-use std::{fs::File, io::Write, path::Path};
+use std::{
+    fs::{File, read_to_string, rename},
+    io::{Error, ErrorKind, Result, Write},
+    path::Path,
+};
+
+use crate::core::defs::MAX_DEPTH;
 
 pub const CONFIG_FILENAME: &str = "genfens_config.json";
 
@@ -20,6 +26,26 @@ pub struct GenfensConfig {
     pub save_interval: usize,
     pub filter_quiet: bool,
     pub sample_rate: f64,
+    /// Skip positions before this ply count. 0 = disabled.
+    pub min_ply: usize,
+    /// Skip positions with fewer pieces than this. 0 = disabled.
+    pub min_pieces: u32,
+    /// Skip positions where search eval contradicts game outcome
+    /// by more than this many centipawns. i32::MAX = disabled.
+    pub eval_contradiction_limit: i32,
+    /// Skip positions where |search_eval - static_eval| exceeds this
+    /// threshold. Catches positions with unresolved tactics the HCE
+    /// cannot learn. i32::MAX = disabled.
+    pub qsearch_filter: i32,
+    /// Use random-restart generation; each position is independently
+    /// generated from a random book line or startpos + N random moves
+    /// instead of playing full self-play game.
+    pub random_restart: bool,
+    /// Plies (half-moves) of random legal moves from the book position
+    /// before running the verification search.
+    pub random_plies: usize,
+    /// Use the standard start position instead of book files.
+    pub startpos: bool,
     pub generated_count: u64,
     pub last_update: i64,
 }
@@ -41,6 +67,13 @@ impl Default for GenfensConfig {
             save_interval: 5000,
             filter_quiet: true,
             sample_rate: 0.7,
+            min_ply: 0,
+            min_pieces: 4,
+            eval_contradiction_limit: i32::MAX,
+            qsearch_filter: i32::MAX,
+            random_restart: true,
+            random_plies: 6,
+            startpos: false,
             generated_count: 0,
             last_update: 0,
         }
@@ -48,23 +81,22 @@ impl Default for GenfensConfig {
 }
 
 impl GenfensConfig {
-    pub fn load() -> std::io::Result<Self> {
+    pub fn load() -> Result<Self> {
         let path = CONFIG_FILENAME;
         if !Path::new(path).exists() {
             return Ok(Self::default());
         }
-        let content = std::fs::read_to_string(path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid config: {e}")))
+        let content = read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|e| Error::new(ErrorKind::InvalidData, format!("Invalid config: {e}")))
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
+    pub fn save(&self) -> Result<()> {
         let tmp_path = format!("{CONFIG_FILENAME}.tmp");
         let content = serde_json::to_string_pretty(self)?;
         let mut tmp_file = File::create(&tmp_path)?;
 
         tmp_file.write_all(content.as_bytes())?;
-        std::fs::rename(&tmp_path, CONFIG_FILENAME)?;
+        rename(&tmp_path, CONFIG_FILENAME)?;
         Ok(())
     }
 
@@ -91,6 +123,13 @@ pub struct GenfensArgs {
     pub save_interval: usize,
     pub filter_quiet: bool,
     pub sample_rate: f64,
+    pub min_ply: usize,
+    pub min_pieces: u32,
+    pub eval_contradiction_limit: i32,
+    pub qsearch_filter: i32,
+    pub random_restart: bool,
+    pub random_plies: usize,
+    pub startpos: bool,
     pub resume: bool,
 }
 
@@ -98,7 +137,7 @@ impl From<GenfensArgs> for GenfensConfig {
     fn from(args: GenfensArgs) -> Self {
         let depth = match args.depth {
             Some(d) => d,
-            None if args.soft_nodes.is_some() || args.hard_nodes.is_some() => crate::core::defs::MAX_DEPTH,
+            None if args.soft_nodes.is_some() || args.hard_nodes.is_some() => MAX_DEPTH,
             None => 6,
         };
 
@@ -117,6 +156,13 @@ impl From<GenfensArgs> for GenfensConfig {
             save_interval: args.save_interval,
             filter_quiet: args.filter_quiet,
             sample_rate: args.sample_rate,
+            min_ply: args.min_ply,
+            min_pieces: args.min_pieces,
+            eval_contradiction_limit: args.eval_contradiction_limit,
+            qsearch_filter: args.qsearch_filter,
+            random_restart: args.random_restart,
+            random_plies: args.random_plies,
+            startpos: args.startpos,
             generated_count: 0,
             last_update: 0,
         }

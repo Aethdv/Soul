@@ -1,10 +1,26 @@
 //! Global configuration structures for the tuning pipeline.
 
-use std::fs;
+use std::{error::Error, fs};
 
 use serde::Deserialize;
 
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
+
+pub const DEFAULT_WDL_END: f64 = 0.3;
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LossFn {
+    Mse,
+    #[serde(rename = "cross_entropy")]
+    CrossEntropy,
+}
+
+impl Default for LossFn {
+    fn default() -> Self {
+        Self::Mse
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -29,13 +45,19 @@ pub enum LrScheduleConfig {
         base: f64,
         min: f64,
         warmup_ratio: f64,
-        restarts: usize,
+        cycles: usize,
     },
     #[serde(rename = "wsd")]
     WarmupStableDecay {
         base: f64,
         min: f64,
         warmup_ratio: f64,
+        stable_ratio: f64,
+    },
+    #[serde(rename = "sd")]
+    StableDecay {
+        base: f64,
+        min: f64,
         stable_ratio: f64,
     },
 }
@@ -47,12 +69,13 @@ impl LrScheduleConfig {
             Self::Linear { start, end } => Box::new(schedule::Linear::new(start, end)),
             Self::Exponential { start, gamma } => Box::new(schedule::Exponential::new(start, gamma)),
             Self::StepDecay { start, gamma, step_epochs } => Box::new(schedule::StepDecay::new(start, gamma, step_epochs)),
-            Self::Cosine { base, min, warmup_ratio, restarts } => {
-                Box::new(schedule::CosineAnnealing::new(base, min).warmup_ratio(warmup_ratio).restarts(restarts))
+            Self::Cosine { base, min, warmup_ratio, cycles } => {
+                Box::new(schedule::CosineAnnealing::new(base, min).warmup_ratio(warmup_ratio).cycles(cycles))
             },
             Self::WarmupStableDecay { base, min, warmup_ratio, stable_ratio } => {
                 Box::new(schedule::WarmupStableDecay::new(base, min, warmup_ratio, stable_ratio))
             },
+            Self::StableDecay { base, min, stable_ratio } => Box::new(schedule::StableDecay::new(base, min, stable_ratio)),
         }
     }
 }
@@ -60,22 +83,10 @@ impl LrScheduleConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum WdlScheduleConfig {
-    Constant {
-        value: f64,
-    },
-    Linear {
-        start: f64,
-        end: f64,
-    },
-    Cosine {
-        start: f64,
-        end: f64,
-    },
-    StableDecay {
-        start: f64,
-        end: f64,
-        stable_ratio: f64,
-    },
+    Constant { value: f64 },
+    Linear { start: f64, end: f64 },
+    Cosine { start: f64, end: f64 },
+    StableDecay { start: f64, end: f64, stable_ratio: f64 },
 }
 
 impl WdlScheduleConfig {
@@ -112,8 +123,13 @@ pub struct EvalTuneConfig {
     pub beta1: f64,
     pub beta2: f64,
     pub weight_decay: f64,
-    /// Empirically, 262,144 works well with ~8M positions; smaller datasets benefit from smaller
-    /// batches (e.g., 8192 for ~2M). Gradient stability is highly batch-size dependent.
+    /// Default is MSE.
+    #[serde(default)]
+    pub loss: LossFn,
+    /// Smaller batches = more updates/epoch = better generalization
+    /// at the cost of slower per-epoch wall time.
+    /// 32k-131k is the sweet spot for 2-15M positions.
+    /// Handwavy; Below 50: overfit. Above 300: diminishing returns.
     pub batch_size: usize,
     pub epochs: usize,
     pub grad_clip: f64,
@@ -125,6 +141,47 @@ pub struct EvalTuneConfig {
     /// Decay rate for Polyak averaging (Chronological EMA). Default: 0.999.
     #[serde(default = "default_ema_decay")]
     pub ema_decay: f64,
+    /// Epoch at which to unfreeze non-material parameters (mobility, king safety, etc.).
+    /// During epochs 0..unfreeze_epoch only PSQT and material values train; the rest
+    /// are held at their initial values. After unfreeze_epoch, all trainable parameters
+    /// participate normally. 0 disables progressive unfreeze. Default: 0.
+    #[serde(default)]
+    pub unfreeze_epoch: usize,
+    /// Per-group LR multipliers for Lion sign-step scaling.
+    #[serde(default = "default_one")]
+    pub lr_psqt: f64,
+    #[serde(default = "default_lr_material")]
+    pub lr_material: f64,
+    #[serde(default = "default_lr_mobility")]
+    pub lr_mobility: f64,
+    #[serde(default = "default_one")]
+    pub lr_other: f64,
+    /// Fixed RNG seed for deterministic batch ordering. When None (default), the seed
+    /// is randomly generated at startup. Set to any u64 for reproducible training runs.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Enable auto-freeze of stagnant parameters. Default: true.
+    #[serde(default = "default_true")]
+    pub auto_freeze: bool,
+    /// Delay auto-freeze activation until this epoch. Default: 500.
+    #[serde(default = "default_freeze_start")]
+    pub freeze_start_epoch: usize,
+    /// Check for stagnant parameters every N epochs. Default: 100.
+    #[serde(default = "default_freeze_cadence")]
+    pub freeze_cadence: usize,
+    /// Grad EMA below this value is considered stagnant. Default: 1e-7.
+    #[serde(default = "default_freeze_threshold")]
+    pub freeze_threshold: f64,
+    /// Number of consecutive checks before freezing. Default: 2.
+    #[serde(default = "default_freeze_consecutive")]
+    pub freeze_consecutive: usize,
+    /// Volatility filter threshold in centipawns. 0 = disabled.
+    /// Positions where |static_eval - search_eval| exceeds this are skipped.
+    #[serde(default)]
+    pub volatility_threshold: i16,
+    /// Scale the threshold with piece count (higher in complex positions).
+    #[serde(default = "default_true")]
+    pub volatility_adaptive: bool,
 }
 
 fn default_patience() -> usize {
@@ -132,6 +189,33 @@ fn default_patience() -> usize {
 }
 fn default_ema_decay() -> f64 {
     0.999
+}
+fn default_true() -> bool {
+    true
+}
+fn default_freeze_start() -> usize {
+    500
+}
+fn default_freeze_cadence() -> usize {
+    100
+}
+fn default_freeze_threshold() -> f64 {
+    1e-7
+}
+fn default_freeze_consecutive() -> usize {
+    2
+}
+
+fn default_one() -> f64 {
+    1.0
+}
+
+fn default_lr_material() -> f64 {
+    0.3
+}
+
+fn default_lr_mobility() -> f64 {
+    0.5
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -179,7 +263,7 @@ pub struct GeneralConfig {
 impl TunerConfig {
     /// # Errors
     /// if file verification fails or TOML parsing fails.
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn Error>> {
         let contents = fs::read_to_string(path).map_err(|e| {
             eprintln!("\x1b[31m[!] Failed to read config file '{}': {}\x1b[0m", path, e);
             e
@@ -196,11 +280,12 @@ impl Default for TunerConfig {
     fn default() -> Self {
         Self {
             evaltune: EvalTuneConfig {
-                lr_schedule: LrScheduleConfig::Cosine { base: 0.1, min: 0.0001, warmup_ratio: 0.1, restarts: 1 },
+                lr_schedule: LrScheduleConfig::Cosine { base: 0.1, min: 0.0001, warmup_ratio: 0.1, cycles: 1 },
                 wdl_schedule: WdlScheduleConfig::Constant { value: 0.3 },
                 beta1: 0.9,
                 beta2: 0.99,
                 weight_decay: 0.00001,
+                loss: LossFn::Mse,
                 batch_size: 32768,
                 epochs: 8000,
                 grad_clip: 1.0,
@@ -208,6 +293,19 @@ impl Default for TunerConfig {
                 k_max: 0.010,
                 patience: 100,
                 ema_decay: 0.999,
+                unfreeze_epoch: 0,
+                seed: None,
+                auto_freeze: true,
+                freeze_start_epoch: 500,
+                freeze_cadence: 100,
+                freeze_threshold: 1e-7,
+                freeze_consecutive: 2,
+                volatility_threshold: 0,
+                volatility_adaptive: true,
+                lr_psqt: 1.0,
+                lr_material: 0.3,
+                lr_mobility: 0.5,
+                lr_other: 1.0,
             },
             searchtune: SearchTuneConfig {
                 population_scale: 2.0,

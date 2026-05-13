@@ -5,6 +5,8 @@
 
 use std::{
     io::{self, Write},
+    iter::Peekable,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,15 +17,134 @@ use std::{
 };
 
 use crate::{
+    cli::Help,
     core::{
         board::{Position, STARTPOS},
         defs::{PieceType, Square},
         error::MoveError,
         moves::Move,
+        zobrist::key_side,
     },
-    engine::{search::Limits, search_params::SearchParams, tt},
+    engine::{
+        eval::detailed_eval,
+        history::History,
+        movegen::gen_legal_moves,
+        search::{Limits, SearchConfig, SearchDisplay, Searcher},
+        search_params::SearchParams,
+        tt::TranspositionTable,
+    },
     tools,
+    weave::Vi16x8,
 };
+
+static LICENSE_NOTICE: &str = concat!(
+    "Soul Chess Engine v",
+    env!("CARGO_PKG_VERSION"),
+    "\nCopyright (C) 2026 Aethdv\n\n",
+    "This program is free software: you can redistribute it and/or modify\n",
+    "it under the terms of the GNU Affero General Public License as published\n",
+    "by the Free Software Foundation, either version 3 of the License, or\n",
+    "(at your option) any later version.\n\n",
+    "This program is distributed in the hope that it will be useful,\n",
+    "but WITHOUT ANY WARRANTY; without even the implied warranty of\n",
+    "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the\n",
+    "GNU Affero General Public License for more details.\n\n",
+    "You should have received a copy of the GNU Affero General Public License\n",
+    "along with this program. If not, see <https://www.gnu.org/licenses/>.\n\n",
+    "Source code: <https://github.com/Aethdv/Soul>"
+);
+
+#[allow(clippy::large_enum_variant)]
+enum SearchCommand {
+    Go(Box<SearchConfig>, Position, Vec<u64>, History, Arc<TranspositionTable>, Sender<History>),
+    Quit,
+}
+
+pub struct UciState {
+    board: Position,
+    accumulator: Vi16x8,
+    history: Vec<u64>,
+    persistent_history: History,
+    tt: Arc<TranspositionTable>,
+    stop: Arc<AtomicBool>,
+    search_tx: Sender<SearchCommand>,
+    history_tx: mpsc::Sender<History>,
+    history_rx: mpsc::Receiver<History>,
+    is_searching: Arc<AtomicBool>,
+    hash_size: usize,
+    overhead: u64,
+    show_wdl: bool,
+    go_pretty: bool,
+    pretty_print: bool,
+    show_currmove: bool,
+    stdout_isatty: Option<bool>,
+    stderr_isatty: Option<bool>,
+    is_frc: bool,
+}
+
+impl UciState {
+    fn new() -> Self {
+        let board = Position::from_fen(STARTPOS);
+        let history = vec![board.hash];
+        let stop = Arc::new(AtomicBool::new(false));
+        let is_searching = Arc::new(AtomicBool::new(false));
+
+        let (tx, rx) = mpsc::channel::<SearchCommand>();
+        let (h_tx, h_rx) = mpsc::channel::<History>();
+
+        let is_searching_worker = is_searching.clone();
+
+        thread::spawn(move || {
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    SearchCommand::Go(cfg, board, history, history_table, tt, result_tx) => {
+                        let mut ctx = Searcher::new(&cfg, &board, &history, history_table, tt);
+                        let final_history = ctx.iterative_deepening();
+                        is_searching_worker.store(false, Ordering::Release);
+                        let _ = result_tx.send(final_history);
+                    },
+                    SearchCommand::Quit => break,
+                }
+            }
+        });
+
+        Self {
+            accumulator: board.get_initial_accumulator(),
+            board,
+            history,
+            persistent_history: History::new(),
+            tt: Arc::new(TranspositionTable::new(16)),
+            stop,
+            search_tx: tx,
+            history_tx: h_tx,
+            history_rx: h_rx,
+            is_searching,
+            hash_size: 16,
+            overhead: 10,
+            show_wdl: false,
+            go_pretty: false,
+            pretty_print: false,
+            show_currmove: true,
+            stdout_isatty: None,
+            stderr_isatty: None,
+            is_frc: false,
+        }
+    }
+
+    fn stop_search(&mut self) {
+        self.stop.store(true, Ordering::Release);
+
+        while self.is_searching.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+
+        self.stop.store(false, Ordering::Release);
+    }
+}
+
+pub fn print_license() {
+    println!("{LICENSE_NOTICE}");
+}
 
 pub fn main_loop(initial_command: Option<String>) {
     let mut state = UciState::new();
@@ -59,22 +180,9 @@ pub fn run_cli_go(args: &[String]) {
 
     let mut iter = args.iter().map(String::as_str).peekable();
     let limits = parse_go_limits(&board, &mut iter);
-    let display = crate::engine::search::SearchDisplay {
-        show_wdl,
-        go_pretty,
-        pretty_print,
-        show_currmove,
-        use_ansi: state.stdout_isatty.unwrap_or(true),
-    };
+    let display = SearchDisplay { show_wdl, go_pretty, pretty_print, show_currmove, use_ansi: state.stdout_isatty.unwrap_or(true) };
 
-    let cfg = crate::engine::search::SearchConfig::new_full(
-        limits,
-        Instant::now(),
-        stop,
-        overhead,
-        display,
-        crate::engine::search_params::SearchParams::default(),
-    );
+    let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
 
     let search_tx = state.search_tx.clone();
     is_searching.store(true, Ordering::Release);
@@ -94,103 +202,92 @@ pub fn run_cli_go(args: &[String]) {
     }
 }
 
-// ──────── Implementation ────────
+pub fn parse_go_limits<'a, I>(board: &Position, tokens: &mut Peekable<I>) -> Limits
+where I: Iterator<Item = &'a str> {
+    let mut limits = Limits::default();
 
-use crate::engine::history;
-
-#[allow(clippy::large_enum_variant)]
-enum SearchCommand {
-    Go(
-        Box<crate::engine::search::SearchConfig>,
-        Position,
-        Vec<u64>,
-        history::History,
-        Arc<tt::TranspositionTable>,
-        Sender<history::History>,
-    ),
-    Quit,
-}
-
-pub struct UciState {
-    board: Position,
-    accumulator: crate::weave::Vi16x8,
-    history: Vec<u64>,
-    persistent_history: history::History,
-    tt: Arc<tt::TranspositionTable>,
-    stop: Arc<AtomicBool>,
-    search_tx: Sender<SearchCommand>,
-    history_tx: mpsc::Sender<history::History>,
-    history_rx: mpsc::Receiver<history::History>,
-    is_searching: Arc<AtomicBool>,
-    hash_size: usize,
-    overhead: u64,
-    show_wdl: bool,
-    go_pretty: bool,
-    pretty_print: bool,
-    show_currmove: bool,
-    stdout_isatty: Option<bool>,
-    stderr_isatty: Option<bool>,
-    is_frc: bool,
-}
-
-impl UciState {
-    fn new() -> Self {
-        let board = Position::from_fen(STARTPOS);
-        let history = vec![board.hash];
-        let stop = Arc::new(AtomicBool::new(false));
-        let is_searching = Arc::new(AtomicBool::new(false));
-
-        let (tx, rx) = mpsc::channel::<SearchCommand>();
-        let (h_tx, h_rx) = mpsc::channel::<history::History>();
-
-        let is_searching_worker = is_searching.clone();
-
-        thread::spawn(move || {
-            while let Ok(cmd) = rx.recv() {
-                match cmd {
-                    SearchCommand::Go(cfg, board, history, history_table, tt, result_tx) => {
-                        let mut ctx = crate::engine::search::Searcher::new(&cfg, &board, &history, history_table, tt);
-                        let final_history = ctx.iterative_deepening();
-                        is_searching_worker.store(false, Ordering::Release);
-                        let _ = result_tx.send(final_history);
-                    },
-                    SearchCommand::Quit => break,
+    #[allow(clippy::while_let_on_iterator)]
+    while let Some(token) = tokens.next() {
+        match token {
+            "wtime" => limits.wtime = parse_val(tokens),
+            "btime" => limits.btime = parse_val(tokens),
+            "winc" => limits.winc = parse_val(tokens),
+            "binc" => limits.binc = parse_val(tokens),
+            "movestogo" => limits.movestogo = parse_val(tokens),
+            "depth" => limits.depth = parse_val(tokens),
+            "softnodes" => limits.softnodes = parse_val(tokens),
+            "hardnodes" | "nodes" => limits.nodes = parse_val(tokens),
+            "movetime" => limits.movetime = parse_val(tokens),
+            "infinite" => limits.infinite = true,
+            "mate" => limits.mate = Some(parse_val(tokens)),
+            "perft" => limits.perft = Some(parse_val(tokens)),
+            "searchmoves" => {
+                // Peek before consuming:
+                // Tokens like depth must not be swallowed
+                // when they fail to parse as a UCI move.
+                while let Some(&mv_str) = tokens.peek() {
+                    if let Ok(mv) = parse_uci_move(board, mv_str) {
+                        limits.searchmoves.push(mv);
+                        tokens.next();
+                    } else {
+                        break;
+                    }
                 }
-            }
-        });
-
-        Self {
-            accumulator: board.get_initial_accumulator(),
-            board,
-            history,
-            persistent_history: history::History::new(),
-            tt: Arc::new(tt::TranspositionTable::new(16)),
-            stop,
-            search_tx: tx,
-            history_tx: h_tx,
-            history_rx: h_rx,
-            is_searching,
-            hash_size: 16,
-            overhead: 10,
-            show_wdl: false,
-            go_pretty: false,
-            pretty_print: false,
-            show_currmove: true,
-            stdout_isatty: None,
-            stderr_isatty: None,
-            is_frc: false,
+            },
+            _ => {},
         }
     }
+    limits
+}
 
-    fn stop_search(&mut self) {
-        self.stop.store(true, Ordering::Release);
+pub fn print_help(use_ansi: bool) {
+    let h = Help::new(22).with_ansi(use_ansi);
 
-        while self.is_searching.load(Ordering::Acquire) {
-            thread::yield_now();
-        }
+    h.header("UCI Protocol");
+    h.command("uci", "Enter UCI mode, print engine info");
+    h.command("isready", "Respond with 'readyok' when ready");
+    h.command("ucinewgame", "Reset for a new game");
+    h.command("position", "Set position (startpos/fen + moves)");
+    h.command("go", "Start search");
+    h.subcommand("depth", "<N>", "Search to depth N");
+    h.subcommand("nodes", "<N>", "Search limit N nodes");
+    h.subcommand("movetime", "<ms>", "Search for exact time");
+    h.subcommand("infinite", "", "Search until stopped");
+    h.subcommand("perft", "<N>", "Perft test to depth N");
+    h.subcommand("mate", "<N>", "Search for mate in N moves");
+    h.subcommand("searchmoves", "", "Restrict search to specific moves");
 
-        self.stop.store(false, Ordering::Release);
-    }
+    h.command("stop", "Stop current search");
+    h.command("setoption", "Set engine option");
+    h.command("quit", "Exit engine");
+    h.separator();
+
+    h.header("Options");
+    h.command_default("Hash", "Hash table size in MB (1-65536)", "16");
+    h.command_default("Overhead", "Move overhead in ms (0-1000)", "10");
+    h.command_default("UCI_ShowWDL", "Show win/draw/loss stats", "false");
+    h.command_default("UCI_Chess960", "Enable Chess960/FRC mode", "false");
+    h.command_default("UCI_ShowCurrMove", "Show current move being searched", "true");
+    h.separator();
+
+    h.header("Custom Commands");
+    h.command("d/display", "Print board");
+    h.command("fen", "Print current FEN");
+    h.command("eval", "Print static evaluation");
+    h.command("flip", "Switch side to move");
+    h.command("key", "Print Zobrist hash");
+    h.command_args("bench", "<N>", "Benchmark to depth N");
+    h.command_args("divide", "<N>", "Perft divide test");
+    h.command("speedtest", "Run performance test");
+    h.command("dataset", "Manage datasets (inspect, info, encode)");
+    h.command("genfens", "Run datagen");
+    h.command("gopretty", "Toggle pretty-print mode for search output");
+    h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
+    h.separator();
+
+    h.header("Info");
+    h.command("help", "Show this help message");
+    h.command("license", "Show license information");
 }
 
 /// Spawns a dedicated stdin listener thread that handles time critical commands
@@ -199,8 +296,8 @@ impl UciState {
 ///
 /// This is required by UCI spec:
 /// "the engine must always be able to process input from stdin, even while thinking."
-fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> std::sync::mpsc::Receiver<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
+fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
         let stdin = io::stdin();
@@ -236,7 +333,7 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> std::sync::mpsc::Receiver<Stri
                     // Always forward to the main thread's command channel.
                     // Commands queue up and are processed in order after any
                     // pending stop_search() completes. Dropping commands here
-                    // causes a race: cutechess-cli gets readyok before the
+                    // causes a race; e.g. cutechess-cli gets readyok before the
                     // search thread stops, sends position/go, and we lose them.
                     if tx.send(line).is_err() {
                         break; // Main thread died
@@ -291,7 +388,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "d" | "display" => state.board.pretty_print(),
         "fen" => println!("{}", state.board.as_fen()),
         "eval" => {
-            let res = crate::engine::eval::detailed_eval(&state.board, &state.accumulator);
+            let res = detailed_eval(&state.board, &state.accumulator);
             println!("PSQT:     {:>5}", res.psqt);
             println!("Mobility: {:>5}", res.mobility);
             println!("Bonus:    {:>5}", res.bonus);
@@ -313,7 +410,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
         "flip" => {
             state.board.stm = state.board.stm.opposite();
-            state.board.hash ^= crate::core::zobrist::key_side();
+            state.board.hash ^= key_side();
             println!("Side to move: {:?}", state.board.stm);
         },
         "key" => println!("Zobrist: 0x{:016X}", state.board.hash),
@@ -338,7 +435,7 @@ fn print_options() {
     println!("option name UCI_ShowCurrMove type check default true");
 }
 
-fn cmd_position<'a, I>(state: &mut UciState, tokens: &mut std::iter::Peekable<I>)
+fn cmd_position<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     let Some(subcmd) = tokens.next() else {
         return;
@@ -377,10 +474,8 @@ where I: Iterator<Item = &'a str> {
     }
 }
 
-fn process_moves<'a, I>(state: &mut UciState, moves: &mut std::iter::Peekable<I>)
+fn process_moves<'a, I>(state: &mut UciState, moves: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
-    use crate::engine::movegen::gen_legal_moves;
-
     for move_str in moves.by_ref() {
         let legal = gen_legal_moves(&state.board);
         let mv = legal.iter().find(|mv| mv.to_uci(state.board.is_frc) == move_str);
@@ -395,7 +490,7 @@ where I: Iterator<Item = &'a str> {
     }
 }
 
-fn cmd_go<'a, I>(state: &mut UciState, tokens: &mut std::iter::Peekable<I>)
+fn cmd_go<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     state.stop_search();
 
@@ -411,10 +506,7 @@ where I: Iterator<Item = &'a str> {
     let show_currmove = state.show_currmove;
 
     let start_time = Instant::now();
-
-    use crate::engine::search::{SearchConfig, SearchDisplay};
     let display = SearchDisplay { show_wdl, go_pretty, pretty_print, show_currmove, use_ansi: state.stdout_isatty.unwrap_or(true) };
-
     let cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
 
     state.is_searching.store(true, Ordering::Release);
@@ -434,45 +526,7 @@ where I: Iterator<Item = &'a str> {
         .unwrap();
 }
 
-pub fn parse_go_limits<'a, I>(board: &Position, tokens: &mut std::iter::Peekable<I>) -> Limits
-where I: Iterator<Item = &'a str> {
-    let mut limits = Limits::default();
-
-    #[allow(clippy::while_let_on_iterator)]
-    while let Some(token) = tokens.next() {
-        match token {
-            "wtime" => limits.wtime = parse_val(tokens),
-            "btime" => limits.btime = parse_val(tokens),
-            "winc" => limits.winc = parse_val(tokens),
-            "binc" => limits.binc = parse_val(tokens),
-            "movestogo" => limits.movestogo = parse_val(tokens),
-            "depth" => limits.depth = parse_val(tokens),
-            "softnodes" => limits.softnodes = parse_val(tokens),
-            "hardnodes" | "nodes" => limits.nodes = parse_val(tokens),
-            "movetime" => limits.movetime = parse_val(tokens),
-            "infinite" => limits.infinite = true,
-            "mate" => limits.mate = Some(parse_val(tokens)),
-            "perft" => limits.perft = Some(parse_val(tokens)),
-            "searchmoves" => {
-                // Peek before consuming:
-                // Tokens like depth must not be
-                // swallowed when they fail to parse as a UCI move.
-                while let Some(&mv_str) = tokens.peek() {
-                    if let Ok(mv) = parse_uci_move(board, mv_str) {
-                        limits.searchmoves.push(mv);
-                        tokens.next();
-                    } else {
-                        break;
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
-    limits
-}
-
-fn cmd_setoption<'a, I>(state: &mut UciState, tokens: &mut std::iter::Peekable<I>)
+fn cmd_setoption<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     let mut name_parts = Vec::new();
     let mut value_parts = Vec::new();
@@ -505,16 +559,14 @@ where I: Iterator<Item = &'a str> {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
-                state.tt = Arc::new(tt::TranspositionTable::new(mb));
+                state.tt = Arc::new(TranspositionTable::new(mb));
             }
         },
-
         "overhead" => {
             if let Ok(v) = value.parse() {
                 state.overhead = v;
             }
         },
-
         "uci_showwdl" => {
             state.show_wdl = parse_bool(&value);
             if state.show_wdl {
@@ -533,14 +585,13 @@ where I: Iterator<Item = &'a str> {
         "threads" => {
             // Dummy. not supported yet.
         },
-
         _ => {},
     }
 }
 
-fn parse_val<'a, T, I>(tokens: &mut std::iter::Peekable<I>) -> T
+fn parse_val<'a, T, I>(tokens: &mut Peekable<I>) -> T
 where
-    T: std::str::FromStr + Default,
+    T: FromStr + Default,
     I: Iterator<Item = &'a str>,
 {
     if let Some(token) = tokens.peek()
@@ -557,8 +608,6 @@ fn parse_bool(value: &str) -> bool {
 }
 
 fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
-    use crate::engine::movegen::gen_legal_moves;
-
     if uci.len() < 4 {
         return Err(MoveError::InvalidFormat);
     }
@@ -588,7 +637,7 @@ fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
                 let rank = from_sq.rank();
                 let is_kingside = mv.to().file() > from_sq.file();
                 let dest_file = if is_kingside { 6 } else { 2 }; // G or C
-                if to_sq == crate::core::defs::Square::from_coords(dest_file, rank) {
+                if to_sq == Square::from_coords(dest_file, rank) {
                     return true;
                 }
             }
@@ -610,8 +659,6 @@ fn square_from_str(s: &str) -> Result<Square, MoveError> {
 }
 
 fn piece_from_char(c: char) -> Result<PieceType, MoveError> {
-    use crate::core::defs::PieceType;
-
     match c.to_ascii_lowercase() {
         'q' => Ok(PieceType::Queen),
         'r' => Ok(PieceType::Rook),
@@ -621,63 +668,7 @@ fn piece_from_char(c: char) -> Result<PieceType, MoveError> {
     }
 }
 
-pub fn print_help(use_ansi: bool) {
-    use crate::cli::Help;
-
-    let h = Help::new(22).with_ansi(use_ansi);
-
-    h.header("UCI Protocol");
-    h.command("uci", "Enter UCI mode, print engine info");
-    h.command("isready", "Respond with 'readyok' when ready");
-    h.command("ucinewgame", "Reset for a new game");
-    h.command("position", "Set position (startpos/fen + moves)");
-    h.command("go", "Start search");
-    h.subcommand("depth", "<N>", "Search to depth N");
-    h.subcommand("nodes", "<N>", "Search limit N nodes");
-    h.subcommand("movetime", "<ms>", "Search for exact time");
-    h.subcommand("infinite", "", "Search until stopped");
-    h.subcommand("perft", "<N>", "Perft test to depth N");
-    h.subcommand("mate", "<N>", "Search for mate in N moves");
-    h.subcommand("searchmoves", "", "Restrict search to specific moves");
-
-    h.command("stop", "Stop current search");
-    h.command("setoption", "Set engine option");
-    h.command("quit", "Exit engine");
-    h.separator();
-
-    h.header("Options");
-    h.command_default("Hash", "Hash table size in MB (1-65536)", "16");
-    h.command_default("Overhead", "Move overhead in ms (0-1000)", "10");
-    h.command_default("UCI_ShowWDL", "Show win/draw/loss stats", "false");
-    h.command_default("UCI_Chess960", "Enable Chess960/FRC mode", "false");
-    h.command_default("UCI_ShowCurrMove", "Show current move being searched", "true");
-    h.separator();
-
-    h.header("Custom Commands");
-    h.command("d/display", "Print board");
-    h.command("fen", "Print current FEN");
-    h.command("eval", "Print static evaluation");
-    h.command("flip", "Switch side to move");
-    h.command("key", "Print Zobrist hash");
-    h.command_args("bench", "<N>", "Benchmark to depth N");
-    h.command_args("divide", "<N>", "Perft divide test");
-    h.command("speedtest", "Run performance test");
-    h.command("dataset", "Manage datasets (inspect, info, encode)");
-    h.command("genfens", "Run datagen");
-    h.command("gopretty", "Toggle pretty-print mode for search output");
-    h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
-    h.separator();
-
-    h.header("Info");
-    h.command("help", "Show this help message");
-    h.command("license", "Show license information");
-}
-
-pub fn print_license() {
-    println!("{LICENSE_NOTICE}");
-}
-
-fn cmd_isatty<'a, I>(state: &mut UciState, tokens: &mut std::iter::Peekable<I>)
+fn cmd_isatty<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     let mut target = 0b11; // both stdout and stderr by default
 
@@ -712,20 +703,3 @@ where I: Iterator<Item = &'a str> {
         }
     }
 }
-
-static LICENSE_NOTICE: &str = concat!(
-    "Soul Chess Engine v",
-    env!("CARGO_PKG_VERSION"),
-    "\nCopyright (C) 2026 Aethdv\n\n",
-    "This program is free software: you can redistribute it and/or modify\n",
-    "it under the terms of the GNU Affero General Public License as published\n",
-    "by the Free Software Foundation, either version 3 of the License, or\n",
-    "(at your option) any later version.\n\n",
-    "This program is distributed in the hope that it will be useful,\n",
-    "but WITHOUT ANY WARRANTY; without even the implied warranty of\n",
-    "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the\n",
-    "GNU Affero General Public License for more details.\n\n",
-    "You should have received a copy of the GNU Affero General Public License\n",
-    "along with this program. If not, see <https://www.gnu.org/licenses/>.\n\n",
-    "Source code: <https://github.com/Aethdv/Soul>"
-);

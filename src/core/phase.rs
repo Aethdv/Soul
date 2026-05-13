@@ -2,7 +2,7 @@
 //!
 //! Interpolates between middlegame and endgame weights based on remaining material.
 
-use crate::core::psqt;
+use crate::core::{defs::TOTAL_PHASE, psqt};
 
 /// Compute phase weights from piece counts.
 /// Used directly during standard engine evaluation.
@@ -32,7 +32,7 @@ fn compute_phase_weights_inner<T: Into<f64> + Copy>(piece_counts: &[T; 6], value
             phase_raw += count.into() * values[phase_idx];
         }
     }
-    let t_phase = crate::core::defs::TOTAL_PHASE as f64;
+    let t_phase = TOTAL_PHASE as f64;
     let phase = phase_raw.clamp(0.0, t_phase).trunc();
     let mg_w = phase / t_phase;
     let eg_w = 1.0 - mg_w;

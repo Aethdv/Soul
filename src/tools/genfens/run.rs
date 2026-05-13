@@ -8,11 +8,17 @@
 //! the conductor: load books, dispatch work, flush to disk, print stats.
 
 use std::{
-    io::Write,
+    fs::File,
+    io::{BufRead, BufReader, Read, Result, Write, stdout},
+    num::NonZero,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc::channel,
     },
+    thread::{available_parallelism, sleep, spawn},
+    time::Duration,
 };
 
 use super::{
@@ -20,7 +26,11 @@ use super::{
     stats::{GlobalStats, get_rss_kb},
     worker::WorkerState,
 };
-use crate::tools::dataset::{SoulEntry, append_encoded, load_encoded, parse_epd_str};
+use crate::{
+    cli::Help,
+    core::{board::Position, util::format_comma as format_num},
+    tools::dataset::{MAGIC_V5, MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
+};
 
 const GREEN: &str = "\x1b[92m";
 const YELLOW: &str = "\x1b[93m";
@@ -33,20 +43,25 @@ const BADGE_BAD: &str = "\x1b[91m[BAD]\x1b[0m";
 
 /// Dashboard refresh interval.
 /// 10 Hz is smooth enough without burning CPU on terminal writes.
-const DASHBOARD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of lines the dashboard occupies. We print this many newlines on
 /// first render, then cursor-up by this amount on every subsequent frame.
-const DASHBOARD_LINES: usize = 10;
+const DASHBOARD_LINES: usize = 14;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let parsed = parse_args(args);
 
-    let book_fens = load_books(&parsed.book_paths);
-    if book_fens.is_empty() {
-        eprintln!("{RED}Error: No opening positions loaded!{RESET}");
-        return;
-    }
+    let book_fens = if parsed.startpos {
+        vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]
+    } else {
+        let fens = load_books(&parsed.book_paths);
+        if fens.is_empty() {
+            eprintln!("{RED}Error: No opening positions loaded!{RESET}");
+            return;
+        }
+        fens
+    };
     println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len(),);
 
     let mut config = resolve_config(&parsed);
@@ -64,7 +79,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // Use half the available cores by default — datagen is I/O-light and
     // compute-heavy, but leaving cores free keeps the system responsive
     // during multi-hour runs.
-    let all_cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let all_cores = available_parallelism().map_or(1, NonZero::get);
     let num_threads = config.thread_count.unwrap_or_else(|| (all_cores / 2).max(1));
 
     let global = Arc::new(GlobalStats::new());
@@ -85,6 +100,8 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let shared_generated = Arc::new(AtomicUsize::new(total_generated));
     let finished = Arc::new(AtomicBool::new(false));
 
+    let rr = config.random_restart;
+
     // ── Dashboard thread ──
     {
         let global_mon = global.clone();
@@ -92,12 +109,12 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         let stop_mon = stop.clone();
         let finish_mon = finished.clone();
 
-        std::thread::spawn(move || {
+        spawn(move || {
             let mut first_frame = true;
             while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
-                let snap = Snapshot::capture(&global_mon, &gen_mon, target);
+                let snap = Snapshot::capture(&global_mon, &gen_mon, target, rr);
                 render_dashboard(&snap, &mut first_frame);
-                std::thread::sleep(DASHBOARD_INTERVAL);
+                sleep(DASHBOARD_INTERVAL);
             }
         });
     }
@@ -105,7 +122,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // ── Persistent worker threads ──
     // Each worker owns its TT and history table for the entire run.
     // One allocation per worker, no churn between games.
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<SoulEntry>>();
+    let (tx, rx) = channel::<Vec<SoulEntry>>();
     let mut handles = Vec::with_capacity(num_threads);
 
     for _ in 0..num_threads {
@@ -113,7 +130,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         let tx = tx.clone();
         let stop_w = stop.clone();
         let target_u = target;
-        handles.push(std::thread::spawn(move || {
+        handles.push(spawn(move || {
             loop {
                 if stop_w.load(Ordering::Relaxed) || worker.global.saved.load(Ordering::Relaxed) >= target_u {
                     break;
@@ -155,14 +172,12 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     // Final report
     println!();
-    let snap = Snapshot::capture(&global, &AtomicUsize::new(total_generated), target);
+    let snap = Snapshot::capture(&global, &AtomicUsize::new(total_generated), target, config.random_restart);
     print_final_report(&snap, &output_path);
 
     config.generated_count = snap.saved;
     let _ = config.save();
 }
-
-// ──────── Display helpers ────────
 
 /// Formats elapsed seconds into the most natural unit.
 /// Datagen runs range from minutes to days, so we adapt the display.
@@ -177,8 +192,6 @@ fn format_eta(seconds: f64) -> String {
     }
 }
 
-use crate::core::util::format_comma as format_num;
-
 /// Safe division that returns 0.0 instead of NaN/Inf.
 /// Percentage math shows up everywhere in datagen stats.
 #[inline]
@@ -192,11 +205,9 @@ fn pct(part: u64, whole: u64) -> f64 {
     safe_div(part as f64, whole as f64) * 100.0
 }
 
-// ──────── Stats snapshot ────────
-
 /// A consistent point-in-time capture of all atomic counters.
 ///
-/// Both the live dashboard and the final report need the same ~15 metrics.
+/// Both the live dashboard and the final report need the same metrics.
 /// Rather than scattering `load(Relaxed)` calls everywhere and duplicating
 /// all the derived calculations, we capture once and compute from the snapshot.
 struct Snapshot {
@@ -208,8 +219,13 @@ struct Snapshot {
     passed_filters: u64,
     games: u64,
     plies: u64,
+    random_restart: bool,
     filtered_quiet: u64,
     filtered_score: u64,
+    filtered_ply: u64,
+    filtered_pieces: u64,
+    filtered_incorrect: u64,
+    filtered_tactical: u64,
     search_fail: u64,
     term_check: u64,
     term_stale: u64,
@@ -224,7 +240,7 @@ impl Snapshot {
     /// Reads every atomic counter with `Relaxed` ordering.
     /// Relaxed is fine here — we're displaying approximate progress,
     /// not synchronizing memory. Counters only ever increase.
-    fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64) -> Self {
+    fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64, random_restart: bool) -> Self {
         Self {
             elapsed: global.start_time.elapsed().as_secs_f64(),
             generated: generated.load(Ordering::Relaxed) as u64,
@@ -234,8 +250,13 @@ impl Snapshot {
             passed_filters: global.passed_filters.load(Ordering::Relaxed),
             games: global.games.load(Ordering::Relaxed),
             plies: global.plies.load(Ordering::Relaxed),
+            random_restart,
             filtered_quiet: global.filtered_quiet.load(Ordering::Relaxed),
             filtered_score: global.filtered_score.load(Ordering::Relaxed),
+            filtered_ply: global.filtered_ply.load(Ordering::Relaxed),
+            filtered_pieces: global.filtered_pieces.load(Ordering::Relaxed),
+            filtered_incorrect: global.filtered_incorrect.load(Ordering::Relaxed),
+            filtered_tactical: global.filtered_tactical.load(Ordering::Relaxed),
             search_fail: global.search_fail.load(Ordering::Relaxed),
             term_check: global.term_check.load(Ordering::Relaxed),
             term_stale: global.term_stale.load(Ordering::Relaxed),
@@ -274,15 +295,18 @@ impl Snapshot {
     }
 
     fn total_filtered(&self) -> u64 {
-        self.filtered_quiet + self.filtered_score
+        self.filtered_quiet
+            + self.filtered_score
+            + self.filtered_ply
+            + self.filtered_pieces
+            + self.filtered_incorrect
+            + self.filtered_tactical
     }
 
     fn total_terminations(&self) -> u64 {
         self.term_check + self.term_stale + self.term_d50 + self.term_drep + self.term_dmat + self.term_draw_adj + self.term_resign
     }
 }
-
-// ──────── Dashboard ────────
 
 /// Renders the live progress dashboard using ANSI cursor movement.
 /// Overwrites the same 10 lines in-place for a clean, flicker-free display.
@@ -316,17 +340,26 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         format_num(snap.target),
         snap.progress_pct(),
     );
-    println!("\r\x1b[KRate:            {:.1} k/s", snap.rate() / 1000.0);
-    println!("\r\x1b[KGames:           {}", format_num(snap.games));
-    println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
+    println!("\r\x1b[KRate:            {:.3} k/s", snap.rate() / 1000.0);
+    if snap.random_restart {
+        println!("\r\x1b[KAttempted:       {}", format_num(snap.attempted));
+        println!("\r\x1b[K",); // preserves alignment
+    } else {
+        println!("\r\x1b[KGames:           {}", format_num(snap.games));
+        println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
+    }
     println!("\r\x1b[KFiltered Quiet:  {}", format_num(snap.filtered_quiet));
     println!("\r\x1b[KFiltered Score:  {}", format_num(snap.filtered_score));
+    println!("\r\x1b[KFiltered Ply:    {}", format_num(snap.filtered_ply));
+    println!("\r\x1b[KFiltered Pieces: {}", format_num(snap.filtered_pieces));
+    println!("\r\x1b[KFiltered Incorr: {}", format_num(snap.filtered_incorrect));
+    println!("\r\x1b[KFiltered Tact:   {}", format_num(snap.filtered_tactical));
     println!("\r\x1b[KBest Move fails: {}", format_num(snap.search_fail));
     println!("\r\x1b[KRAM alloc:       {} MB", get_rss_kb() / 1024);
     println!("\r\x1b[KElapsed:         {}", format_eta(snap.elapsed));
     println!("\r\x1b[KETA:             {}", format_eta(snap.eta_secs()));
 
-    let _ = std::io::stdout().flush();
+    let _ = stdout().flush();
 }
 
 /// Prints the final generation report — the definitive summary of a run.
@@ -335,7 +368,7 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     let total_term = snap.total_terminations();
 
     println!(
-        "{GREEN}[OK]{RESET} {} positions in {:.1}s ({:.1}k/s)",
+        "{GREEN}[OK]{RESET} {} positions in {:.1}s ({:.3}k/s)",
         format_num(snap.saved),
         snap.elapsed,
         snap.rate() / 1000.0,
@@ -343,8 +376,12 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!("{GREEN}[OK]{RESET} Saved to {output_path}");
     println!();
     println!("[FINAL STATS]");
-    println!("  Total Games:      {}", format_num(snap.games));
-    println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
+    if snap.random_restart {
+        println!("  Total Positions:  {}", format_num(snap.attempted));
+    } else {
+        println!("  Total Games:      {}", format_num(snap.games));
+        println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
+    }
     println!();
     println!("  Positions:");
     println!("    Attempted:      {}", format_num(snap.attempted));
@@ -354,6 +391,14 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!("  Filter Breakdown:");
     println!("    Quiet filter:   {} ({:.1}%)", format_num(snap.filtered_quiet), pct(snap.filtered_quiet, total_filt),);
     println!("    Score filter:   {} ({:.1}%)", format_num(snap.filtered_score), pct(snap.filtered_score, total_filt),);
+    println!("    Ply filter:     {} ({:.1}%)", format_num(snap.filtered_ply), pct(snap.filtered_ply, total_filt),);
+    println!("    Pieces filter:  {} ({:.1}%)", format_num(snap.filtered_pieces), pct(snap.filtered_pieces, total_filt),);
+    println!(
+        "    Incorrect filt: {} ({:.1}%)",
+        format_num(snap.filtered_incorrect),
+        pct(snap.filtered_incorrect, total_filt),
+    );
+    println!("    Qsearch filt:   {} ({:.1}%)", format_num(snap.filtered_tactical), pct(snap.filtered_tactical, total_filt),);
     println!();
     println!("  Game Terminations:");
 
@@ -374,8 +419,6 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!();
     println!("  Search Failures:  {}", format_num(snap.search_fail));
 }
-
-// ──────── Book loading ────────
 
 /// Loads opening positions from one or more EPD/FEN files.
 /// Returns the merged set of starting positions for selfplay games.
@@ -414,7 +457,11 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
     println!("Output: {}", config.output_path);
-    println!("Book: {} ({book_count} openings)", config.book_paths.join(", "),);
+    if config.startpos {
+        println!("Book: startpos");
+    } else {
+        println!("Book: {} ({book_count} openings)", config.book_paths.join(", "),);
+    }
 
     match (config.soft_nodes, config.hard_nodes) {
         (None, None) => println!("Search: depth={}", config.depth),
@@ -430,6 +477,15 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
 
     if config.filter_quiet {
         println!("Filter: quiet positions only");
+    }
+    if config.min_ply > 0 {
+        println!("Filter: min ply = {}", config.min_ply);
+    }
+    if config.min_pieces > 0 {
+        println!("Filter: min pieces = {}", config.min_pieces);
+    }
+    if config.eval_contradiction_limit != i32::MAX {
+        println!("Filter: eval contradiction limit = {} cp", config.eval_contradiction_limit);
     }
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
@@ -450,18 +506,8 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Genfe
     let _ = config.save();
 }
 
-// ── Resume support ──
-
-/// Reads the number of positions already present in an output file.
-/// V3+ format stores the count in the header for 𝒪(1) lookup.
-/// Older formats require a full deserialization pass.
+/// Reads the position count from a V5/V6 header. Unknown formats return 0.
 fn load_existing_count(path: &str) -> usize {
-    use std::{
-        fs::File,
-        io::{BufReader, Read},
-        path::Path,
-    };
-
     if !Path::new(path).exists() {
         return 0;
     }
@@ -474,24 +520,17 @@ fn load_existing_count(path: &str) -> usize {
         return 0;
     }
 
-    if &magic == crate::tools::dataset::MAGIC_V5 {
+    if &magic == MAGIC_V5 || &magic == MAGIC_V6 {
         let mut buf = [0u8; 8];
         if reader.read_exact(&mut buf).is_ok() {
             return u64::from_le_bytes(buf) as usize;
         }
-        return 0;
     }
 
-    // Pre-V3: no header count — have to deserialize the whole file.
-    // "Expensive", but only happens once on resume.
-    load_encoded(path).map_or(0, |v| v.len())
+    0
 }
 
-// ── CLI argument parsing ──
-
 fn print_help() {
-    use crate::cli::Help;
-
     let h = Help::new(22);
 
     h.header("Usage:");
@@ -500,21 +539,32 @@ fn print_help() {
 
     h.header("Options:");
     h.option_default("-n, --count", "<N>", "Target number of positions to generate", "8,000,000");
+    h.option_default("-t, --threads", "<N>", "Number of threads", "auto");
     h.option_default("-o, --output", "<PATH>", "Output file path", "data.soul.zst");
     h.option_default("-b, --book", "<PATH>", "Opening book path", "UHO_Lichess_4852_v1.epd");
     h.option_default("-d, --depth", "<N>", "Search depth (default 6; MAX when --soft/--nodes set without --depth)", "6");
     h.option("--soft", "<N>", "Soft node limit");
     h.option("--nodes", "<N>", "Hard node limit");
-    h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
-    h.option_default("--filter", "<CP>", "Max score for saved positions", "450");
     h.option_default("--plies", "<N>", "Max game length", "300");
     h.option_default("--buf", "<N>", "Buffer size per thread", "256");
-    h.option_default("-t, --threads", "<N>", "Number of threads", "auto");
+    h.option("--resume", "", "Resume from existing config/output");
     h.option_default("--save-interval", "<N>", "Save interval", "5000");
+    h.option_default("--random-plies", "<N>", "Random plies (half-moves) from book position (random-restart)", "6");
+    h.option("--no-random-restart", "", "Disable random-restart; use full game mode");
+    h.option("--startpos", "", "Use standard start position instead of book files");
     h.option_default("--sample", "<0-1>", "Randomly sample fraction of positions", "0.7");
     h.option("--all", "", "Disable quiet position filtering");
-    h.option("--resume", "", "Resume from existing config/output");
-    h.option("-h, --help", "", "Print this help message");
+    h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
+    h.option_default("--filter", "<CP>", "Max score for saved positions", "450");
+    h.option_default("--qsearch", "<CP>", "Skip positions where |search - static| delta exceeds this threshold", "disabled");
+    h.option_default("--min-ply", "<N>", "Skip positions before this ply", "0");
+    h.option_default("--min-pieces", "<N>", "Skip positions with fewer pieces", "4");
+    h.option_default(
+        "--eval-contradiction-limit",
+        "<CP>",
+        "Skip positions where eval contradicts game outcome by more than this (centipawns)",
+        "disabled",
+    );
 }
 
 fn parse_args(args: &[&str]) -> GenfensArgs {
@@ -532,6 +582,13 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
     let mut save_interval = 5000;
     let mut filter_quiet = true;
     let mut sample_rate = 0.7;
+    let mut min_ply = 0usize;
+    let mut min_pieces = 4u32;
+    let mut eval_contradiction_limit = i32::MAX;
+    let mut qsearch_filter = i32::MAX;
+    let mut random_restart = true;
+    let mut random_plies = 6usize;
+    let mut startpos = false;
     let mut resume = false;
 
     let mut it = args.iter().copied();
@@ -603,12 +660,39 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                     sample_rate = v.parse().unwrap_or(sample_rate);
                 }
             },
+            "--min-ply" => {
+                if let Some(v) = it.next() {
+                    min_ply = v.parse().unwrap_or(min_ply);
+                }
+            },
+            "--min-pieces" => {
+                if let Some(v) = it.next() {
+                    min_pieces = v.parse().unwrap_or(min_pieces);
+                }
+            },
+            "--eval-contradiction-limit" => {
+                if let Some(v) = it.next() {
+                    eval_contradiction_limit = v.parse().unwrap_or(eval_contradiction_limit);
+                }
+            },
+            "--qsearch" => {
+                if let Some(v) = it.next() {
+                    qsearch_filter = v.parse().unwrap_or(qsearch_filter);
+                }
+            },
+            "--random-plies" => {
+                if let Some(v) = it.next() {
+                    random_plies = v.parse().unwrap_or(random_plies);
+                }
+            },
+            "--no-random-restart" => random_restart = false,
+            "--startpos" => startpos = true,
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
             },
-            _ => {}, // Unknown flags silently ignored — engine convention.
+            _ => {}, // Unknown flags silently ignored.
         }
     }
 
@@ -633,6 +717,13 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
         save_interval,
         filter_quiet,
         sample_rate,
+        min_ply,
+        min_pieces,
+        eval_contradiction_limit,
+        qsearch_filter,
+        random_restart,
+        random_plies,
+        startpos,
         resume,
     }
 }
@@ -656,12 +747,7 @@ fn parse_suffix(s: &str) -> Option<u64> {
 
 /// Loads opening positions from an EPD file, falling back to raw FEN parsing.
 /// Both formats are common in the chess datagen ecosystem.
-fn load_epd_fens(path: &str) -> std::io::Result<Vec<String>> {
-    use std::{
-        fs::File,
-        io::{BufRead, BufReader},
-    };
-
+fn load_epd_fens(path: &str) -> Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut fens = Vec::new();
@@ -672,7 +758,7 @@ fn load_epd_fens(path: &str) -> std::io::Result<Vec<String>> {
         if let Some((board, _)) = parse_epd_str(&line) {
             // EPD parsed successfully — re-export as FEN to normalize formatting.
             fens.push(board.as_fen());
-        } else if crate::core::board::Position::try_from_fen(&line).is_ok() {
+        } else if Position::try_from_fen(&line).is_ok() {
             // Fallback: raw FEN line (no EPD operations field).
             fens.push(line);
         }

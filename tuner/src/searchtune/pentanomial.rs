@@ -22,6 +22,24 @@ pub struct Pentanomial {
     pub ww: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameResult {
+    Win,
+    Draw,
+    Loss,
+}
+
+impl GameResult {
+    #[must_use]
+    pub const fn flip(self) -> Self {
+        match self {
+            Self::Win => Self::Loss,
+            Self::Draw => Self::Draw,
+            Self::Loss => Self::Win,
+        }
+    }
+}
+
 impl Pentanomial {
     #[inline]
     #[must_use]
@@ -242,11 +260,11 @@ impl Pentanomial {
         // We explicitly multiply by 0.0 for the LL (Loss-Loss) case.
         // While mathematically redundant, it documents the scoring mapping and
         // ensures the weight of every Pentanomial bucket is accounted for.
-        let sum_sq = (f64::from(self.ll) * 0.0)    // LL: 0.0 pts
-            + (f64::from(self.ld) * 0.25)         // LD: 0.5 pts
-            + (f64::from(self.dd) * 1.0)          // DD: 1.0 pts
-            + (f64::from(self.wl) * 1.0)          // WL: 1.0 pts
-            + (f64::from(self.wd) * 2.25)         // WD: 1.5 pts
+        let sum_sq = (f64::from(self.ll) * 0.0) // LL: 0.0 pts
+            + (f64::from(self.ld) * 0.25)       // LD: 0.5 pts
+            + (f64::from(self.dd) * 1.0)        // DD: 1.0 pts
+            + (f64::from(self.wl) * 1.0)        // WL: 1.0 pts
+            + (f64::from(self.wd) * 2.25)       // WD: 1.5 pts
             + (f64::from(self.ww) * 4.0); // WW: 2.0 pts
 
         let mean_pair = self.score() * 2.0;
@@ -270,8 +288,6 @@ impl Pentanomial {
         self.ww += other.ww;
     }
 
-    // ──────── Private Helpers ────────
-
     /// Extracts the raw geometric draw tendency.
     fn draw_rate(&self) -> f64 {
         let total = self.total();
@@ -283,24 +299,6 @@ impl Pentanomial {
         let draw_games = f64::from(self.ld + self.dd * 2 + self.wd);
         let total_games = f64::from(total * 2);
         (draw_games / total_games).clamp(0.01, 0.99)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GameResult {
-    Win,
-    Draw,
-    Loss,
-}
-
-impl GameResult {
-    #[must_use]
-    pub const fn flip(self) -> Self {
-        match self {
-            Self::Win => Self::Loss,
-            Self::Draw => Self::Draw,
-            Self::Loss => Self::Win,
-        }
     }
 }
 

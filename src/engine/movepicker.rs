@@ -4,14 +4,14 @@
 //!
 //! Generates and scores moves lazily to maximize alpha-beta cutoffs.
 //!
-//! | Stage          | Content               | Sorting             |
-//! |----------------|-----------------------|---------------------|
-//! | `Hash`         | PV move from prior iteration | Exact match |
-//! | `Captures`     | Captures & promotions | MVV-LVA             |
-//! | `Quiets`       | Non-captures          | History heuristic   |
+//! | Stage          | Content                      | Sorting             |
+//! |----------------|------------------------------|---------------------|
+//! | `Hash`         | PV move from prior iteration | Exact match         |
+//! | `Captures`     | Captures & promotions        | MVV-LVA             |
+//! | `Quiets`       | Non-captures                 | History heuristic   |
 //!
 //! Moves are bitpacked with their heuristic scores into `u32`s and sorted
-//! ascending using Rust's native `sort_unstable` (PDQSort). This allows
+//! ascending using Rust's native `sort_unstable` (ipnsort). This allows
 //! popping the highest-scored moves from the back in 𝒪(1) time without
 //! index shifting.
 
@@ -34,7 +34,10 @@ use crate::{
     },
 };
 
-// ──────── Staged Move Picker ────────
+// Ensure move bit-packing assumes correctly.
+const _: () = assert!(std::mem::size_of::<Move>() == 2);
+
+// ── Staged Move Picker ──
 //
 // Generates moves lazily to maximize alpha-beta cutoffs.
 //
@@ -45,7 +48,7 @@ use crate::{
 // We fully sort the generated stages using Rust's sort_unstable.
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
 // Because Big-O is a lie when it hits modern hardware.
-// A PDQSort beats a branch-heavy selection sort loop, even when K is small.
+// An ipnsort beats a branch-heavy selection sort loop, even when K is small.
 //
 // Moves and their scores are cleanly bitpacked into u32's. Native sorting
 // places the highest-scored moves at the end of the array, allowing us
@@ -78,9 +81,6 @@ pub struct MovePicker {
     is_qsearch: bool,
     in_check: bool,
 }
-
-// Ensure move bit-packing assumes correctly.
-const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
 impl MovePicker {
     #[inline]
@@ -144,7 +144,6 @@ impl MovePicker {
 
                 Stage::GenCaptures => {
                     self.gen_captures(board, history);
-                    // ── Stage Segregation ──
                     // We sort captures independently of quiet moves.
                     // Even if a strong quiet move has a high history score,
                     // it will never override a capture because they are processed
@@ -173,7 +172,7 @@ impl MovePicker {
                         }
                         continue;
                     }
-                    // Pop from the back: since the array is sorted ascending,
+                    // Pop from the back; since the array is sorted ascending,
                     // the highest-scored moves sit at the end. Popping via count -= 1
                     // is 𝒪(1) and avoids the expensive index-shifting of remove(0).
                     self.count -= 1;
@@ -229,10 +228,7 @@ impl MovePicker {
         }
     }
 
-    // ──────── Capture Generation ────────
-
-    /// Generate all pseudo-legal captures and promotions for the side to move.
-    /// Defers to specific piece generators.
+    #[inline]
     fn gen_captures(&mut self, board: &Position, history: &History) {
         let stm = board.stm;
         let us = board.side_bb[stm];
@@ -248,8 +244,6 @@ impl MovePicker {
         self.gen_piece_caps::<{ PieceType::King }>(board, us, them, occ, history);
     }
 
-    /// Generates pawn captures (diagonal) and promotion captures.
-    /// Handles en passant explicitly.
     #[inline(always)]
     fn gen_pawn_caps(&mut self, board: &Position, us: Bitboard, them: Bitboard, history: &History) {
         let stm = board.stm;
@@ -279,8 +273,7 @@ impl MovePicker {
             }
         }
 
-        // En passant. Victim is always a pawn — captured pawn is on the
-        // adjacent square, not on `to`.
+        // Victim is always a pawn — captured pawn is on the adjacent square, not on `to`.
         if let Some(ep_sq) = board.en_passant {
             for from in atk_pawn(ep_sq, stm.opposite()) & pawns {
                 self.add_cap(board, Move::new(from, ep_sq, Move::EP_CAPTURE), PieceType::Pawn, history);
@@ -295,8 +288,7 @@ impl MovePicker {
         mvv + chist / self.capt_hist_divisor
     }
 
-    /// Generic piece capture generator.
-    /// Const-monomorphized by `PT` (PieceType) to eliminate dynamic dispatch for attack lookups.
+    /// Monomorphized by `PT` for dispatch-free attack lookups.
     #[inline]
     fn gen_piece_caps<const PT: PieceType>(
         &mut self,
@@ -319,8 +311,6 @@ impl MovePicker {
         }
     }
 
-    /// Appends a move and its score to the candidates list.
-    /// Manages bit-packing and boundary checks.
     #[inline(always)]
     fn add_move_packed(&mut self, mv: Move, score: MoveScore) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
@@ -335,8 +325,7 @@ impl MovePicker {
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
         let mvv = self.mvv_lva(board, mv, attacker);
-        // En passant: victim is always pawn (the captured pawn sits on an
-        // adjacent square, not on `mv.to()`).
+        // Victim is always pawn (the captured pawn sits on an adjacent square, not on `mv.to()`).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
         self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
@@ -394,8 +383,6 @@ impl MovePicker {
         s as MoveScore
     }
 
-    // ──────── Quiet Move Generation ────────
-
     /// Generate only quiet queen promotions for QSearch.
     #[inline]
     fn gen_qsearch_quiets(&mut self, board: &Position, history: &History) {
@@ -434,7 +421,6 @@ impl MovePicker {
         self.gen_castling(board, us, occ, history);
     }
 
-    /// Append a quiet move with history scoring.
     #[inline]
     fn add_quiet(&mut self, board: &Position, mv: Move, history: &History) {
         let pt = board.expect_piece_at(mv.from());
@@ -446,8 +432,6 @@ impl MovePicker {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
         let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1, self.cont2, self.cont4);
-
-        // ──────── Move Ordering Heuristics ────────
 
         // Combined history values stay well inside `[-32768, 32768]` in practice.
         // Soft-gravity attractors prevent any single table from sitting near its
@@ -523,8 +507,7 @@ impl MovePicker {
         }
     }
 
-    /// Generic piece quiet move generator.
-    /// Const-monomorphized by `PT` (PieceType) to eliminate dynamic dispatch for attack lookups.
+    /// Monomorphized by `PT` for dispatch-free attack lookups.
     #[inline]
     fn gen_piece_quiets<const PT: PieceType>(
         &mut self,
@@ -541,9 +524,6 @@ impl MovePicker {
         }
     }
 
-    // ──────── Castling (Standard + Chess960) ────────
-
-    /// Evaluates castling rights and attempts to generate legal castling moves.
     #[inline]
     fn gen_castling(&mut self, board: &Position, us: Bitboard, occ: Bitboard, history: &History) {
         let king_bb = board.role_bb[PieceType::King] & us;
@@ -605,8 +585,6 @@ impl MovePicker {
         }
     }
 
-    // ──────── Bit-Unpacking & Attack Lookups ────────
-
     /// Extracts the move from the packed item at `i`.
     #[inline(always)]
     unsafe fn read_move(&self, i: usize) -> Move {
@@ -616,8 +594,6 @@ impl MovePicker {
         Move::from_u16((packed & 0xFFFF) as u16)
     }
 
-    /// Static dispatcher for piece attacks.
-    /// Maps the const generic `PT` to the appropriate bitboard attack function.
     #[inline(always)]
     fn attacks<const PT: PieceType>(from: Square, occ: Bitboard) -> Bitboard {
         match PT {
