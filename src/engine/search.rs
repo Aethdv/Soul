@@ -229,6 +229,10 @@ pub struct Stack {
     pub is_null: bool,
 }
 
+/// Search was cut short — time, node limit, or external stop signal.
+#[derive(Debug)]
+pub struct SearchAborted;
+
 impl SearchDisplay {
     pub const SILENT: Self = Self { show_wdl: false, go_pretty: false, pretty_print: false, show_currmove: false, use_ansi: false };
     pub const DEFAULT: Self = Self { show_currmove: true, use_ansi: true, ..Self::SILENT };
@@ -302,12 +306,6 @@ impl SearchConfig {
     }
 }
 
-impl Default for Line {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Line {
     pub const fn new() -> Self {
         Self { moves: [Move::null(); MAX_PLY], len: 0 }
@@ -325,6 +323,12 @@ impl Line {
     #[inline(always)]
     pub fn get(&self, idx: usize) -> Option<Move> {
         if idx < self.len { Some(self.moves[idx]) } else { None }
+    }
+}
+
+impl Default for Line {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -352,9 +356,6 @@ impl Default for Stack {
     }
 }
 
-/// Search was cut short — time, node limit, or external stop signal.
-#[derive(Debug)]
-pub struct SearchAborted;
 impl<'cfg> Searcher<'cfg> {
     // ── Iterative Deepening ──
     /// Search depth 1, then 2, then 3, ...

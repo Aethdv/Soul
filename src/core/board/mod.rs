@@ -99,12 +99,6 @@ const _: () = {
 
 pub use fen::Fen;
 
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Fen(self))
-    }
-}
-
 //  160 bytes — spans up to three cache lines.
 //
 //  ┌──────────────────┬────────┬───────┐
@@ -151,6 +145,12 @@ pub struct Position {
     pub is_frc: bool,
     /// Full-move counter (starts at 1, incremented after Black moves).
     pub fullmove_number: u16,
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Fen(self))
+    }
 }
 
 // Moves that destroy information:

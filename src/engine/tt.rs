@@ -21,14 +21,13 @@ pub const BOUND_EXACT: u8 = 1;
 pub const BOUND_LOWER: u8 = 2; // Beta cutoff (fail-high)
 pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 
+pub const SCORE_NONE: i32 = 32000;
+
 /// Can we use this TT score as a cutoff given the current window?
 #[inline(always)]
 pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
     bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
 }
-
-/// Uninitialized TT eval/score.
-pub const SCORE_NONE: i32 = 32000;
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]

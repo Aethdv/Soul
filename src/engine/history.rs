@@ -12,6 +12,8 @@ pub const CORRECTION_SIZE: usize = 16384;
 pub const CORRECTION_SCALE: i32 = 256;
 pub const CORRECTION_LIMIT: i32 = 256 * 32;
 
+const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
+
 /// Combined history tables for move ordering.
 #[derive(Clone)]
 pub struct History {
@@ -79,12 +81,6 @@ impl Default for ContContext {
     }
 }
 
-impl Default for ContinuationHistory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ContinuationHistory {
     pub fn new() -> Self {
         Self { data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice() }
@@ -116,7 +112,7 @@ impl ContinuationHistory {
     }
 }
 
-impl Default for CaptureHistory {
+impl Default for ContinuationHistory {
     fn default() -> Self {
         Self::new()
     }
@@ -156,7 +152,11 @@ impl CaptureHistory {
     }
 }
 
-const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
+impl Default for CaptureHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CorrectionHistory {
     pub fn new() -> Self {
@@ -320,8 +320,12 @@ impl History {
 }
 
 impl Default for History {
-    /// Returns a zero-cost sentinel. The cont table is an empty Box (0 bytes).
-    /// Only use as a placeholder for `mem::take` — never score moves against this.
+    /// Returns a zero-cost sentinel.
+    ///
+    /// # Panics
+    /// Indexing into `cont[-]`, `correction[-]`, or `capt` on a default
+    /// `History` panics — the internal tables are empty boxes.
+    /// Only use `Default::default()` as a placeholder for `mem::take`.
     fn default() -> Self {
         Self {
             table: [[[0; 64]; 6]; 2],
