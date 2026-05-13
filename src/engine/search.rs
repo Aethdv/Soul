@@ -635,6 +635,8 @@ impl<'cfg> Searcher<'cfg> {
         self.last_print = 0;
         self.pv_history.clear();
         self.history_table = history_table;
+        self.prev_score = -INF;
+        self.prev_pv = Line::new();
     }
 
     #[inline]
@@ -996,7 +998,7 @@ impl Worker {
                 let nodes_before = searcher.nodes;
                 self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction)?;
                 searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
-                if likely(res.alpha >= beta) {
+                if res.alpha >= beta {
                     break;
                 }
             }
