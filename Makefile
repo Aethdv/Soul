@@ -116,11 +116,7 @@ profile: ## Generate CPU performance profile
 	@echo "Done: profile_data.txt"
 
 openbench: ## OpenBench native build
-	@echo "Building for OpenBench..."
-	@CC=cc RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
-		cargo build --release --quiet
-	@cp target/release/$(EXE_NAME) $(EXE)
-	@echo "Done: ./$(EXE)"
+	@$(call pgo_build,Standard)
 
 evaltune:
 	@echo "Building evaltune..."
