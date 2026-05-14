@@ -157,6 +157,8 @@ impl TranspositionTable {
             let is_exact_match = entry.key == hash;
             entry.key = hash;
 
+            // Preserve an existing highly-valued move if we hit a beta-cutoff
+            // and the new bound provided an empty (null) move.
             let mut store_mv = mv.inner();
             if mv.is_null() && is_exact_match {
                 store_mv = entry.mv;
