@@ -1,6 +1,9 @@
 EXE_NAME := soul
 DEPTH    ?= 12
 
+HAS_PGO := $(shell command -v cargo-pgo 2> /dev/null)
+RUST_HOST := $(shell rustc -vV | sed -n 's/host: //p')
+
 # OpenBench passes CC=cargo (for C/C++ engines). Override it so cc-rs
 # (used by zstd-sys) finds a real C compiler instead of cargo.
 override CC := cc
@@ -86,17 +89,16 @@ define pgo_build
 	@cargo clean > /dev/null 2>&1
 	@cargo pgo clean > /dev/null 2>&1
 	@echo "Instrumenting..."
-	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native -C metadata=pgo" \
+	@CC=cc RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native -C metadata=pgo" \
 		cargo pgo build -- --quiet
 	@echo "Training..."
 	@LLVM_PROFILE_FILE="target/pgo-profiles/%p.profraw" \
-		$$(find target -name "$(EXE)" -type f -path "*/release/*" ! -path "*/deps/*" | head -1) \
-		bench $(DEPTH) > /dev/null
+		target/$(RUST_HOST)/release/$(EXE) bench $(DEPTH) > /dev/null
 	@echo "Optimizing..."
-	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native -C metadata=pgo" \
+	@CC=cc RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native -C metadata=pgo" \
 		cargo pgo optimize build -- --quiet
-	@find target -name "$(EXE)" -type f -path "*/release/*" ! -path "*/deps/*" -exec cp {} $(EXE) \;
-	@echo "Done: ./$(EXE)" $(2)
+	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
+	@echo "Done: ./$(EXE)"
 endef
 
 pgo: check-pgo ## PGO build (recommended)
@@ -115,8 +117,16 @@ profile: ## Generate CPU performance profile
 	@echo "\nThe profiling report has been generated in profile_data.txt"
 	@echo "Done: profile_data.txt"
 
-openbench: ## OpenBench native build
-	@$(call pgo_build,Standard)
+openbench:
+ifdef HAS_PGO
+	@$(call pgo_build,OpenBench)
+else
+	@echo "Building for OpenBench (cargo-pgo not found — native build)..."
+	@CC=cc RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
+		cargo build --release --quiet
+	@cp target/release/$(EXE_NAME) $(EXE)
+	@echo "Done: ./$(EXE)"
+endif
 
 evaltune:
 	@echo "Building evaltune..."
