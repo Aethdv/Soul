@@ -230,6 +230,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             state.accumulator = state.board.get_initial_accumulator();
             state.history.clear();
             state.history.push(state.board.hash);
+            state.tt.new_search();
         },
         "result" => {
             state.stop_search();
@@ -291,6 +292,7 @@ fn cmd_move(state: &mut XBoardState, move_str: &str) {
         state.stop_search();
         state.board.make_move(*mv, &mut state.accumulator);
         state.history.push(state.board.hash);
+        state.tt.new_search();
 
         if state.board.is_threefold_repetition(&state.history) {
             println!("1/2-1/2 {{Draw by repetition}}");

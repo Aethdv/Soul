@@ -447,6 +447,7 @@ where I: Iterator<Item = &'a str> {
         state.accumulator = state.board.get_initial_accumulator();
         state.history.clear();
         state.history.push(state.board.hash);
+        state.tt.new_search();
 
         if tokens.peek() == Some(&"moves") {
             tokens.next();
@@ -460,6 +461,7 @@ where I: Iterator<Item = &'a str> {
                 state.accumulator = state.board.get_initial_accumulator();
                 state.history.clear();
                 state.history.push(state.board.hash);
+                state.tt.new_search();
             },
             Err(e) => {
                 println!("info string warning: invalid fen: {e}");
