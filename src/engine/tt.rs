@@ -155,44 +155,47 @@ impl TranspositionTable {
 
         let idx = self.index(hash);
         let cur = self.generation.load(Ordering::Relaxed);
-        let mut best_idx = idx;
-        let mut best_quality = i32::MAX;
+        let mut replace_idx = idx;
+        let mut replace_quality = i32::MAX;
 
         for i in 0..CLUSTER_SIZE {
             let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
 
             if entry.bound == BOUND_NONE || entry.key == hash {
-                best_idx = idx + i;
+                replace_idx = idx + i;
+                replace_quality = i32::MIN;
                 break;
             }
 
             let gen_diff = cur.wrapping_sub(entry.age) as i32;
             let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
-            if quality < best_quality {
-                best_quality = quality;
-                best_idx = idx + i;
+            if quality < replace_quality {
+                replace_quality = quality;
+                replace_idx = idx + i;
             }
         }
 
-        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
-        // Standard high-performance lockless TT approach.
-        let entry = unsafe { &mut *(self.entries.as_ptr().add(best_idx) as *mut TtEntry) };
-        let is_exact_match = entry.key == hash;
-        entry.key = hash;
+        if replace_quality == i32::MIN || depth >= replace_quality {
+            // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
+            // Standard high-performance lockless TT approach.
+            let entry = unsafe { &mut *(self.entries.as_ptr().add(replace_idx) as *mut TtEntry) };
+            let is_exact_match = entry.key == hash;
+            entry.key = hash;
 
-        let mut store_mv = mv.inner();
-        // Preserve an existing highly-valued move if we hit a beta-cutoff
-        // and the new bound provided an empty (null) move.
-        if mv.is_null() && is_exact_match {
-            store_mv = entry.mv;
+            let mut store_mv = mv.inner();
+            // Preserve an existing highly-valued move if we hit a beta-cutoff
+            // and the new bound provided an empty (null) move.
+            if mv.is_null() && is_exact_match {
+                store_mv = entry.mv;
+            }
+
+            entry.mv = store_mv;
+            entry.score = Self::score_to_tt(score, ply) as i16;
+            entry.depth = depth as u8;
+            entry.bound = bound;
+            entry.age = cur;
+            entry.pv = pv as u8;
         }
-
-        entry.mv = store_mv;
-        entry.score = Self::score_to_tt(score, ply) as i16;
-        entry.depth = depth as u8;
-        entry.bound = bound;
-        entry.age = cur;
-        entry.pv = pv as u8;
     }
 
     /// Stores a qsearch result (depth = 0).
