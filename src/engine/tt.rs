@@ -8,7 +8,10 @@
 //! preferred with exact-position upgrades; qsearch stores are conservative
 //! to avoid evicting deeper negamax entries.
 
-use std::{arch, mem, ptr};
+use std::{
+    arch, mem, ptr,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 use crate::core::{
     defs::{MATE, MAX_PLY},
@@ -22,6 +25,11 @@ pub const BOUND_LOWER: u8 = 2; // Beta cutoff (fail-high)
 pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 
 pub const SCORE_NONE: i32 = 32000;
+
+/// `quality = depth - gen_diff * AGE_FACTOR`.
+/// Higher values evict stale entries faster.
+/// Sirius: 2, Obsidian: 8, start here: 4.
+const AGE_FACTOR: i32 = 4;
 
 /// Can we use this TT score as a cutoff given the current window?
 #[inline(always)]
@@ -39,13 +47,18 @@ pub struct TtEntry {
     pub score: i16,
     pub depth: u8,
     pub bound: u8,
-    pub _pad: u16,
+    /// Generation at store time — prior-generation entries evict first.
+    pub age: u8,
+    pub _pad: u8,
 }
 
 const _: () = assert!(std::mem::size_of::<TtEntry>() == 16);
 
 pub struct TranspositionTable {
     entries: Box<[TtEntry]>,
+    /// Monotonically increments on every new search (position change).
+    /// Wraps at 255; `wrapping_sub` handles roll-over correctly.
+    pub generation: AtomicU8,
 }
 
 // SAFETY: The TT bypasses Rust's safety borrow rules via raw pointers during probe and store,
@@ -57,7 +70,7 @@ unsafe impl Sync for TranspositionTable {}
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
     pub fn new(size_mb: usize) -> Self {
-        let mut tt = Self { entries: Box::new([]) };
+        let mut tt = Self { entries: Box::new([]), generation: AtomicU8::new(0) };
         tt.resize(size_mb);
         tt
     }
@@ -68,13 +81,13 @@ impl TranspositionTable {
         self.entries = vec![TtEntry::default(); count].into_boxed_slice();
     }
 
-    /// Returns TT occupancy in permille (0–1000) by sampling the first 1000 entries.
+    /// Returns TT occupancy in permille (0–1000).
     pub fn hashfull(&self) -> usize {
         let sample = self.entries.len().min(1000);
         self.entries[..sample].iter().filter(|e| e.bound != BOUND_NONE).count() * 1000 / sample.max(1)
     }
 
-    /// Safe because of boxed lifetime.
+    /// Zero every entry and reset the generation counter.
     pub fn clear(&self) {
         if self.entries.is_empty() {
             return;
@@ -83,6 +96,13 @@ impl TranspositionTable {
         unsafe {
             ptr::write_bytes(ptr, 0, self.entries.len());
         }
+        self.generation.store(0, Ordering::Relaxed);
+    }
+
+    /// Advance generation counter. Call on each new position —
+    /// stale entries become easier to evict without being destroyed.
+    pub fn new_search(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline(always)]
@@ -129,15 +149,16 @@ impl TranspositionTable {
         // Standard high-performance lockless TT approach.
         let entry = unsafe { &mut *(self.entries.as_ptr().add(idx) as *mut TtEntry) };
 
-        // Fundamental Replacement Scheme: Depth-Preferred + Exact Position Upgrade
-        // We overwrite if the new entry searched deeper, or if it's the exact same position
-        // and we simply want to upgrade the bound or move.
-        if entry.key != hash || depth >= entry.depth as i32 || entry.bound == BOUND_NONE {
+        let cur = self.generation.load(Ordering::Relaxed);
+        let gen_diff = cur.wrapping_sub(entry.age) as i32;
+        let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+
+        if entry.key != hash || entry.bound == BOUND_NONE || depth >= quality {
             let is_exact_match = entry.key == hash;
             entry.key = hash;
 
-            // Preserve an existing highly-valued move if we hit a beta-cutoff and
-            // the new bound provided an empty (null) move.
+            // Preserve an existing highly-valued move if we hit a beta-cutoff
+            // and the new bound provided an empty (null) move.
             let mut store_mv = mv.inner();
             if mv.is_null() && is_exact_match {
                 store_mv = entry.mv;
@@ -147,12 +168,15 @@ impl TranspositionTable {
             entry.score = Self::score_to_tt(score, ply) as i16;
             entry.depth = depth as u8;
             entry.bound = bound;
+            entry.age = cur;
         }
     }
 
-    /// Stores a qsearch result (depth = 0). Conservative replacement policy:
-    /// only overwrites empty slots or existing depth-0 entries so that deeper
-    /// negamax entries are never evicted by high-volume qsearch stores.
+    /// Stores a qsearch result (depth = 0).
+    ///
+    /// Conservative replacement:
+    /// only overwrites empty slots, existing depth-0 entries, or stale entries
+    /// whose aged quality has dropped to zero — never evicts a fresh deep entry.
     #[inline(always)]
     pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8) {
         if self.entries.is_empty() {
@@ -164,14 +188,17 @@ impl TranspositionTable {
         // Standard high-performance lockless TT approach.
         let entry = unsafe { &mut *(self.entries.as_ptr().add(idx) as *mut TtEntry) };
 
-        // Only overwrite empty slots or existing depth-0 (qsearch) entries.
-        // Depth-preferred negamax entries must not be evicted.
-        if entry.bound == BOUND_NONE || entry.depth == 0 {
+        let cur = self.generation.load(Ordering::Relaxed);
+        let gen_diff = cur.wrapping_sub(entry.age) as i32;
+        let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+
+        if entry.bound == BOUND_NONE || entry.depth == 0 || quality <= 0 {
             entry.key = hash;
             entry.mv = mv.inner();
             entry.score = Self::score_to_tt(score, ply) as i16;
             entry.depth = 0;
             entry.bound = bound;
+            entry.age = cur;
         }
     }
 
