@@ -7,6 +7,10 @@
 //! hash collisions from corrupting position data. Replacement is depth-
 //! preferred with exact-position upgrades; qsearch stores are conservative
 //! to avoid evicting deeper negamax entries.
+//!
+//! Three-entry clusters (48 bytes per cluster): each hash index maps to
+//! a 3-slot bucket, giving the replacement formula three candidates to
+//! select from instead of one.
 
 use std::{
     arch, mem, ptr,
@@ -26,10 +30,14 @@ pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 
 pub const SCORE_NONE: i32 = 32000;
 
+const _: () = assert!(mem::size_of::<TtEntry>() == 16);
+
 /// `quality = depth - gen_diff * AGE_FACTOR`.
 /// Higher values evict stale entries faster.
-/// Sirius: 2, Obsidian: 8, start here: 4.
+/// Sirius: 2, Obsidian: 8
 const AGE_FACTOR: i32 = 4;
+
+const CLUSTER_SIZE: usize = 3;
 
 /// Can we use this TT score as a cutoff given the current window?
 #[inline(always)]
@@ -49,10 +57,8 @@ pub struct TtEntry {
     pub bound: u8,
     /// Generation at store time — prior-generation entries evict first.
     pub age: u8,
-    pub _pad: u8,
+    pub pv: u8,
 }
-
-const _: () = assert!(std::mem::size_of::<TtEntry>() == 16);
 
 pub struct TranspositionTable {
     entries: Box<[TtEntry]>,
@@ -77,8 +83,9 @@ impl TranspositionTable {
 
     pub fn resize(&mut self, size_mb: usize) {
         let bytes = size_mb.max(1) * 1024 * 1024;
-        let count = (bytes / mem::size_of::<TtEntry>()).max(1);
-        self.entries = vec![TtEntry::default(); count].into_boxed_slice();
+        let count = (bytes / mem::size_of::<TtEntry>()).max(CLUSTER_SIZE);
+        let clusters = count / CLUSTER_SIZE;
+        self.entries = vec![TtEntry::default(); clusters * CLUSTER_SIZE].into_boxed_slice();
     }
 
     /// Returns TT occupancy in permille (0–1000).
@@ -120,56 +127,72 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8)> {
+    pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8, bool)> {
         if self.entries.is_empty() {
             return None;
         }
 
         let idx = self.index(hash);
-        let entry = unsafe { &*self.entries.as_ptr().add(idx) };
 
-        // 64-bit exact match completely prevents hash-collision-induced memory corruption.
-        if entry.key == hash && entry.bound != BOUND_NONE {
-            let score = Self::score_from_tt(entry.score as i32, ply);
-            let mv = Move::from_u16(entry.mv);
-            return Some((mv, score, entry.depth as i32, entry.bound));
+        for i in 0..CLUSTER_SIZE {
+            let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
+            // 64-bit exact match completely prevents hash-collision-induced memory corruption.
+            if entry.key == hash && entry.bound != BOUND_NONE {
+                let score = Self::score_from_tt(entry.score as i32, ply);
+                let mv = Move::from_u16(entry.mv);
+
+                return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0));
+            }
         }
-
         None
     }
 
     #[inline(always)]
-    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8) {
+    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool) {
         if self.entries.is_empty() {
             return;
         }
 
         let idx = self.index(hash);
-        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
-        // Standard high-performance lockless TT approach.
-        let entry = unsafe { &mut *(self.entries.as_ptr().add(idx) as *mut TtEntry) };
-
         let cur = self.generation.load(Ordering::Relaxed);
-        let gen_diff = cur.wrapping_sub(entry.age) as i32;
-        let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+        let mut best_idx = idx;
+        let mut best_quality = i32::MAX;
 
-        if entry.key != hash || entry.bound == BOUND_NONE || depth >= quality {
-            let is_exact_match = entry.key == hash;
-            entry.key = hash;
+        for i in 0..CLUSTER_SIZE {
+            let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
 
-            // Preserve an existing highly-valued move if we hit a beta-cutoff
-            // and the new bound provided an empty (null) move.
-            let mut store_mv = mv.inner();
-            if mv.is_null() && is_exact_match {
-                store_mv = entry.mv;
+            if entry.bound == BOUND_NONE || entry.key == hash {
+                best_idx = idx + i;
+                break;
             }
 
-            entry.mv = store_mv;
-            entry.score = Self::score_to_tt(score, ply) as i16;
-            entry.depth = depth as u8;
-            entry.bound = bound;
-            entry.age = cur;
+            let gen_diff = cur.wrapping_sub(entry.age) as i32;
+            let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+            if quality < best_quality {
+                best_quality = quality;
+                best_idx = idx + i;
+            }
         }
+
+        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
+        // Standard high-performance lockless TT approach.
+        let entry = unsafe { &mut *(self.entries.as_ptr().add(best_idx) as *mut TtEntry) };
+        let is_exact_match = entry.key == hash;
+        entry.key = hash;
+
+        let mut store_mv = mv.inner();
+        // Preserve an existing highly-valued move if we hit a beta-cutoff
+        // and the new bound provided an empty (null) move.
+        if mv.is_null() && is_exact_match {
+            store_mv = entry.mv;
+        }
+
+        entry.mv = store_mv;
+        entry.score = Self::score_to_tt(score, ply) as i16;
+        entry.depth = depth as u8;
+        entry.bound = bound;
+        entry.age = cur;
+        entry.pv = pv as u8;
     }
 
     /// Stores a qsearch result (depth = 0).
@@ -178,36 +201,53 @@ impl TranspositionTable {
     /// only overwrites empty slots, existing depth-0 entries, or stale entries
     /// whose aged quality has dropped to zero — never evicts a fresh deep entry.
     #[inline(always)]
-    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8) {
+    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8, pv: bool) {
         if self.entries.is_empty() {
             return;
         }
 
         let idx = self.index(hash);
-        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
-        // Standard high-performance lockless TT approach.
-        let entry = unsafe { &mut *(self.entries.as_ptr().add(idx) as *mut TtEntry) };
-
         let cur = self.generation.load(Ordering::Relaxed);
-        let gen_diff = cur.wrapping_sub(entry.age) as i32;
-        let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+        let mut best_idx: Option<usize> = None;
+        let mut best_quality = i32::MAX;
 
-        if entry.bound == BOUND_NONE || entry.depth == 0 || quality <= 0 {
+        for i in 0..CLUSTER_SIZE {
+            let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
+
+            if entry.key == hash || entry.bound == BOUND_NONE || entry.depth == 0 {
+                best_idx = Some(idx + i);
+                break;
+            }
+
+            let gen_diff = cur.wrapping_sub(entry.age) as i32;
+            let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+            if quality <= 0 && quality < best_quality {
+                best_quality = quality;
+                best_idx = Some(idx + i);
+            }
+        }
+
+        if let Some(best) = best_idx {
+            // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
+            // Standard high-performance lockless TT approach.
+            let entry = unsafe { &mut *(self.entries.as_ptr().add(best) as *mut TtEntry) };
             entry.key = hash;
             entry.mv = mv.inner();
             entry.score = Self::score_to_tt(score, ply) as i16;
             entry.depth = 0;
             entry.bound = bound;
             entry.age = cur;
+            entry.pv = pv as u8;
         }
     }
 
-    /// Maps 64-bit hash to [0, count).
+    /// Maps 64-bit hash to the first index of a 3-entry cluster.
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
         // High 64 bits of a 128-bit multiplication (mulhi64).
-        // Uniformly maps a 64-bit hash into the range [0, count).
-        (((hash as u128) * (self.entries.len() as u128)) >> 64) as usize
+        // Uniformly maps a 64-bit hash into the range [0, clusters).
+        let clusters = self.entries.len() / CLUSTER_SIZE;
+        (((hash as u128) * (clusters as u128)) >> 64) as usize * CLUSTER_SIZE
     }
 
     /// Adjusts mate scores when storing into the TT.
