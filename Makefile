@@ -93,7 +93,7 @@ define pgo_build
 		cargo pgo build -- --quiet
 	@echo "Training..."
 	@LLVM_PROFILE_FILE="target/pgo-profiles/%p.profraw" \
-		target/$(RUST_HOST)/release/$(EXE) bench $(DEPTH) > /dev/null
+		target/$(RUST_HOST)/release/$(EXE_NAME) bench $(DEPTH) > /dev/null
 	@echo "Optimizing..."
 	@CC=cc RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native -C metadata=pgo" \
 		cargo pgo optimize build -- --quiet
