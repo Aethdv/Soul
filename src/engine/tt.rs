@@ -153,7 +153,7 @@ impl TranspositionTable {
         let gen_diff = cur.wrapping_sub(entry.age) as i32;
         let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
 
-        if entry.key != hash || entry.bound == BOUND_NONE || depth as i32 >= quality {
+        if entry.key != hash || entry.bound == BOUND_NONE || depth >= quality {
             let is_exact_match = entry.key == hash;
             entry.key = hash;
 
