@@ -828,15 +828,21 @@ impl Worker {
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
         // This is what makes iterative deepening fast — earlier iterations populate the table for later ones.
-        let tt_move = if let Some((mv, score, depth_stored, bound)) = searcher.tt.probe(self.pos.hash, ply) {
+        let tt_move = if let Some((mv, score, depth_stored, bound, _pv)) = searcher.tt.probe(self.pos.hash, ply) {
             // Hash collisions can inject moves from unrelated positions.
             // Full pseudo-legality check rejects garbage before it reaches
             // the move picker or triggers a cutoff with a bogus score.
             let valid = mv.is_null() || is_pseudo_legal(&self.pos, mv);
 
-            if valid && !N::PV && depth_stored >= depth && tt::can_cutoff(bound, score, alpha, beta) {
+            #[rustfmt::skip]
+            if valid
+                && !N::PV
+                && depth_stored >= depth
+                && tt::can_cutoff(bound, score, alpha, beta)
+            {
                 return Ok(score);
             }
+
             if valid && !mv.is_null() { Some(mv) } else { None }
         } else {
             None
@@ -1145,7 +1151,6 @@ impl Worker {
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
                     let mut r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
                     let pt = self.pos.expect_piece_at(mv.from());
-                    // ~13 Elo
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
@@ -1260,7 +1265,7 @@ impl Worker {
         };
 
         // ── TT store ──
-        searcher.tt.store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound);
+        searcher.tt.store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV);
 
         // ── Correction History Update ──
         // Only learn from positions resolved by quiet moves — tactical
@@ -1455,7 +1460,7 @@ impl Worker {
         // sequence for accurate PV reporting.
         //
         // Quiescence TT Move (~9 Elo)
-        let qs_tt_move = if let Some((mv, score, _depth, bound)) = searcher.tt.probe(self.pos.hash, ply) {
+        let qs_tt_move = if let Some((mv, score, _depth, bound, _pv)) = searcher.tt.probe(self.pos.hash, ply) {
             if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
@@ -1584,7 +1589,7 @@ impl Worker {
         } else {
             tt::BOUND_UPPER
         };
-        searcher.tt.store_qs(self.pos.hash, ply, best_eval, best_move, bound);
+        searcher.tt.store_qs(self.pos.hash, ply, best_eval, best_move, bound, false);
 
         Ok(best_eval)
     }
