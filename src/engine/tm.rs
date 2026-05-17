@@ -162,8 +162,13 @@ impl Clock {
     fn hard_ms(&self, mtg: f64, soft_ms: u64) -> u64 {
         let max_scale = if self.movestogo > 0 { (1.5 + 0.11 * mtg).min(6.3) } else { (4.0 + self.ply as f64 / 12.0).min(7.0) };
 
-        let absolute_cap = (self.time as f64 * 0.80) as u64;
-        let hard = ((soft_ms as f64 * max_scale) as u64).min(absolute_cap);
+        let dynamic = (soft_ms as f64 * max_scale) as u64;
+        let ceiling = (self.time as f64 * 0.80) as u64;
+        let hard = if self.movestogo > 0 {
+            dynamic.min(ceiling)
+        } else {
+            dynamic.max((self.time as f64 * 0.50) as u64).min(ceiling)
+        };
         (hard.saturating_add(self.inc)).min(self.time)
     }
 
