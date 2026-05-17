@@ -577,7 +577,8 @@ impl<'cfg> Searcher<'cfg> {
         tt: Arc<TranspositionTable>,
     ) -> Self {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
-        let tm = TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
+        let tm =
+            TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
 
         let root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
 
@@ -627,7 +628,8 @@ impl<'cfg> Searcher<'cfg> {
         self.zobrist_trail.push(pos.hash);
 
         self.cfg = cfg;
-        self.tm = TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, &cfg.search_params);
+        self.tm =
+            TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
         self.root_pos = *pos;
         self.root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
         self.nodes = 0;
