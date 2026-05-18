@@ -1490,7 +1490,10 @@ impl Worker {
                 self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
-                return Ok(eval);
+                // Static eval is blind to quiet replies — the
+                // stand-pat verdict overstates certainty.
+                // Blend toward beta to deflate the overconfidence.
+                return Ok((eval + beta) / 2);
             }
 
             // ── Delta Pruning (~20 Elo) ──
