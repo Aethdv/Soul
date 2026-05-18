@@ -22,9 +22,6 @@ use crate::{
     engine::{search::Limits, search_params::SearchParams},
 };
 
-/// Absolute hard limit as a fraction of remaining time for sudden death.
-pub const TIME_HARD_CAP: f64 = 0.5;
-
 /// Tracks elapsed time against precomputed soft / hard budgets.
 ///
 /// Constructed once at the start of a search; queried each iteration to
@@ -47,8 +44,16 @@ pub struct TimeManager {
 impl TimeManager {
     /// `phase` feeds the moves-to-go interpolation; `overhead` is shaved off both
     /// budgets to leave room for I/O and GUI lag — never enough to drop below 1 ms.
-    pub fn new(limits: &Limits, start: Instant, stm: Color, overhead: u64, phase: i32, params: &SearchParams) -> Self {
-        let (soft, hard) = compute_budget(limits, stm, overhead, phase, params);
+    pub fn new(
+        limits: &Limits,
+        start: Instant,
+        stm: Color,
+        overhead: u64,
+        phase: i32,
+        game_ply: u64,
+        params: &SearchParams,
+    ) -> Self {
+        let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
         Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, score: 1.0 }
     }
 
@@ -106,42 +111,6 @@ impl TimeManager {
     }
 }
 
-/// Resolve the `(soft, hard)` budget pair for the side to move.
-///
-/// Walks the precedence ladder documented at the module level. The clocked
-/// path is the only one that consults `phase` and `params`; everything
-/// above it short-circuits before they're touched.
-fn compute_budget(limits: &Limits, stm: Color, overhead: u64, phase: i32, params: &SearchParams) -> (Duration, Duration) {
-    if limits.infinite {
-        return (Duration::MAX, Duration::MAX);
-    }
-
-    if limits.movetime > 0 {
-        let limit = with_overhead(limits.movetime, overhead);
-        return (limit, limit);
-    }
-
-    let clock = Clock::for_stm(limits, stm);
-
-    if clock.is_unclocked() {
-        return (Duration::MAX, Duration::MAX);
-    }
-
-    let mtg = clock.moves_to_go(phase, params);
-    let hard_ms = clock.hard_ms(mtg);
-    let soft_ms = clock.soft_ms(mtg, hard_ms);
-
-    (with_overhead(soft_ms, overhead), with_overhead(hard_ms, overhead))
-}
-
-/// Subtract communication overhead from a millisecond budget, clamped to
-/// at least 1 ms so we never produce a zero-length window the search would
-/// abort on entry.
-#[inline]
-fn with_overhead(ms: u64, overhead: u64) -> Duration {
-    Duration::from_millis(ms.saturating_sub(overhead).max(1))
-}
-
 /// The side-to-move's view of the time control: their remaining time,
 /// their increment, and the CLI/GUI-supplied `movestogo` (0 if absent).
 ///
@@ -151,16 +120,17 @@ struct Clock {
     time: u64,
     inc: u64,
     movestogo: u64,
+    ply: u64,
 }
 
 impl Clock {
     /// Pick the side-to-move's clock fields out of the protocol message.
-    fn for_stm(limits: &Limits, stm: Color) -> Self {
+    fn for_stm(limits: &Limits, stm: Color, game_ply: u64) -> Self {
         let (time, inc) = match stm {
             Color::White => (limits.wtime, limits.winc),
             Color::Black => (limits.btime, limits.binc),
         };
-        Self { time, inc, movestogo: limits.movestogo }
+        Self { time, inc, movestogo: limits.movestogo, ply: game_ply }
     }
 
     /// True when the CLI/GUI sent neither time nor increment for this side —
@@ -189,24 +159,64 @@ impl Clock {
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
-    fn hard_ms(&self, mtg: f64) -> u64 {
-        let hard_base = if self.movestogo > 0 {
-            // Classical: Bound by a multiple of the per-move budget,
-            // but never exceed 95% of total remaining time to leave a sliver of safety.
-            (self.time as f64 / mtg * 5.0).min(self.time as f64 * 0.95)
+    fn hard_ms(&self, mtg: f64, _soft_ms: u64) -> u64 {
+        let hard = if self.movestogo > 0 {
+            (self.time as f64 / mtg * 5.0).min(self.time as f64 * 0.95) as u64
         } else {
-            // Sudden death: hard cap at a fixed fraction (50%) of total remaining time.
-            self.time as f64 * TIME_HARD_CAP
+            let ceiling = (self.time as f64 * 0.80) as u64;
+            let base = (self.time as f64 * (0.50 + 0.001 * self.ply as f64)) as u64;
+            base.min(ceiling)
         };
-
-        // We can safely add the increment because we'll get it back after this move.
-        (hard_base as u64).saturating_add(self.inc).min(self.time)
+        (hard.saturating_add(self.inc)).min(self.time)
     }
 
-    fn soft_ms(&self, mtg: f64, hard_ms: u64) -> u64 {
+    fn soft_ms(&self, mtg: f64) -> u64 {
         let base = (self.time as f64 / mtg) as u64;
         let inc_contrib = (self.inc as f64 * 0.8) as u64;
 
-        (base + inc_contrib).min(hard_ms)
+        base + inc_contrib
     }
+}
+
+/// Resolve the `(soft, hard)` budget pair for the side to move.
+///
+/// Walks the precedence ladder documented at the module level. The clocked
+/// path is the only one that consults `phase` and `params`; everything
+/// above it short-circuits before they're touched.
+fn compute_budget(
+    limits: &Limits,
+    stm: Color,
+    overhead: u64,
+    phase: i32,
+    game_ply: u64,
+    params: &SearchParams,
+) -> (Duration, Duration) {
+    if limits.infinite {
+        return (Duration::MAX, Duration::MAX);
+    }
+
+    if limits.movetime > 0 {
+        let limit = with_overhead(limits.movetime, overhead);
+        return (limit, limit);
+    }
+
+    let clock = Clock::for_stm(limits, stm, game_ply);
+
+    if clock.is_unclocked() {
+        return (Duration::MAX, Duration::MAX);
+    }
+
+    let mtg = clock.moves_to_go(phase, params);
+    let soft_ms = clock.soft_ms(mtg);
+    let hard_ms = clock.hard_ms(mtg, soft_ms);
+
+    (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
+}
+
+/// Subtract communication overhead from a millisecond budget, clamped to
+/// at least 1 ms so we never produce a zero-length window the search would
+/// abort on entry.
+#[inline]
+fn with_overhead(ms: u64, overhead: u64) -> Duration {
+    Duration::from_millis(ms.saturating_sub(overhead).max(1))
 }
