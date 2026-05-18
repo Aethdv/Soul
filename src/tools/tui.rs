@@ -98,13 +98,12 @@ pub fn fmt_nps(nps: u64) -> String {
     }
 }
 
-pub fn fmt_score_uci(score: i32, stm: usize) -> String {
-    let ws = if stm == 1 { -score } else { score };
-    if ws.abs() > MATE_BOUND {
-        let mate_in = if ws > 0 { (MATE - ws + 1) / 2 } else { -(MATE + ws + 1) / 2 };
+pub fn fmt_score_uci(score: i32) -> String {
+    if score.abs() > MATE_BOUND {
+        let mate_in = if score > 0 { (MATE - score + 1) / 2 } else { -(MATE + score + 1) / 2 };
         format!("mate {mate_in}")
     } else {
-        format!("cp {ws}")
+        format!("cp {score}")
     }
 }
 
@@ -278,20 +277,19 @@ fn fmt_score_pretty(score: i32, enabled: bool) -> String {
     }
 }
 
-fn fmt_score_white_pov(score: i32, stm: usize, enabled: bool) -> String {
-    let ws = if stm == 0 { score } else { -score };
+fn fmt_score_colored(score: i32, enabled: bool) -> String {
     let reset = if enabled { RESET } else { "" };
 
-    if ws.abs() > MATE_BOUND {
-        let plies = if ws > 0 { MATE - ws } else { MATE + ws };
+    if score.abs() > MATE_BOUND {
+        let plies = if score > 0 { MATE - score } else { MATE + score };
         let moves = (plies + 1) / 2;
-        let s = if ws > 0 { format!("M{}", moves.max(1)) } else { format!("-M{}", moves.max(1)) };
+        let s = if score > 0 { format!("M{}", moves.max(1)) } else { format!("-M{}", moves.max(1)) };
         return format!("{}{:>7}{}", tui_fg(MATE_PRPL, enabled), s, reset);
     }
 
-    let color = eval_gradient(sigmoid(ws));
-    let pawns = f64::from(ws) / 100.0;
-    let s = if ws >= 0 { format!("+{pawns:.2}") } else { format!("{pawns:.2}") };
+    let color = eval_gradient(sigmoid(score));
+    let pawns = f64::from(score) / 100.0;
+    let s = if score >= 0 { format!("+{pawns:.2}") } else { format!("{pawns:.2}") };
     format!("{}{:>7}{}", tui_fg(color, enabled), s, reset)
 }
 
@@ -426,7 +424,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             "info depth {:>2} seldepth {:>2} score {}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
             data.depth,
             data.sel_depth,
-            fmt_score_white_pov(data.score, data.stm, data.use_ansi),
+            fmt_score_colored(data.score, data.use_ansi),
             wdl_str,
             fmt_nodes(data.nodes),
             fmt_nps(data.nps),
@@ -438,7 +436,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             "info depth {} seldepth {} score {}{} nodes {} nps {} time {} hashfull {} pv",
             data.depth,
             data.sel_depth,
-            fmt_score_uci(data.score, data.stm),
+            fmt_score_uci(data.score),
             wdl_str,
             data.nodes,
             data.nps,
