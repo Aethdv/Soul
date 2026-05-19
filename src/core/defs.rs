@@ -26,7 +26,7 @@ pub const INF: i32 = 32_000;
 /// Checkmate at the root. Actual mates are scored `MATE - ply_distance`.
 pub const MATE: i32 = 30_000;
 /// Any |score| above this threshold is a forced mate, not merely a large eval.
-pub const MATE_BOUND: i32 = MATE - 100;
+pub const MATE_BOUND: i32 = MATE - MAX_PLY as i32 - 1;
 /// Total game phase material: N=1, B=1, R=2, Q=4 → 2·(1+1+2+4) = 24
 pub const TOTAL_PHASE: i32 = 24;
 /// Middlegame terms
