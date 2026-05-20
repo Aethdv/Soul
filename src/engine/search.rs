@@ -61,6 +61,11 @@ pub const MAX_TRACKED_QUIETS: usize = 256;
 /// legal capture counts with headroom.
 pub const MAX_TRACKED_CAPTURES: usize = 64;
 
+/// One ply expressed in LMR table units. Sub-ply granularity lets each
+/// per-move adjustment dose uniformly across the table, regardless of
+/// the cell's absolute reduction.
+pub const LMR_SCALE: i32 = 1024;
+
 // ── Node type specialization ──
 /// Chess search has three distinct contexts:
 /// root (first ply, owns the move list), PV, and non-PV
@@ -186,7 +191,8 @@ pub struct SearchConfig {
     pub overhead: u64,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
-    pub lmr_table: Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
+    /// LMR reductions in milli-plies (`LMR_SCALE` units = 1 ply).
+    pub lmr_table: Box<[[i16; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
 }
 
 // ── Root Move ──
@@ -285,21 +291,23 @@ impl SearchConfig {
         (v, a)
     }
 
-    /// LMR reduction table from tunable base/divisor.
+    /// LMR reduction table from tunable base/divisor, stored in `LMR_SCALE` units.
     ///
     ///   `R(d, m) = base + ln(d) · ln(m) / divisor`
     ///
     /// Logarithmic in both depth and move index: deeper searches tolerate
     /// larger reductions, and later moves deserve them. Precomputed so the
     /// inner loop never touches a float.
-    fn build_lmr_table(sp: &SearchParams) -> Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
+    fn build_lmr_table(sp: &SearchParams) -> Box<[[i16; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
         let base = sp.lmr_base as f64 / 100.0;
         let divisor = sp.lmr_divisor as f64 / 100.0;
+        let scale = LMR_SCALE as f64;
 
-        let mut table = Box::new([[0i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
+        let mut table = Box::new([[0i16; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
         for d in 1..=MAX_DEPTH as usize {
             for m in 1..=MAX_PLY {
-                table[d][m] = (base + (d as f64).ln() * (m as f64).ln() / divisor).floor() as i8;
+                let r = base + (d as f64).ln() * (m as f64).ln() / divisor;
+                table[d][m] = (r * scale).floor() as i16;
             }
         }
         table
@@ -996,7 +1004,7 @@ impl Worker {
                 // so late moves in the list are already the engine's worst guesses.
                 // Scout them at reduced depth; a fail-high triggers a full re-search.
                 let reduction = if depth >= 2 && i >= 1 && mv.is_quiet() && !in_check {
-                    searcher.cfg.lmr_table[depth as usize][i + 1] as i32
+                    searcher.cfg.lmr_table[depth as usize][i + 1] as i32 / LMR_SCALE
                 } else {
                     0
                 };
@@ -1156,10 +1164,13 @@ impl Worker {
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
-                        r -= 1;
+                        r -= LMR_SCALE;
                     }
 
-                    (r - hist / 8192).clamp(0, depth - 1)
+                    // Divisor 8 = 8192 / LMR_SCALE: history discounts reduction
+                    // at the same ply magnitude with sub-ply precision.
+                    let max_r = (depth - 1) * LMR_SCALE;
+                    (r - hist / 8).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
                 };
