@@ -1167,10 +1167,10 @@ impl Worker {
                         r -= LMR_SCALE;
                     }
 
-                    // Divisor 8 = 8192 / LMR_SCALE: history discounts reduction
-                    // at the same ply magnitude with sub-ply precision.
+                    // Hist discounts at ply granularity even in the milli world.
+                    let hist_discount = (hist / 8192) * LMR_SCALE;
                     let max_r = (depth - 1) * LMR_SCALE;
-                    (r - hist / 8).clamp(0, max_r) / LMR_SCALE
+                    (r - hist_discount).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
                 };
