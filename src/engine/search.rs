@@ -260,7 +260,7 @@ impl SearchConfig {
         search_params: SearchParams,
     ) -> Self {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
-        let lmr_table = Self::build_lmr_table(&search_params);
+        let lmr_table = Self::build_lmr_table();
 
         Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
     }
@@ -298,9 +298,9 @@ impl SearchConfig {
     /// Logarithmic in both depth and move index: deeper searches tolerate
     /// larger reductions, and later moves deserve them. Precomputed so the
     /// inner loop never touches a float.
-    fn build_lmr_table(sp: &SearchParams) -> Box<[[i16; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
-        let base = sp.lmr_base as f64 / 100.0;
-        let divisor = sp.lmr_divisor as f64 / 100.0;
+    fn build_lmr_table() -> Box<[[i16; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
+        let base = lmr_base() as f64 / 100.0;
+        let divisor = lmr_divisor() as f64 / 100.0;
         let scale = LMR_SCALE as f64;
 
         let mut table = Box::new([[0i16; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
