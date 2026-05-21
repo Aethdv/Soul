@@ -1479,13 +1479,14 @@ impl Worker {
         // sequence for accurate PV reporting.
         //
         // Quiescence TT Move (~9 Elo)
-        let qs_tt_move = if let Some((mv, score, _depth, bound, _pv)) = searcher.tt.probe(self.pos.hash, ply) {
+        let (qs_tt_move, qs_tt_pv) = if let Some((mv, score, _depth, bound, pv)) = searcher.tt.probe(self.pos.hash, ply) {
             if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
                 return Ok(score);
             }
-            if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None }
+            let mv = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
+            (mv, pv)
         } else {
-            None
+            (None, false)
         };
 
         let checkers = self.pos.checkers();
@@ -1611,7 +1612,7 @@ impl Worker {
         } else {
             tt::BOUND_UPPER
         };
-        searcher.tt.store_qs(self.pos.hash, ply, best_eval, best_move, bound, false);
+        searcher.tt.store_qs(self.pos.hash, ply, best_eval, best_move, bound, N::PV || qs_tt_pv);
 
         Ok(best_eval)
     }
