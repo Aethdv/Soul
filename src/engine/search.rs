@@ -302,7 +302,7 @@ impl SearchConfig {
         (v, a)
     }
 
-    /// `ln(i) * LMR_SCALE` lookup for LMR reduction composition.
+    /// `ln(i) · LMR_SCALE` lookup for LMR reduction composition.
     ///
     ///   `R(d, m) = base + ln(d) · ln(m) / divisor`
     ///
@@ -1172,10 +1172,8 @@ impl Worker {
                         r -= LMR_SCALE;
                     }
 
-                    // Hist discounts at ply granularity even in the milli world.
-                    let hist_discount = (hist / 8192) * LMR_SCALE;
                     let max_r = (depth - 1) * LMR_SCALE;
-                    (r - hist_discount).clamp(0, max_r) / LMR_SCALE
+                    (r - hist / 8).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
                 };
