@@ -214,12 +214,14 @@ impl TranspositionTable {
         let cur = self.generation.load(Ordering::Relaxed);
         let mut best_idx: Option<usize> = None;
         let mut best_quality = i32::MAX;
+        let mut is_key_match = false;
 
         for i in 0..CLUSTER_SIZE {
             let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
 
             if entry.key == hash || entry.bound == BOUND_NONE || entry.depth == 0 {
                 best_idx = Some(idx + i);
+                is_key_match = entry.key == hash;
                 break;
             }
 
@@ -235,13 +237,17 @@ impl TranspositionTable {
             // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
             // Standard high-performance lockless TT approach.
             let entry = unsafe { &mut *(self.entries.as_ptr().add(best) as *mut TtEntry) };
+            // Preserve any prior PV-history bit when overwriting the same
+            // position — qs visits would otherwise erase the propagated flag
+            // stamped by a previous negamax store.
+            let store_pv = if is_key_match { (pv as u8) | entry.pv } else { pv as u8 };
             entry.key = hash;
             entry.mv = mv.inner();
             entry.score = Self::score_to_tt(score, ply) as i16;
             entry.depth = 0;
             entry.bound = bound;
             entry.age = cur;
-            entry.pv = pv as u8;
+            entry.pv = store_pv;
         }
     }
 
