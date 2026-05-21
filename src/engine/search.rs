@@ -843,7 +843,7 @@ impl Worker {
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
         // This is what makes iterative deepening fast — earlier iterations populate the table for later ones.
-        let tt_move = if let Some((mv, score, depth_stored, bound, _pv)) = searcher.tt.probe(self.pos.hash, ply) {
+        let (tt_move, tt_pv) = if let Some((mv, score, depth_stored, bound, pv)) = searcher.tt.probe(self.pos.hash, ply) {
             // Hash collisions can inject moves from unrelated positions.
             // Full pseudo-legality check rejects garbage before it reaches
             // the move picker or triggers a cutoff with a bogus score.
@@ -858,9 +858,10 @@ impl Worker {
                 return Ok(score);
             }
 
-            if valid && !mv.is_null() { Some(mv) } else { None }
+            let tt_move = if valid && !mv.is_null() { Some(mv) } else { None };
+            (tt_move, pv)
         } else {
-            None
+            (None, false)
         };
 
         // ── TT Move Ordering (~56 Elo) ──
@@ -1281,7 +1282,9 @@ impl Worker {
         };
 
         // ── TT store ──
-        searcher.tt.store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV);
+        searcher
+            .tt
+            .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv);
 
         // ── Correction History Update ──
         // Only learn from positions resolved by quiet moves — tactical

@@ -181,10 +181,14 @@ impl TranspositionTable {
         entry.key = hash;
 
         let mut store_mv = mv.inner();
-        // Preserve an existing highly-valued move if we hit a beta-cutoff
-        // and the new bound provided an empty (null) move.
+        let mut store_pv = pv as u8;
+        // Preserve an existing highly-valued move if the new store provides
+        // `Move::null()` and the hash matches. The pv flag rides with the
+        // move it describes — losing it would erase the position's
+        // PV-history context.
         if mv.is_null() && is_exact_match {
             store_mv = entry.mv;
+            store_pv |= entry.pv;
         }
 
         entry.mv = store_mv;
@@ -192,7 +196,7 @@ impl TranspositionTable {
         entry.depth = depth as u8;
         entry.bound = bound;
         entry.age = cur;
-        entry.pv = pv as u8;
+        entry.pv = store_pv;
     }
 
     /// Stores a qsearch result (depth = 0).
