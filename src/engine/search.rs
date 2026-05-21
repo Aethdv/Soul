@@ -61,6 +61,11 @@ pub const MAX_TRACKED_QUIETS: usize = 256;
 /// legal capture counts with headroom.
 pub const MAX_TRACKED_CAPTURES: usize = 64;
 
+/// One ply expressed in LMR table units. Sub-ply granularity lets each
+/// per-move adjustment dose uniformly across the table, regardless of
+/// the cell's absolute reduction.
+pub const LMR_SCALE: i32 = 1024;
+
 // ── Node type specialization ──
 /// Chess search has three distinct contexts:
 /// root (first ply, owns the move list), PV, and non-PV
@@ -186,7 +191,9 @@ pub struct SearchConfig {
     pub overhead: u64,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
-    pub lmr_table: Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]>,
+    /// `ln(i) * LMR_SCALE` lookup, indexed by depth or move count.
+    /// Reduction composes as `base + table[d] * table[m] / div`, all in milli-plies.
+    pub lmr_table: Box<[i16; MAX_PLY + 1]>,
 }
 
 // ── Root Move ──
@@ -254,9 +261,19 @@ impl SearchConfig {
         search_params: SearchParams,
     ) -> Self {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
-        let lmr_table = Self::build_lmr_table(&search_params);
+        let lmr_table = Self::build_lmr_table();
 
         Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
+    }
+
+    /// Composed LMR reduction in `LMR_SCALE` units.
+    #[inline(always)]
+    pub fn lmr(&self, depth: i32, m: usize) -> i32 {
+        let base = lmr_base() * LMR_SCALE / 100;
+        let div = lmr_divisor() * LMR_SCALE / 100;
+        let d = self.lmr_table[depth as usize] as i32;
+        let m = self.lmr_table[m] as i32;
+        base + d * m / div
     }
 
     /// MVV-LVA lookup table from tunable parameters.
@@ -285,24 +302,20 @@ impl SearchConfig {
         (v, a)
     }
 
-    /// LMR reduction table from tunable base/divisor.
+    /// `ln(i) · LMR_SCALE` lookup for LMR reduction composition.
     ///
     ///   `R(d, m) = base + ln(d) · ln(m) / divisor`
     ///
-    /// Logarithmic in both depth and move index: deeper searches tolerate
-    /// larger reductions, and later moves deserve them. Precomputed so the
-    /// inner loop never touches a float.
-    fn build_lmr_table(sp: &SearchParams) -> Box<[[i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]> {
-        let base = sp.lmr_base as f64 / 100.0;
-        let divisor = sp.lmr_divisor as f64 / 100.0;
-
-        let mut table = Box::new([[0i8; MAX_PLY + 1]; MAX_DEPTH as usize + 1]);
-        for d in 1..=MAX_DEPTH as usize {
-            for m in 1..=MAX_PLY {
-                table[d][m] = (base + (d as f64).ln() * (m as f64).ln() / divisor).floor() as i8;
-            }
+    /// Factored into a 1D log table reused on both axes; deeper searches
+    /// tolerate larger reductions, and later moves deserve them. Looking
+    /// up two values and multiplying beats a 2D table that spills L1.
+    fn build_lmr_table() -> Box<[i16; MAX_PLY + 1]> {
+        let scale = LMR_SCALE as f64;
+        let mut lut = Box::new([0i16; MAX_PLY + 1]);
+        for i in 1..=MAX_PLY {
+            lut[i] = ((i as f64).ln() * scale).round() as i16;
         }
-        table
+        lut
     }
 }
 
@@ -996,7 +1009,7 @@ impl Worker {
                 // so late moves in the list are already the engine's worst guesses.
                 // Scout them at reduced depth; a fail-high triggers a full re-search.
                 let reduction = if depth >= 2 && i >= 1 && mv.is_quiet() && !in_check {
-                    searcher.cfg.lmr_table[depth as usize][i + 1] as i32
+                    searcher.cfg.lmr(depth, i + 1) / LMR_SCALE
                 } else {
                     0
                 };
@@ -1151,15 +1164,16 @@ impl Worker {
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
-                    let mut r = searcher.cfg.lmr_table[depth as usize][res.move_count + 1] as i32;
+                    let mut r = searcher.cfg.lmr(depth, res.move_count + 1);
                     let pt = self.pos.expect_piece_at(mv.from());
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
-                        r -= 1;
+                        r -= LMR_SCALE;
                     }
 
-                    (r - hist / 8192).clamp(0, depth - 1)
+                    let max_r = (depth - 1) * LMR_SCALE;
+                    (r - hist / 8).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
                 };
