@@ -98,35 +98,34 @@ pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
 /// Pre-computed attack maps for both sides. Built once per evaluation and
 /// threaded through every sub-computation to avoid redundant slider work.
 struct EvalCtx {
-    /// Piece + pawn attacks, excluding king.
-    /// Used for danger assessment — your own king's reach
-    /// doesn't help assault the opponent's king zone.
+    us: Bitboard,
+    them: Bitboard,
+    occ: Bitboard,
+
+    // Piece + pawn attacks, excluding king.
+    // Used for danger assessment — your own king's reach
+    // doesn't help assault the opponent's king zone.
     atk_us: Bitboard,
     atk_them: Bitboard,
 
-    /// Full control:
-    /// piece + pawn + king attacks.
-    /// Used for mobility and piece-protection calculations
-    /// where the king's influence matters.
+    // piece + pawn + king attacks.
+    // Used for mobility and piece-protection calculations
+    // where the king's influence matters.
     area_us: Bitboard,
     area_them: Bitboard,
 
-    /// Pawn-only attack maps, cached to avoid recomputation.
+    // Pawn-only attack maps, cached to avoid recomputation.
     pawn_atk_us: Bitboard,
     pawn_atk_them: Bitboard,
 
     ksq_us: Square,
     ksq_them: Square,
 
-    /// Pawn occupancy (used for shield evaluation, not attacks).
+    // Pawn occupancy (used for shield evaluation, not attacks).
     pawn_us: Bitboard,
     pawn_them: Bitboard,
 
-    us: Bitboard,
-    them: Bitboard,
-    occ: Bitboard,
-
-    /// Shadow/X-ray attack maps.
+    // Shadow/X-ray attack maps.
     xray_us: Bitboard,
     xray_them: Bitboard,
 }

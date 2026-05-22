@@ -39,6 +39,7 @@ mod scatter {
         out[offset] += outer * f64::from(grad[*slot]);
         *slot += 1;
     }
+
     #[inline(always)]
     pub(super) fn scatter_vec4(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
         for i in 0..4 {
@@ -46,6 +47,16 @@ mod scatter {
         }
         *slot += 4;
     }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(super) fn scatter_array4(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
+        for i in 0..4 {
+            out[offset + i] += outer * f64::from(grad[*slot + i]);
+        }
+        *slot += 4;
+    }
+
     #[inline(always)]
     pub(super) fn scatter_array6(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
         for i in 0..6 {
@@ -140,6 +151,7 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
         let mat_eg_val = values.get(mat_eg_idx).copied().unwrap_or(0.0);
 
         let mut bb_w = board.pieces(piece, Color::White);
+
         while bb_w.is_not_empty() {
             let sq = bb_w.pop_lsb();
             let sq_idx = usize::from(sq.flip_rank());
@@ -161,6 +173,7 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
         }
 
         let mut bb_b = board.pieces(piece, Color::Black);
+
         while bb_b.is_not_empty() {
             let sq = bb_b.pop_lsb();
             let sq_idx = usize::from(sq);
@@ -183,20 +196,25 @@ pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
     }
 
     let mut phase_dual = DualNode::zero();
+
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
         let phase_idx = psqt::LAYOUT.weight_offset + pt;
+
         if phase_idx < values.len() {
             phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
         }
     }
+
     let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
 
     // Seed DualNode values
     // Only lanes 0 (MG) and 1 (EG) need gradient tracking.
     // Lane 2 is the Phase counter. Lanes 3-7 are unused padding.
     let mut dual_acc = DualVec8::zero();
+
     dual_acc.0[0] = DualNode::seed(lane_vals[0], 0);
     dual_acc.0[1] = DualNode::seed(lane_vals[1], 1);
+
     for (dual, &val) in dual_acc.0[2..8].iter_mut().zip(&lane_vals[2..8]) {
         *dual = DualNode::constant(val);
     }
@@ -228,12 +246,15 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
     let mut phase_dual = DualNode::zero();
+
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
         let phase_idx = psqt::LAYOUT.weight_offset + pt;
+
         if phase_idx < values.len() {
             phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
         }
     }
+
     let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
 
     // Seed DualNode values
@@ -497,6 +518,7 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
         let count_w = bb_w.popcount() as f64;
         lane_vals[0] += count_w * mat_mg;
         lane_vals[1] += count_w * mat_eg;
+
         while bb_w.is_not_empty() {
             let sq = bb_w.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));

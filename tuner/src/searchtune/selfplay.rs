@@ -238,7 +238,8 @@ fn play_game<'a>(
             limits.wtime = white_time_ms;
             limits.btime = black_time_ms;
             let phase = i32::from(board.get_initial_accumulator().to_array()[2]);
-            searcher.tm = TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, &cfg.search_params);
+            searcher.tm =
+                TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
         }
 
         cfg.stop.store(false, Ordering::Release);
