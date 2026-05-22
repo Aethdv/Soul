@@ -33,10 +33,12 @@ pub trait EvalMath:
     type Scalar;
     type Vec4: EnvVec4<Scalar = Self::Scalar, Vec8 = Self::Vec8>;
     type Vec8: EnvVec8<Scalar = Self::Scalar, Vec4 = Self::Vec4>;
+    type Array4: ops::Index<usize, Output = Self>;
     type Array6: ops::Index<usize, Output = Self>;
 
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self;
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4;
+    fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4;
     fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6;
 
     /// Construct the zero value.
@@ -107,6 +109,7 @@ impl EvalMath for i32 {
     type Scalar = i32;
     type Vec4 = Vi32x4;
     type Vec8 = Vi16x8;
+    type Array4 = [i32; 4];
     type Array6 = [i32; 6];
 
     #[inline(always)]
@@ -122,6 +125,11 @@ impl EvalMath for i32 {
             values[offset + 2] as i32,
             values[offset + 3] as i32,
         )
+    }
+
+    #[inline(always)]
+    fn load_array4(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array4 {
+        [values[offset] as i32, values[offset + 1] as i32, values[offset + 2] as i32, values[offset + 3] as i32]
     }
 
     #[inline(always)]
@@ -215,6 +223,7 @@ impl EvalMath for f64 {
     type Scalar = f64;
     type Vec4 = F64Vec4;
     type Vec8 = F64Vec8;
+    type Array4 = [f64; 4];
     type Array6 = [f64; 6];
 
     #[inline(always)]
@@ -225,6 +234,11 @@ impl EvalMath for f64 {
     #[inline(always)]
     fn load_vec4(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Vec4 {
         Self::Vec4::from_lanes(values[offset], values[offset + 1], values[offset + 2], values[offset + 3])
+    }
+
+    #[inline(always)]
+    fn load_array4(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array4 {
+        [values[offset], values[offset + 1], values[offset + 2], values[offset + 3]]
     }
 
     #[inline(always)]
