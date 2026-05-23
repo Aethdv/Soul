@@ -35,7 +35,7 @@ const H2H_ELO_THRESHOLD: f64 = 4.0;
 /// # Panics
 /// if opening file cannot be read or if internal logic fails.
 pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
-    let params = search_params::PARAM_DEFS;
+    let params = search_params::tunable_param_defs();
     let n = params.len();
 
     let lambda = default_lambda(n, config.population_scale);
@@ -101,7 +101,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     println!("  Step size (σ₀):  {:.2}", cmaes.sigma());
     println!();
     println!("\x1b[90m ─── Parameters ({n}) ───\x1b[0m");
-    for p in params {
+    for p in &params {
         println!(
             " \x1b[38;5;250m{:<22}\x1b[0m \x1b[1;37m{:>6}\x1b[0m   \x1b[90m{:>6} .. {:<6}\x1b[0m",
             p.name, p.default as i32, p.min as i32, p.max as i32

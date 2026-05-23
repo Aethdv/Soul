@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use parking_lot::Mutex;
-use soul::engine::search_params::{PARAM_DEFS, SearchParams};
+use soul::engine::search_params::{SearchParams, tunable_param_defs};
 
 use super::{pentanomial::Pentanomial, selfplay};
 use crate::core::fnv::Fnv1a;
@@ -122,17 +122,15 @@ impl MatchCache {
 fn hash_discrete_params(candidate_norm: &[f64], opponent_norm: &[f64], openings: &[String]) -> u64 {
     let mut fnv = Fnv1a::new();
 
-    // Hash candidate
+    let params = tunable_param_defs();
+
     for (i, &v) in candidate_norm.iter().enumerate() {
-        let param = &PARAM_DEFS[i];
-        let discrete_val = param.denormalize(v);
+        let discrete_val = params[i].denormalize(v);
         fnv.write_bytes(&discrete_val.to_bits().to_le_bytes());
     }
 
-    // Hash opponent
     for (i, &v) in opponent_norm.iter().enumerate() {
-        let param = &PARAM_DEFS[i];
-        let discrete_val = param.denormalize(v);
+        let discrete_val = params[i].denormalize(v);
         fnv.write_bytes(&discrete_val.to_bits().to_le_bytes());
     }
 

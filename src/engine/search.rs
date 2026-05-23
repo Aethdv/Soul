@@ -436,7 +436,7 @@ impl<'cfg> Searcher<'cfg> {
         // Only one legal move. Slash the budget to 5% so we exit the depth
         // loop almost instantly, banking the saved time.
         if self.root_moves.len() == 1 {
-            self.tm.set_bm_stab_factor(0.05);
+            self.tm.set_bm_stab_factor(tm_single_root() as f64 / 100.0);
         }
 
         for depth in 1..=depth_limit {
@@ -455,7 +455,7 @@ impl<'cfg> Searcher<'cfg> {
             // so if we can't afford that estimate we stop before starting it.
             if depth > 1
                 && (elapsed >= self.tm.soft_limit().as_millis() as u64
-                    || elapsed + (prev_depth_time * 2) > self.tm.hard_limit().as_millis() as u64
+                    || elapsed + (prev_depth_time * tm_iter_scale() as u64 / 100) > self.tm.hard_limit().as_millis() as u64
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
             {
                 break;
@@ -467,8 +467,8 @@ impl<'cfg> Searcher<'cfg> {
 
             // ── Aspiration Windows (~42 Elo) ──
             let mut delta = asp_initial();
-            let mut alpha = if depth >= 4 { (self.prev_score - delta).max(-INF) } else { -INF };
-            let mut beta = if depth >= 4 { (self.prev_score + delta).min(INF) } else { INF };
+            let mut alpha = if depth >= asp_depth() { (self.prev_score - delta).max(-INF) } else { -INF };
+            let mut beta = if depth >= asp_depth() { (self.prev_score + delta).min(INF) } else { INF };
 
             let mut aborted = false;
             loop {
@@ -490,7 +490,7 @@ impl<'cfg> Searcher<'cfg> {
                     break;
                 }
 
-                delta += delta / 3;
+                delta += delta / asp_widen_div();
             }
 
             if aborted {
@@ -540,7 +540,7 @@ impl<'cfg> Searcher<'cfg> {
             // in [0.5, 2.0]. Gated below `score_drop_depth` because aspiration
             // churn at low depth produces noise, not signal.
             let score_factor = if depth >= score_drop_depth() {
-                let scale = score_factor_scale() as f64;
+                let scale = score_swing_scale() as f64;
                 let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
                 2.0_f64.powf(diff / scale)
             } else {
@@ -952,15 +952,16 @@ impl Worker {
             self.stack[ply + 1].is_null = true;
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
-            let score = match self.negamax::<NonPvNode>(searcher, (depth - r - 1).max(0), -beta, -beta + 1, ply + 1, None) {
-                Ok(v) => -v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_null_move(&undo);
-                    self.stack[ply + 1].is_null = false;
-                    return Err(e);
-                },
-            };
+            let score =
+                match self.negamax::<NonPvNode>(searcher, (depth - r - nmp_ply_offset()).max(0), -beta, -beta + 1, ply + 1, None) {
+                    Ok(v) => -v,
+                    Err(e) => {
+                        searcher.zobrist_trail.pop();
+                        self.pos.unmake_null_move(&undo);
+                        self.stack[ply + 1].is_null = false;
+                        return Err(e);
+                    },
+                };
             searcher.zobrist_trail.pop();
             self.pos.unmake_null_move(&undo);
             self.stack[ply + 1].is_null = false;
@@ -980,7 +981,7 @@ impl Worker {
                 }
 
                 self.is_nmp_verif = true;
-                let verif = self.negamax::<NonPvNode>(searcher, (depth - r - 1).max(0), beta - 1, beta, ply, None);
+                let verif = self.negamax::<NonPvNode>(searcher, (depth - r - nmp_ply_offset()).max(0), beta - 1, beta, ply, None);
                 self.is_nmp_verif = false;
 
                 if verif? >= beta {
@@ -994,7 +995,7 @@ impl Worker {
         // that, guesses. Reduce by one ply to acknowledge the uncertainty
         // and avoid investing full depth into an unguided search.
         // The next iteration will have a TT move and do it properly.
-        let depth = if depth >= 4 && tt_move.is_none() { depth - 1 } else { depth };
+        let depth = if depth >= iir_depth() && tt_move.is_none() { depth - iir_reduction() } else { depth };
 
         // ──────── Move loop ────────
 
@@ -1170,11 +1171,11 @@ impl Worker {
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
-                        r -= LMR_SCALE;
+                        r -= killer_lmr_bonus();
                     }
 
-                    let max_r = (depth - 1) * LMR_SCALE;
-                    (r - hist / 8).clamp(0, max_r) / LMR_SCALE
+                    let max_r = (depth - lmr_retained()) * LMR_SCALE;
+                    (r - hist / lmr_hist_div()).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
                 };
@@ -1195,7 +1196,7 @@ impl Worker {
                     // scaled 4x and capped at 1600 to push entries toward the
                     // nominal ±16384 attractor without a single deep search
                     // permanently dominating the history table.
-                    let bonus = (depth.pow(2) * 4).min(1600);
+                    let bonus = (depth.pow(2) * hist_bonus_mult()).min(hist_bonus_cap());
 
                     // Only reward if the cutoff itself was caused by a quiet move.
                     // Captures and structural moves (castling) are handled differently.
@@ -1333,7 +1334,7 @@ impl Worker {
         // but to respond. Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
         if self.pos.checkers().is_not_empty() {
-            reduction = (reduction - 1).max(0);
+            reduction = (reduction - check_lmr_bonus()).max(0);
         }
 
         res.move_count += 1;
