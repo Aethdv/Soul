@@ -143,15 +143,12 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         // Fresh run: prior report's [min, max] interpretation may no longer apply.
         let _ = fs::remove_file(bounds_path_ref);
     }
-    let mut bounds = BoundsTracker::new(
-        n,
-        BoundsConfig {
-            window_gens: config.bounds_window_gens,
-            alarm_multiplier: config.bounds_alarm_multiplier,
-            alarm_floor: config.bounds_alarm_floor,
-            elite_beta: 0.2,
-        },
-    );
+    let mut bounds = BoundsTracker::new(n, BoundsConfig {
+        window_gens: config.bounds_window_gens,
+        alarm_multiplier: config.bounds_alarm_multiplier,
+        alarm_floor: config.bounds_alarm_floor,
+        elite_beta: 0.2,
+    });
 
     // SIGINT: finish current epoch, write final report, then exit. Second Ctrl-C = hard exit.
     let stop_flag = Arc::new(AtomicBool::new(false));

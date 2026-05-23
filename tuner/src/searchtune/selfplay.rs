@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     io::Error,
     sync::{
         Arc,
@@ -24,6 +25,9 @@ use soul::{
 };
 
 use super::pentanomial::{GameResult, Pentanomial, pair_to_pentanomial};
+
+/// Per-worker TT pool size.
+const TT_POOL_MB: usize = 16;
 
 /// Executes a full suite of candidate vs. baseline paired matches.
 ///
@@ -136,6 +140,25 @@ fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64
     (penta, total_candidate_nodes, total_baseline_nodes)
 }
 
+thread_local! {
+    /// One pair of TTs per rayon worker, alive for the worker's lifetime.
+    /// Cleared (not reallocated) between pairs so we pay 32 MB of malloc *once*
+    /// per worker instead of per opening pair.
+    static TT_POOL: RefCell<Option<(Arc<TranspositionTable>, Arc<TranspositionTable>)>> = const { RefCell::new(None) };
+}
+
+/// Hand out the worker-local TT pair, lazy-initialized and cleared on each call.
+fn acquire_tts() -> (Arc<TranspositionTable>, Arc<TranspositionTable>) {
+    TT_POOL.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let pair = slot
+            .get_or_insert_with(|| (Arc::new(TranspositionTable::new(TT_POOL_MB)), Arc::new(TranspositionTable::new(TT_POOL_MB))));
+        pair.0.clear();
+        pair.1.clear();
+        (Arc::clone(&pair.0), Arc::clone(&pair.1))
+    })
+}
+
 fn play_match_pair<F: Fn()>(
     fen: &str,
     limits: &Limits,
@@ -152,8 +175,7 @@ fn play_match_pair<F: Fn()>(
     // Thread local heap-allocated stacks
     let dummy_board = Board::default();
     let dummy_hist = vec![dummy_board.hash];
-    let tt_a = Arc::new(TranspositionTable::new(16));
-    let tt_b = Arc::new(TranspositionTable::new(16));
+    let (tt_a, tt_b) = acquire_tts();
     let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, History::new(), tt_a));
     let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, History::new(), tt_b));
 
