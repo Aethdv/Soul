@@ -511,6 +511,7 @@ name = "tuner"
 version = "0.2.1"
 dependencies = [
  "clap",
+ "ctrlc",
  "fastrand",
  "parking_lot",
  "paste",

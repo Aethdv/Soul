@@ -12,15 +12,22 @@
 
 use std::{
     collections::BTreeMap,
+    fs,
     io::{Write, stdout},
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Instant,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 use rayon::prelude::*;
 use soul::engine::search_params::{self, SearchParams};
 
 use super::{
+    bounds::{BoundsConfig, BoundsTracker},
     cache::MatchCache,
     cmaes::{CmaEs, clamp_normalized, default_lambda},
     elo::{EloCache, elo_color},
@@ -128,6 +135,36 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
     let mut rng = fastrand::Rng::new();
     let total_start = Instant::now();
+
+    // ── Bounds Reporter ──
+    let bounds_path = config.bounds_report_path.clone();
+    let bounds_path_ref = Path::new(&bounds_path);
+    if !resume {
+        // Fresh run: prior report's [min, max] interpretation may no longer apply.
+        let _ = fs::remove_file(bounds_path_ref);
+    }
+    let mut bounds = BoundsTracker::new(
+        n,
+        BoundsConfig {
+            window_gens: config.bounds_window_gens,
+            alarm_multiplier: config.bounds_alarm_multiplier,
+            alarm_floor: config.bounds_alarm_floor,
+            elite_beta: 0.2,
+        },
+    );
+
+    // SIGINT: finish current epoch, write final report, then exit. Second Ctrl-C = hard exit.
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let stop_flag = Arc::clone(&stop_flag);
+        let _ = ctrlc::set_handler(move || {
+            if stop_flag.swap(true, Ordering::SeqCst) {
+                eprintln!("\n\x1b[91m>> Second Ctrl-C, hard exit.\x1b[0m");
+                std::process::exit(130);
+            }
+            eprintln!("\n\x1b[93m>> Ctrl-C received — finishing current epoch, writing bounds report, then exiting.\x1b[0m");
+        });
+    }
 
     let mut verified_elite_params = best_params.clone();
     // On resume, verified_elite_state is the loaded CMA-ES state (same as cmaes).
@@ -257,22 +294,29 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         let progress = AtomicUsize::new(0);
         let total_to_play = needs_play.len() * effective_pairs;
 
+        let play_start = Instant::now();
+        // ~33Hz cap on stdout writes. Tight enough to look continuous on 60Hz+ displays;
+        // loose enough that workers don't serialize on the print mutex at high pair throughput.
+        let last_print = Mutex::new(play_start);
+        const PRINT_INTERVAL: Duration = Duration::from_millis(30);
+
         macro_rules! fmt_progress {
-            ($done:expr) => {
+            ($done:expr, $eta:expr) => {
                 format!(
-                    "  Epoch {:>3}/{} | Budget: {:>3} | Pairs {:>3}/{} | Imputed: {:>2} | SE: {:>4.1} | Elo: ...",
+                    "  Epoch {:>3}/{} | Budget: {:>3} | Pairs {:>4}/{} | ETA {:>6} | Imputed: {:>2} | SE: {:>4.1} | Elo: ...",
                     epoch,
                     config.epochs,
                     effective_pairs,
                     $done,
                     total_to_play,
+                    format_eta($eta),
                     lambda - needs_play.len(),
                     min_surrogate_err
                 )
             };
         }
 
-        print!("{}", fmt_progress!(0));
+        print!("{}", fmt_progress!(0, f64::INFINITY));
         let _ = stdout().flush();
 
         // Physically play the matches for unknown candidates
@@ -284,11 +328,26 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                 let candidate_params = SearchParams::from_normalized(&clamped);
 
                 let progress_ref = &progress;
+                let last_print_ref = &last_print;
                 let on_pair = || {
                     let done = progress_ref.fetch_add(1, Ordering::Relaxed) + 1;
-                    // Throttle updates to minimize lock contention on stdout().flush()
-                    if done.is_multiple_of(10) || done == total_to_play {
-                        print!("\r{}", fmt_progress!(done));
+                    let now = Instant::now();
+
+                    // Cheap unlocked precheck under the time gate; uncontended hot path skips the lock entirely.
+                    let should_print = done == total_to_play
+                        || last_print_ref
+                            .try_lock()
+                            .filter(|guard| now.duration_since(**guard) >= PRINT_INTERVAL)
+                            .map(|mut guard| {
+                                *guard = now;
+                                true
+                            })
+                            .unwrap_or(false);
+
+                    if should_print {
+                        let elapsed_s = now.duration_since(play_start).as_secs_f64();
+                        let eta_s = if done > 0 { elapsed_s * (total_to_play - done) as f64 / done as f64 } else { f64::INFINITY };
+                        print!("\r{}", fmt_progress!(done, eta_s));
                         let _ = stdout().flush();
                     }
                 };
@@ -314,7 +373,10 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             elo_cache.add(population[idx].clone(), opponent_norm.clone(), elo, weight);
         }
 
-        let avg_std_err: f64 = fitness_results.iter().map(|&(_, err, ..)| err).sum::<f64>() / lambda as f64;
+        // Pass mean(SE²), not mean(SE)² — Law of Total Variance wants the average
+        // variance contribution from noise. Jensen's inequality: mean(SE)² ≤ mean(SE²),
+        // so squaring the mean would systematically under-state noise variance.
+        let avg_var_noise: f64 = fitness_results.iter().map(|&(_, err, ..)| err * err).sum::<f64>() / lambda as f64;
 
         // ── Penalization & Bayesian Consensus ──
         let penalized_elo: Vec<f64> = population
@@ -370,7 +432,17 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             .collect();
 
         let raw_elos: Vec<f64> = fitness_results.iter().map(|&(r, ..)| r).collect();
-        cmaes.update(&population, &penalized_elo, &raw_elos, avg_std_err);
+        cmaes.update(&population, &penalized_elo, &raw_elos, avg_var_noise);
+
+        // ── Bounds observation ──
+        // Replays CMA-ES's ranking locally (top-μ by penalized fitness) to feed elite stats.
+        {
+            let mu = lambda / 2;
+            let mut elite_indices: Vec<usize> = (0..lambda).collect();
+            elite_indices.sort_unstable_by(|&a, &b| penalized_elo[b].total_cmp(&penalized_elo[a]));
+            elite_indices.truncate(mu);
+            bounds.observe(&population, &elite_indices, &params);
+        }
 
         // ── Learning Rate Adaptation (LRA) ──
         // Scale the global learning rate based on the estimated Signal-to-Noise Ratio.
@@ -612,6 +684,24 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         if let Err(e) = ckpt.save() {
             eprintln!("\n\x1b[31m[!] Failed to save checkpoint: {e}\x1b[0m");
         }
+
+        // ── Bounds report: periodic + on SIGINT ──
+        let stop_requested = stop_flag.load(Ordering::SeqCst);
+        if stop_requested || (config.bounds_report_interval > 0 && epoch % config.bounds_report_interval == 0) {
+            let label = if stop_requested { "SIGINT" } else { "periodic" };
+            if let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, epoch, label) {
+                eprintln!("\x1b[31m[!] Failed to write bounds report: {e}\x1b[0m");
+            }
+        }
+        if stop_requested {
+            eprintln!("\x1b[93m>> Bounds report flushed to {bounds_path}; exiting.\x1b[0m");
+            break;
+        }
+    }
+
+    // Final report on natural completion (in case last epoch wasn't a periodic boundary).
+    if let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, config.epochs, "final") {
+        eprintln!("\x1b[31m[!] Failed to write final bounds report: {e}\x1b[0m");
     }
 
     println!("\n\x1b[1;36m>> Search Tuning Complete ({:.1}s)\x1b[0m", total_start.elapsed().as_secs_f64());
@@ -693,4 +783,19 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         println!("{:<14} = {value},", param.name);
     }
     println!("// -------------------------------\n");
+}
+
+/// `Hh Mm`, `Mm Ss`, `S.s s`, or `--` if unknown.
+fn format_eta(secs: f64) -> String {
+    if !secs.is_finite() || secs < 0.0 {
+        return "--".to_string();
+    }
+    let s = secs as u64;
+    if s >= 3600 {
+        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m{:02}s", s / 60, s % 60)
+    } else {
+        format!("{secs:.1}s")
+    }
 }
