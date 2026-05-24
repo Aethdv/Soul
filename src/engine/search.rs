@@ -136,16 +136,15 @@ pub struct Searcher<'cfg> {
     pub iter_depth: i32,
     pub last_print: u128,
     pub pv_history: VecDeque<(u128, Line, i32)>,
-    pub history_table: History,
     pub tt: Arc<TranspositionTable>,
 }
 
 #[repr(align(32))]
-pub struct Worker {
+pub struct Worker<'h> {
     pub pos: Position,
     pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 1]>,
-    pub history: History,
+    pub history: &'h mut History,
     /// Set while a null-move verification search is on the stack.
     /// Suppresses nested NMP, which would otherwise recurse forever on
     /// the same position at ever-shrinking depth.
@@ -379,7 +378,7 @@ impl<'cfg> Searcher<'cfg> {
     ///   2. Natural anytime algorithm: always have a best move ready from the
     ///      last completed iteration.
     #[inline]
-    pub fn iterative_deepening(&mut self) -> History {
+    pub fn iterative_deepening(&mut self, history: &mut History) {
         self.nodes = 0;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
@@ -391,14 +390,14 @@ impl<'cfg> Searcher<'cfg> {
             let mut board = self.root_pos;
             let mut acc = board.get_initial_accumulator();
             println!("Nodes searched: {}", perft(&mut board, perft_depth, &mut acc));
-            return self.history_table.clone();
+            return;
         }
 
         if self.root_moves.is_empty() {
             if !self.cfg.limits.silent {
                 println!("bestmove 0000");
             }
-            return self.history_table.clone();
+            return;
         }
 
         if !self.cfg.limits.searchmoves.is_empty() {
@@ -408,7 +407,7 @@ impl<'cfg> Searcher<'cfg> {
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
-                return self.history_table.clone();
+                return;
             }
         }
 
@@ -426,7 +425,7 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
-            history: self.history_table.clone(),
+            history,
             is_nmp_verif: false,
         };
 
@@ -577,18 +576,10 @@ impl<'cfg> Searcher<'cfg> {
             }
             let _ = io::stdout().flush();
         }
-
-        worker.history
     }
 
     #[inline]
-    pub fn new(
-        cfg: &'cfg SearchConfig,
-        pos: &Position,
-        history: &[u64],
-        history_table: History,
-        tt: Arc<TranspositionTable>,
-    ) -> Self {
+    pub fn new(cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], tt: Arc<TranspositionTable>) -> Self {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         let tm =
             TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
@@ -621,12 +612,11 @@ impl<'cfg> Searcher<'cfg> {
             sel_depth: 0,
             iter_depth: 0,
             last_print: 0,
-            history_table,
             tt,
         }
     }
 
-    /// Per-move reset. Keeps `history_table` — clear it between games via [`Self::clear_history`].
+    /// Per-move reset. History lives at the caller; clear it between games via `History::clear`.
     #[inline]
     pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64]) {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
@@ -653,12 +643,6 @@ impl<'cfg> Searcher<'cfg> {
         self.pv_history.clear();
         self.prev_score = -INF;
         self.prev_pv = Line::new();
-    }
-
-    /// Zero the history table in place.
-    #[inline]
-    pub fn clear_history(&mut self) {
-        self.history_table.clear();
     }
 
     #[inline]
@@ -779,7 +763,7 @@ impl<'cfg> Searcher<'cfg> {
     }
 }
 
-impl Worker {
+impl Worker<'_> {
     /// Negamax with alpha-beta pruning. Since chess is zero-sum, we maximize the
     /// score from the current side's perspective at every node, negating the score
     /// as it returns up the tree.

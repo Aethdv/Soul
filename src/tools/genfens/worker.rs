@@ -451,15 +451,11 @@ impl WorkerState {
             SearchParams::default(),
         );
 
-        // Move history out with a zero-cost default (empty cont Box).
-        // The history accumulates across positions within a game for better ordering.
-        let mut searcher =
-            Searcher::new(&cfg, &self.board, &self.search_history, mem::take(&mut self.history_table), Arc::clone(&self.tt));
-        searcher.iterative_deepening();
+        // History accumulates across positions within a game for better ordering.
+        let mut searcher = Searcher::new(&cfg, &self.board, &self.search_history, Arc::clone(&self.tt));
+        searcher.iterative_deepening(&mut self.history_table);
         let best_score = searcher.best_score().unwrap_or(0);
         let best_move = searcher.best_move();
-        // Move the enriched history back; the empty sentinel gets dropped (0 bytes freed).
-        self.history_table = searcher.history_table;
 
         (static_eval, best_score, best_move)
     }

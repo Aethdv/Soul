@@ -137,16 +137,16 @@ impl XBoardState {
         let overhead = self.overhead;
         let show_wdl = self.show_wdl;
         let history_arc = Arc::clone(&self.persistent_history);
-        let persistent_history = history_arc.lock().clone();
+        let mut persistent_history = history_arc.lock().clone();
 
         let tt = self.tt.clone();
 
         self.search_thread = Some(thread::spawn(move || {
             let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
             let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
-            let mut ctx = Searcher::new(&cfg, &board, &history, persistent_history, tt);
-            let final_history = ctx.iterative_deepening();
-            *history_arc.lock() = final_history;
+            let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+            ctx.iterative_deepening(&mut persistent_history);
+            *history_arc.lock() = persistent_history;
         }));
     }
 }

@@ -158,6 +158,19 @@ fn acquire_tts() -> (Arc<TranspositionTable>, Arc<TranspositionTable>) {
     })
 }
 
+thread_local! {
+    /// Owned histories per worker; ~MB each. Taken at pair start, returned after.
+    static HISTORY_POOL: RefCell<Option<(History, History)>> = const { RefCell::new(None) };
+}
+
+fn acquire_histories() -> (History, History) {
+    HISTORY_POOL.with(|cell| cell.borrow_mut().take().unwrap_or_else(|| (History::new(), History::new())))
+}
+
+fn release_histories(hist_a: History, hist_b: History) {
+    HISTORY_POOL.with(|cell| *cell.borrow_mut() = Some((hist_a, hist_b)));
+}
+
 fn play_match_pair<F: Fn()>(
     fen: &str,
     limits: &Limits,
@@ -175,18 +188,25 @@ fn play_match_pair<F: Fn()>(
     let dummy_board = Board::default();
     let dummy_hist = vec![dummy_board.hash];
     let (tt_a, tt_b) = acquire_tts();
-    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, History::new(), tt_a));
-    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, History::new(), tt_b));
+    let (mut hist_a, mut hist_b) = acquire_histories();
+    // Pooled histories may carry state from a prior pair — start each pair clean.
+    hist_a.clear();
+    hist_b.clear();
+
+    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, tt_a));
+    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, tt_b));
 
     // Round 1: A (White) vs B (Black)
-    let (result_as_white, nodes_a_1, nodes_b_1) = play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b);
+    let (result_as_white, nodes_a_1, nodes_b_1) =
+        play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b, &mut hist_a, &mut hist_b);
 
     // ucinewgame-equivalent between the two games of the pair.
-    searcher_a.clear_history();
-    searcher_b.clear_history();
+    hist_a.clear();
+    hist_b.clear();
 
     // Round 2: B (White) vs A (Black)
-    let (result_for_b, nodes_b_2, nodes_a_2) = play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a);
+    let (result_for_b, nodes_b_2, nodes_a_2) =
+        play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a, &mut hist_b, &mut hist_a);
 
     // Invert result (B's POV → A's POV)
     let result_as_black_perspective = match result_for_b {
@@ -196,6 +216,8 @@ fn play_match_pair<F: Fn()>(
     };
 
     on_finish();
+
+    release_histories(hist_a, hist_b);
 
     (
         pair_to_pentanomial(result_as_white, result_as_black_perspective),
@@ -215,6 +237,8 @@ fn play_game<'a>(
     cfg_black: &'a SearchConfig,
     searcher_white: &mut Searcher<'a>,
     searcher_black: &mut Searcher<'a>,
+    hist_white: &mut History,
+    hist_black: &mut History,
 ) -> (GameResult, u64, u64) {
     let uses_clock =
         cfg_white.limits.wtime > 0 && cfg_white.limits.movetime == 0 && cfg_white.limits.depth == 0 && cfg_white.limits.nodes == 0;
@@ -247,8 +271,11 @@ fn play_game<'a>(
 
         let move_start = Instant::now();
 
-        let (searcher, cfg) =
-            if board.stm == Color::White { (&mut *searcher_white, cfg_white) } else { (&mut *searcher_black, cfg_black) };
+        let (searcher, cfg, hist_table) = if board.stm == Color::White {
+            (&mut *searcher_white, cfg_white, &mut *hist_white)
+        } else {
+            (&mut *searcher_black, cfg_black, &mut *hist_black)
+        };
 
         searcher.reset(cfg, &board, &history);
 
@@ -270,7 +297,7 @@ fn play_game<'a>(
         }
 
         cfg.stop.store(false, Ordering::Release);
-        searcher.iterative_deepening();
+        searcher.iterative_deepening(hist_table);
 
         let score = searcher.best_score().unwrap_or(0);
         let ply = (board.fullmove_number as usize - 1) * 2 + (board.stm as usize);

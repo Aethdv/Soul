@@ -97,11 +97,11 @@ impl UciState {
         thread::spawn(move || {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    SearchCommand::Go(cfg, board, history, history_table, tt, result_tx) => {
-                        let mut ctx = Searcher::new(&cfg, &board, &history, history_table, tt);
-                        let final_history = ctx.iterative_deepening();
+                    SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx) => {
+                        let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+                        ctx.iterative_deepening(&mut history_table);
                         is_searching_worker.store(false, Ordering::Release);
-                        let _ = result_tx.send(final_history);
+                        let _ = result_tx.send(history_table);
                     },
                     SearchCommand::Quit => break,
                 }
