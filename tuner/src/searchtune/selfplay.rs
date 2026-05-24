@@ -16,7 +16,6 @@ use soul::{
     engine::{
         adjudication::check_adjudication,
         history::History,
-        movegen::gen_legal_moves,
         search::{Limits, Protocol, SearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
         tm::TimeManager,
@@ -239,14 +238,6 @@ fn play_game<'a>(
     let black_inc = cfg_black.limits.binc;
 
     for _ply in 0..MAX_GAME_PLIES {
-        let moves = gen_legal_moves(&board);
-        if moves.is_empty() {
-            let in_check = board.checkers().is_not_empty();
-            if in_check {
-                return (if board.stm == Color::White { GameResult::Loss } else { GameResult::Win }, white_nodes, black_nodes);
-            }
-            return (GameResult::Draw, white_nodes, black_nodes);
-        }
         if is_draw(&board, &history) {
             return (GameResult::Draw, white_nodes, black_nodes);
         }
@@ -257,6 +248,15 @@ fn play_game<'a>(
             if board.stm == Color::White { (&mut *searcher_white, cfg_white) } else { (&mut *searcher_black, cfg_black) };
 
         searcher.reset(cfg, &board, &history);
+
+        // reset already generated root_moves; empty => mate or stalemate.
+        if searcher.best_move().is_none() {
+            let in_check = board.checkers().is_not_empty();
+            if in_check {
+                return (if board.stm == Color::White { GameResult::Loss } else { GameResult::Win }, white_nodes, black_nodes);
+            }
+            return (GameResult::Draw, white_nodes, black_nodes);
+        }
 
         if uses_clock {
             let mut limits = cfg.limits.clone();
@@ -305,7 +305,8 @@ fn play_game<'a>(
             }
         }
 
-        let best_move = searcher.best_move().unwrap_or_else(|| *moves.iter().next().unwrap());
+        // safe: terminal positions returned above, so root_moves is non-empty.
+        let best_move = searcher.best_move().expect("non-terminal position must have a move");
 
         board.make_move(best_move, &mut accumulator);
         history.push(board.hash);
