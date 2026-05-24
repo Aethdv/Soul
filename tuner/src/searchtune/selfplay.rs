@@ -237,6 +237,9 @@ fn play_game<'a>(
     let white_inc = cfg_white.limits.winc;
     let black_inc = cfg_black.limits.binc;
 
+    // Hoisted once per game; only wtime/btime change per move.
+    let mut tm_limits = cfg_white.limits.clone();
+
     for _ply in 0..MAX_GAME_PLIES {
         if is_draw(&board, &history) {
             return (GameResult::Draw, white_nodes, black_nodes);
@@ -259,13 +262,11 @@ fn play_game<'a>(
         }
 
         if uses_clock {
-            let mut limits = cfg.limits.clone();
-            // Just pass the current actual clocks — no branching needed.
-            limits.wtime = white_time_ms;
-            limits.btime = black_time_ms;
+            tm_limits.wtime = white_time_ms;
+            tm_limits.btime = black_time_ms;
             let phase = i32::from(accumulator.to_array()[2]);
             searcher.tm =
-                TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
+                TimeManager::new(&tm_limits, move_start, board.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
         }
 
         cfg.stop.store(false, Ordering::Release);
