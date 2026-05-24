@@ -263,7 +263,7 @@ fn play_game<'a>(
             // Just pass the current actual clocks — no branching needed.
             limits.wtime = white_time_ms;
             limits.btime = black_time_ms;
-            let phase = i32::from(board.get_initial_accumulator().to_array()[2]);
+            let phase = i32::from(accumulator.to_array()[2]);
             searcher.tm =
                 TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
         }
