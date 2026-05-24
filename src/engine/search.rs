@@ -626,8 +626,9 @@ impl<'cfg> Searcher<'cfg> {
         }
     }
 
+    /// Per-move reset. Keeps `history_table` — clear it between games via [`Self::clear_history`].
     #[inline]
-    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], history_table: History) {
+    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64]) {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
 
         self.zobrist_trail.clear();
@@ -650,9 +651,14 @@ impl<'cfg> Searcher<'cfg> {
         self.iter_depth = 0;
         self.last_print = 0;
         self.pv_history.clear();
-        self.history_table = history_table;
         self.prev_score = -INF;
         self.prev_pv = Line::new();
+    }
+
+    /// Zero the history table in place.
+    #[inline]
+    pub fn clear_history(&mut self) {
+        self.history_table.clear();
     }
 
     #[inline]

@@ -182,6 +182,10 @@ fn play_match_pair<F: Fn()>(
     // Round 1: A (White) vs B (Black)
     let (result_as_white, nodes_a_1, nodes_b_1) = play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b);
 
+    // ucinewgame-equivalent between the two games of the pair.
+    searcher_a.clear_history();
+    searcher_b.clear_history();
+
     // Round 2: B (White) vs A (Black)
     let (result_for_b, nodes_b_2, nodes_a_2) = play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a);
 
@@ -252,7 +256,7 @@ fn play_game<'a>(
         let (searcher, cfg) =
             if board.stm == Color::White { (&mut *searcher_white, cfg_white) } else { (&mut *searcher_black, cfg_black) };
 
-        searcher.reset(cfg, &board, &history, History::new());
+        searcher.reset(cfg, &board, &history);
 
         if uses_clock {
             let mut limits = cfg.limits.clone();
