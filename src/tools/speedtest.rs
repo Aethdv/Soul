@@ -62,9 +62,10 @@ pub fn run(limit: usize) {
         stop_signal.store(false, Ordering::Release);
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
-        let mut searcher = Searcher::new(&cfg, &board, &history, History::new(), Arc::new(TranspositionTable::new(16)));
+        let mut history_table = History::new();
+        let mut searcher = Searcher::new(&cfg, &board, &history, Arc::new(TranspositionTable::new(16)));
 
-        searcher.iterative_deepening();
+        searcher.iterative_deepening(&mut history_table);
         total_nodes += searcher.nodes;
 
         let bar_width = 40;

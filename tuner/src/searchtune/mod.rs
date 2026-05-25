@@ -1,3 +1,4 @@
+pub mod bounds;
 pub mod cache;
 pub mod cmaes;
 pub mod elo;

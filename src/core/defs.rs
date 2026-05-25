@@ -117,7 +117,7 @@ impl Color {
     }
 }
 
-impl const From<u8> for Color {
+const impl From<u8> for Color {
     #[inline(always)]
     fn from(val: u8) -> Self {
         // SAFETY: val & 1 is always 0 or 1 — both valid Color variants.
@@ -125,14 +125,14 @@ impl const From<u8> for Color {
     }
 }
 
-impl const From<Color> for usize {
+const impl From<Color> for usize {
     #[inline(always)]
     fn from(val: Color) -> Self {
         val as usize
     }
 }
 
-impl const Not for Color {
+const impl Not for Color {
     type Output = Self;
 
     #[inline(always)]
@@ -225,7 +225,7 @@ impl PieceType {
     }
 }
 
-impl const From<u8> for PieceType {
+const impl From<u8> for PieceType {
     #[inline(always)]
     fn from(val: u8) -> Self {
         // SAFETY: The engine guarantees that pieces are strictly within 0..=6.
@@ -243,7 +243,7 @@ impl const From<u8> for PieceType {
     }
 }
 
-impl const From<PieceType> for usize {
+const impl From<PieceType> for usize {
     #[inline(always)]
     fn from(val: PieceType) -> Self {
         val as usize
@@ -289,7 +289,7 @@ impl Direction {
     }
 }
 
-impl const From<u8> for Direction {
+const impl From<u8> for Direction {
     #[inline(always)]
     fn from(val: u8) -> Self {
         // SAFETY: val & 7 is 0..=7, matching all eight Direction variants.

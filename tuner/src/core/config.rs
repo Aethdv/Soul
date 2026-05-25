@@ -246,6 +246,38 @@ pub struct SearchTuneConfig {
     pub centering_penalty: f64,
     pub active_softness: f64,
     pub sigma_boost_factor: f64,
+
+    /// Generations between bounds-report snapshots (also written on SIGINT).
+    #[serde(default = "default_bounds_report_interval")]
+    pub bounds_report_interval: usize,
+    /// Sliding-window size (generations) for clamp-rate detection.
+    #[serde(default = "default_bounds_window_gens")]
+    pub bounds_window_gens: usize,
+    /// Observed clamp rate must exceed `expected_rate * multiplier + floor` to flag a widen.
+    #[serde(default = "default_bounds_alarm_multiplier")]
+    pub bounds_alarm_multiplier: f64,
+    /// Absolute floor for alarm, prevents flagging when expected rate ≈ 0.
+    #[serde(default = "default_bounds_alarm_floor")]
+    pub bounds_alarm_floor: f64,
+    /// File path for the bounds report, relative to CWD.
+    #[serde(default = "default_bounds_report_path")]
+    pub bounds_report_path: String,
+}
+
+fn default_bounds_report_interval() -> usize {
+    5
+}
+fn default_bounds_window_gens() -> usize {
+    20
+}
+fn default_bounds_alarm_multiplier() -> f64 {
+    2.0
+}
+fn default_bounds_alarm_floor() -> f64 {
+    0.02
+}
+fn default_bounds_report_path() -> String {
+    "bounds_report.txt".to_string()
 }
 
 fn default_smoothing_radius() -> f64 {
@@ -328,6 +360,11 @@ impl Default for TunerConfig {
                 centering_penalty: 100.0,
                 active_softness: 0.5,
                 sigma_boost_factor: 2.0,
+                bounds_report_interval: 5,
+                bounds_window_gens: 20,
+                bounds_alarm_multiplier: 2.0,
+                bounds_alarm_floor: 0.02,
+                bounds_report_path: "bounds_report.txt".to_string(),
             },
             general: GeneralConfig {
                 checkpoint_interval: 50,

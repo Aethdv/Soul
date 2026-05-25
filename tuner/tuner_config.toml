@@ -62,13 +62,13 @@ min_sigma = 0.02
 max_restarts = 3
 stagnation_threshold = 15
 h2h_pairs = 300
-validation_pairs = 1000
+validation_pairs = 500
 
-reeval_interval = 8
+reeval_interval = 10
 confidence_factor = 2.0 # Elo - k · stderr
 
-epochs = 200
-pairs = 128
+epochs = 100
+pairs = 16
 tc = "4+0.04"
 h2h_tc = "1.0+0.01"
 val_tc = "1.0+0.01"

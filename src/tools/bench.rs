@@ -42,8 +42,9 @@ pub fn run(depth: i32) {
         io::stdout().flush().ok();
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
-        let mut searcher = Searcher::new(&cfg, &board, &history, History::new(), Arc::new(TranspositionTable::new(16)));
-        searcher.iterative_deepening();
+        let mut history_table = History::new();
+        let mut searcher = Searcher::new(&cfg, &board, &history, Arc::new(TranspositionTable::new(16)));
+        searcher.iterative_deepening(&mut history_table);
 
         let nodes = searcher.nodes;
         total_nodes += nodes;

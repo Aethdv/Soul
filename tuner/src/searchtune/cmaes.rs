@@ -48,14 +48,20 @@
 //!    inferiority. If the covariance shrinks in response to such noise, the search
 //!    space can collapse prematurely around noise.
 //!    We apply the Law of Total Variance (`Var(Obs) = Var(True) + Var(Noise)`) using
-//!    the empirical standard error of the matches. The resulting Reliability Coefficient
-//!    (`R = Var(True) / Var(Obs)`) estimates the fraction of observed variance
-//!    attributable to genuine parameter differences. A smoothstep of `R` gates the
-//!    negative covariance updates, so that noisy generations have little effect on the
-//!    covariance shape.
-//!    *Note: This is an original derivation for chess engine tuning. It is conceptually
-//!    related to the SNR-maintenance goal of LRA-CMA-ES, but operates at the level of
-//!    individual covariance updates rather than the global learning rate.*
+//!    the average per-candidate match variance (mean of `SE²`, not `mean(SE)²` —
+//!    Jensen's inequality would systematically under-state noise the other way).
+//!    The Reliability Coefficient `R = Var(True) / Var(Obs)` — the classical
+//!    psychometric measure of signal fraction — is smoothed across generations, and
+//!    a cubic smoothstep of the EMA gates the *negative* covariance updates only.
+//!    Positive updates pass through at full strength so noisy gens still move toward
+//!    observed winners; only the destructive (search-space contracting) updates are
+//!    throttled, since their failure mode (premature collapse) is unrecoverable.
+//!    *Ref: Spearman, C. (1904). The Proof and Measurement of Association between
+//!    Two Things. The American Journal of Psychology, 15(1), 72–101.*
+//!    *Note: applying this classical coefficient to gate Active CMA-ES negative-weight
+//!    updates is, to our knowledge, unused elsewhere in chess engine tuning. Related
+//!    to LRA-CMA-ES's SNR-maintenance but acts on individual covariance updates rather
+//!    than the global learning rate.*
 //!
 //! 5. SNR-Adaptive Learning Rate (LRA-CMA-ES)
 //!    The global update scale `η` is adapted each generation to maintain a stable
@@ -112,14 +118,19 @@ pub struct CmaEs {
     active_softness: f64,
 
     // ── Adaptation State ──
-    eta: f64,        // Global learning rate factor
-    lra_e: Vec<f64>, // Moving average of updates (Signal)
-    lra_v: f64,      // Moving average of update magnitudes (Noise)
-    g_norm: f64,     // Current natural gradient norm
+    eta: f64,             // Global learning rate factor
+    lra_e: Vec<f64>,      // Moving average of updates (Signal)
+    lra_v: f64,           // Moving average of update magnitudes (Noise)
+    g_norm: f64,          // Current natural gradient norm
+    reliability_ema: f64, // Smoothed reliability coefficient for negative-weight gating
 }
 
 /// The smoothing factor for the SNR-adaptive learning rate moving averages.
 const LRA_BETA: f64 = 0.1;
+
+/// Smoothing factor for the reliability EMA.
+/// Lower = more stable, slower to react to genuine noise regime changes.
+const RELIABILITY_BETA: f64 = 0.2;
 
 /// Clamps normalized values to [0, 1].
 ///
@@ -273,6 +284,7 @@ impl CmaEs {
             lra_e: vec![0.0; n],
             lra_v: 0.0,
             g_norm: 0.0,
+            reliability_ema: 0.0,
         }
     }
 
@@ -314,33 +326,34 @@ impl CmaEs {
     /// The elite subset (μ) tugs the mean toward victory. The entire population (λ) expands
     /// or shrinks our uncertainty (covariance) along their respective vectors.
     /// Crucially, negative update vectors are gated by Signal-to-Noise Ratio (SNR).
-    pub fn update(&mut self, population_normalized: &[Vec<f64>], penalized_elo: &[f64], raw_elo: &[f64], avg_std_err: f64) {
+    pub fn update(&mut self, population_normalized: &[Vec<f64>], penalized_elo: &[f64], raw_elo: &[f64], avg_var_noise: f64) {
         let mut indices: Vec<usize> = (0..self.lambda).collect();
         indices.sort_unstable_by(|&a, &b| penalized_elo[b].total_cmp(&penalized_elo[a]));
 
         // ── SNR Gating (Reliability Coefficient) ──
         // Raw match variance combines true engine strength (signal) and match luck (noise).
-        // If we gate updates on raw variance, we punish candidates for unlucky pairings.
-        //
-        // Using the Law of Total Variance: Var(Observed) = Var(True) + Var(Noise).
-        // We know the standard error (Var(Noise)), so we can isolate Var(True).
-        // The ratio Var(True) / Var(Observed) gives the Reliability Coefficient —
-        // the fraction of variance that represents actual strength differences
-        // rather than match noise.
+        // Gating on raw variance alone punishes candidates for unlucky pairings, so we
+        // decompose: Var(Observed) = Var(True) + Var(Noise). The noise term is the
+        // average per-candidate match variance (mean of SE², not SE-of-mean squared —
+        // Jensen would systematically under-state noise the other way).
+        // R = Var(True) / Var(Observed) is the reliability coefficient (Spearman, 1904).
         let mean_raw = raw_elo.iter().sum::<f64>() / self.lambda as f64;
         let var_observed = raw_elo.iter().map(|e| (e - mean_raw).powi(2)).sum::<f64>() / (self.lambda.max(2) - 1) as f64;
-
-        let var_noise = avg_std_err.powi(2);
-
-        // ── Law of Total Variance ──
-        // Var(Observed) = Var(True) + Var(Noise)
-        let var_signal = (var_observed - var_noise).max(0.0);
-
-        // Reliability R = Var(True) / Var(Observed)
+        let var_signal = (var_observed - avg_var_noise).max(0.0);
         let reliability = if var_observed > 1e-6 { (var_signal / var_observed).clamp(0.0, 1.0) } else { 0.0 };
 
-        // Cubic smoothstep the reliability to gracefully fade out noise-driven negative updates
-        let neg_scale = reliability * reliability * (3.0 - 2.0 * reliability);
+        // Smooth across generations: a single quiet gen shouldn't mute all negative
+        // updates. Lazy init on the first call so we don't bias toward 1.0 (trust)
+        // or 0.0 (paranoia) before we've measured anything.
+        self.reliability_ema = if self.generation == 0 {
+            reliability
+        } else {
+            (1.0 - RELIABILITY_BETA).mul_add(self.reliability_ema, RELIABILITY_BETA * reliability)
+        };
+
+        // Cubic smoothstep the EMA reliability to gracefully fade out noise-driven negative updates
+        let r = self.reliability_ema;
+        let neg_scale = r * r * (3.0 - 2.0 * r);
 
         self.generation += 1;
 

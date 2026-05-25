@@ -276,42 +276,42 @@ impl Square {
     }
 }
 
-impl const From<u8> for Square {
+const impl From<u8> for Square {
     #[inline(always)]
     fn from(val: u8) -> Self {
         Self(val)
     }
 }
 
-impl const From<Square> for u8 {
+const impl From<Square> for u8 {
     #[inline(always)]
     fn from(sq: Square) -> Self {
         sq.0
     }
 }
 
-impl const From<Square> for u16 {
+const impl From<Square> for u16 {
     #[inline(always)]
     fn from(sq: Square) -> Self {
         sq.0 as u16
     }
 }
 
-impl const From<Square> for u64 {
+const impl From<Square> for u64 {
     #[inline(always)]
     fn from(sq: Square) -> Self {
         sq.0 as u64
     }
 }
 
-impl const From<Square> for usize {
+const impl From<Square> for usize {
     #[inline(always)]
     fn from(sq: Square) -> Self {
         sq.0 as usize
     }
 }
 
-impl const Shl<Square> for u64 {
+const impl Shl<Square> for u64 {
     type Output = u64;
     #[inline(always)]
     fn shl(self, rhs: Square) -> u64 {
@@ -319,7 +319,7 @@ impl const Shl<Square> for u64 {
     }
 }
 
-impl const Shr<Square> for u64 {
+const impl Shr<Square> for u64 {
     type Output = u64;
     #[inline(always)]
     fn shr(self, rhs: Square) -> u64 {
@@ -355,7 +355,7 @@ impl PartialOrd<Square> for u8 {
     }
 }
 
-impl const BitXor<u8> for Square {
+const impl BitXor<u8> for Square {
     type Output = Self;
     #[inline(always)]
     fn bitxor(self, rhs: u8) -> Self {
@@ -363,7 +363,7 @@ impl const BitXor<u8> for Square {
     }
 }
 
-impl const BitXor for Square {
+const impl BitXor for Square {
     type Output = Self;
     #[inline(always)]
     fn bitxor(self, rhs: Self) -> Self {
@@ -441,21 +441,21 @@ impl IntoIterator for Bitboard {
     }
 }
 
-impl const From<u64> for Bitboard {
+const impl From<u64> for Bitboard {
     #[inline(always)]
     fn from(val: u64) -> Self {
         Self(val)
     }
 }
 
-impl const From<Bitboard> for u64 {
+const impl From<Bitboard> for u64 {
     #[inline(always)]
     fn from(bb: Bitboard) -> Self {
         bb.0
     }
 }
 
-impl const From<Square> for Bitboard {
+const impl From<Square> for Bitboard {
     /// Converts a square into a bitboard with exactly that bit set.
     #[inline(always)]
     fn from(sq: Square) -> Self {
@@ -465,14 +465,14 @@ impl const From<Square> for Bitboard {
 
 macro_rules! impl_bb_op {
     ($trait:ident, $func:ident, $assign_trait:ident, $assign_func:ident) => {
-        impl const $trait for Bitboard {
+        const impl $trait for Bitboard {
             type Output = Self;
             #[inline(always)]
             fn $func(self, rhs: Self) -> Self {
                 Self(self.0.$func(rhs.0))
             }
         }
-        impl const $trait<u64> for Bitboard {
+        const impl $trait<u64> for Bitboard {
             type Output = Self;
             #[inline(always)]
             fn $func(self, rhs: u64) -> Self {
@@ -498,7 +498,7 @@ impl_bb_op!(BitAnd, bitand, BitAndAssign, bitand_assign);
 impl_bb_op!(BitOr, bitor, BitOrAssign, bitor_assign);
 impl_bb_op!(BitXor, bitxor, BitXorAssign, bitxor_assign);
 
-impl const Not for Bitboard {
+const impl Not for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn not(self) -> Self {
@@ -506,7 +506,7 @@ impl const Not for Bitboard {
     }
 }
 
-impl const Shl<u8> for Bitboard {
+const impl Shl<u8> for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn shl(self, rhs: u8) -> Self {
@@ -514,7 +514,7 @@ impl const Shl<u8> for Bitboard {
     }
 }
 
-impl const Shr<u8> for Bitboard {
+const impl Shr<u8> for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn shr(self, rhs: u8) -> Self {
@@ -522,7 +522,7 @@ impl const Shr<u8> for Bitboard {
     }
 }
 
-impl const Shl<Square> for Bitboard {
+const impl Shl<Square> for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn shl(self, rhs: Square) -> Self {
@@ -530,7 +530,7 @@ impl const Shl<Square> for Bitboard {
     }
 }
 
-impl const Shr<Square> for Bitboard {
+const impl Shr<Square> for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn shr(self, rhs: Square) -> Self {
@@ -538,7 +538,7 @@ impl const Shr<Square> for Bitboard {
     }
 }
 
-impl const Sub for Bitboard {
+const impl Sub for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
@@ -546,7 +546,7 @@ impl const Sub for Bitboard {
     }
 }
 
-impl const Sub<u64> for Bitboard {
+const impl Sub<u64> for Bitboard {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: u64) -> Self {

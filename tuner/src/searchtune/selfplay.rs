@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     io::Error,
     sync::{
         Arc,
@@ -15,7 +16,6 @@ use soul::{
     engine::{
         adjudication::check_adjudication,
         history::History,
-        movegen::gen_legal_moves,
         search::{Limits, Protocol, SearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
         tm::TimeManager,
@@ -24,6 +24,9 @@ use soul::{
 };
 
 use super::pentanomial::{GameResult, Pentanomial, pair_to_pentanomial};
+
+/// Per-worker TT pool size.
+const TT_POOL_MB: usize = 16;
 
 /// Executes a full suite of candidate vs. baseline paired matches.
 ///
@@ -136,6 +139,38 @@ fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64
     (penta, total_candidate_nodes, total_baseline_nodes)
 }
 
+thread_local! {
+    /// One pair of TTs per rayon worker, alive for the worker's lifetime.
+    /// Cleared (not reallocated) between pairs so we pay 32 MB of malloc *once*
+    /// per worker instead of per opening pair.
+    static TT_POOL: RefCell<Option<(Arc<TranspositionTable>, Arc<TranspositionTable>)>> = const { RefCell::new(None) };
+}
+
+/// Hand out the worker-local TT pair, lazy-initialized and cleared on each call.
+fn acquire_tts() -> (Arc<TranspositionTable>, Arc<TranspositionTable>) {
+    TT_POOL.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let pair = slot
+            .get_or_insert_with(|| (Arc::new(TranspositionTable::new(TT_POOL_MB)), Arc::new(TranspositionTable::new(TT_POOL_MB))));
+        pair.0.clear();
+        pair.1.clear();
+        (Arc::clone(&pair.0), Arc::clone(&pair.1))
+    })
+}
+
+thread_local! {
+    /// Owned histories per worker; ~MB each. Taken at pair start, returned after.
+    static HISTORY_POOL: RefCell<Option<(History, History)>> = const { RefCell::new(None) };
+}
+
+fn acquire_histories() -> (History, History) {
+    HISTORY_POOL.with(|cell| cell.borrow_mut().take().unwrap_or_else(|| (History::new(), History::new())))
+}
+
+fn release_histories(hist_a: History, hist_b: History) {
+    HISTORY_POOL.with(|cell| *cell.borrow_mut() = Some((hist_a, hist_b)));
+}
+
 fn play_match_pair<F: Fn()>(
     fen: &str,
     limits: &Limits,
@@ -152,16 +187,26 @@ fn play_match_pair<F: Fn()>(
     // Thread local heap-allocated stacks
     let dummy_board = Board::default();
     let dummy_hist = vec![dummy_board.hash];
-    let tt_a = Arc::new(TranspositionTable::new(16));
-    let tt_b = Arc::new(TranspositionTable::new(16));
-    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, History::new(), tt_a));
-    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, History::new(), tt_b));
+    let (tt_a, tt_b) = acquire_tts();
+    let (mut hist_a, mut hist_b) = acquire_histories();
+    // Pooled histories may carry state from a prior pair — start each pair clean.
+    hist_a.clear();
+    hist_b.clear();
+
+    let mut searcher_a = Box::new(Searcher::new(&cfg_a, &dummy_board, &dummy_hist, tt_a));
+    let mut searcher_b = Box::new(Searcher::new(&cfg_b, &dummy_board, &dummy_hist, tt_b));
 
     // Round 1: A (White) vs B (Black)
-    let (result_as_white, nodes_a_1, nodes_b_1) = play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b);
+    let (result_as_white, nodes_a_1, nodes_b_1) =
+        play_game(fen, &cfg_a, &cfg_b, &mut searcher_a, &mut searcher_b, &mut hist_a, &mut hist_b);
+
+    // ucinewgame-equivalent between the two games of the pair.
+    hist_a.clear();
+    hist_b.clear();
 
     // Round 2: B (White) vs A (Black)
-    let (result_for_b, nodes_b_2, nodes_a_2) = play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a);
+    let (result_for_b, nodes_b_2, nodes_a_2) =
+        play_game(fen, &cfg_b, &cfg_a, &mut searcher_b, &mut searcher_a, &mut hist_b, &mut hist_a);
 
     // Invert result (B's POV → A's POV)
     let result_as_black_perspective = match result_for_b {
@@ -171,6 +216,8 @@ fn play_match_pair<F: Fn()>(
     };
 
     on_finish();
+
+    release_histories(hist_a, hist_b);
 
     (
         pair_to_pentanomial(result_as_white, result_as_black_perspective),
@@ -190,6 +237,8 @@ fn play_game<'a>(
     cfg_black: &'a SearchConfig,
     searcher_white: &mut Searcher<'a>,
     searcher_black: &mut Searcher<'a>,
+    hist_white: &mut History,
+    hist_black: &mut History,
 ) -> (GameResult, u64, u64) {
     let uses_clock =
         cfg_white.limits.wtime > 0 && cfg_white.limits.movetime == 0 && cfg_white.limits.depth == 0 && cfg_white.limits.nodes == 0;
@@ -212,38 +261,43 @@ fn play_game<'a>(
     let white_inc = cfg_white.limits.winc;
     let black_inc = cfg_black.limits.binc;
 
+    // Hoisted once per game; only wtime/btime change per move.
+    let mut tm_limits = cfg_white.limits.clone();
+
     for _ply in 0..MAX_GAME_PLIES {
-        let moves = gen_legal_moves(&board);
-        if moves.is_empty() {
-            let in_check = board.checkers().is_not_empty();
-            if in_check {
-                return (if board.stm == Color::White { GameResult::Loss } else { GameResult::Win }, white_nodes, black_nodes);
-            }
-            return (GameResult::Draw, white_nodes, black_nodes);
-        }
         if is_draw(&board, &history) {
             return (GameResult::Draw, white_nodes, black_nodes);
         }
 
         let move_start = Instant::now();
 
-        let (searcher, cfg) =
-            if board.stm == Color::White { (&mut *searcher_white, cfg_white) } else { (&mut *searcher_black, cfg_black) };
+        let (searcher, cfg, hist_table) = if board.stm == Color::White {
+            (&mut *searcher_white, cfg_white, &mut *hist_white)
+        } else {
+            (&mut *searcher_black, cfg_black, &mut *hist_black)
+        };
 
-        searcher.reset(cfg, &board, &history, History::new());
+        searcher.reset(cfg, &board, &history);
+
+        // reset already generated root_moves; empty => mate or stalemate.
+        if searcher.best_move().is_none() {
+            let in_check = board.checkers().is_not_empty();
+            if in_check {
+                return (if board.stm == Color::White { GameResult::Loss } else { GameResult::Win }, white_nodes, black_nodes);
+            }
+            return (GameResult::Draw, white_nodes, black_nodes);
+        }
 
         if uses_clock {
-            let mut limits = cfg.limits.clone();
-            // Just pass the current actual clocks — no branching needed.
-            limits.wtime = white_time_ms;
-            limits.btime = black_time_ms;
-            let phase = i32::from(board.get_initial_accumulator().to_array()[2]);
+            tm_limits.wtime = white_time_ms;
+            tm_limits.btime = black_time_ms;
+            let phase = i32::from(accumulator.to_array()[2]);
             searcher.tm =
-                TimeManager::new(&limits, move_start, board.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
+                TimeManager::new(&tm_limits, move_start, board.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
         }
 
         cfg.stop.store(false, Ordering::Release);
-        searcher.iterative_deepening();
+        searcher.iterative_deepening(hist_table);
 
         let score = searcher.best_score().unwrap_or(0);
         let ply = (board.fullmove_number as usize - 1) * 2 + (board.stm as usize);
@@ -279,7 +333,8 @@ fn play_game<'a>(
             }
         }
 
-        let best_move = searcher.best_move().unwrap_or_else(|| *moves.iter().next().unwrap());
+        // safe: terminal positions returned above, so root_moves is non-empty.
+        let best_move = searcher.best_move().expect("non-terminal position must have a move");
 
         board.make_move(best_move, &mut accumulator);
         history.push(board.hash);

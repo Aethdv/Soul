@@ -82,8 +82,9 @@ fn main() {
                 let display =
                     SearchDisplay { show_wdl: true, go_pretty: true, pretty_print: false, show_currmove: true, use_ansi: true };
                 let cfg = SearchConfig::new_full(limits, Instant::now(), stop, 0, display, SearchParams::default());
-                let mut searcher = Searcher::new(&cfg, &board, &[], History::new(), Arc::new(TranspositionTable::new(16)));
-                searcher.iterative_deepening();
+                let mut history_table = History::new();
+                let mut searcher = Searcher::new(&cfg, &board, &[], Arc::new(TranspositionTable::new(16)));
+                searcher.iterative_deepening(&mut history_table);
                 if let Some(best_move) = searcher.best_move() {
                     println!("bestmove {}", best_move.to_uci(board.is_frc));
                 }

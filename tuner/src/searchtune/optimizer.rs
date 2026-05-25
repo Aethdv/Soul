@@ -63,6 +63,7 @@ fn approx_erf(x: f64) -> f64 {
 
 /// Gaussian Cumulative Distribution Function,
 /// using Abramowitz & Stegun 7.1.26 approximation
-fn normal_cdf(x: f64) -> f64 {
+#[must_use]
+pub fn normal_cdf(x: f64) -> f64 {
     0.5 * (1.0 + approx_erf(x / SQRT_2))
 }
