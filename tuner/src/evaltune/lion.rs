@@ -108,9 +108,9 @@ impl Lion {
             // <https://asylum.red/test/4378/>
             // Probably revisit at NNUE scale.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
-            let updated = if c.abs() < 1e-9 {
-                decayed
-            } else if m.signum() != g.signum() && m.abs() > 1e-6 {
+            // Skip the Lion sign step when the correlation gate is open (c≈0) or the
+            // momentum and gradient signs disagree — either way, decay only.
+            let updated = if c.abs() < 1e-9 || (m.signum() != g.signum() && m.abs() > 1e-6) {
                 decayed
             } else {
                 decayed - eff_lr * c.signum()

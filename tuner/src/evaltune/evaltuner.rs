@@ -450,8 +450,8 @@ fn train_loop<G, V>(
     // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
     // so PSQT + material settle before the refinements join.
     if config.unfreeze_epoch > 0 {
-        for i in base_end..fixed_mask.len() {
-            fixed_mask[i] = true;
+        for f in &mut fixed_mask[base_end..] {
+            *f = true;
         }
         println!("Progressive unfreeze: params {base_end}+ frozen until epoch {}", config.unfreeze_epoch);
     }
@@ -595,12 +595,10 @@ fn train_loop<G, V>(
             // Plateau LR halving is gated to constant schedules only.
             // Cosine/WSD/etc don't need a separate stall-response mechanism.
             // Reducing LR when the scheduler is already responsible for decay would overcorrect.
-            if is_constant_schedule {
-                if plateau_count >= config.patience {
-                    lr_scale *= 0.5;
-                    plateau_count = 0;
-                    println!("  Plateau detected — LR scale → {lr_scale:.3}");
-                }
+            if is_constant_schedule && plateau_count >= config.patience {
+                lr_scale *= 0.5;
+                plateau_count = 0;
+                println!("  Plateau detected — LR scale → {lr_scale:.3}");
             }
         }
 

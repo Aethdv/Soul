@@ -151,8 +151,8 @@ seeformat: ## Check formatting (no changes)
 format: ## Auto-format with rustfmt
 	@cargo fmt
 
-clippy: ## Lint with Clippy (-D warnings)
-	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" cargo clippy --quiet -- -D warnings
+clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" cargo clippy --workspace --all-features --quiet -- -D warnings
 
 clean: ## Remove all build artifacts
 	@echo "Cleaning..."

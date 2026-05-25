@@ -8,18 +8,13 @@ use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
 pub const DEFAULT_WDL_END: f64 = 0.3;
 
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LossFn {
+    #[default]
     Mse,
     #[serde(rename = "cross_entropy")]
     CrossEntropy,
-}
-
-impl Default for LossFn {
-    fn default() -> Self {
-        Self::Mse
-    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
