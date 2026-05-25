@@ -696,9 +696,11 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         }
     }
 
-    // Final report on natural completion (in case last epoch wasn't a periodic boundary).
-    if let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, config.epochs, "final") {
-        eprintln!("\x1b[31m[!] Failed to write final bounds report: {e}\x1b[0m");
+    // Final report on natural completion only; a SIGINT exit already wrote its own.
+    if !stop_flag.load(Ordering::SeqCst) {
+        if let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, config.epochs, "final") {
+            eprintln!("\x1b[31m[!] Failed to write final bounds report: {e}\x1b[0m");
+        }
     }
 
     println!("\n\x1b[1;36m>> Search Tuning Complete ({:.1}s)\x1b[0m", total_start.elapsed().as_secs_f64());
