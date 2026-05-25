@@ -151,20 +151,8 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     println!("{reset}\x1b[K\n");
 
     // Eval + WDL bars
-    let wdl_heat = (w as f32 - l as f32 + 1000.0) / 2000.0; // 0=losing, 1=winning
-    let heat_color = if wdl_heat >= 0.5 {
-        lerp(BAR_DRAW_LO, BAR_WIN_LO, (wdl_heat - 0.5) * 2.0)
-    } else {
-        lerp(BAR_LOSE_LO, BAR_DRAW_LO, wdl_heat * 2.0)
-    };
-
     let score_str = fmt_score_pretty(data.score, data.use_ansi);
-    let eval_color = if data.score.abs() > MATE_BOUND {
-        String::new()
-    } else {
-        format!("{}{bold}", tui_fg(heat_color, data.use_ansi))
-    };
-    println!("  {bold}{}Eval{reset} {}{}{reset}\x1b[K", tui_fg(GOLD_DIM, data.use_ansi), eval_color, score_str);
+    println!("  {bold}{}Eval{reset} {bold}{}{reset}\x1b[K", tui_fg(GOLD_DIM, data.use_ansi), score_str);
 
     let bar_width = 50;
     let (wp, dp, lp) = (w as f32 / 10.0, d as f32 / 10.0, l as f32 / 10.0);
@@ -236,14 +224,21 @@ fn sigmoid(cp: i32) -> f64 {
     1.0 / (1.0 + (f64::from(-cp) / 150.0).exp())
 }
 
+/// Color for a centipawn score; purple for mate,
+/// blue only at a dead-level `0.00`, gradient otherwise.
+fn score_color(score: i32) -> Rgb {
+    if score.abs() > MATE_BOUND {
+        MATE_PRPL
+    } else if score == 0 {
+        DRAW_BLUE
+    } else {
+        eval_gradient(sigmoid(score))
+    }
+}
+
 /// Maps win probability [0, 1] to a gradient color.
 /// This is the One True Gradient™ used everywhere scores are colored.
 fn eval_gradient(win_prob: f64) -> Rgb {
-    // Dead draw zone
-    if (win_prob - 0.5).abs() < 0.02 {
-        return DRAW_BLUE;
-    }
-
     if win_prob > 0.5 {
         // Winning: gray → warm gold → green → deep green
         let t = ((win_prob - 0.5) * 2.0).min(1.0) as f32;
@@ -263,34 +258,25 @@ fn eval_gradient(win_prob: f64) -> Rgb {
     }
 }
 
-fn fmt_score_pretty(score: i32, enabled: bool) -> String {
-    let reset = if enabled { RESET } else { "" };
-    if score > MATE_BOUND {
-        let moves = (MATE - score + 1) / 2;
-        format!("{}M{}{}", tui_fg(MATE_PRPL, enabled), moves.max(1), reset)
-    } else if score < -MATE_BOUND {
-        let moves = (MATE + score + 1) / 2;
-        format!("{}-M{}{}", tui_fg(MATE_PRPL, enabled), moves.max(1), reset)
+/// Bare score text; `M5` / `-M3` for mates, signed pawns (`+1.23`) otherwise.
+fn fmt_score_num(score: i32) -> String {
+    if score.abs() > MATE_BOUND {
+        let moves = ((MATE - score.abs() + 1) / 2).max(1);
+        if score > 0 { format!("M{moves}") } else { format!("-M{moves}") }
     } else {
         let pawns = f64::from(score) / 100.0;
         if score >= 0 { format!("+{pawns:.2}") } else { format!("{pawns:.2}") }
     }
 }
 
+fn fmt_score_pretty(score: i32, enabled: bool) -> String {
+    let reset = if enabled { RESET } else { "" };
+    format!("{}{}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), reset)
+}
+
 fn fmt_score_colored(score: i32, enabled: bool) -> String {
     let reset = if enabled { RESET } else { "" };
-
-    if score.abs() > MATE_BOUND {
-        let plies = if score > 0 { MATE - score } else { MATE + score };
-        let moves = (plies + 1) / 2;
-        let s = if score > 0 { format!("M{}", moves.max(1)) } else { format!("-M{}", moves.max(1)) };
-        return format!("{}{:>7}{}", tui_fg(MATE_PRPL, enabled), s, reset);
-    }
-
-    let color = eval_gradient(sigmoid(score));
-    let pawns = f64::from(score) / 100.0;
-    let s = if score >= 0 { format!("+{pawns:.2}") } else { format!("{pawns:.2}") };
-    format!("{}{:>7}{}", tui_fg(color, enabled), s, reset)
+    format!("{}{:>7}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), reset)
 }
 
 fn bar(width: usize, fill: f32, lo: Rgb, hi: Rgb, enabled: bool) -> String {

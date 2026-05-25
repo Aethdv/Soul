@@ -187,7 +187,7 @@ pub fn elo_color(elo: f64) -> String {
     // (±4.0 is a structural victory), but the engine's TUI scale is built for
     // macro-Elo. We use a ±100 Elo dynamic range to preserve differentiation
     // between significantly different high scores.
-    let rgb = if elo.abs() < 0.5 {
+    let rgb = if elo.abs() < 0.05 {
         DRAW_BLUE
     } else if elo > 0.0 {
         let t = (elo / 100.0).min(1.0) as f32; // Deep at +100 Elo

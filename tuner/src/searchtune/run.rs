@@ -516,20 +516,11 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         let epoch_duration = epoch_start.elapsed();
 
         print!("\r\x1b[K");
-        // Status color for the Epoch header:
-        // If we are winning significantly (>20 Elo) but this generation stalled,
-        // use a neutral 'Holding' color (Steel) instead of the negative blue/red.
-        let status_color = if epoch_start_best_elo > 20.0 && gen_best_elo <= 0.0 {
-            "\x1b[38;2;176;196;222m".to_string() // STEEL
-        } else {
-            elo_color(gen_best_elo)
-        };
-
         let best_val_color = elo_color(epoch_start_best_elo);
         let avg_val_color = elo_color(avg_raw_elo);
 
         println!(
-            "{status_color}Epoch {epoch:>3}\x1b[0m | \
+            "\x1b[1;38;2;189;148;232mEpoch {epoch:>3}\x1b[0m | \
              \x1b[90mBest:\x1b[0m {best_val_color}{epoch_start_best_elo:>+5.1}\x1b[0m | \
              \x1b[90mAvg:\x1b[0m {avg_val_color}{avg_raw_elo:>+5.1}\x1b[0m | \
              \x1b[90mBudget:\x1b[0m \x1b[33m{effective_pairs:>3}\x1b[0m | \
