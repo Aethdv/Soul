@@ -7,12 +7,13 @@ use std::{
 
 use rayon::prelude::*;
 use soul::{
+    color,
     core::{defs::Color, psqt},
     engine::eval_params::{self, Tunable},
     tools::dataset::FeatureSlots,
 };
 
-use super::{lion::Lion, loader, report::*, storage::*, training::*};
+use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
 use crate::core::{
     config::{EvalTuneConfig, LossFn, LrScheduleConfig},
     logger::JsonLogger,
@@ -72,12 +73,12 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         eprintln!("Error: No positions loaded.");
         return;
     }
-    println!("Total positions: \x1b[32m{}\x1b[0m", all_entries.len());
+    println!("Total positions: {}{}\x1b[0m", palette::fg(palette::COUNT), all_entries.len());
 
     train_entries(all_entries, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
-    println!("\n\x1b[93mDone in {elapsed:.2}s\x1b[0m");
+    println!("\n{}Done in {elapsed:.2}s\x1b[0m", palette::fg(palette::BRAND));
 }
 
 /// Enable Flush-to-Zero and Denormals-are-Zero for performance.
@@ -284,7 +285,10 @@ fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Ve
 }
 
 fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
-    println!("Positions:  \x1b[32m{}\x1b[0m ({} train / {} val)", total, train.len(), val.len());
+    let lab = palette::fg(palette::LABEL);
+    let c = palette::fg(palette::COUNT);
+    let r = "\x1b[0m";
+    println!("{lab}Positions:{r}  {c}{total}{r} ({} train / {} val)", train.len(), val.len());
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
@@ -296,9 +300,32 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
             (w, b, d + 1)
         }
     });
-    println!("  White wins: \x1b[32m{ww}\x1b[0m");
-    println!("  Black wins: \x1b[32m{bw}\x1b[0m");
-    println!("  Draws:      \x1b[32m{dr}\x1b[0m");
+    println!("  {lab}White wins:{r} {c}{ww}{r}");
+    println!("  {lab}Black wins:{r} {c}{bw}{r}");
+    println!("  {lab}Draws:{r}      {c}{dr}{r}");
+}
+
+/// Validation-loss trajectory as a colored block sparkline, each cell ranked
+/// within the window's own min–max; lowest loss is shortest and greenest,
+/// highest is tallest and reddest, so a descending run cools to a green floor.
+fn loss_sparkline(history: &[f64]) -> String {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if history.is_empty() {
+        return String::new();
+    }
+    let lo = history.iter().copied().fold(f64::MAX, f64::min);
+    let hi = history.iter().copied().fold(f64::MIN, f64::max);
+    let span = (hi - lo).max(1e-12);
+
+    let mut out = String::with_capacity(history.len() * 20);
+    for &v in history {
+        let frac = (v - lo) / span; // 0 = best (lowest), 1 = worst (highest)
+        let level = (frac * 8.0).min(7.0) as usize;
+        out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
+        out.push(BLOCKS[level]);
+    }
+    out.push_str("\x1b[0m");
+    out
 }
 
 /// ── Shared training loop ──
@@ -325,7 +352,7 @@ fn train_loop<G, V>(
             (1, 1.0_f64, default_values.clone(), momentum)
         },
         |path| {
-            println!("Resuming from checkpoint: \x1b[33m{path}\x1b[0m");
+            println!("Resuming from checkpoint: {}{path}\x1b[0m", palette::fg(palette::VALUE));
             let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
                 eprintln!("Failed to load checkpoint: {e}");
                 std::process::exit(1);
@@ -345,16 +372,19 @@ fn train_loop<G, V>(
     let init_blend = wdl_scheduler.blend(1, config.epochs);
     let mut k =
         golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| val_eval(&values, kk, init_blend));
+    let v = palette::fg(palette::VALUE);
+    let lab = palette::fg(palette::LABEL);
+    let r = "\x1b[0m";
     let win_rate_100cp = sigmoid(100.0, k);
-    println!("K Factor:   \x1b[36m{k:.6}\x1b[0m (100cp -> {:.1}%)   ", win_rate_100cp * 100.0);
+    println!("{lab}K Factor:{r}   {v}{k:.6}{r} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
 
     // Frozen reference K - never re-optimized.
     // L_ref uses this K so that loss numbers are comparable across epochs
     // and runs regardless of K-reopt drift.
     let k_ref = k;
-    println!("Ref K:      \x1b[36m{k_ref:.6}\x1b[0m");
+    println!("{lab}Ref K:{r}      {v}{k_ref:.6}{r}");
     let seed_label = if config.seed.is_some() { " (deterministic)" } else { "" };
-    println!("Seed:       \x1b[36m{rng_seed}\x1b[0m{seed_label}");
+    println!("{lab}Seed:{r}       {v}{rng_seed}{r}{seed_label}");
 
     let initial_values = values.clone();
 
@@ -374,11 +404,11 @@ fn train_loop<G, V>(
     let snapshot_limit = (config.epochs / 10).max(1);
     let mut snapshots: Vec<Snapshot> = Vec::with_capacity(snapshot_limit);
 
-    println!("Parameters: {}", all_params.len());
-    println!("Mode:       \x1b[36m{mode_label}\x1b[0m");
-    println!("LR Sched:   \x1b[36m{}\x1b[0m", lr_scheduler.describe());
-    println!("WDL Sched:  \x1b[36m{}\x1b[0m", wdl_scheduler.describe());
-    println!("Optimizer:  \x1b[36mLion\x1b[0m (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
+    println!("{lab}Parameters:{r} {v}{}{r}", all_params.len());
+    println!("{lab}Mode:{r}       {v}{mode_label}{r}");
+    println!("{lab}LR Sched:{r}   {v}{}{r}", lr_scheduler.describe());
+    println!("{lab}WDL Sched:{r}  {v}{}{r}", wdl_scheduler.describe());
+    println!("{lab}Optimizer:{r}  {v}Lion{r} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = File::create("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
@@ -406,6 +436,11 @@ fn train_loop<G, V>(
     let mut best_val_loss = f64::MAX;
     let mut plateau_count = 0usize;
 
+    // Validation-loss trajectory for the milestone sparkline, and the previous
+    // epoch's loss for the per-line trend arrow.
+    let mut val_history: Vec<f64> = Vec::new();
+    let mut prev_val_loss = f64::NAN;
+
     let psqt_end = psqt::LAYOUT.material_offset;
     let base_end = psqt_end + psqt::LAYOUT.material_len;
     let mob_start = psqt::LAYOUT.mobility_open_offset;
@@ -415,8 +450,8 @@ fn train_loop<G, V>(
     // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
     // so PSQT + material settle before the refinements join.
     if config.unfreeze_epoch > 0 {
-        for i in base_end..fixed_mask.len() {
-            fixed_mask[i] = true;
+        for f in &mut fixed_mask[base_end..] {
+            *f = true;
         }
         println!("Progressive unfreeze: params {base_end}+ frozen until epoch {}", config.unfreeze_epoch);
     }
@@ -560,16 +595,14 @@ fn train_loop<G, V>(
             // Plateau LR halving is gated to constant schedules only.
             // Cosine/WSD/etc don't need a separate stall-response mechanism.
             // Reducing LR when the scheduler is already responsible for decay would overcorrect.
-            if is_constant_schedule {
-                if plateau_count >= config.patience {
-                    lr_scale *= 0.5;
-                    plateau_count = 0;
-                    println!("  Plateau detected — LR scale → {lr_scale:.3}");
-                }
+            if is_constant_schedule && plateau_count >= config.patience {
+                lr_scale *= 0.5;
+                plateau_count = 0;
+                println!("  Plateau detected — LR scale → {lr_scale:.3}");
             }
         }
 
-        let overfit_warn = if val_loss > best_val_loss * 1.02 { " \x1b[31;1m⚠ OVERFIT\x1b[0m" } else { "" };
+        let overfit = val_loss > best_val_loss * 1.02;
 
         let is_best = if epoch > warmup_end {
             update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit)
@@ -609,19 +642,47 @@ fn train_loop<G, V>(
                     "is_best": is_best,
                     "psqt_norm": psqt_norm,
                     "mob_norm": mob_norm,
-                    "overfit": overfit_warn.contains("OVERFIT")
+                    "overfit": overfit
                 }),
             );
         }
 
         let elapsed = t0.elapsed().as_secs_f32();
-        let color = if is_best { "\x1b[32m" } else { "\x1b[0m" };
+
+        // Loss has no absolute scale, so color the live value by its per-epoch
+        // trend; dropped from last epoch → green ▼, rose → red ▲. The number and
+        // the arrow share that one trend color.
+        let (arrow, trend) = if !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
+            ('·', palette::fg(palette::LABEL))
+        } else if val_loss < prev_val_loss {
+            ('▼', palette::fg(color::advantage(0.7)))
+        } else {
+            ('▲', palette::fg(color::advantage(-0.7)))
+        };
+
+        let r = "\x1b[0m";
+        let lab = palette::fg(palette::LABEL);
+        let dim = palette::fg(palette::DIM);
+        let (mark, epoch_c) = if is_best { ("✦ ", palette::fg(palette::BRAND)) } else { ("  ", dim.clone()) };
+        let warn = if overfit { format!("  {}⚠ overfit{r}", palette::fg(color::advantage(-1.0))) } else { String::new() };
+
+        #[rustfmt::skip]
         println!(
-            "\r{}Epoch {:>3}/{} | L_train: {:.6} | L_val: {:.6} | L_ref: {:.6} | LR: {:.4} | {:.2}s{}\x1b[0m\x1b[K",
-            color, epoch, config.epochs, train_loss, val_loss, ref_loss, lr, elapsed, overfit_warn
+            "{mark}{epoch_c}Epoch {epoch:>3}/{}{r}  \
+             {lab}val{r} {trend}{val_loss:.6}{r} {trend}{arrow}{r}  \
+             {lab}train{r} {dim}{train_loss:.6}{r}  \
+             {lab}ref{r} {dim}{ref_loss:.6}{r}  \
+             {lab}lr{r} {}{lr:.4}{r}  {dim}{elapsed:.2}s{r}{warn}\x1b[K",
+            config.epochs,
+            palette::fg(palette::VALUE),
         );
 
+        val_history.push(val_loss);
+        prev_val_loss = val_loss;
+
         if epoch % 20 == 0 || epoch == config.epochs {
+            let tail = &val_history[val_history.len().saturating_sub(40)..];
+            println!("\n  {lab}L_val{r}  {}", loss_sparkline(tail));
             print_params(&all_params, &initial_values, &ema_values);
 
             if let Err(e) = save_checkpoint(
@@ -705,7 +766,7 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
         }
 
         if paths.is_empty() {
-            eprintln!("\x1b[31mError: No default dataset found in data/ directory.\x1b[0m");
+            eprintln!("{}Error: No default dataset found in data/ directory.\x1b[0m", color::ansi_fg((225, 89, 91)));
             eprintln!("Please provide a dataset path using --dataset <path>");
             None
         } else {

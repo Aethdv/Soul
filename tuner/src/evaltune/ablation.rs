@@ -101,7 +101,7 @@ fn print_report(results: &[AblationResult]) {
     let peak = results.first().map_or(0.0, |r| r.delta);
 
     println!("Term Ablation Report\n");
-    println!("  {:<20} {:>11}  {}", "Group", "dL_val", "Impact");
+    println!("  {:<20} {:>11}  Impact", "Group", "dL_val");
     println!("  {}", "─".repeat(20 + 13 + BAR_W + 3));
 
     for r in results {
