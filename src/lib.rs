@@ -21,6 +21,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 pub mod cli;
+pub mod color;
 pub mod core;
 pub mod engine;
 pub mod protocols;

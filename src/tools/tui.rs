@@ -6,15 +6,18 @@
 use std::{fmt::Write, io, io::Write as _};
 
 use crate::{
+    color::{self, Rgb},
     core::{
         board::Position,
-        defs::{MATE, MATE_BOUND, PieceType, Protocol, Square},
+        defs::{Color, MATE, MATE_BOUND, PieceType, Protocol, Square},
         moves::Move,
     },
-    engine::{movegen::gen_legal_moves, search::Line, wdl},
+    engine::{
+        movegen::gen_legal_moves,
+        search::{Line, PvSnapshot},
+        wdl,
+    },
 };
-
-type Rgb = (u8, u8, u8);
 
 const GOLD_DIM: Rgb = (218, 165, 32); // branding
 const GOLD_BRIGHT: Rgb = (255, 215, 0); // branding
@@ -22,27 +25,23 @@ const STEEL: Rgb = (176, 196, 222); // header info
 const SLATE: Rgb = (119, 136, 153); // header dim
 const TEAL: Rgb = (72, 209, 204); // nps accent
 
-const DRAW_BLUE: Rgb = (120, 170, 220); // oklch(0.74 0.08 230)
-const SLIGHT_UP: Rgb = (200, 180, 100); // oklch(0.76 0.12  85) gold
-const WARM_UP: Rgb = (210, 185, 80); // oklch(0.78 0.15  80) golden yellow
-const WIN_GREEN: Rgb = (90, 190, 120); // oklch(0.75 0.16 145)
-const WIN_DEEP: Rgb = (50, 185, 135); // oklch(0.72 0.17 160) teal-green
-const SLIGHT_DOWN: Rgb = (225, 160, 140); // oklch(0.76 0.10  30) warm peach
-const WARM_DOWN: Rgb = (230, 145, 100); // oklch(0.74 0.14  35) orange
-const LOSE_RED: Rgb = (220, 110, 95); // oklch(0.68 0.16  20) coral
-const LOSE_DEEP: Rgb = (195, 85, 80); // oklch(0.62 0.17  15) brick
-const MATE_PRPL: Rgb = (151, 125, 191); // mate
+const MATE_PRPL: Rgb = (151, 125, 191);
 
-const BAR_WIN_LO: Rgb = (144, 238, 144); // WDL bar start
-const BAR_WIN_HI: Rgb = (60, 179, 113); // WDL bar end
-const BAR_DRAW_LO: Rgb = (240, 230, 140);
-const BAR_DRAW_HI: Rgb = (189, 183, 107);
-const BAR_LOSE_LO: Rgb = (255, 127, 80);
-const BAR_LOSE_HI: Rgb = (205, 92, 92);
+// WDL outcomes share the advantage palette's hues; win green, draw the level
+// blue (`color::LEVEL`), loss red. Bar fill and percent ramp WDL_FLOOR→hue
+// so intensity tracks probability; the empty track sits below the floor,
+// so a filled cell always reads brighter than an unfilled one.
+const WDL_EMPTY: Rgb = (58, 62, 72); // unfilled track
+const WDL_FLOOR: Rgb = (112, 120, 134); // faintest fill / vanishing percent
+const WIN_C: Rgb = (100, 200, 120);
+const LOSE_C: Rgb = (224, 105, 100);
 
-const PV_WHITE: Rgb = (224, 255, 255);
-const PV_BLACK: Rgb = (160, 160, 160);
-const DIM: Rgb = (130, 130, 130); // timestamps
+// PV moves split by temperature; White warm ivory (joins the gold identity),
+// Black cool slate (joins the steel/slate telemetry), so a line alternates
+// warm/cool as it alternates side.
+const PV_WHITE: Rgb = (246, 238, 218);
+const PV_BLACK: Rgb = (139, 154, 171);
+const DIM: Rgb = (130, 130, 130); // timestamps, move numbers
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -59,7 +58,7 @@ pub struct SearchInfoData<'a> {
     pub show_wdl: bool,
     pub material: u32,
     pub stm: usize,
-    pub history: &'a [(u128, Line, i32)],
+    pub history: &'a [PvSnapshot],
     pub board: &'a Position,
     pub use_ansi: bool,
 }
@@ -115,107 +114,110 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
     let _ = io::stdout().flush();
 }
 
-/// Pretty TUI output for `GoPretty` mode with WDL bars and history.
+/// Pretty TUI output for `GoPretty` mode; status strip, eval + WDL bars,
+/// the principal variation in SAN, and a colored history of recent iterations.
 pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
-    if data.use_ansi {
+    let ansi = data.use_ansi;
+    if ansi {
         print!("\x1b[H");
     }
 
-    let (wf, df, lf) = wdl::wdl_model(data.score, data.material);
-    let w = (wf * 1000.0).round() as u32;
-    let d = (df * 1000.0).round() as u32;
-    let l = (lf * 1000.0).round() as u32;
+    let reset = if ansi { RESET } else { "" };
+    let bold = if ansi { BOLD } else { "" };
+    let dim = tui_fg(DIM, ansi);
+    let label = tui_fg(GOLD_DIM, ansi);
+
+    // identity, depth/seldepth, clock, nodes, speed, TT fill.
     let t = data.time_ms.try_into().unwrap_or(u64::MAX);
+    let dot = format!("{dim} · {reset}");
 
-    let reset = if data.use_ansi { RESET } else { "" };
-    let bold = if data.use_ansi { BOLD } else { "" };
-
+    #[rustfmt::skip]
     println!(
-        "  {bold}{}✦ Soul{reset}  {}d{}/{}{reset}  {}{}  {}{}  {}{}\x1b[K",
-        tui_fg(GOLD_BRIGHT, data.use_ansi),
-        tui_fg(STEEL, data.use_ansi),
-        data.depth,
-        data.sel_depth,
-        tui_fg(SLATE, data.use_ansi),
-        fmt_time(t),
-        tui_fg(SLATE, data.use_ansi),
-        fmt_nodes(data.nodes),
-        tui_fg(TEAL, data.use_ansi),
-        fmt_nps(data.nps),
+        "  {bold}{}✦ Soul{reset}{dot}{}{}/{}{reset}{dot}{}{}{reset}{dot}{}{}{reset}{dot}{}{}{reset}{dot}{}TT {}%{reset}\x1b[K",
+        tui_fg(GOLD_BRIGHT, ansi),
+        tui_fg(STEEL, ansi), data.depth, data.sel_depth,
+        tui_fg(SLATE, ansi), fmt_time(t),
+        tui_fg(SLATE, ansi), fmt_nodes(data.nodes),
+        tui_fg(TEAL, ansi), fmt_nps(data.nps),
+        tui_fg(SLATE, ansi), data.hashfull / 10,
     );
 
     print!("  ");
     for i in 0..48 {
-        print!("{}━", tui_fg(lerp(GOLD_BRIGHT, TEAL, i as f32 / 48.0), data.use_ansi));
+        print!("{}━", tui_fg(color::mix(GOLD_BRIGHT, TEAL, f64::from(i) / 47.0), ansi));
     }
     println!("{reset}\x1b[K\n");
 
-    // Eval + WDL bars
-    let score_str = fmt_score_pretty(data.score, data.use_ansi);
-    println!("  {bold}{}Eval{reset} {bold}{}{reset}\x1b[K", tui_fg(GOLD_DIM, data.use_ansi), score_str);
-
+    // ── Eval + WDL ──
+    // Labels share a 4-column gutter, so the eval value lines
+    // up with the bars' left edge.
     let bar_width = 50;
-    let (wp, dp, lp) = (w as f32 / 10.0, d as f32 / 10.0, l as f32 / 10.0);
-    println!(
-        "  {bold}{}Win {reset}    [{}] {}{wp:>5.1}%{reset}",
-        tui_fg(GOLD_DIM, data.use_ansi),
-        bar(bar_width, wp / 100.0, BAR_WIN_LO, BAR_WIN_HI, data.use_ansi),
-        tui_fg(BAR_WIN_HI, data.use_ansi)
-    );
-    println!(
-        "  {bold}{}Draw{reset}    [{}] {}{dp:>5.1}%{reset}",
-        tui_fg(GOLD_DIM, data.use_ansi),
-        bar(bar_width, dp / 100.0, BAR_DRAW_LO, BAR_DRAW_HI, data.use_ansi),
-        tui_fg(BAR_DRAW_HI, data.use_ansi)
-    );
-    println!(
-        "  {bold}{}Lose{reset}    [{}] {}{lp:>5.1}%{reset}\n",
-        tui_fg(GOLD_DIM, data.use_ansi),
-        bar(bar_width, lp / 100.0, BAR_LOSE_LO, BAR_LOSE_HI, data.use_ansi),
-        tui_fg(BAR_LOSE_HI, data.use_ansi)
-    );
+    let (wf, df, lf) = wdl::wdl_model(data.score, data.material);
+    println!("  {bold}{label}Eval{reset}    {bold}{}{reset}\x1b[K", fmt_score_pretty(data.score, ansi));
+    println!("{}", wdl_row("Win", (wf * 100.0) as f32, WIN_C, bar_width, ansi));
+    println!("{}", wdl_row("Draw", (df * 100.0) as f32, color::LEVEL, bar_width, ansi));
+    println!("{}\n", wdl_row("Lose", (lf * 100.0) as f32, LOSE_C, bar_width, ansi));
 
-    // Best PV
-    let white_first = data.stm == 0;
-    println!("  {bold}{}Best PV{reset}", tui_fg(GOLD_DIM, data.use_ansi));
-    print!("  ");
-    print_pv_line(&data.pv.moves[..data.pv.len.min(10)], white_first, data.board.is_frc, data.use_ansi);
+    // ── Best PV ──
+    // Numbered SAN, replayed from the root.
+    println!("  {bold}{label}Best PV{reset}");
+    print!("  {}", fmt_pv(data.board, &data.pv.moves[..data.pv.len.min(10)], ansi));
     if data.pv.len > 10 {
-        print!("{}...{}", tui_fg(DIM, data.use_ansi), reset);
+        print!("{dim}…{reset}");
     }
     println!("\x1b[K\n");
 
-    // History
-    println!("  {bold}{}History{reset}", tui_fg(GOLD_DIM, data.use_ansi));
+    // ── History ──
+    // Eval trajectory as a sparkline, then the most recent
+    // iterations: depth, clock, eval with a rise/fall arrow, and the line.
+    println!("  {bold}{label}History{reset}  {}\x1b[K", eval_sparkline(data.history, ansi));
     let start = data.history.len().saturating_sub(6);
-    for (time, pv, _) in &data.history[start..] {
-        let ts = fmt_time((*time).try_into().unwrap_or(u64::MAX));
-        print!("  {}{:>8} -> ", tui_fg(DIM, data.use_ansi), ts);
-        print_pv_line(&pv.moves[..pv.len.min(8)], white_first, data.board.is_frc, data.use_ansi);
-        if pv.len > 8 {
-            print!("{}...{}", tui_fg(DIM, data.use_ansi), reset);
+    for (i, snap) in data.history[start..].iter().enumerate() {
+        let ts = fmt_time(snap.time_ms.try_into().unwrap_or(u64::MAX));
+        let prev = (start + i).checked_sub(1).and_then(|p| data.history.get(p));
+        let (arrow, arrow_c) = match prev {
+            Some(p) if snap.score - p.score > 5 => ('▲', WIN_C),
+            Some(p) if snap.score - p.score < -5 => ('▼', LOSE_C),
+            _ => ('·', DIM),
+        };
+        print!(
+            "  {dim}d{:>2}{reset}  {dim}{ts:>7}{reset}  {}{:>6}{reset} {}{arrow}{reset}  {}",
+            snap.depth,
+            tui_fg(score_color(snap.score), ansi),
+            fmt_score_num(snap.score),
+            tui_fg(arrow_c, ansi),
+            fmt_pv(data.board, &snap.line.moves[..snap.line.len.min(8)], ansi),
+        );
+        if snap.line.len > 8 {
+            print!("{dim}…{reset}");
         }
         println!("\x1b[K");
     }
     println!();
 
-    if data.use_ansi {
+    if ansi {
         print!("\x1b[J"); // Clear to end of screen
     }
     let _ = io::stdout().flush();
 }
 
-#[inline]
-fn tui_fg(c: Rgb, enabled: bool) -> String {
-    if enabled { format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
+/// Eval trajectory as a colored block sparkline — one cell per retained
+/// iteration, height by win probability, hue by the advantage gradient.
+fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let reset = if enabled { RESET } else { "" };
+    let mut out = String::with_capacity(history.len() * 20);
+    for snap in history {
+        let level = ((sigmoid(snap.score) * 8.0) as usize).min(7);
+        write!(out, "{}{}", tui_fg(score_color(snap.score), enabled), BLOCKS[level]).unwrap();
+    }
+    out.push_str(reset);
+    out
 }
 
-/// Lerp between two colors. t=0 → a, t=1 → b.
 #[inline]
-fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let t = t.clamp(0.0, 1.0);
-    let mix = |x: u8, y: u8| (f32::from(y) - f32::from(x)).mul_add(t, f32::from(x)) as u8;
-    (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+fn tui_fg(c: Rgb, enabled: bool) -> String {
+    if enabled { color::ansi_fg(c) } else { String::new() }
 }
 
 /// Maps centipawn score to [0, 1] win probability.
@@ -225,36 +227,14 @@ fn sigmoid(cp: i32) -> f64 {
 }
 
 /// Color for a centipawn score; purple for mate,
-/// blue only at a dead-level `0.00`, gradient otherwise.
+/// blue only at a dead-level `0.00`, advantage gradient otherwise.
 fn score_color(score: i32) -> Rgb {
     if score.abs() > MATE_BOUND {
         MATE_PRPL
     } else if score == 0 {
-        DRAW_BLUE
+        color::LEVEL
     } else {
-        eval_gradient(sigmoid(score))
-    }
-}
-
-/// Maps win probability [0, 1] to a gradient color.
-/// This is the One True Gradient™ used everywhere scores are colored.
-fn eval_gradient(win_prob: f64) -> Rgb {
-    if win_prob > 0.5 {
-        // Winning: gray → warm gold → green → deep green
-        let t = ((win_prob - 0.5) * 2.0).min(1.0) as f32;
-        match () {
-            _ if t < 0.3 => lerp(SLIGHT_UP, WARM_UP, t / 0.3),
-            _ if t < 0.7 => lerp(WARM_UP, WIN_GREEN, (t - 0.3) / 0.4),
-            _ => lerp(WIN_GREEN, WIN_DEEP, (t - 0.7) / 0.3),
-        }
-    } else {
-        // Losing: gray → warm pink → red → deep red
-        let t = ((0.5 - win_prob) * 2.0).min(1.0) as f32;
-        match () {
-            _ if t < 0.3 => lerp(SLIGHT_DOWN, WARM_DOWN, t / 0.3),
-            _ if t < 0.7 => lerp(WARM_DOWN, LOSE_RED, (t - 0.3) / 0.4),
-            _ => lerp(LOSE_RED, LOSE_DEEP, (t - 0.7) / 0.3),
-        }
+        color::advantage((sigmoid(score) - 0.5) * 2.0)
     }
 }
 
@@ -279,22 +259,28 @@ fn fmt_score_colored(score: i32, enabled: bool) -> String {
     format!("{}{:>7}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), reset)
 }
 
-fn bar(width: usize, fill: f32, lo: Rgb, hi: Rgb, enabled: bool) -> String {
-    let fill = fill.clamp(0.0, 1.0);
-    let filled = (fill * width as f32) as usize;
+/// One WDL row; a probability-keyed intensity bar plus a magnitude-lit percent.
+/// Bar cells ramp `WDL_FLOOR`→`hue` by position, so length and brightness both
+/// track `pct`; the percent ramps the same way by its own magnitude, settling
+/// to the dim floor when the outcome is negligible.
+fn wdl_row(label: &str, pct: f32, hue: Rgb, width: usize, enabled: bool) -> String {
     let reset = if enabled { RESET } else { "" };
+    let bold = if enabled { BOLD } else { "" };
+    let frac = f64::from(pct.clamp(0.0, 100.0)) / 100.0;
+    let filled = (frac * width as f64) as usize;
 
-    let mut out = String::with_capacity(width * 20);
+    let mut bars = String::with_capacity(width * 20);
     for i in 0..filled {
-        let t = i as f32 / width.max(1) as f32;
-        write!(out, "{}#", tui_fg(lerp(lo, hi, t), enabled)).unwrap();
+        let t = i as f64 / width.saturating_sub(1).max(1) as f64;
+        write!(bars, "{}#", tui_fg(color::mix(WDL_FLOOR, hue, t), enabled)).unwrap();
     }
-    out.push_str(&tui_fg(DIM, enabled));
+    bars.push_str(&tui_fg(WDL_EMPTY, enabled));
     for _ in filled..width {
-        out.push('.');
+        bars.push('.');
     }
-    out.push_str(reset);
-    out
+
+    let pct_fg = tui_fg(color::mix(WDL_FLOOR, hue, frac), enabled);
+    format!("  {bold}{}{label:<4}{reset}    [{bars}{reset}] {pct_fg}{pct:>5.1}%{reset}", tui_fg(GOLD_DIM, enabled))
 }
 
 fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
@@ -469,12 +455,36 @@ fn print_xboard(data: &SearchInfoData<'_>) {
     println!();
 }
 
-/// Print a PV line with alternating White/Black colors.
-fn print_pv_line(moves: &[Move], white_first: bool, is_frc: bool, enabled: bool) {
+/// Render a PV as numbered SAN, replaying from `root` so each move can be
+/// disambiguated and check-marked. Move numbers are dim, White's moves bright,
+/// Black's muted; the count follows `root`'s side and fullmove so a line that
+/// opens on Black reads `29… c5 30. Nf3`.
+fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
     let reset = if enabled { RESET } else { "" };
-    for (i, m) in moves.iter().enumerate() {
-        let is_white = (i % 2 == 0) == white_first;
-        let c = if is_white { PV_WHITE } else { PV_BLACK };
-        print!("{}{}{reset} ", tui_fg(c, enabled), m.to_uci(is_frc));
+    let mut board = *root;
+    let mut acc = board.get_initial_accumulator();
+    let mut num = board.fullmove_number;
+    let mut white_to_move = board.stm == Color::White;
+
+    let mut out = String::with_capacity(moves.len() * 12);
+    for (i, &mv) in moves.iter().enumerate() {
+        if white_to_move {
+            write!(out, "{}{num}.{reset} ", tui_fg(DIM, enabled)).unwrap();
+        } else if i == 0 {
+            write!(out, "{}{num}…{reset} ", tui_fg(DIM, enabled)).unwrap();
+        }
+
+        let legal = gen_legal_moves(&board);
+        let san = to_san(&mut board, mv, legal.as_slice());
+        board.make_move(mv, &mut acc);
+
+        let c = if white_to_move { PV_WHITE } else { PV_BLACK };
+        write!(out, "{}{san}{reset} ", tui_fg(c, enabled)).unwrap();
+
+        if !white_to_move {
+            num += 1;
+        }
+        white_to_move = !white_to_move;
     }
+    out
 }

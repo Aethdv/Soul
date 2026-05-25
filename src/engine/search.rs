@@ -135,7 +135,7 @@ pub struct Searcher<'cfg> {
     pub sel_depth: i32,
     pub iter_depth: i32,
     pub last_print: u128,
-    pub pv_history: VecDeque<(u128, Line, i32)>,
+    pub pv_history: VecDeque<PvSnapshot>,
     pub tt: Arc<TranspositionTable>,
 }
 
@@ -218,6 +218,16 @@ pub struct RootMove {
 pub struct Line {
     pub moves: [Move; MAX_PLY],
     pub len: usize,
+}
+
+/// One completed iterative-deepening pass, retained for the pretty TUI's
+/// history and eval sparkline.
+#[derive(Clone, Copy)]
+pub struct PvSnapshot {
+    pub depth: i32,
+    pub time_ms: u128,
+    pub score: i32,
+    pub line: Line,
 }
 
 /// Per-ply scratch data.
@@ -553,7 +563,8 @@ impl<'cfg> Searcher<'cfg> {
             self.print_info(depth, self.prev_score, &self.prev_pv);
 
             let elapsed = self.tm.elapsed().as_millis().max(1);
-            self.pv_history.push_back((elapsed, self.prev_pv, self.prev_score));
+            self.pv_history
+                .push_back(PvSnapshot { depth, time_ms: elapsed, score: self.prev_score, line: self.prev_pv });
 
             // Bounded history: the TUI only needs the most recent points for the sparkline.
             if self.pv_history.len() > 30 {
