@@ -150,8 +150,8 @@ impl BoundsTracker {
         writeln!(file)?;
         writeln!(
             file,
-            "{:<22} {:>8} {:>16} {:>18} {:>16} {:>9} {:>9} {:>20}  {}",
-            "param", "default", "cur[min,max]", "observed[lo,hi]", "elite[μ±σ]", "lo_clmp", "hi_clmp", "expected[lo,hi]", "verdict"
+            "{:<22} {:>8} {:>16} {:>18} {:>16} {:>9} {:>9} {:>20}  verdict",
+            "param", "default", "cur[min,max]", "observed[lo,hi]", "elite[μ±σ]", "lo_clmp", "hi_clmp", "expected[lo,hi]"
         )?;
         writeln!(file, "{}", "-".repeat(150))?;
 

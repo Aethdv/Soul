@@ -30,7 +30,8 @@ use super::{
     bounds::{BoundsConfig, BoundsTracker},
     cache::MatchCache,
     cmaes::{CmaEs, clamp_normalized, default_lambda},
-    elo::{EloCache, elo_color},
+    elo::EloCache,
+    palette::{self, elo_color},
     selfplay,
     storage::Checkpoint,
 };
@@ -516,43 +517,38 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         let epoch_duration = epoch_start.elapsed();
 
         print!("\r\x1b[K");
-        // Status color for the Epoch header:
-        // If we are winning significantly (>20 Elo) but this generation stalled,
-        // use a neutral 'Holding' color (Steel) instead of the negative blue/red.
-        let status_color = if epoch_start_best_elo > 20.0 && gen_best_elo <= 0.0 {
-            "\x1b[38;2;176;196;222m".to_string() // STEEL
-        } else {
-            elo_color(gen_best_elo)
-        };
-
+        let r = "\x1b[0m";
+        let lab = palette::fg(palette::LABEL);
+        let sep = format!("{}|{r}", palette::fg(palette::SEP));
+        let epoch_c = format!("\x1b[1m{}", palette::fg(palette::EPOCH));
+        let tel = palette::fg(palette::TELEMETRY);
+        let budget_c = palette::fg(palette::BUDGET);
+        let time_c = palette::fg(palette::TIME);
         let best_val_color = elo_color(epoch_start_best_elo);
         let avg_val_color = elo_color(avg_raw_elo);
 
         println!(
-            "{status_color}Epoch {epoch:>3}\x1b[0m | \
-             \x1b[90mBest:\x1b[0m {best_val_color}{epoch_start_best_elo:>+5.1}\x1b[0m | \
-             \x1b[90mAvg:\x1b[0m {avg_val_color}{avg_raw_elo:>+5.1}\x1b[0m | \
-             \x1b[90mBudget:\x1b[0m \x1b[33m{effective_pairs:>3}\x1b[0m | \
-             \x1b[90mσ:\x1b[0m \x1b[36m{:.3}\x1b[0m | \
-             \x1b[90mη:\x1b[0m \x1b[36m{:.2}\x1b[0m | \
-             \x1b[90mTime:\x1b[0m \x1b[37m{:>5.1}s\x1b[0m",
+            "{epoch_c}Epoch {epoch:>3}{r} {sep} \
+             {lab}Best:{r} {best_val_color}{epoch_start_best_elo:>+5.1}{r} {sep} \
+             {lab}Avg:{r} {avg_val_color}{avg_raw_elo:>+5.1}{r} {sep} \
+             {lab}Budget:{r} {budget_c}{effective_pairs:>3}{r} {sep} \
+             {lab}σ:{r} {tel}{:.3}{r} {sep} \
+             {lab}η:{r} {tel}{:.2}{r} {sep} \
+             {lab}Time:{r} {time_c}{:>5.1}s{r}",
             cmaes.sigma(),
             cmaes.learning_rate(),
             epoch_duration.as_secs_f64()
         );
 
         if let Some((won, h2h_elo)) = h2h_result {
-            if won {
-                println!(
-                    "        └─ \x1b[38;2;255;215;0m✓\x1b[0m \x1b[1;96mH2H: Challenger wins ({h2h_elo:+.1} \
-                     Elo) → New elite!\x1b[0m"
-                );
+            // Marker shows the outcome; the gradient grades the margin.
+            let c = elo_color(h2h_elo);
+            let (mark, msg) = if won {
+                ("✓", format!("H2H: Challenger wins ({h2h_elo:+.1} Elo) → New elite!"))
             } else {
-                println!(
-                    "        └─ \x1b[38;2;255;100;100m✗\x1b[0m \x1b[38;2;255;180;80mH2H: Defender holds \
-                     ({h2h_elo:+.1} Elo) → Keeping elite.\x1b[0m"
-                );
-            }
+                ("✗", format!("H2H: Defender holds ({h2h_elo:+.1} Elo) → Keeping elite."))
+            };
+            println!("        └─ {c}{mark} {msg}{r}");
         }
 
         let best_clamped = clamp_normalized(&best_params);
@@ -697,10 +693,10 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     }
 
     // Final report on natural completion only; a SIGINT exit already wrote its own.
-    if !stop_flag.load(Ordering::SeqCst) {
-        if let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, config.epochs, "final") {
-            eprintln!("\x1b[31m[!] Failed to write final bounds report: {e}\x1b[0m");
-        }
+    if !stop_flag.load(Ordering::SeqCst)
+        && let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, config.epochs, "final")
+    {
+        eprintln!("\x1b[31m[!] Failed to write final bounds report: {e}\x1b[0m");
     }
 
     println!("\n\x1b[1;36m>> Search Tuning Complete ({:.1}s)\x1b[0m", total_start.elapsed().as_secs_f64());

@@ -3,6 +3,7 @@ pub mod cache;
 pub mod cmaes;
 pub mod elo;
 pub mod optimizer;
+pub mod palette;
 pub mod pentanomial;
 pub mod run;
 pub mod selfplay;
