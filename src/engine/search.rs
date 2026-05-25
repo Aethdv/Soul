@@ -1051,7 +1051,7 @@ impl Worker<'_> {
 
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, cont1, cont2, cont4);
-            while let Some(mv) = picker.next(&self.pos, &self.history) {
+            while let Some(mv) = picker.next(&self.pos, self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
@@ -1533,7 +1533,7 @@ impl Worker<'_> {
 
         let recapture_only = !in_check && qs_ply >= qs_recapture_ply();
 
-        while let Some(mv) = picker.next(&self.pos, &self.history) {
+        while let Some(mv) = picker.next(&self.pos, self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                 continue;
             }
