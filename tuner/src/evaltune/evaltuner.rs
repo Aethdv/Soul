@@ -73,12 +73,12 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         eprintln!("Error: No positions loaded.");
         return;
     }
-    println!("Total positions: \x1b[32m{}\x1b[0m", all_entries.len());
+    println!("Total positions: {}{}\x1b[0m", palette::fg(palette::COUNT), all_entries.len());
 
     train_entries(all_entries, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
-    println!("\n\x1b[93mDone in {elapsed:.2}s\x1b[0m");
+    println!("\n{}Done in {elapsed:.2}s\x1b[0m", palette::fg(palette::BRAND));
 }
 
 /// Enable Flush-to-Zero and Denormals-are-Zero for performance.
@@ -352,7 +352,7 @@ fn train_loop<G, V>(
             (1, 1.0_f64, default_values.clone(), momentum)
         },
         |path| {
-            println!("Resuming from checkpoint: \x1b[33m{path}\x1b[0m");
+            println!("Resuming from checkpoint: {}{path}\x1b[0m", palette::fg(palette::VALUE));
             let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
                 eprintln!("Failed to load checkpoint: {e}");
                 std::process::exit(1);
@@ -766,7 +766,7 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
         }
 
         if paths.is_empty() {
-            eprintln!("\x1b[31mError: No default dataset found in data/ directory.\x1b[0m");
+            eprintln!("{}Error: No default dataset found in data/ directory.\x1b[0m", color::ansi_fg((225, 89, 91)));
             eprintln!("Please provide a dataset path using --dataset <path>");
             None
         } else {

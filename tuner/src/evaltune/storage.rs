@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use soul::engine::eval_params::Tunable;
+use soul::{color, engine::eval_params::Tunable};
 
 use crate::core::{error::CheckpointError, fnv::Fnv1a};
 
@@ -94,8 +94,10 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     let cp: Checkpoint = serde_json::from_reader(reader)?;
     if cp.version != CHECKPOINT_VERSION {
         eprintln!(
-            "\x1b[91m[!] Error: Checkpoint version mismatch! (Expected: {}, Found: {})\x1b[0m",
-            CHECKPOINT_VERSION, cp.version
+            "{}[!] Error: Checkpoint version mismatch! (Expected: {}, Found: {})\x1b[0m",
+            color::ansi_fg((225, 89, 91)),
+            CHECKPOINT_VERSION,
+            cp.version
         );
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Checkpoint version mismatch").into());
     }
@@ -105,7 +107,12 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 
     let current_hash = compute_layout_hash(tunables);
     if cp.hash != current_hash {
-        eprintln!("\x1b[33mWarning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x})\x1b[0m", cp.hash, current_hash);
+        eprintln!(
+            "{}Warning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x})\x1b[0m",
+            color::ansi_fg((218, 165, 32)),
+            cp.hash,
+            current_hash
+        );
         eprintln!("New parameters will use current default values.");
     }
 
