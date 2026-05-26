@@ -356,7 +356,7 @@ impl GameOutcome {
 /// opponent has a chance to stray.
 #[inline]
 pub fn draw_score(nodes: u64) -> i32 {
-    (nodes & 0xF) as i32 - 8
+    (nodes & 0x7) as i32 - 3
 }
 
 /// Let chess types serve as array indices directly:
