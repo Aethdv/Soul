@@ -318,7 +318,7 @@ search_params! {
         NT(hist_bonus_mult,     4),
         NT(hist_bonus_cap,   1600),
 
-        //                   default min  max  step
+        //                default min  max  step
         T (minor_corr_weight, 128,  8),
         T (major_corr_weight, 128,  8),
     }
