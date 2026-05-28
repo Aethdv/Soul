@@ -580,14 +580,25 @@ impl Position {
         key
     }
 
-    /// Compute a Zobrist hash of non-pawn, non-king pieces for a given color.
-    /// Used by non-pawn correction history to index by material configuration.
-    pub fn calc_non_pawn_hash(&self, color: Color) -> u64 {
+    /// Zobrist hash of all minor pieces (knights + bishops, both colors).
+    /// Keys minor correction history. Global like `calc_pawn_hash` — the
+    /// stm dimension in the table carries perspective.
+    pub fn calc_minor_hash(&self) -> u64 {
         let mut key = 0u64;
-        let pieces =
-            self.side_bb[color as usize] & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
-        for sq in pieces {
-            key ^= zobrist::key_piece(self.piece_at(sq), color, sq);
+        let minors = self.role_bb[PieceType::Knight] | self.role_bb[PieceType::Bishop];
+        for sq in minors {
+            key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
+        }
+        key
+    }
+
+    /// Zobrist hash of all major pieces (rooks + queens, both colors).
+    /// Keys major correction history. Global like `calc_pawn_hash`.
+    pub fn calc_major_hash(&self) -> u64 {
+        let mut key = 0u64;
+        let majors = self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen];
+        for sq in majors {
+            key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
         }
         key
     }

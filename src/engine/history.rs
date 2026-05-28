@@ -25,8 +25,10 @@ pub struct History {
     cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
-    /// `[color][non_pawn_hash & 0x3FFF]` — Zobrist-indexed by material configuration
-    np_correction: CorrectionHistory, // ~18 Elo
+    /// `[side][minor_hash & 0x3FFF]` — knights + bishops, both colors
+    minor_correction: CorrectionHistory,
+    /// `[side][major_hash & 0x3FFF]` — rooks + queens, both colors
+    major_correction: CorrectionHistory,
     /// `[side][attacker][to][victim]`
     capt: CaptureHistory, // ~8 Elo
 }
@@ -205,7 +207,8 @@ impl History {
             butterfly: [[0; 4096]; 2],
             cont: [ContinuationHistory::new(), ContinuationHistory::new()],
             correction: CorrectionHistory::new(),
-            np_correction: CorrectionHistory::new(),
+            minor_correction: CorrectionHistory::new(),
+            major_correction: CorrectionHistory::new(),
             capt: CaptureHistory::new(),
         }
     }
@@ -217,7 +220,8 @@ impl History {
         self.cont[0].clear();
         self.cont[1].clear();
         self.correction.clear();
-        self.np_correction.clear();
+        self.minor_correction.clear();
+        self.major_correction.clear();
         self.capt.clear();
     }
 
@@ -293,19 +297,30 @@ impl History {
         *entry = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384) as i16;
     }
 
-    /// Blended correction: pawn structure + side-to-move's non-pawn configuration.
+    /// Blended correction: pawn structure + minor and major piece placement.
     ///
-    /// Pawn correction is at full weight; NP correction is scaled by `np_weight / 256`
-    /// so the tuner can dial its contribution independently.
+    /// Pawn correction is at full weight; minor and major are each scaled by
+    /// their own `weight / 256` so the tuner can dial them independently.
     #[inline(always)]
-    pub fn correction(&self, stm: Color, pawn_hash: u64, stm_np_hash: u64, np_weight: i32) -> i32 {
-        self.correction.get(stm, pawn_hash) + self.np_correction.get(stm, stm_np_hash) * np_weight / 256
+    pub fn correction(
+        &self,
+        stm: Color,
+        pawn_hash: u64,
+        minor_hash: u64,
+        major_hash: u64,
+        minor_weight: i32,
+        major_weight: i32,
+    ) -> i32 {
+        self.correction.get(stm, pawn_hash)
+            + self.minor_correction.get(stm, minor_hash) * minor_weight / 256
+            + self.major_correction.get(stm, major_hash) * major_weight / 256
     }
 
     #[inline(always)]
-    pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, stm_np_hash: u64, diff: i32, depth: i32) {
+    pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, minor_hash: u64, major_hash: u64, diff: i32, depth: i32) {
         self.correction.update(stm, pawn_hash, diff, depth);
-        self.np_correction.update(stm, stm_np_hash, diff, depth);
+        self.minor_correction.update(stm, minor_hash, diff, depth);
+        self.major_correction.update(stm, major_hash, diff, depth);
     }
 
     #[inline(always)]
@@ -332,7 +347,8 @@ impl Default for History {
             butterfly: [[0; 4096]; 2],
             cont: [ContinuationHistory { data: Box::new([]) }, ContinuationHistory { data: Box::new([]) }],
             correction: CorrectionHistory { data: Box::new([]) },
-            np_correction: CorrectionHistory { data: Box::new([]) },
+            minor_correction: CorrectionHistory { data: Box::new([]) },
+            major_correction: CorrectionHistory { data: Box::new([]) },
             capt: CaptureHistory { data: Box::new([]) },
         }
     }
