@@ -897,12 +897,15 @@ impl Worker<'_> {
         // frame learns from the unshifted baseline, not the already-corrected
         // value we use for pruning.
         let pawn_hash = if in_check { 0 } else { self.pos.calc_pawn_hash() };
-        let stm_np_hash = if in_check { 0 } else { self.pos.calc_non_pawn_hash(self.pos.stm) };
+        let minor_hash = if in_check { 0 } else { self.pos.calc_minor_hash() };
+        let major_hash = if in_check { 0 } else { self.pos.calc_major_hash() };
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
             let correction =
-                self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
+                self.history
+                    .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, minor_corr_weight(), major_corr_weight())
+                    / history::CORRECTION_SCALE;
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
         self.stack[ply].static_eval = static_eval;
@@ -1302,7 +1305,8 @@ impl Worker<'_> {
                 || (bound == tt::BOUND_UPPER && res.best_eval >= static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
-            self.history.update_correction(self.pos.stm, pawn_hash, stm_np_hash, diff, depth);
+            self.history
+                .update_correction(self.pos.stm, pawn_hash, minor_hash, major_hash, diff, depth);
         }
 
         Ok(res.best_eval)
@@ -1505,9 +1509,12 @@ impl Worker<'_> {
         } else {
             let raw_eval = evaluate(&self.pos, &self.accumulator);
             let pawn_hash = self.pos.calc_pawn_hash();
-            let stm_np_hash = self.pos.calc_non_pawn_hash(self.pos.stm);
+            let minor_hash = self.pos.calc_minor_hash();
+            let major_hash = self.pos.calc_major_hash();
             let correction =
-                self.history.correction(self.pos.stm, pawn_hash, stm_np_hash, np_corr_weight()) / history::CORRECTION_SCALE;
+                self.history
+                    .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, minor_corr_weight(), major_corr_weight())
+                    / history::CORRECTION_SCALE;
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
             if eval >= beta {
                 // Static eval is blind to quiet replies — the
