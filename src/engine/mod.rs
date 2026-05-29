@@ -3,6 +3,7 @@
 pub mod adjudication;
 pub mod autograd;
 pub mod combiner;
+#[cfg(feature = "corrstats")] pub mod corrstats;
 pub mod eval;
 pub mod eval_params;
 pub mod history;

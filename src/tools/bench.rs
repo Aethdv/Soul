@@ -57,4 +57,7 @@ pub fn run(depth: i32) {
     let nps = (total_nodes as f64 / elapsed.as_secs_f64().max(0.000_001)) as u64;
 
     println!("Bench: {total_nodes} nodes {nps} nps");
+
+    #[cfg(feature = "corrstats")]
+    crate::engine::corrstats::report();
 }

@@ -11,6 +11,8 @@ use crate::core::defs::{Color, PieceType, Square};
 pub const CORRECTION_SIZE: usize = 16384;
 pub const CORRECTION_SCALE: i32 = 256;
 pub const CORRECTION_LIMIT: i32 = 256 * 32;
+/// Denominator for the per-table blend weights — `weight / this` is a table's share.
+pub const CORRECTION_WEIGHT_SCALE: i32 = 256;
 
 const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 
@@ -313,9 +315,19 @@ impl History {
         minor_weight: i32,
         major_weight: i32,
     ) -> i32 {
-        self.correction.get(stm, pawn_hash)
-            + self.minor_correction.get(stm, minor_hash) * minor_weight / 256
-            + self.major_correction.get(stm, major_hash) * major_weight / 256
+        let pawn = self.correction.get(stm, pawn_hash);
+        let minor = self.minor_correction.get(stm, minor_hash);
+        let major = self.major_correction.get(stm, major_hash);
+
+        #[cfg(feature = "corrstats")]
+        {
+            use crate::engine::corrstats::{Table, record_read};
+            record_read(Table::Pawn, pawn);
+            record_read(Table::Minor, minor);
+            record_read(Table::Major, major);
+        }
+
+        pawn + minor * minor_weight / CORRECTION_WEIGHT_SCALE + major * major_weight / CORRECTION_WEIGHT_SCALE
     }
 
     #[inline(always)]
@@ -323,6 +335,14 @@ impl History {
         self.correction.update(stm, pawn_hash, diff, depth);
         self.minor_correction.update(stm, minor_hash, diff, depth);
         self.major_correction.update(stm, major_hash, diff, depth);
+
+        #[cfg(feature = "corrstats")]
+        {
+            use crate::engine::corrstats::{Table, record_update};
+            record_update(Table::Pawn);
+            record_update(Table::Minor);
+            record_update(Table::Major);
+        }
     }
 
     #[inline(always)]
