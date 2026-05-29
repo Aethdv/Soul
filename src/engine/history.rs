@@ -26,7 +26,7 @@ pub struct History {
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
     /// `[side][minor_hash & 0x3FFF]` — knights + bishops, both colors
-    minor_correction: CorrectionHistory,
+    minor_correction: CorrectionHistory, // minor + major split from lumped non-pawn (~18 Elo): net ~5 Elo
     /// `[side][major_hash & 0x3FFF]` — rooks + queens, both colors
     major_correction: CorrectionHistory,
     /// `[side][attacker][to][victim]`
@@ -181,14 +181,16 @@ impl CorrectionHistory {
 
     /// Weighted moving average update.
     ///
-    /// `weight = min(1 + depth, 16)`, so shallow searches nudge gently
-    /// and deep searches carry more authority — but never so much that
-    /// a single outlier dominates.
+    /// Weight ramps quadratically with depth, capped at 32/256;
+    /// a deep search's verdict is far more trustworthy than a shallow one,
+    /// so it overwrites a larger share of the entry, while the cap still
+    /// keeps any single outlier from dominating.
     #[inline(always)]
     pub fn update(&mut self, stm: Color, pawn_hash: u64, raw_diff: i32, depth: i32) {
         let entry = &mut self.data[Self::idx(stm, pawn_hash)];
-        let weight = (1 + depth).min(16);
+        let weight = ((1 + depth) * (1 + depth) / 4).min(32);
         let scaled = raw_diff * CORRECTION_SCALE;
+
         *entry = ((*entry * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT);
     }
 }
