@@ -44,6 +44,8 @@ zerocopy = { version = "0.8.48", default-features = false, features = ["derive",
 
 [features]
 searchtune = []
+# Instrument correction-history reads/updates for diagnosis. Off in release.
+corrstats = []
 
 [profile.release]
 lto = "fat"

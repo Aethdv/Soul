@@ -30,7 +30,7 @@ endif
 
 .PHONY: all help debug release native v3 v4 pgo openbench clean \
         evaltune searchtune test seeformat format clippy profile \
-        releases avx2 avx2-bmi2 avx512
+        releases avx2 avx2-bmi2 avx512 corrstats
 
 all: openbench
 
@@ -69,6 +69,13 @@ native: ## Build optimized for your CPU
 		cargo build --release --quiet
 	@cp target/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
+
+corrstats: ## Native build with correction-history stats (./soul-corrstats bench)
+	@echo "Building $(EXE_NAME)-corrstats..."
+	@RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" \
+		cargo build --release --features corrstats --quiet
+	@cp target/release/$(EXE_NAME) $(EXE)-corrstats
+	@echo "Done: ./$(EXE)-corrstats"
 
 v4: ## AVX512
 	@echo "Building x86-64-v4..."
@@ -157,7 +164,7 @@ clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
 clean: ## Remove all build artifacts
 	@echo "Cleaning..."
 	@cargo clean
-	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval
+	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval $(EXE)-corrstats
 	@rm -f $(EXE_NAME)-v*-avx2* $(EXE_NAME)-v*-avx512*
 	@rm -rf target/pgo-profiles
 	@echo "Done"
