@@ -1,5 +1,3 @@
-#![feature(custom_inner_attributes)]
-
 use tuner::{evaltune::lion::Lion, searchtune::cmaes::CmaEs};
 
 #[test]
