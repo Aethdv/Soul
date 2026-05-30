@@ -71,7 +71,6 @@ impl fmt::Debug for DualNode {
     }
 }
 
-
 // Each operator checks `active == 0` (constant) to skip gradient work.
 // Ideally for the ~50% of eval operations involving a constant,
 // this eliminates the gradient computation entirely.
@@ -259,7 +258,7 @@ impl Neg for DualNode {
         }
 
         let mut grad = [0.0f32; DUAL_N];
-        
+
         grad_map1(&self.grad, &mut grad, |ga| Vf32x8::zero() - ga);
         Self { grad, val: -self.val, active: self.active }
     }
@@ -467,7 +466,6 @@ impl EnvVec4 for DualVec4 {
             self.0[1].math_clamp(min, max),
             self.0[2].math_clamp(min, max),
             self.0[3].math_clamp(min, max),
-
             hi.0[0].math_clamp(min, max),
             hi.0[1].math_clamp(min, max),
             hi.0[2].math_clamp(min, max),
