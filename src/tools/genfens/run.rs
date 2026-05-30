@@ -12,6 +12,7 @@ use std::{
     io::{BufRead, BufReader, Read, Result, Write, stdout},
     num::NonZero,
     path::Path,
+    process,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -22,13 +23,13 @@ use std::{
 };
 
 use super::{
-    config::{GenfensArgs, GenfensConfig},
+    config::GenfensConfig,
     stats::{GlobalStats, get_rss_kb},
     worker::WorkerState,
 };
 use crate::{
     cli::Help,
-    core::{board::Position, util::format_comma as format_num},
+    core::{board::Position, defs::MAX_DEPTH, util::format_comma as format_num},
     tools::dataset::{MAGIC_V5, MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
 };
 
@@ -50,23 +51,24 @@ const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
 const DASHBOARD_LINES: usize = 14;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
-    let parsed = parse_args(args);
+    let (parsed, resume) = parse_args(args);
 
     let book_fens = if parsed.startpos {
         vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]
     } else {
         let fens = load_books(&parsed.book_paths);
+
         if fens.is_empty() {
             eprintln!("{RED}Error: No opening positions loaded!{RESET}");
             return;
         }
         fens
     };
+
     println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len(),);
 
-    let mut config = resolve_config(&parsed);
-
-    let start_count = if parsed.resume { load_existing_count(&config.output_path) } else { 0 };
+    let mut config = resolve_config(parsed, resume);
+    let start_count = if resume { load_existing_count(&config.output_path) } else { 0 };
 
     config.generated_count = start_count as u64;
     let _ = config.save();
@@ -111,8 +113,10 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
         spawn(move || {
             let mut first_frame = true;
+
             while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
                 let snap = Snapshot::capture(&global_mon, &gen_mon, target, rr);
+
                 render_dashboard(&snap, &mut first_frame);
                 sleep(DASHBOARD_INTERVAL);
             }
@@ -130,18 +134,22 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         let tx = tx.clone();
         let stop_w = stop.clone();
         let target_u = target;
+
         handles.push(spawn(move || {
             loop {
                 if stop_w.load(Ordering::Relaxed) || worker.global.saved.load(Ordering::Relaxed) >= target_u {
                     break;
                 }
+
                 let entries = worker.play_game();
+
                 if !entries.is_empty() && tx.send(entries).is_err() {
                     break;
                 }
             }
         }));
     }
+
     drop(tx); // channel closes when all senders drop
 
     // ── Collection loop: flush results to disk periodically ──
@@ -340,7 +348,9 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         format_num(snap.target),
         snap.progress_pct(),
     );
+
     println!("\r\x1b[KRate:            {:.3} k/s", snap.rate() / 1000.0);
+
     if snap.random_restart {
         println!("\r\x1b[KAttempted:       {}", format_num(snap.attempted));
         println!("\r\x1b[K",); // preserves alignment
@@ -348,6 +358,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         println!("\r\x1b[KGames:           {}", format_num(snap.games));
         println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
     }
+
     println!("\r\x1b[KFiltered Quiet:  {}", format_num(snap.filtered_quiet));
     println!("\r\x1b[KFiltered Score:  {}", format_num(snap.filtered_score));
     println!("\r\x1b[KFiltered Ply:    {}", format_num(snap.filtered_ply));
@@ -373,15 +384,18 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
         snap.elapsed,
         snap.rate() / 1000.0,
     );
+
     println!("{GREEN}[OK]{RESET} Saved to {output_path}");
     println!();
     println!("[FINAL STATS]");
+
     if snap.random_restart {
         println!("  Total Positions:  {}", format_num(snap.attempted));
     } else {
         println!("  Total Games:      {}", format_num(snap.games));
         println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
     }
+
     println!();
     println!("  Positions:");
     println!("    Attempted:      {}", format_num(snap.attempted));
@@ -393,11 +407,13 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!("    Score filter:   {} ({:.1}%)", format_num(snap.filtered_score), pct(snap.filtered_score, total_filt),);
     println!("    Ply filter:     {} ({:.1}%)", format_num(snap.filtered_ply), pct(snap.filtered_ply, total_filt),);
     println!("    Pieces filter:  {} ({:.1}%)", format_num(snap.filtered_pieces), pct(snap.filtered_pieces, total_filt),);
+
     println!(
         "    Incorrect filt: {} ({:.1}%)",
         format_num(snap.filtered_incorrect),
         pct(snap.filtered_incorrect, total_filt),
     );
+
     println!("    Qsearch filt:   {} ({:.1}%)", format_num(snap.filtered_tactical), pct(snap.filtered_tactical, total_filt),);
     println!();
     println!("  Game Terminations:");
@@ -412,6 +428,7 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
         ("Draw (adj)", snap.term_draw_adj),
         ("Resign", snap.term_resign),
     ];
+
     for (label, count) in terminations {
         println!("    {label:<15} {} ({:.1}%)", format_num(count), pct(count, total_term),);
     }
@@ -435,21 +452,18 @@ fn load_books(paths: &[String]) -> Vec<String> {
             Err(e) => eprintln!("  {RED}Failed to load {path}: {e}{RESET}"),
         }
     }
-
     all
 }
 
-/// Resolves the generation config from CLI args, optionally resuming
-/// a previous run by loading saved state from disk.
-fn resolve_config(args: &GenfensArgs) -> GenfensConfig {
-    if args.resume
-        && let Ok(mut cfg) = GenfensConfig::load()
-    {
-        cfg.target_count = args.target_count;
-        cfg.book_paths.clone_from(&args.book_paths);
+/// Resolves the generation config, optionally resuming a previous run by
+/// loading saved state from disk and re-applying the CLI's target and books.
+fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
+    if resume && let Ok(mut cfg) = GenfensConfig::load() {
+        cfg.target_count = parsed.target_count;
+        cfg.book_paths = parsed.book_paths;
         return cfg;
     }
-    GenfensConfig::from(args.clone())
+    parsed
 }
 
 /// Prints the launch banner — what we're about to do and how.
@@ -457,6 +471,7 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
     println!("Output: {}", config.output_path);
+
     if config.startpos {
         println!("Book: startpos");
     } else {
@@ -478,15 +493,19 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     if config.filter_quiet {
         println!("Filter: quiet positions only");
     }
+
     if config.min_ply > 0 {
         println!("Filter: min ply = {}", config.min_ply);
     }
+
     if config.min_pieces > 0 {
         println!("Filter: min pieces = {}", config.min_pieces);
     }
+
     if config.eval_contradiction_limit != i32::MAX {
         println!("Filter: eval contradiction limit = {} cp", config.eval_contradiction_limit);
     }
+
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
     }
@@ -499,9 +518,11 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Genfe
     if pending.is_empty() {
         return;
     }
+
     if let Err(e) = append_encoded(output_path, pending) {
         eprintln!("{RED}[ERROR] Failed to save batch: {e}{RESET}");
     }
+
     pending.clear();
     let _ = config.save();
 }
@@ -516,12 +537,14 @@ fn load_existing_count(path: &str) -> usize {
     let mut reader = BufReader::new(file);
 
     let mut magic = [0u8; 8];
+
     if reader.read_exact(&mut magic).is_err() {
         return 0;
     }
 
     if &magic == MAGIC_V5 || &magic == MAGIC_V6 {
         let mut buf = [0u8; 8];
+
         if reader.read_exact(&mut buf).is_ok() {
             return u64::from_le_bytes(buf) as usize;
         }
@@ -567,46 +590,56 @@ fn print_help() {
     );
 }
 
-fn parse_args(args: &[&str]) -> GenfensArgs {
-    let mut output_path = String::from("data.soul.zst");
-    let mut book_paths = Vec::new();
-    let mut target_count = 8_000_000;
+fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
+    // Defaults come solely from GenfensConfig::default(); the CLI overrides
+    // fields in place. depth stays a local Option so the node-limit resolution
+    // can run after the loop; resume is a control flag, not config.
+    let mut cfg = GenfensConfig::default();
     let mut depth: Option<i32> = None;
-    let mut soft_nodes = None;
-    let mut hard_nodes = None;
-    let mut resign_cp = 800;
-    let mut score_filter = 450;
-    let mut max_plies = 300;
-    let mut buffer_size = 256;
-    let mut thread_count = None;
-    let mut save_interval = 5000;
-    let mut filter_quiet = true;
-    let mut sample_rate = 0.7;
-    let mut min_ply = 0usize;
-    let mut min_pieces = 4u32;
-    let mut eval_contradiction_limit = i32::MAX;
-    let mut qsearch_filter = i32::MAX;
-    let mut random_restart = true;
-    let mut random_plies = 6usize;
-    let mut startpos = false;
+    let mut book_override = false;
     let mut resume = false;
+
+    // Consume the next token and parse it into the field, leaving the field
+    // unchanged on a missing or unparseable argument. take_opt writes None on
+    // a parse failure, for the Option-typed fields.
+    macro_rules! take {
+        ($it:expr, $f:expr) => {
+            if let Some(v) = $it.next() {
+                $f = v.parse().unwrap_or($f);
+            }
+        };
+    }
+
+    macro_rules! take_opt {
+        ($it:expr, $f:expr) => {
+            if let Some(v) = $it.next() {
+                $f = v.parse().ok();
+            }
+        };
+    }
 
     let mut it = args.iter().copied();
     while let Some(flag) = it.next() {
         match flag {
+            // Non-uniform arms: string values, accumulation, custom parsing.
             "-o" | "--output" => {
                 if let Some(v) = it.next() {
-                    output_path = v.to_string();
+                    cfg.output_path = v.to_string();
                 }
             },
             "-b" | "--book" => {
                 if let Some(v) = it.next() {
-                    book_paths.push(v.to_string());
+                    // First --book replaces the default; further ones accumulate.
+                    if !book_override {
+                        cfg.book_paths.clear();
+                        book_override = true;
+                    }
+                    cfg.book_paths.push(v.to_string());
                 }
             },
             "-n" | "--count" => {
                 if let Some(v) = it.next() {
-                    target_count = parse_suffix(v).unwrap_or(target_count);
+                    cfg.target_count = parse_suffix(v).unwrap_or(cfg.target_count);
                 }
             },
             "-d" | "--depth" => {
@@ -614,118 +647,44 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                     depth = v.parse().ok().or(depth);
                 }
             },
-            "--soft" => {
-                if let Some(v) = it.next() {
-                    soft_nodes = v.parse().ok();
-                }
-            },
-            "--nodes" => {
-                if let Some(v) = it.next() {
-                    hard_nodes = v.parse().ok();
-                }
-            },
-            "--resign" => {
-                if let Some(v) = it.next() {
-                    resign_cp = v.parse().unwrap_or(resign_cp);
-                }
-            },
-            "--filter" => {
-                if let Some(v) = it.next() {
-                    score_filter = v.parse().unwrap_or(score_filter);
-                }
-            },
-            "--plies" => {
-                if let Some(v) = it.next() {
-                    max_plies = v.parse().unwrap_or(max_plies);
-                }
-            },
-            "--buf" => {
-                if let Some(v) = it.next() {
-                    buffer_size = v.parse().unwrap_or(buffer_size);
-                }
-            },
-            "-t" | "--threads" => {
-                if let Some(v) = it.next() {
-                    thread_count = v.parse().ok();
-                }
-            },
-            "--save-interval" => {
-                if let Some(v) = it.next() {
-                    save_interval = v.parse().unwrap_or(save_interval);
-                }
-            },
-            "--all" => filter_quiet = false,
-            "--sample" => {
-                if let Some(v) = it.next() {
-                    sample_rate = v.parse().unwrap_or(sample_rate);
-                }
-            },
-            "--min-ply" => {
-                if let Some(v) = it.next() {
-                    min_ply = v.parse().unwrap_or(min_ply);
-                }
-            },
-            "--min-pieces" => {
-                if let Some(v) = it.next() {
-                    min_pieces = v.parse().unwrap_or(min_pieces);
-                }
-            },
-            "--eval-contradiction-limit" => {
-                if let Some(v) = it.next() {
-                    eval_contradiction_limit = v.parse().unwrap_or(eval_contradiction_limit);
-                }
-            },
-            "--qsearch" => {
-                if let Some(v) = it.next() {
-                    qsearch_filter = v.parse().unwrap_or(qsearch_filter);
-                }
-            },
-            "--random-plies" => {
-                if let Some(v) = it.next() {
-                    random_plies = v.parse().unwrap_or(random_plies);
-                }
-            },
-            "--no-random-restart" => random_restart = false,
-            "--startpos" => startpos = true,
+
+            "--soft" => take_opt!(it, cfg.soft_nodes),
+            "--nodes" => take_opt!(it, cfg.hard_nodes),
+            "-t" | "--threads" => take_opt!(it, cfg.thread_count),
+
+            "--resign" => take!(it, cfg.resign_cp),
+            "--filter" => take!(it, cfg.score_filter),
+            "--plies" => take!(it, cfg.max_plies),
+            "--buf" => take!(it, cfg.buffer_size),
+            "--save-interval" => take!(it, cfg.save_interval),
+            "--sample" => take!(it, cfg.sample_rate),
+            "--min-ply" => take!(it, cfg.min_ply),
+            "--min-pieces" => take!(it, cfg.min_pieces),
+            "--eval-contradiction-limit" => take!(it, cfg.eval_contradiction_limit),
+            "--qsearch" => take!(it, cfg.qsearch_filter),
+            "--random-plies" => take!(it, cfg.random_plies),
+
+            "--all" => cfg.filter_quiet = false,
+            "--no-random-restart" => cfg.random_restart = false,
+            "--startpos" => cfg.startpos = true,
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
-                std::process::exit(0);
+                process::exit(0);
             },
             _ => {}, // Unknown flags silently ignored.
         }
     }
 
-    // Default book if none specified — UHO is the community standard
-    // for balanced, non-degenerate openings.
-    if book_paths.is_empty() {
-        book_paths.push("UHO_Lichess_4852_v1.epd".to_string());
+    // An explicit --depth wins; otherwise a node-limited run searches to max
+    // depth and lets the node cap bound it; otherwise keep the default.
+    if let Some(d) = depth {
+        cfg.depth = d;
+    } else if cfg.soft_nodes.is_some() || cfg.hard_nodes.is_some() {
+        cfg.depth = MAX_DEPTH;
     }
 
-    GenfensArgs {
-        target_count,
-        output_path,
-        book_paths,
-        depth,
-        soft_nodes,
-        hard_nodes,
-        resign_cp,
-        score_filter,
-        max_plies,
-        buffer_size,
-        thread_count,
-        save_interval,
-        filter_quiet,
-        sample_rate,
-        min_ply,
-        min_pieces,
-        eval_contradiction_limit,
-        qsearch_filter,
-        random_restart,
-        random_plies,
-        startpos,
-        resume,
-    }
+    (cfg, resume)
 }
 
 /// Parses a number string with optional K/M/B suffix.
@@ -765,6 +724,5 @@ fn load_epd_fens(path: &str) -> Result<Vec<String>> {
         // Lines that fail both parses are silently skipped,
         // they're comments, blank lines, or corrupted entries.
     }
-
     Ok(fens)
 }

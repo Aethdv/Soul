@@ -4,6 +4,7 @@
 //! using move-time limits to simulate realistic game conditions.
 
 use std::{
+    env,
     io::{self, Write},
     process::Command,
     sync::{
@@ -14,7 +15,7 @@ use std::{
 };
 
 use crate::{
-    core::{board::Position, defs::Protocol},
+    core::{board::Position, defs::Protocol, util::format_comma},
     engine::{
         history::History,
         search::{Limits, Searcher},
@@ -30,6 +31,7 @@ const PEACH: &str = "\x1b[38;2;250;179;135m";
 const RESET: &str = "\x1b[0m";
 
 const SPEEDTEST_FENS: &str = include_str!("../data/speedtest.fens");
+
 /// Run speedtest with adaptive time per position.
 pub fn run(limit: usize) {
     use crate::engine::{search::SearchConfig, search_params::SearchParams};
@@ -72,6 +74,7 @@ pub fn run(limit: usize) {
         let progress = (i + 1) as f32 / total as f32;
         let filled = (bar_width as f32 * progress) as usize;
         let bar: String = "=".repeat(filled) + &" ".repeat(bar_width - filled);
+
         print!("\r  [{}] {:>5.1}%  ({}/{})", bar, progress * 100.0, i + 1, total);
         io::stdout().flush().ok();
     }
@@ -79,10 +82,10 @@ pub fn run(limit: usize) {
     let elapsed = start.elapsed();
     let nps = (total_nodes as f64 / elapsed.as_secs_f64().max(0.000_001)) as u64;
 
-    let nps_formatted = format_with_separators(nps);
-    let nodes_formatted = format_with_separators(total_nodes);
+    let nps_formatted = format_comma(nps);
+    let nodes_formatted = format_comma(total_nodes);
 
-    let binary_name = std::env::current_exe()
+    let binary_name = env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "Soul".to_string());
@@ -160,18 +163,6 @@ fn get_feature_flags() -> String {
     parts.push("POPCNT");
 
     if parts.is_empty() { "none".to_string() } else { parts.join(" ") }
-}
-
-fn format_with_separators(n: u64) -> String {
-    let s = n.to_string();
-    let mut result = String::with_capacity(s.len() + s.len() / 3);
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(c);
-    }
-    result.chars().rev().collect()
 }
 
 /// Get rustc version at runtime.

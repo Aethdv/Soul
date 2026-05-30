@@ -4,7 +4,10 @@
 //!   * `SoulEntry` — 32-byte nibble-array frames, zstd-compressed.
 //!   * EPD text — one position per line, with game-result annotations.
 
-use std::io::{self, Read, Write};
+use std::{
+    fs,
+    io::{self, Read, Write},
+};
 
 use zerocopy::IntoBytes;
 
@@ -38,7 +41,7 @@ const V5_SIZE: usize = 96;
 /// independently and collected into a single output `Vec`, growing in-place
 /// rather than bouncing through an intermediate buffer.
 pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
-    let file = std::fs::File::open(path)?;
+    let file = fs::File::open(path)?;
     let mut decoder = zstd::Decoder::new(file)?;
 
     let mut entries = Vec::new();
@@ -52,20 +55,22 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
         if magic == *MAGIC_V6 {
             let mut buf = [0u8; 8];
             decoder.read_exact(&mut buf)?;
-            let count = u64::from_le_bytes(buf) as usize;
 
+            let count = u64::from_le_bytes(buf) as usize;
             let base = entries.len();
+
             entries.resize(base + count, SoulEntry::default());
             decoder.read_exact(entries[base..].as_mut_bytes())?;
         } else if magic == *MAGIC_V5 {
             let mut buf = [0u8; 8];
             decoder.read_exact(&mut buf)?;
+
             let count = u64::from_le_bytes(buf) as usize;
-
             let mut v5_chunk = vec![0u8; count * V5_SIZE];
-            decoder.read_exact(&mut v5_chunk)?;
 
+            decoder.read_exact(&mut v5_chunk)?;
             entries.reserve(count);
+
             for i in 0..count {
                 entries.push(v5_to_v6(&v5_chunk[i * V5_SIZE..][..V5_SIZE]));
             }
@@ -73,19 +78,18 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
         }
     }
-
     Ok(entries)
 }
 
 /// Creates (or overwrites) a compressed dataset file.
 pub fn save_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
-    write_frame(std::fs::File::create(path)?, entries)
+    write_frame(fs::File::create(path)?, entries)
 }
 
 /// Appends an independent compressed frame to a dataset file,
 /// creating it if necessary.
 pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let file = fs::OpenOptions::new().create(true).append(true).open(path)?;
     write_frame(file, entries)
 }
 
@@ -104,6 +108,7 @@ pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
 /// The returned `f64` is always from White's perspective.
 pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
     let line = line.trim();
+
     if line.is_empty() {
         return None;
     }
@@ -113,8 +118,10 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
         let mut fields = line.split('|').map(str::trim);
         let fen = fields.next().unwrap(); // split always yields ≥ 1 element
         let _eval = fields.next(); // guaranteed present by the guard
+
         if let Some(wdl) = fields.next() {
             let result = wdl.parse::<f64>().ok()?;
+
             if let Ok(board) = Position::try_from_fen(fen) {
                 return Some((board, result));
             }
@@ -122,34 +129,26 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
         // Fewer than three fields, or bad FEN → fall through to classic heuristics.
     }
 
-    // Classic EPD result detection
-    let (result, fen_raw) = if let Some(stripped) = line.strip_suffix("1-0") {
-        (1.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("0-1") {
-        (0.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("1/2-1/2") {
-        (0.5, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("1.0") {
-        (1.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("0.0") {
-        (0.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("0.5") {
-        (0.5, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix(";w") {
-        (1.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("; w") {
-        (1.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix(";b") {
-        (0.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("; b") {
-        (0.0, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix(";d") {
-        (0.5, stripped.to_string())
-    } else if let Some(stripped) = line.strip_suffix("; d") {
-        (0.5, stripped.to_string())
-    } else {
-        (0.5, line.to_string())
-    };
+    // Classic EPD result detection.
+    const RESULT_SUFFIXES: &[(&str, f64)] = &[
+        ("1-0", 1.0),
+        ("0-1", 0.0),
+        ("1/2-1/2", 0.5),
+        ("1.0", 1.0),
+        ("0.0", 0.0),
+        ("0.5", 0.5),
+        (";w", 1.0),
+        ("; w", 1.0),
+        (";b", 0.0),
+        ("; b", 0.0),
+        (";d", 0.5),
+        ("; d", 0.5),
+    ];
+
+    let (result, fen_raw) = RESULT_SUFFIXES
+        .iter()
+        .find_map(|&(suffix, val)| line.strip_suffix(suffix).map(|s| (val, s.to_string())))
+        .unwrap_or((0.5, line.to_string()));
 
     // Strip trailing EPD opcodes (everything past the first ';').
     let fen = fen_raw.split(';').next().unwrap_or(&fen_raw).trim();
@@ -185,16 +184,20 @@ fn v5_to_v6(raw: &[u8]) -> SoulEntry {
         let sq_val = (p & 0x3F) as u8;
         let upper = (p >> 6) as usize;
         let pt = upper & 0x07;
+
         if pt > 5 {
             continue;
         }
+
         let v5_color = upper & 0x08; // 0=Us/White, 8=Them/Black in V5 normalization
 
         // Undo V5 STM-perspective normalization.
         let mut sq = sq_val;
+
         if original_stm == 1 {
             sq ^= 0x38; // flip_rank
         }
+
         let real_black = if original_stm == 0 { v5_color != 0 } else { v5_color == 0 };
         let color_bit = if real_black { 0x08u8 } else { 0x00u8 };
 
@@ -206,8 +209,10 @@ fn v5_to_v6(raw: &[u8]) -> SoulEntry {
     let mut pieces = [0u8; 16];
     let mut occ = occupancy;
     let mut idx = 0usize;
+
     while occ != 0 {
         let sq = occ.trailing_zeros() as usize;
+
         occ &= occ - 1;
         pieces[idx / 2] |= nibbles[sq] << ((idx & 1) * 4);
         idx += 1;
@@ -232,6 +237,7 @@ fn v5_to_v6(raw: &[u8]) -> SoulEntry {
 
 fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
     let mut enc = zstd::Encoder::new(writer, 3)?;
+
     enc.write_all(MAGIC_V6)?;
     enc.write_all(&(entries.len() as u64).to_le_bytes())?;
     enc.write_all(entries.as_bytes())?;

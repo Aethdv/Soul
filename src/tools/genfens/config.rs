@@ -6,8 +6,6 @@ use std::{
     path::Path,
 };
 
-use crate::core::defs::MAX_DEPTH;
-
 pub const CONFIG_FILENAME: &str = "genfens_config.json";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -103,68 +101,5 @@ impl GenfensConfig {
     pub fn update_count(&mut self, count: u64) {
         self.generated_count = count;
         let _ = self.save();
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GenfensArgs {
-    pub target_count: u64,
-    pub output_path: String,
-    pub book_paths: Vec<String>,
-    /// `None` = unspecified by the user; resolved at config construction time.
-    pub depth: Option<i32>,
-    pub soft_nodes: Option<u64>,
-    pub hard_nodes: Option<u64>,
-    pub resign_cp: i32,
-    pub score_filter: i32,
-    pub max_plies: usize,
-    pub buffer_size: usize,
-    pub thread_count: Option<usize>,
-    pub save_interval: usize,
-    pub filter_quiet: bool,
-    pub sample_rate: f64,
-    pub min_ply: usize,
-    pub min_pieces: u32,
-    pub eval_contradiction_limit: i32,
-    pub qsearch_filter: i32,
-    pub random_restart: bool,
-    pub random_plies: usize,
-    pub startpos: bool,
-    pub resume: bool,
-}
-
-impl From<GenfensArgs> for GenfensConfig {
-    fn from(args: GenfensArgs) -> Self {
-        let depth = match args.depth {
-            Some(d) => d,
-            None if args.soft_nodes.is_some() || args.hard_nodes.is_some() => MAX_DEPTH,
-            None => 6,
-        };
-
-        Self {
-            target_count: args.target_count,
-            output_path: args.output_path,
-            book_paths: args.book_paths,
-            depth,
-            soft_nodes: args.soft_nodes,
-            hard_nodes: args.hard_nodes,
-            resign_cp: args.resign_cp,
-            score_filter: args.score_filter,
-            max_plies: args.max_plies,
-            buffer_size: args.buffer_size,
-            thread_count: args.thread_count,
-            save_interval: args.save_interval,
-            filter_quiet: args.filter_quiet,
-            sample_rate: args.sample_rate,
-            min_ply: args.min_ply,
-            min_pieces: args.min_pieces,
-            eval_contradiction_limit: args.eval_contradiction_limit,
-            qsearch_filter: args.qsearch_filter,
-            random_restart: args.random_restart,
-            random_plies: args.random_plies,
-            startpos: args.startpos,
-            generated_count: 0,
-            last_update: 0,
-        }
     }
 }
