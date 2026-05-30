@@ -497,6 +497,7 @@ macro_rules! impl_bb_op {
 impl_bb_op!(BitAnd, bitand, BitAndAssign, bitand_assign);
 impl_bb_op!(BitOr, bitor, BitOrAssign, bitor_assign);
 impl_bb_op!(BitXor, bitxor, BitXorAssign, bitxor_assign);
+impl_bb_op!(Sub, sub, SubAssign, sub_assign);
 
 const impl Not for Bitboard {
     type Output = Self;
@@ -535,36 +536,6 @@ const impl Shr<Square> for Bitboard {
     #[inline(always)]
     fn shr(self, rhs: Square) -> Self {
         Self(self.0 >> rhs.0)
-    }
-}
-
-const impl Sub for Bitboard {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self(self.0 - rhs.0)
-    }
-}
-
-const impl Sub<u64> for Bitboard {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: u64) -> Self {
-        Self(self.0 - rhs)
-    }
-}
-
-impl SubAssign for Bitboard {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) {
-        self.0 -= rhs.0;
-    }
-}
-
-impl SubAssign<u64> for Bitboard {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: u64) {
-        self.0 -= rhs;
     }
 }
 
