@@ -99,8 +99,10 @@ impl UciState {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx) => {
                         let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+
                         ctx.iterative_deepening(&mut history_table);
                         is_searching_worker.store(false, Ordering::Release);
+
                         let _ = result_tx.send(history_table);
                     },
                     SearchCommand::Quit => break,
@@ -140,6 +142,27 @@ impl UciState {
 
         self.stop.store(false, Ordering::Release);
     }
+
+    /// Reset to a fresh root position; rebuild the accumulator and reseed the
+    /// repetition history with the new root hash.
+    fn load_position(&mut self, board: Position) {
+        self.board = board;
+        self.board.is_frc = self.is_frc;
+        self.accumulator = self.board.get_initial_accumulator();
+        self.history.clear();
+        self.history.push(self.board.hash);
+    }
+
+    /// Search display flags assembled from the current option + tty state.
+    fn search_display(&self) -> SearchDisplay {
+        SearchDisplay {
+            show_wdl: self.show_wdl,
+            go_pretty: self.go_pretty,
+            pretty_print: self.pretty_print,
+            show_currmove: self.show_currmove,
+            use_ansi: self.stdout_isatty.unwrap_or(true),
+        }
+    }
 }
 
 pub fn print_license() {
@@ -159,6 +182,7 @@ pub fn main_loop(initial_command: Option<String>) {
         while let Ok(new_hist) = state.history_rx.try_recv() {
             state.persistent_history = new_hist;
         }
+
         if !process_command(&mut state, line.trim()) {
             break;
         }
@@ -171,20 +195,16 @@ pub fn run_cli_go(args: &[String]) {
     let stop = state.stop.clone();
     let is_searching = state.is_searching.clone();
 
-    // Use UciState defaults
     let overhead = state.overhead;
-    let show_wdl = state.show_wdl;
-    let go_pretty = state.go_pretty;
-    let pretty_print = state.pretty_print;
-    let show_currmove = state.show_currmove;
 
     let mut iter = args.iter().map(String::as_str).peekable();
     let limits = parse_go_limits(&board, &mut iter);
-    let display = SearchDisplay { show_wdl, go_pretty, pretty_print, show_currmove, use_ansi: state.stdout_isatty.unwrap_or(true) };
+    let display = state.search_display();
 
     let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
 
     let search_tx = state.search_tx.clone();
+
     is_searching.store(true, Ordering::Release);
     search_tx
         .send(SearchCommand::Go(
@@ -222,7 +242,7 @@ where I: Iterator<Item = &'a str> {
             "mate" => limits.mate = Some(parse_val(tokens)),
             "perft" => limits.perft = Some(parse_val(tokens)),
             "searchmoves" => {
-                // Peek before consuming:
+                // Peek before consuming;
                 // Tokens like depth must not be swallowed
                 // when they fail to parse as a UCI move.
                 while let Some(&mv_str) = tokens.peek() {
@@ -329,6 +349,7 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                     stop.store(true, Ordering::Release);
                     let _ = tx.send(line);
                 },
+
                 _ => {
                     // Always forward to the main thread's command channel.
                     // Commands queue up and are processed in order after any
@@ -349,6 +370,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
     if input.is_empty() {
         return true;
     }
+
     let mut tokens = input.split_whitespace().peekable();
     let cmd = tokens.next().unwrap();
 
@@ -358,35 +380,38 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             let _ = state.search_tx.send(SearchCommand::Quit);
             return false;
         },
+
         "uci" => {
             state.pretty_print = false;
             print_id();
             print_options();
             println!("uciok");
         },
+
         "isready" => println!("readyok"),
+
         "ucinewgame" => {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
-            state.history.clear();
             state.persistent_history.clear();
             state.tt.clear();
-            state.board = Position::from_fen(STARTPOS);
-            state.board.is_frc = state.is_frc;
-            state.accumulator = state.board.get_initial_accumulator();
-            state.history.push(state.board.hash);
+            state.load_position(Position::from_fen(STARTPOS));
         },
+
         "position" => cmd_position(state, &mut tokens),
         "go" => cmd_go(state, &mut tokens),
+
         "stop" => {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
         },
+
         "setoption" => cmd_setoption(state, &mut tokens),
         "license" => print_license(),
         "isatty" => cmd_isatty(state, &mut tokens),
         "d" | "display" => state.board.pretty_print(),
         "fen" => println!("{}", state.board.as_fen()),
+
         "eval" => {
             let res = detailed_eval(&state.board, &state.accumulator);
             println!("PSQT:     {:>5}", res.psqt);
@@ -396,23 +421,28 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             println!("───────────────");
             println!("Total:    {:>5}", res.total);
         },
+
         "bench" => tools::bench::run(parse_val(&mut tokens)),
         "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
         "speedtest" => tools::speedtest::run(0),
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>(), &state.stop),
+
         "gopretty" => {
             state.go_pretty = !state.go_pretty;
             println!("GoPretty: {}", state.go_pretty);
         },
+
         "prettyprint" | "pp" => {
             state.pretty_print = !state.pretty_print;
             println!("PrettyPrint: {}", state.pretty_print);
         },
+
         "flip" => {
             state.board.stm = state.board.stm.opposite();
             state.board.hash ^= key_side();
             println!("Side to move: {:?}", state.board.stm);
         },
+
         "key" => println!("Zobrist: 0x{:016X}", state.board.hash),
         "help" => print_help(state.stdout_isatty.unwrap_or(true)),
         _ => {},
@@ -442,11 +472,7 @@ where I: Iterator<Item = &'a str> {
     };
 
     if subcmd == "startpos" {
-        state.board = Position::from_fen(STARTPOS);
-        state.board.is_frc = state.is_frc;
-        state.accumulator = state.board.get_initial_accumulator();
-        state.history.clear();
-        state.history.push(state.board.hash);
+        state.load_position(Position::from_fen(STARTPOS));
         state.tt.new_search();
 
         if tokens.peek() == Some(&"moves") {
@@ -456,13 +482,10 @@ where I: Iterator<Item = &'a str> {
     } else if subcmd == "fen" {
         match Position::try_from_tokens(&mut *tokens) {
             Ok(board) => {
-                state.board = board;
-                state.board.is_frc = state.is_frc;
-                state.accumulator = state.board.get_initial_accumulator();
-                state.history.clear();
-                state.history.push(state.board.hash);
+                state.load_position(board);
                 state.tt.new_search();
             },
+
             Err(e) => {
                 println!("info string warning: invalid fen: {e}");
                 return;
@@ -502,13 +525,9 @@ where I: Iterator<Item = &'a str> {
     let stop = state.stop.clone();
     let history = state.history.clone();
     let overhead = state.overhead;
-    let show_wdl = state.show_wdl;
-    let go_pretty = state.go_pretty;
-    let pretty_print = state.pretty_print;
-    let show_currmove = state.show_currmove;
 
     let start_time = Instant::now();
-    let display = SearchDisplay { show_wdl, go_pretty, pretty_print, show_currmove, use_ansi: state.stdout_isatty.unwrap_or(true) };
+    let display = state.search_display();
     let cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
 
     state.is_searching.store(true, Ordering::Release);
@@ -541,6 +560,7 @@ where I: Iterator<Item = &'a str> {
             reading_value = false;
             continue;
         }
+
         if token == "value" {
             reading_name = false;
             reading_value = true;
@@ -564,11 +584,13 @@ where I: Iterator<Item = &'a str> {
                 state.tt = Arc::new(TranspositionTable::new(mb));
             }
         },
+
         "overhead" => {
             if let Ok(v) = value.parse() {
                 state.overhead = v;
             }
         },
+
         "uci_showwdl" => {
             state.show_wdl = parse_bool(&value);
             if state.show_wdl {
@@ -577,13 +599,17 @@ where I: Iterator<Item = &'a str> {
                 );
             }
         },
+
         "uci_chess960" => state.is_frc = parse_bool(&value),
+
         "uci_showcurrmove" => {
             state.show_currmove = parse_bool(&value);
         },
+
         "prettyprint" => {
             state.pretty_print = parse_bool(&value);
         },
+
         "threads" => {
             // Dummy. not supported yet.
         },
@@ -621,6 +647,7 @@ fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
 
     // Find matching legal move
     let legal = gen_legal_moves(board);
+
     legal
         .iter()
         .find(|&&mv| {
@@ -634,11 +661,13 @@ fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
             if mv.is_castling() && mv.to_uci(board.is_frc) == uci {
                 return true;
             }
+
             // Fallback: If GUI sends standard castling (e1g1) but we are in FRC mode, still accept it.
             if mv.is_castling() && mv.from() == from_sq {
                 let rank = from_sq.rank();
                 let is_kingside = mv.to().file() > from_sq.file();
                 let dest_file = if is_kingside { 6 } else { 2 }; // G or C
+
                 if to_sq == Square::from_coords(dest_file, rank) {
                     return true;
                 }
@@ -697,9 +726,11 @@ where I: Iterator<Item = &'a str> {
 
     if let Some(tok) = bool_str {
         let val = matches!(tok.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1");
+
         if target & 0b01 != 0 {
             state.stdout_isatty = Some(val);
         }
+
         if target & 0b10 != 0 {
             state.stderr_isatty = Some(val);
         }
