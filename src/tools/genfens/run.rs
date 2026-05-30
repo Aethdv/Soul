@@ -23,13 +23,13 @@ use std::{
 };
 
 use super::{
-    config::{GenfensArgs, GenfensConfig},
+    config::GenfensConfig,
     stats::{GlobalStats, get_rss_kb},
     worker::WorkerState,
 };
 use crate::{
     cli::Help,
-    core::{board::Position, util::format_comma as format_num},
+    core::{board::Position, defs::MAX_DEPTH, util::format_comma as format_num},
     tools::dataset::{MAGIC_V5, MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
 };
 
@@ -51,7 +51,7 @@ const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
 const DASHBOARD_LINES: usize = 14;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
-    let parsed = parse_args(args);
+    let (parsed, resume) = parse_args(args);
 
     let book_fens = if parsed.startpos {
         vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]
@@ -67,8 +67,8 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len(),);
 
-    let mut config = resolve_config(&parsed);
-    let start_count = if parsed.resume { load_existing_count(&config.output_path) } else { 0 };
+    let mut config = resolve_config(parsed, resume);
+    let start_count = if resume { load_existing_count(&config.output_path) } else { 0 };
 
     config.generated_count = start_count as u64;
     let _ = config.save();
@@ -455,17 +455,15 @@ fn load_books(paths: &[String]) -> Vec<String> {
     all
 }
 
-/// Resolves the generation config from CLI args, optionally resuming
-/// a previous run by loading saved state from disk.
-fn resolve_config(args: &GenfensArgs) -> GenfensConfig {
-    if args.resume
-        && let Ok(mut cfg) = GenfensConfig::load()
-    {
-        cfg.target_count = args.target_count;
-        cfg.book_paths.clone_from(&args.book_paths);
+/// Resolves the generation config, optionally resuming a previous run by
+/// loading saved state from disk and re-applying the CLI's target and books.
+fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
+    if resume && let Ok(mut cfg) = GenfensConfig::load() {
+        cfg.target_count = parsed.target_count;
+        cfg.book_paths = parsed.book_paths;
         return cfg;
     }
-    GenfensConfig::from(args.clone())
+    parsed
 }
 
 /// Prints the launch banner — what we're about to do and how.
@@ -592,28 +590,13 @@ fn print_help() {
     );
 }
 
-fn parse_args(args: &[&str]) -> GenfensArgs {
-    let mut output_path = String::from("data.soul.zst");
-    let mut book_paths = Vec::new();
-    let mut target_count = 8_000_000;
+fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
+    // Defaults come solely from GenfensConfig::default(); the CLI overrides
+    // fields in place. depth stays a local Option so the node-limit resolution
+    // can run after the loop; resume is a control flag, not config.
+    let mut cfg = GenfensConfig::default();
     let mut depth: Option<i32> = None;
-    let mut soft_nodes = None;
-    let mut hard_nodes = None;
-    let mut resign_cp = 800;
-    let mut score_filter = 450;
-    let mut max_plies = 300;
-    let mut buffer_size = 256;
-    let mut thread_count = None;
-    let mut save_interval = 5000;
-    let mut filter_quiet = true;
-    let mut sample_rate = 0.7;
-    let mut min_ply = 0usize;
-    let mut min_pieces = 4u32;
-    let mut eval_contradiction_limit = i32::MAX;
-    let mut qsearch_filter = i32::MAX;
-    let mut random_restart = true;
-    let mut random_plies = 6usize;
-    let mut startpos = false;
+    let mut book_override = false;
     let mut resume = false;
 
     // Consume the next token and parse it into the field, leaving the field
@@ -641,17 +624,22 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
             // Non-uniform arms: string values, accumulation, custom parsing.
             "-o" | "--output" => {
                 if let Some(v) = it.next() {
-                    output_path = v.to_string();
+                    cfg.output_path = v.to_string();
                 }
             },
             "-b" | "--book" => {
                 if let Some(v) = it.next() {
-                    book_paths.push(v.to_string());
+                    // First --book replaces the default; further ones accumulate.
+                    if !book_override {
+                        cfg.book_paths.clear();
+                        book_override = true;
+                    }
+                    cfg.book_paths.push(v.to_string());
                 }
             },
             "-n" | "--count" => {
                 if let Some(v) = it.next() {
-                    target_count = parse_suffix(v).unwrap_or(target_count);
+                    cfg.target_count = parse_suffix(v).unwrap_or(cfg.target_count);
                 }
             },
             "-d" | "--depth" => {
@@ -660,25 +648,25 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
                 }
             },
 
-            "--soft" => take_opt!(it, soft_nodes),
-            "--nodes" => take_opt!(it, hard_nodes),
-            "-t" | "--threads" => take_opt!(it, thread_count),
+            "--soft" => take_opt!(it, cfg.soft_nodes),
+            "--nodes" => take_opt!(it, cfg.hard_nodes),
+            "-t" | "--threads" => take_opt!(it, cfg.thread_count),
 
-            "--resign" => take!(it, resign_cp),
-            "--filter" => take!(it, score_filter),
-            "--plies" => take!(it, max_plies),
-            "--buf" => take!(it, buffer_size),
-            "--save-interval" => take!(it, save_interval),
-            "--sample" => take!(it, sample_rate),
-            "--min-ply" => take!(it, min_ply),
-            "--min-pieces" => take!(it, min_pieces),
-            "--eval-contradiction-limit" => take!(it, eval_contradiction_limit),
-            "--qsearch" => take!(it, qsearch_filter),
-            "--random-plies" => take!(it, random_plies),
+            "--resign" => take!(it, cfg.resign_cp),
+            "--filter" => take!(it, cfg.score_filter),
+            "--plies" => take!(it, cfg.max_plies),
+            "--buf" => take!(it, cfg.buffer_size),
+            "--save-interval" => take!(it, cfg.save_interval),
+            "--sample" => take!(it, cfg.sample_rate),
+            "--min-ply" => take!(it, cfg.min_ply),
+            "--min-pieces" => take!(it, cfg.min_pieces),
+            "--eval-contradiction-limit" => take!(it, cfg.eval_contradiction_limit),
+            "--qsearch" => take!(it, cfg.qsearch_filter),
+            "--random-plies" => take!(it, cfg.random_plies),
 
-            "--all" => filter_quiet = false,
-            "--no-random-restart" => random_restart = false,
-            "--startpos" => startpos = true,
+            "--all" => cfg.filter_quiet = false,
+            "--no-random-restart" => cfg.random_restart = false,
+            "--startpos" => cfg.startpos = true,
             "--resume" => resume = true,
             "-h" | "--help" => {
                 print_help();
@@ -688,36 +676,15 @@ fn parse_args(args: &[&str]) -> GenfensArgs {
         }
     }
 
-    // Default book if none specified — UHO is the community standard
-    // for balanced, non-degenerate openings.
-    if book_paths.is_empty() {
-        book_paths.push("UHO_Lichess_4852_v1.epd".to_string());
+    // An explicit --depth wins; otherwise a node-limited run searches to max
+    // depth and lets the node cap bound it; otherwise keep the default.
+    if let Some(d) = depth {
+        cfg.depth = d;
+    } else if cfg.soft_nodes.is_some() || cfg.hard_nodes.is_some() {
+        cfg.depth = MAX_DEPTH;
     }
 
-    GenfensArgs {
-        target_count,
-        output_path,
-        book_paths,
-        depth,
-        soft_nodes,
-        hard_nodes,
-        resign_cp,
-        score_filter,
-        max_plies,
-        buffer_size,
-        thread_count,
-        save_interval,
-        filter_quiet,
-        sample_rate,
-        min_ply,
-        min_pieces,
-        eval_contradiction_limit,
-        qsearch_filter,
-        random_restart,
-        random_plies,
-        startpos,
-        resume,
-    }
+    (cfg, resume)
 }
 
 /// Parses a number string with optional K/M/B suffix.
