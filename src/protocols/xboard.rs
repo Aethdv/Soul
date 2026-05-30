@@ -61,6 +61,7 @@ pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
 
     while let Some(Ok(line)) = lines.next() {
         let trimmed = line.trim();
+
         if trimmed.is_empty() {
             continue;
         }
@@ -105,12 +106,24 @@ impl XBoardState {
 
     fn stop_search(&mut self) {
         self.stop_signal.store(true, Ordering::Release);
+
         if let Some(handle) = self.search_thread.take()
             && let Err(e) = handle.join()
         {
             eprintln!("Error: {}", EngineError::from_panic(e.as_ref()));
         }
+
         self.stop_signal.store(false, Ordering::Release);
+    }
+
+    /// Reset to a fresh root position: rebuild the accumulator and reseed the
+    /// repetition history with the new root hash. FRC flag rides along.
+    fn load_position(&mut self, board: Position) {
+        self.board = board;
+        self.board.is_frc = self.is_frc;
+        self.accumulator = self.board.get_initial_accumulator();
+        self.history.clear();
+        self.history.push(self.board.hash);
     }
 
     fn start_search(&mut self) {
@@ -145,6 +158,7 @@ impl XBoardState {
             let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
             let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+
             ctx.iterative_deepening(&mut persistent_history);
             *history_arc.lock() = persistent_history;
         }));
@@ -161,39 +175,41 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 print_features();
             }
         },
+
         "new" => {
             state.stop_search();
-            state.board = Position::from_fen(STARTPOS);
-            state.board.is_frc = state.is_frc;
-            state.accumulator = state.board.get_initial_accumulator();
-            state.history.clear();
-            state.history.push(state.board.hash);
+            state.load_position(Position::from_fen(STARTPOS));
             state.tt.clear();
             state.mode = Mode::Normal;
             state.engine_side = Some(Color::Black);
             state.limits = Limits { protocol: Protocol::XBoard, ..Default::default() };
         },
+
         "force" => {
             state.stop_search();
             state.mode = Mode::Force;
         },
+
         "go" | "playother" => {
             state.stop_search();
             state.mode = Mode::Normal;
             state.engine_side = Some(state.board.stm);
             state.start_search();
         },
+
         "analyze" => {
             state.stop_search();
             state.mode = Mode::Analyze;
             state.limits.infinite = true;
             state.start_search();
         },
+
         "exit" => {
             state.stop_search();
             state.mode = Mode::Normal;
             state.limits.infinite = false;
         },
+
         "white" => {
             state.stop_search();
             state.engine_side = Some(Color::Black);
@@ -202,6 +218,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 state.board.hash ^= key_side();
             }
         },
+
         "black" => {
             state.stop_search();
             state.engine_side = Some(Color::White);
@@ -210,32 +227,34 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 state.board.hash ^= key_side();
             }
         },
+
         "level" => cmd_level(state, args),
         "st" => cmd_st(state, args),
         "sd" => cmd_sd(state, args),
         "nps" => cmd_nps(state, args),
         "time" => cmd_time(state, args),
         "otim" => cmd_otim(state, args),
+
         "ping" => {
             if let Some(n) = args.next() {
                 println!("pong {n}");
             }
         },
+
         "setboard" => {
             let rest: Vec<&str> = args.collect();
             let fen = rest.join(" ");
             state.stop_search();
-            state.board = Position::from_fen(&fen);
-            state.board.is_frc = state.is_frc;
-            state.accumulator = state.board.get_initial_accumulator();
-            state.history.clear();
-            state.history.push(state.board.hash);
+            state.load_position(Position::from_fen(&fen));
             state.tt.new_search();
         },
+
         "result" => {
             state.stop_search();
         },
+
         "option" => cmd_option(state, args),
+
         "memory" => {
             if let Some(arg) = args.next()
                 && let Ok(mb) = arg.parse::<usize>()
@@ -244,17 +263,20 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 state.tt = Arc::new(TranspositionTable::new(mb));
             }
         },
+
         "cores" => {
-            // "Dummy" impl — TT not yet implemented, so thread count has no effect.
+            // "Dummy" impl.
             if let Some(_arg) = args.next() {
                 // state.threads = arg.parse() ...
             }
         },
+
         "usermove" => {
             if let Some(move_str) = args.next() {
                 cmd_move(state, move_str);
             }
         },
+
         "accepted" | "rejected" => { /* Feature negotiation — no-op */ },
         _ => {
             cmd_move(state, cmd);
@@ -314,6 +336,7 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
     let Some(moves_str) = args.next() else {
         return;
     };
+
     if let Ok(moves) = moves_str.parse::<u64>() {
         state.limits.movestogo = moves;
     }
@@ -325,12 +348,14 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
         let secs = if parts.len() > 1 { parts[1].parse::<u64>().unwrap_or(0) } else { 0 };
 
         let total_ms = (mins * 60 + secs) * 1000;
+
         state.limits.wtime = total_ms;
         state.limits.btime = total_ms;
     }
 
     if let Some(inc) = args.next().and_then(|s| s.parse::<f64>().ok()) {
         let inc_ms = (inc * 1000.0) as u64;
+
         state.limits.winc = inc_ms;
         state.limits.binc = inc_ms;
     }
@@ -366,6 +391,7 @@ fn cmd_time<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str
         && let Ok(cs) = arg.parse::<u64>()
     {
         let ms = cs * 10;
+
         if state.board.stm == Color::White {
             state.limits.wtime = ms;
         } else {
@@ -379,6 +405,7 @@ fn cmd_otim<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str
         && let Ok(cs) = arg.parse::<u64>()
     {
         let ms = cs * 10;
+
         if state.board.stm == Color::White {
             state.limits.btime = ms;
         } else {
@@ -406,11 +433,13 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
                 state.tt = Arc::new(TranspositionTable::new(mb));
             }
         },
+
         "overhead" => {
             if let Ok(v) = value.parse() {
                 state.overhead = v;
             }
         },
+
         "showwdl" => {
             if let Ok(v) = value.parse::<u8>() {
                 state.show_wdl = v != 0;
