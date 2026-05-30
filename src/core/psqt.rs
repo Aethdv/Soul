@@ -15,6 +15,10 @@ use crate::{
     weave::Vi16x8,
 };
 
+const _: () = assert!(mem::size_of::<[i16; 8]>().is_multiple_of(16), "SIMD accumulator must be 16-byte aligned");
+
+pub static PSQT: [AlignedTable; 14] = init_psqt();
+
 /// [`PieceType` + `ColorOffset`][`Square`] → [i16; 8]
 /// Lanes: [`MG`, `EG`, `Phase`, 0, 0, 0, 0, 0]
 /// Alignment: 32 bytes ensures that every 16-byte `[i16; 8]` entry is strictly aligned
@@ -22,10 +26,6 @@ use crate::{
 #[repr(align(32))]
 #[derive(Clone, Copy)]
 pub struct AlignedTable(pub [[i16; 8]; 64]);
-
-const _: () = assert!(mem::size_of::<[i16; 8]>().is_multiple_of(16), "SIMD accumulator must be 16-byte aligned");
-
-pub static PSQT: [AlignedTable; 14] = init_psqt();
 
 /// PSQT vector for piece-square table lookup.
 #[inline(always)]
@@ -40,13 +40,14 @@ pub fn get_vec(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
     Vi16x8(unsafe { arch::x86_64::_mm_load_si128(entry.as_ptr() as *const _) })
 }
 
-/// Mirror square horizontally: files E-H map to D-A
+/// Mirror square horizontally; files E-H map to D-A
 /// Input: 0..63, Output: 0..31
 #[inline]
 pub const fn mirror_sq(sq: usize) -> usize {
     const MIRROR_FILE: [usize; 8] = [0, 1, 2, 3, 3, 2, 1, 0];
     let file = sq & 7;
     let rank = sq >> 3;
+
     (rank << 2) + MIRROR_FILE[file]
 }
 
@@ -61,52 +62,38 @@ const fn init_psqt() -> [AlignedTable; 14] {
         let ph_w = PHASE_WEIGHTS[pt];
 
         let mut sq = 0;
+
         while sq < 64 {
             let w_visual_idx = sq ^ 0x38;
-            let mut mg_val = mg_w + get_raw_mg(pt, w_visual_idx);
-            let mut eg_val = eg_w + get_raw_eg(pt, w_visual_idx);
+            let mg_val = clamp_i16(mg_w + get_raw_mg(pt, w_visual_idx));
+            let eg_val = clamp_i16(eg_w + get_raw_eg(pt, w_visual_idx));
 
-            if mg_val < i16::MIN as i32 {
-                mg_val = i16::MIN as i32;
-            }
-            if mg_val > i16::MAX as i32 {
-                mg_val = i16::MAX as i32;
-            }
-            if eg_val < i16::MIN as i32 {
-                eg_val = i16::MIN as i32;
-            }
-            if eg_val > i16::MAX as i32 {
-                eg_val = i16::MAX as i32;
-            }
-
-            tables[pt].0[sq] = [mg_val as i16, eg_val as i16, ph_w as i16, 0, 0, 0, 0, 0];
+            tables[pt].0[sq] = [mg_val, eg_val, ph_w as i16, 0, 0, 0, 0, 0];
 
             let b_visual_idx = sq;
-            let mut mg_val_b = -(mg_w + get_raw_mg(pt, b_visual_idx));
-            let mut eg_val_b = -(eg_w + get_raw_eg(pt, b_visual_idx));
-
-            if mg_val_b < i16::MIN as i32 {
-                mg_val_b = i16::MIN as i32;
-            }
-            if mg_val_b > i16::MAX as i32 {
-                mg_val_b = i16::MAX as i32;
-            }
-            if eg_val_b < i16::MIN as i32 {
-                eg_val_b = i16::MIN as i32;
-            }
-            if eg_val_b > i16::MAX as i32 {
-                eg_val_b = i16::MAX as i32;
-            }
+            let mg_val_b = clamp_i16(-(mg_w + get_raw_mg(pt, b_visual_idx)));
+            let eg_val_b = clamp_i16(-(eg_w + get_raw_eg(pt, b_visual_idx)));
 
             // NOTE: PSQT values for Black are mirrored using 'sq'.
             // This allows us to use the same tables built from White's perspective,
             // as piece movement symmetry holds when ranks are flipped.
-            tables[pt + 7].0[sq] = [mg_val_b as i16, eg_val_b as i16, ph_w as i16, 0, 0, 0, 0, 0];
+            tables[pt + 7].0[sq] = [mg_val_b, eg_val_b, ph_w as i16, 0, 0, 0, 0, 0];
             sq += 1;
         }
         pt += 1;
     }
     tables
+}
+
+/// Saturating i32 → i16 cast.
+const fn clamp_i16(v: i32) -> i16 {
+    if v < i16::MIN as i32 {
+        i16::MIN
+    } else if v > i16::MAX as i32 {
+        i16::MAX
+    } else {
+        v as i16
+    }
 }
 
 #[inline]
