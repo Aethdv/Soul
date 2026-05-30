@@ -190,8 +190,8 @@ pub struct SearchConfig {
     pub overhead: u64,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
-    /// `ln(i) * LMR_SCALE` lookup, indexed by depth or move count.
-    /// Reduction composes as `base + table[d] * table[m] / div`, all in milli-plies.
+    /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
+    /// Reduction composes as `base + table[d] · table[m] / div`, all in milli-plies.
     pub lmr_table: Box<[i16; MAX_PLY + 1]>,
 }
 
@@ -282,6 +282,7 @@ impl SearchConfig {
         let div = lmr_divisor() * LMR_SCALE / 100;
         let d = self.lmr_table[depth as usize] as i32;
         let m = self.lmr_table[m] as i32;
+
         base + d * m / div
     }
 
@@ -321,6 +322,7 @@ impl SearchConfig {
     fn build_lmr_table() -> Box<[i16; MAX_PLY + 1]> {
         let scale = LMR_SCALE as f64;
         let mut lut = Box::new([0i16; MAX_PLY + 1]);
+
         for i in 1..=MAX_PLY {
             lut[i] = ((i as f64).ln() * scale).round() as i16;
         }
@@ -336,6 +338,7 @@ impl Line {
     /// Prepend `mv` to `tail`, forming a complete PV line.
     pub fn compose(&mut self, mv: Move, tail: &Line) {
         let n = tail.len.min(MAX_PLY - 1);
+
         self.moves[0] = mv;
         self.moves[1..=n].copy_from_slice(&tail.moves[..n]);
         self.len = 1 + n;
@@ -427,10 +430,15 @@ impl<'cfg> Searcher<'cfg> {
             _ => MAX_DEPTH,
         };
 
+        // The root position is fixed for the whole search, so its PSQT
+        // accumulator is invariant — compute it once and restore from it on
+        // every aspiration re-search rather than rescanning the board.
+        let root_acc = self.root_pos.get_initial_accumulator();
+
         // fresh worker initialized ONCE — prevents 123KB stack memset per iteration.
         let mut worker = Worker {
             pos: self.root_pos,
-            accumulator: self.root_pos.get_initial_accumulator(),
+            accumulator: root_acc,
             stack: vec![Stack::default(); MAX_PLY + 1]
                 .into_boxed_slice()
                 .try_into()
@@ -453,13 +461,14 @@ impl<'cfg> Searcher<'cfg> {
 
             let elapsed = self.tm.elapsed().as_millis() as u64;
             let prev_depth_time = elapsed.saturating_sub(last_iter_elapsed);
+
             last_iter_elapsed = elapsed;
 
             // Between iterations:
             // Bail if soft limits say we probably
             // can't finish the next depth in time.
             //
-            // `prev_depth_time * 2` is a rough branching-factor proxy;
+            // prev_depth_time * 2 is a rough branching-factor proxy;
             // each additional ply typically costs about twice the previous one,
             // so if we can't afford that estimate we stop before starting it.
             if depth > 1
@@ -480,9 +489,10 @@ impl<'cfg> Searcher<'cfg> {
             let mut beta = if depth >= asp_depth() { (self.prev_score + delta).min(INF) } else { INF };
 
             let mut aborted = false;
+
             loop {
                 worker.pos = self.root_pos;
-                worker.accumulator = self.root_pos.get_initial_accumulator();
+                worker.accumulator = root_acc;
 
                 if worker.negamax::<RootNode>(self, depth, alpha, beta, 0, None).is_err() {
                     aborted = true;
@@ -530,13 +540,14 @@ impl<'cfg> Searcher<'cfg> {
             //
             //   percent = clamp(floor, base − scale · best_nodes / total_nodes)
             //
-            // Gated below `bm_stab_depth` — early iterations haven't
+            // Gated below bm_stab_depth — early iterations haven't
             // accumulated enough node signal for the ratio to be meaningful.
             if depth >= bm_stab_depth() {
                 let best_nodes = self.root_moves[0].nodes;
                 let total_nodes = self.nodes.max(1);
                 let effort_discount = bm_stab_scale() as u64 * best_nodes / total_nodes;
                 let percent = (bm_stab_base() as u64).saturating_sub(effort_discount).max(bm_stab_floor() as u64);
+
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
@@ -550,7 +561,7 @@ impl<'cfg> Searcher<'cfg> {
             //
             // Clamping pins the factor to [0.5, 2.0]; the exponent makes equal-size
             // gains and losses scale the budget by reciprocal amounts. Gated below
-            // `score_drop_depth` — low-depth aspiration churn is noise, not signal.
+            // score_drop_depth — low-depth aspiration churn is noise, not signal.
             let score_factor = if depth >= score_drop_depth() {
                 let scale = score_swing_scale() as f64;
                 let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
@@ -641,7 +652,7 @@ impl<'cfg> Searcher<'cfg> {
     fn fill_trail(trail: &mut Vec<u64>, pos: &Position, history: &[u64]) {
         trail.clear();
         let keep = history.len().min(pos.halfmove_clock as usize);
-        
+
         if keep > 0 {
             trail.extend_from_slice(&history[history.len() - keep..]);
         }
@@ -680,12 +691,12 @@ impl<'cfg> Searcher<'cfg> {
 
         if self.cfg.display.go_pretty && self.nodes.is_multiple_of(NODE_CHECK_INTERVAL) {
             let now = self.tm.elapsed().as_millis();
+
             if now - self.last_print > PRINT_UPDATE_MS {
                 self.last_print = now;
                 self.print_realtime();
             }
         }
-
         false
     }
 
@@ -700,6 +711,7 @@ impl<'cfg> Searcher<'cfg> {
     fn search_info_data<'a>(&'a self, depth: i32, score: i32, pv: &'a Line, history: &'a [PvSnapshot]) -> tui::SearchInfoData<'a> {
         let ms = self.tm.elapsed().as_millis().max(1);
         let nps = (u128::from(self.nodes) * 1000) / ms;
+
         tui::SearchInfoData {
             depth,
             score,
@@ -800,6 +812,7 @@ impl Worker<'_> {
         if depth <= 0 {
             return self.qsearch::<N>(searcher, alpha, beta, ply, None, 0);
         }
+
         if ply >= MAX_PLY {
             return Ok(evaluate(&self.pos, &self.accumulator));
         }
@@ -894,9 +907,23 @@ impl Worker<'_> {
                 self.history
                     .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, minor_corr_weight(), major_corr_weight())
                     / history::CORRECTION_SCALE;
+
             (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
         };
+
         self.stack[ply].static_eval = static_eval;
+
+        // ── Improving Flag ──
+        // Has our position strengthened since our last turn?
+        // Step further back if the closer reference was in check,
+        // no static_eval was stored there.
+        let _improving = if !in_check && ply >= 2 && self.stack[ply - 2].static_eval != tt::SCORE_NONE {
+            static_eval > self.stack[ply - 2].static_eval
+        } else if !in_check && ply >= 4 && self.stack[ply - 4].static_eval != tt::SCORE_NONE {
+            static_eval > self.stack[ply - 4].static_eval
+        } else {
+            false
+        };
 
         // ── Reverse Futility Pruning (~52 Elo) ──
         // Position is already so good that even after subtracting a generous
@@ -921,6 +948,7 @@ impl Worker<'_> {
             && static_eval + razoring_margin() * depth < alpha
         {
             let score = self.qsearch::<N>(searcher, alpha, beta, ply, None, 0)?;
+
             if score <= alpha {
                 return Ok(score);
             }
@@ -942,8 +970,10 @@ impl Worker<'_> {
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
+
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
+
             let score =
                 match self.negamax::<NonPvNode>(searcher, (depth - r - nmp_ply_offset()).max(0), -beta, -beta + 1, ply + 1, None) {
                     Ok(v) => -v,
@@ -954,6 +984,7 @@ impl Worker<'_> {
                         return Err(e);
                     },
                 };
+
             searcher.zobrist_trail.pop();
             self.pos.unmake_null_move(&undo);
             self.stack[ply + 1].is_null = false;
@@ -962,7 +993,7 @@ impl Worker<'_> {
                 let null_score = if score > MATE_BOUND { beta } else { score };
 
                 // ── Verification Search ──
-                // At or below `nmp_verif_min_depth`, trust the cutoff outright.
+                // At or below nmp_verif_min_depth, trust the cutoff outright.
                 // Cheap nodes are almost never zugzwangs. Above the threshold,
                 // re-search the same position without a null move at reduced depth.
                 // If that also fails high, the cutoff is real; if it fails low we
@@ -1014,6 +1045,7 @@ impl Worker<'_> {
                 let nodes_before = searcher.nodes;
                 self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction)?;
                 searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
+
                 if res.alpha >= beta {
                     break;
                 }
@@ -1059,6 +1091,7 @@ impl Worker<'_> {
                 }
 
                 let mut appended_quiet = false;
+
                 if mv.is_history_quiet() && self.stack[ply].quiet_count < MAX_TRACKED_QUIETS {
                     let count = self.stack[ply].quiet_count;
                     self.stack[ply].quiet_moves[count] = mv;
@@ -1067,6 +1100,7 @@ impl Worker<'_> {
                 }
 
                 let mut appended_capture = false;
+
                 if mv.is_capture() && !mv.is_promotion() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
                     let count = self.stack[ply].capture_count;
                     self.stack[ply].capture_moves[count] = mv;
@@ -1104,8 +1138,8 @@ impl Worker<'_> {
                 // repeatedly by the gravity update. Trust that signal at
                 // shallow depth and skip the full search.
                 //
-                // Gate uses `!is_tactical()` rather than `is_quiet()` so
-                // non-capture promotions are excluded; `is_quiet` only
+                // Gate uses !is_tactical() rather than is_quiet() so
+                // non-capture promotions are excluded; is_quiet only
                 // filters captures, and pruning a queen promotion on
                 // global history would be absurd.
                 //
@@ -1125,6 +1159,7 @@ impl Worker<'_> {
                 {
                     let pt = self.pos.expect_piece_at(mv.from());
                     let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+
                     if hist < -hist_prune_margin() * depth {
                         continue;
                     }
@@ -1149,6 +1184,7 @@ impl Worker<'_> {
                 // at shallow depth.
                 if !in_check && !N::PV && res.move_count >= 1 {
                     let margin = if mv.is_capture() { -see_capture_margin() * depth } else { -see_quiet_margin() * depth * depth };
+
                     if !see_ge(&self.pos, mv, margin) {
                         continue;
                     }
@@ -1167,6 +1203,7 @@ impl Worker<'_> {
                     }
 
                     let max_r = (depth - lmr_retained()) * LMR_SCALE;
+
                     (r - hist / lmr_hist_div()).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
@@ -1194,6 +1231,7 @@ impl Worker<'_> {
                     // Captures and structural moves (castling) are handled differently.
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
+
                         self.history.update(stm, pt, mv.from(), mv.to(), cont1, cont2, cont4, bonus);
 
                         // ── Killer Moves (~35 Elo) ──
@@ -1212,7 +1250,7 @@ impl Worker<'_> {
                         // train a table that nothing reads.
                         //
                         // self.pos is the parent position: search_move has already
-                        // unmade the move, so the captured piece is back on `to`
+                        // unmade the move, so the captured piece is back on to
                         // (or it's en passant, where the victim is a pawn by definition).
                         let attacker = self.pos.expect_piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(mv.to()) };
@@ -1253,6 +1291,7 @@ impl Worker<'_> {
                         let cm = self.stack[ply].capture_moves[i];
                         let attacker = self.pos.expect_piece_at(cm.from());
                         let victim = if cm.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(cm.to()) };
+
                         self.history.update_capture(stm, attacker, cm.to(), victim, -bonus);
                     }
 
@@ -1293,6 +1332,7 @@ impl Worker<'_> {
                 || (bound == tt::BOUND_UPPER && res.best_eval >= static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
+
             self.history
                 .update_correction(self.pos.stm, pawn_hash, minor_hash, major_hash, diff, depth);
         }
@@ -1320,6 +1360,7 @@ impl Worker<'_> {
     ) -> Result<(), SearchAborted> {
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
+
         searcher.tt.prefetch(self.pos.hash);
 
         // ── Gives-Check LMR Adjustment (~4 Elo) ──
@@ -1372,14 +1413,14 @@ impl Worker<'_> {
                 res.alpha = eval;
                 // Borrow checker requires a disjoint split; we need a mutable
                 // reference to stack[ply].pv and a shared one to stack[ply+1].pv
-                // simultaneously. Rust can't prove `ply` and `ply+1` don't alias
-                // through two separate borrows of `self.stack`, so split_at_mut
+                // simultaneously. Rust can't prove ply and ply+1 don't alias
+                // through two separate borrows of self.stack, so split_at_mut
                 // gives us two non-overlapping slices as proof.
                 let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
                 let child_pv = &next_stack[0].pv;
                 let child_len = child_pv.len.min(MAX_PLY - 1);
-
                 let current_pv = &mut current_stack[ply].pv;
+
                 current_pv.moves[0] = mv;
                 current_pv.moves[1..=child_len].copy_from_slice(&child_pv.moves[..child_len]);
                 current_pv.len = child_len + 1;
@@ -1410,7 +1451,7 @@ impl Worker<'_> {
         let next_pv = if (N::ROOT || N::PV) && is_pv_move { searcher.prev_pv.get(ply + 1) } else { None };
 
         if is_first {
-            // No bound yet — search wide open.
+            // No bound yet; search wide open.
             return Ok(-self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?);
         }
 
@@ -1426,7 +1467,7 @@ impl Worker<'_> {
         }
 
         if score > alpha && score < beta {
-            // Genuine improvement — search with full window on the PV.
+            // Genuine improvement; search with full window on the PV.
             score = -self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?;
         }
 
@@ -1503,7 +1544,9 @@ impl Worker<'_> {
                 self.history
                     .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, minor_corr_weight(), major_corr_weight())
                     / history::CORRECTION_SCALE;
+
             let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
+
             if eval >= beta {
                 // Static eval is blind to quiet replies — the
                 // stand-pat verdict overstates certainty.
@@ -1522,6 +1565,7 @@ impl Worker<'_> {
                 .into_iter()
                 .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
                 .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
+
             if eval + best_capturable + delta_margin() < alpha {
                 return Ok(alpha);
             }
@@ -1532,6 +1576,7 @@ impl Worker<'_> {
 
         let mut moves_made = 0;
         let mut best_move = Move::null();
+
         let ksq = self.pos.pieces(PieceType::King, stm).lsb();
         let pinned = self.pos.king_blockers();
 
@@ -1545,7 +1590,7 @@ impl Worker<'_> {
             }
 
             // ── Recapture-only Deep QS (~1 Elo) ──
-            // Past `qs_recapture_ply`, captures only matter if they continue
+            // Past qs_recapture_ply, captures only matter if they continue
             // the forcing exchange on the square the opponent just moved to.
             // Speculative off-square captures are what explodes in mutual-
             // attack soup (e.g. 30-bishop pathologicals). Tactics are
@@ -1588,6 +1633,7 @@ impl Worker<'_> {
             if score > best_eval {
                 best_eval = score;
                 best_move = mv;
+
                 if score > alpha {
                     if score >= beta {
                         break;
@@ -1668,11 +1714,11 @@ impl Worker<'_> {
         // that an aligned load would require.
         for chunk in chunks {
             let vec = unsafe { Vu64x4::load(chunk.as_ptr()) };
+
             if vec.cmp_eq(needle).any() {
                 return true;
             }
         }
-
         remainder.contains(&key)
     }
 }
