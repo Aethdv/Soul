@@ -435,22 +435,27 @@ impl EnvVec4 for Vi32x4 {
     fn zero() -> Self {
         Self::zero()
     }
+
     #[inline(always)]
     fn splat(val: i32) -> Self {
         Self::splat(val)
     }
+
     #[inline(always)]
     fn from_lanes(a: i32, b: i32, c: i32, d: i32) -> Self {
         Self::from_lanes(a, b, c, d)
     }
+
     #[inline(always)]
     fn extract<const N: i32>(self) -> i32 {
         self.extract::<N>()
     }
+
     #[inline(always)]
     fn srai<const N: i32>(self) -> Self {
         self.srai::<N>()
     }
+
     #[inline(always)]
     fn pack_i16(self, hi: Self) -> Self::Vec8 {
         self.pack_i16(hi)
@@ -465,18 +470,22 @@ impl EnvVec8 for Vi16x8 {
     fn zero() -> Self {
         Self::zero()
     }
+
     #[inline(always)]
     fn splat(val: i16) -> Self {
         Self::splat(val)
     }
+
     #[inline(always)]
     fn madd(self, rhs: Self) -> Self::Vec4 {
         self.madd(rhs)
     }
+
     #[inline(always)]
     fn load_i32_4(self) -> Self::Vec4 {
         self.load_i32_4()
     }
+
     #[inline(always)]
     fn extract<const N: i32>(self) -> Self::Scalar {
         i32::from(self.extract::<N>())
