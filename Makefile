@@ -150,7 +150,7 @@ searchtune:
 	@echo "Done: ./search$(EXE_EXT)"
 
 test: ## Run test suite
-	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" cargo test -- --nocapture
+	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="$(LINKER_FLAGS) -C target-cpu=native" cargo test --workspace -- --nocapture
 
 seeformat: ## Check formatting (no changes)
 	@cargo fmt --check
