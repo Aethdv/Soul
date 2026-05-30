@@ -541,13 +541,16 @@ impl<'cfg> Searcher<'cfg> {
             }
 
             // ── Score Swing (~28 Elo) ──
-            // Log-symmetric bidirectional reaction to the iteration-to-iteration
-            // score change. A drop of `score_factor_scale` cp doubles the soft
-            // budget (refutation surfaced — buy depth to resolve it); a surge
-            // of the same magnitude halves it (we just found something strong,
-            // so bank the time). Diff is clamped to ±scale so the factor stays
-            // in [0.5, 2.0]. Gated below `score_drop_depth` because aspiration
-            // churn at low depth produces noise, not signal.
+            // Scale the soft budget by how far the score moved since last iteration.
+            // A drop means a refutation surfaced — double the budget to buy depth
+            // and resolve it. A surge means we found something strong — halve it
+            // and bank the time.
+            //
+            //   factor = 2 ^ (clamp(prev − new, ±scale) / scale)
+            //
+            // Clamping pins the factor to [0.5, 2.0]; the exponent makes equal-size
+            // gains and losses scale the budget by reciprocal amounts. Gated below
+            // `score_drop_depth` — low-depth aspiration churn is noise, not signal.
             let score_factor = if depth >= score_drop_depth() {
                 let scale = score_swing_scale() as f64;
                 let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
@@ -591,24 +594,11 @@ impl<'cfg> Searcher<'cfg> {
 
     #[inline]
     pub fn new(cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], tt: Arc<TranspositionTable>) -> Self {
-        let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
-        let tm =
-            TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
-
+        let tm = Self::build_tm(cfg, pos, history);
         let root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
-
-        // Game history limited by the 50-move rule horizon.
-        // Positions older than the last capture or pawn push can never repeat.
         let mut trail = Vec::with_capacity(1024);
-        let keep = history.len().min(pos.halfmove_clock as usize);
-        if keep > 0 {
-            let start = history.len() - keep;
-            trail.extend_from_slice(&history[start..]);
-        }
 
-        // Always include the current root position in the trail.
-        // This ensures repetitions of the root are detected at ply 2, 4, etc.
-        trail.push(pos.hash);
+        Self::fill_trail(&mut trail, pos, history);
 
         Self {
             cfg,
@@ -630,21 +620,9 @@ impl<'cfg> Searcher<'cfg> {
     /// Per-move reset. History lives at the caller; clear it between games via `History::clear`.
     #[inline]
     pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64]) {
-        let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
-
-        self.zobrist_trail.clear();
-        let keep = history.len().min(pos.halfmove_clock as usize);
-        if keep > 0 {
-            let start = history.len() - keep;
-            self.zobrist_trail.extend_from_slice(&history[start..]);
-        }
-
-        // Always include the current root position in the trail.
-        self.zobrist_trail.push(pos.hash);
-
+        Self::fill_trail(&mut self.zobrist_trail, pos, history);
         self.cfg = cfg;
-        self.tm =
-            TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params);
+        self.tm = Self::build_tm(cfg, pos, history);
         self.root_pos = *pos;
         self.root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
         self.nodes = 0;
@@ -654,6 +632,27 @@ impl<'cfg> Searcher<'cfg> {
         self.pv_history.clear();
         self.prev_score = -INF;
         self.prev_pv = Line::new();
+    }
+
+    /// Rebuild the repetition trail from game history, trimmed to the 50-move
+    /// horizon; positions older than the last capture or pawn push can never
+    /// repeat. The root hash is always appended last so root repetitions
+    /// surface at ply 2, 4, and so on.
+    fn fill_trail(trail: &mut Vec<u64>, pos: &Position, history: &[u64]) {
+        trail.clear();
+        let keep = history.len().min(pos.halfmove_clock as usize);
+        
+        if keep > 0 {
+            trail.extend_from_slice(&history[history.len() - keep..]);
+        }
+        trail.push(pos.hash);
+    }
+
+    /// Time manager for this root position, derived from the live config
+    /// and the accumulator's phase lane.
+    fn build_tm(cfg: &SearchConfig, pos: &Position, history: &[u64]) -> TimeManager {
+        let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
+        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params)
     }
 
     #[inline]
@@ -694,17 +693,14 @@ impl<'cfg> Searcher<'cfg> {
         self.cfg.stop.load(Ordering::Acquire)
     }
 
+    /// Assemble the display snapshot shared by depth-complete and realtime reporting.
+    /// `pv` and `history` are borrowed by the returned struct,
+    /// so the caller owns them for the duration of the print.
     #[cold]
-    fn print_info(&self, depth: i32, score: i32, pv: &Line) {
-        if self.cfg.limits.silent {
-            return;
-        }
-
+    fn search_info_data<'a>(&'a self, depth: i32, score: i32, pv: &'a Line, history: &'a [PvSnapshot]) -> tui::SearchInfoData<'a> {
         let ms = self.tm.elapsed().as_millis().max(1);
         let nps = (u128::from(self.nodes) * 1000) / ms;
-
-        let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
-        let data = tui::SearchInfoData {
+        tui::SearchInfoData {
             depth,
             score,
             pv,
@@ -716,10 +712,20 @@ impl<'cfg> Searcher<'cfg> {
             show_wdl: self.cfg.display.show_wdl,
             material: self.root_pos.material_count(),
             stm: self.root_pos.stm.as_usize(),
-            history: &history_vec,
+            history,
             board: &self.root_pos,
             use_ansi: self.cfg.display.use_ansi,
-        };
+        }
+    }
+
+    #[cold]
+    fn print_info(&self, depth: i32, score: i32, pv: &Line) {
+        if self.cfg.limits.silent {
+            return;
+        }
+
+        let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
+        let data = self.search_info_data(depth, score, pv, &history_vec);
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
             tui::print_pretty_search_info(&data);
@@ -748,27 +754,9 @@ impl<'cfg> Searcher<'cfg> {
         if self.cfg.limits.silent {
             return;
         }
-        let ms = self.tm.elapsed().as_millis().max(1);
-        let best = &self.root_moves[0];
-        let nps = (u128::from(self.nodes) * 1000) / ms;
-
         let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
-        let data = tui::SearchInfoData {
-            depth: self.iter_depth,
-            sel_depth: self.sel_depth,
-            score: best.score,
-            nodes: self.nodes,
-            nps: u64::try_from(nps).unwrap_or(u64::MAX),
-            time_ms: ms,
-            hashfull: self.tt.hashfull(),
-            pv: &best.pv,
-            show_wdl: self.cfg.display.show_wdl,
-            material: self.root_pos.material_count(),
-            stm: self.root_pos.stm.as_usize(),
-            history: &history_vec,
-            board: &self.root_pos,
-            use_ansi: self.cfg.display.use_ansi,
-        };
+        let best = &self.root_moves[0];
+        let data = self.search_info_data(self.iter_depth, best.score, &best.pv, &history_vec);
 
         tui::print_pretty_search_info(&data);
     }
@@ -780,7 +768,7 @@ impl Worker<'_> {
     /// as it returns up the tree.
     ///
     /// PVS layered on top:
-    /// after the presumed best move gets a full-window search,
+    /// After the presumed best move gets a full-window search,
     /// all others are probed with a zero-width "scout" window (alpha, alpha+1).
     /// Most confirm they're worse. The rare fail-high triggers a re-search,
     /// but that's rare enough to be a net win.
