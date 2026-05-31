@@ -1466,7 +1466,7 @@ impl Worker<'_> {
         if score > alpha && reduction > 0 {
             score = -self.negamax::<NonPvNode>(searcher, depth - 1, -alpha - 1, -alpha, ply + 1, None)?;
 
-            // ── Post-LMR Continuation History ──
+            // ── Post-LMR Continuation History (~8 Elo) ──
             // The reduced scout beat alpha; the full-depth re-search settles it.
             // A fail-low means the reduction over-promised, a fail-high means a cutoff
             // punish or reward continuation history accordingly, ordering only.
