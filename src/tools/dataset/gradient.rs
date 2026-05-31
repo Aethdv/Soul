@@ -85,8 +85,9 @@ impl FeatureSlots {
         self.bishop_pair.push(if pos.stm == Color::Black { -bp_diff } else { bp_diff });
 
         let open = !pos.role_bb[PieceType::Pawn].file_fill();
-        let w_open = (pos.pieces(PieceType::Rook, Color::White) & open).popcount() as i8;
-        let b_open = (pos.pieces(PieceType::Rook, Color::Black) & open).popcount() as i8;
+        let rooks_open = pos.role_bb[PieceType::Rook] & open;
+        let w_open = (rooks_open & pos.side_bb[Color::White]).popcount() as i8;
+        let b_open = (rooks_open & pos.side_bb[Color::Black]).popcount() as i8;
         let open_diff = w_open - b_open;
         self.rook_open.push(if pos.stm == Color::Black { -open_diff } else { open_diff });
 

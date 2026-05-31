@@ -254,8 +254,9 @@ impl SharedFeatures {
         let bishop_pair_diff = w_pair - b_pair;
 
         let open = !board.role_bb[PieceType::Pawn].file_fill();
-        let w_open = (board.pieces(PieceType::Rook, Color::White) & open).popcount() as i32;
-        let b_open = (board.pieces(PieceType::Rook, Color::Black) & open).popcount() as i32;
+        let rooks_open = board.role_bb[PieceType::Rook] & open;
+        let w_open = (rooks_open & board.side_bb[Color::White]).popcount() as i32;
+        let b_open = (rooks_open & board.side_bb[Color::Black]).popcount() as i32;
         let rook_open_diff = w_open - b_open;
 
         Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff }
