@@ -119,6 +119,7 @@ impl DualEvalResult {
             param_grads.len(),
             psqt::LAYOUT.mobility_open_offset,
         );
+
         for i in 0..self.active_count {
             let a = &self.active[i];
             let s = f64::from(a.sign);
@@ -261,6 +262,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let mut dual_acc = DualVec8::zero();
     dual_acc.0[0] = DualNode::seed(lane_vals[0], 0);
     dual_acc.0[1] = DualNode::seed(lane_vals[1], 1);
+
     for (dual, &val) in dual_acc.0[2..8].iter_mut().zip(&lane_vals[2..8]) {
         *dual = DualNode::constant(val);
     }
@@ -329,7 +331,6 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
             param_grads[eg_idx] -= d_eg;
         }
     }
-
     err * err
 }
 
@@ -382,7 +383,6 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let upstreams = LinearCombiner::backward(phase, d, param_grads);
 
     // ── PSQT + material (out-of-band, not a term) ──
-    //
     // Stays in the tape because it lives in the accumulator, not the
     // per-term parameter block. One board sweep writes both PSQT
     // and material gradients for every active piece.
@@ -462,6 +462,7 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let ao = psqt::LAYOUT.attacker_offset;
     let xr = psqt::LAYOUT.xray_offset;
     let bp = psqt::LAYOUT.bishop_pair_offset;
+    let ro = psqt::LAYOUT.rook_open_offset;
 
     let params = EvalParams {
         mg_mob_open: F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
@@ -475,6 +476,8 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
         w_xray_ortho: values[xr],
         w_bp_mg: values[bp],
         w_bp_eg: values[bp + 1],
+        w_rook_open_mg: values[ro],
+        w_rook_open_eg: values[ro + 1],
     };
 
     let features = SharedFeatures::compute(board);
@@ -485,8 +488,10 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
 #[inline(always)]
 fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
     let mut phase_raw = 0.0;
+
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
         let phase_idx = psqt::LAYOUT.weight_offset + pt;
+
         if phase_idx < values.len() {
             phase_raw += count * values[phase_idx];
         }
@@ -561,6 +566,7 @@ mod tests {
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;
@@ -580,8 +586,10 @@ mod tests {
             "KingSafetyTerm (attackers)"
         } else if slot < LAYOUT.bishop_pair_offset {
             "XrayTerm"
-        } else {
+        } else if slot < LAYOUT.rook_open_offset {
             "BishopPairTerm"
+        } else {
+            "RookOpenTerm"
         }
     }
 
@@ -613,7 +621,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len];
+        let mut values = vec![0.0f64; LAYOUT.rook_open_offset + LAYOUT.rook_open_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -625,7 +633,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len];
+        let mut values = vec![0.0f64; LAYOUT.rook_open_offset + LAYOUT.rook_open_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -662,6 +670,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_rook_open_term_oracle() {
+        assert_oracle_matches(
+            "RookOpenTerm alone",
+            &values_in_range(LAYOUT.rook_open_offset..LAYOUT.rook_open_offset + LAYOUT.rook_open_len),
+        );
+    }
+
     const ENCODED_FENS: &[&str] = &[
         // White-to-move
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -672,6 +688,8 @@ mod tests {
         "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
         // Bishop pair imbalance
         "r1bqkbnr/1pp2ppp/p1p5/4p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5",
+        // Rook open-file imbalance
+        "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
     ];
 
     /// `accumulate_gradient` shares math with the board-based gradient paths.

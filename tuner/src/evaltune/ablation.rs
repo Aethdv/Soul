@@ -137,6 +137,7 @@ fn build_groups() -> Vec<Group> {
         ("King Safety",      l.king_safety_offset,      3),
         ("Xray",             l.xray_offset,             1),
         ("Bishop Pair",      l.bishop_pair_offset,      2),
+        ("Rook Open",        l.rook_open_offset,        2),
     ];
 
     groups.extend(terms.iter().map(|&(name, off, len)| Group { name, range: off..off + len }));

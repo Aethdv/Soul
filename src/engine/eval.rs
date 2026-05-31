@@ -22,7 +22,7 @@ use crate::{
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
             self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS,
-            MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, XRAY_WEIGHTS,
+            MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -73,6 +73,7 @@ crate::register_terms! {
     mobility::MobilityTerm => mobility,
     mobility::KingSafetyTerm => king_safety,
     BishopPairTerm => bonus,
+    RookOpenTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -80,6 +81,8 @@ crate::register_terms! {
 pub struct XrayTerm;
 /// Tapered bonus for holding both bishops (~9 Elo).
 pub struct BishopPairTerm;
+/// Tapered bonus for a rook on an open file with no pawns of either color (~5 Elo).
+pub struct RookOpenTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -100,6 +103,8 @@ pub struct SharedFeatures {
     /// `+1` if white has the bishop pair and black doesn't,
     /// `-1` for the reverse, `0` otherwise.
     pub bishop_pair_diff: i32,
+    /// White minus black rooks standing on a fully open file with no pawns of either color.
+    pub rook_open_diff: i32,
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -220,6 +225,8 @@ impl EvalParams<i32> {
             w_xray_ortho: XRAY_WEIGHTS[0],
             w_bp_mg: BISHOP_PAIR_WEIGHTS[0],
             w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
+            w_rook_open_mg: ROOK_OPEN_WEIGHTS[0],
+            w_rook_open_eg: ROOK_OPEN_WEIGHTS[1],
         }
     }
 }
@@ -246,7 +253,13 @@ impl SharedFeatures {
         let b_pair = i32::from(board.pieces(PieceType::Bishop, Color::Black).more_than_one());
         let bishop_pair_diff = w_pair - b_pair;
 
-        Self { openness, data, xray_ortho, bishop_pair_diff }
+        let open = !board.role_bb[PieceType::Pawn].file_fill();
+        let rooks_open = board.role_bb[PieceType::Rook] & open;
+        let w_open = (rooks_open & board.side_bb[Color::White]).popcount() as i32;
+        let b_open = (rooks_open & board.side_bb[Color::Black]).popcount() as i32;
+        let rook_open_diff = w_open - b_open;
+
+        Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff }
     }
 }
 
@@ -282,6 +295,25 @@ impl term::LinearTerm for BishopPairTerm {
         let feature = features.bishop_pair_diff as f64;
         grads[eval_params::LAYOUT.bishop_pair_offset] += upstream.d_mg * feature;
         grads[eval_params::LAYOUT.bishop_pair_offset + 1] += upstream.d_eg * feature;
+    }
+}
+
+impl term::LinearTerm for RookOpenTerm {
+    type Upstream = term::TaperPair;
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
+        let feature = T::from_i32(features.rook_open_diff);
+        let eg_phase = T::from_i32(TOTAL_PHASE) - phase;
+        let tapered = params.w_rook_open_mg * phase + params.w_rook_open_eg * eg_phase;
+        acc.bonus += (tapered * feature / T::from_i32(TOTAL_PHASE)).trunc();
+    }
+
+    #[inline]
+    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
+        let feature = features.rook_open_diff as f64;
+        grads[eval_params::LAYOUT.rook_open_offset] += upstream.d_mg * feature;
+        grads[eval_params::LAYOUT.rook_open_offset + 1] += upstream.d_eg * feature;
     }
 }
 

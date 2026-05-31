@@ -25,6 +25,7 @@ pub struct FeatureSlots {
     pub safety_them: Vec<[u8; 4]>,
     pub xray_ortho: Vec<i8>,
     pub bishop_pair: Vec<i8>,
+    pub rook_open: Vec<i8>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -37,6 +38,7 @@ impl FeatureSlots {
             safety_them: Vec::with_capacity(cap),
             xray_ortho: Vec::with_capacity(cap),
             bishop_pair: Vec::with_capacity(cap),
+            rook_open: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -82,6 +84,13 @@ impl FeatureSlots {
         let bp_diff = white_bp - black_bp;
         self.bishop_pair.push(if pos.stm == Color::Black { -bp_diff } else { bp_diff });
 
+        let open = !pos.role_bb[PieceType::Pawn].file_fill();
+        let rooks_open = pos.role_bb[PieceType::Rook] & open;
+        let w_open = (rooks_open & pos.side_bb[Color::White]).popcount() as i8;
+        let b_open = (rooks_open & pos.side_bb[Color::Black]).popcount() as i8;
+        let open_diff = w_open - b_open;
+        self.rook_open.push(if pos.stm == Color::Black { -open_diff } else { open_diff });
+
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
         self.static_eval.push(evaluate_fast(&pos, &acc, phase) as i16);
@@ -118,6 +127,7 @@ pub fn accumulate_gradient_cached(
         let (pt, sq_idx, sign) = f.piece_data[i];
         let mg_idx = (pt * 64) + psqt::mirror_sq(sq_idx);
         let eg_idx = (pt * 64) + 32 + psqt::mirror_sq(sq_idx);
+
         // SAFETY: pt (0..5), mirror_sq (0..31). Max idx = 5*64+32+31 = 383 < 384.
         unsafe {
             *grads.get_unchecked_mut(mg_idx) += gradient * sign * mg_w;
@@ -126,8 +136,10 @@ pub fn accumulate_gradient_cached(
     }
 
     let material_offset = psqt::LAYOUT.material_offset;
+
     for pt in 0..6 {
         let diff = f.mat_diffs[pt];
+
         if diff.abs() > 0.001 {
             let mg_idx = material_offset + pt;
             let eg_idx = material_offset + 6 + pt;
@@ -167,11 +179,17 @@ pub fn accumulate_gradient_cached(
     grads[bp_offset] += gradient * bp * mg_w;
     grads[bp_offset + 1] += gradient * bp * eg_w;
 
+    let ro_offset = psqt::LAYOUT.rook_open_offset;
+    let ro = f64::from(slots.rook_open[idx]);
+    grads[ro_offset] += gradient * ro * mg_w;
+    grads[ro_offset + 1] += gradient * ro * eg_w;
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
 
     let mobility = slots.mobility[idx];
+
     for i in 0..4 {
         let diff = f64::from(mobility[i]) - f64::from(mobility[i + 4]);
         let g_diff = gradient * diff;
@@ -196,6 +214,7 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
         let (pt, sq_idx, sign) = f.piece_data[i];
         let mg_idx = (pt * 64) + psqt::mirror_sq(sq_idx);
         let eg_idx = (pt * 64) + 32 + psqt::mirror_sq(sq_idx);
+
         // SAFETY: pt (0..5), mirror_sq (0..31). Max idx = 5*64+32+31 = 383 < 384.
         unsafe {
             score += sign * (*values.get_unchecked(mg_idx) * mg_w + *values.get_unchecked(eg_idx) * eg_w);
@@ -206,6 +225,7 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
 
     for pt in 0..6 {
         let diff = f.mat_diffs[pt];
+
         // SAFETY: pt bounded 0..5, indices map strictly into material parameter slots.
         unsafe {
             let mg_idx = material_offset + pt;
@@ -237,6 +257,7 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
 
     let mobility = slots.mobility[idx];
+
     for i in 0..4 {
         let diff = f64::from(mobility[i]) - f64::from(mobility[i + 4]);
         let mobility_w =
@@ -247,6 +268,10 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let bp_offset = psqt::LAYOUT.bishop_pair_offset;
     let bp = f64::from(slots.bishop_pair[idx]);
     score += (bp * (values[bp_offset] * mg_w + values[bp_offset + 1] * eg_w)).trunc();
+
+    let ro_offset = psqt::LAYOUT.rook_open_offset;
+    let ro = f64::from(slots.rook_open[idx]);
+    score += (ro * (values[ro_offset] * mg_w + values[ro_offset + 1] * eg_w)).trunc();
 
     score
 }
@@ -305,6 +330,7 @@ fn extract_board(entry: &SoulEntry) -> BoardFeatures {
 
         if pt == 0 {
             let bit = 1u64 << sq.0;
+
             if is_black {
                 f.black_pawns |= bit;
             } else {

@@ -159,6 +159,21 @@ impl Bitboard {
         BitboardIter(self)
     }
 
+    /// Smears every set bit across its entire file. Shifts are multiples of 8,
+    /// which never cross a file boundary, so no file mask is needed.
+    #[inline(always)]
+    #[must_use]
+    pub const fn file_fill(self) -> Self {
+        let mut b = self.0;
+        b |= b << 8;
+        b |= b << 16;
+        b |= b << 32;
+        b |= b >> 8;
+        b |= b >> 16;
+        b |= b >> 32;
+        Bitboard(b)
+    }
+
     #[inline(always)]
     pub const fn shift(self, dir: Direction) -> Self {
         match dir {
