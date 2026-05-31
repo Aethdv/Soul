@@ -81,7 +81,7 @@ crate::register_terms! {
 pub struct XrayTerm;
 /// Tapered bonus for holding both bishops (~9 Elo).
 pub struct BishopPairTerm;
-/// Tapered bonus for a rook on an open file (no pawns of either color).
+/// Tapered bonus for a rook on an open file with no pawns of either color (~5 Elo).
 pub struct RookOpenTerm;
 
 pub struct DetailedEval {

@@ -17,7 +17,7 @@ weight_decay = 0.00001
 # 15M        131,072   114
 # 26M        262,144   100
 # 52M        524,288   100
-batch_size = 32768
+batch_size = 65536
 
 epochs = 4000
 loss = "mse" # cross_entropy
