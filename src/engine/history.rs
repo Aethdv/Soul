@@ -294,6 +294,28 @@ impl History {
         }
     }
 
+    #[inline(always)]
+    pub fn update_conthist(
+        &mut self,
+        stm: Color,
+        pt: PieceType,
+        to: Square,
+        cont1: ContContext,
+        cont2: ContContext,
+        cont4: ContContext,
+        bonus: i32,
+    ) {
+        if cont1.pt != PieceType::None {
+            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
+        }
+        if cont2.pt != PieceType::None {
+            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus);
+        }
+        if cont4.pt != PieceType::None {
+            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus);
+        }
+    }
+
     /// Single soft-gravity update step. Extracted to keep updates DRY.
     #[inline(always)]
     fn update_entry(entry: &mut i16, bonus: i32) {
