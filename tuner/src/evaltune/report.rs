@@ -108,13 +108,16 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     }
 
     let mat = psqt::LAYOUT.material_offset;
+
     if params.len() > mat {
         writeln!(w, "}}\n\ndefine_simple_params! {{").ok();
         let pieces = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
         writeln!(w, "    MATERIAL = [").ok();
+
         for (pt, name) in pieces.iter().enumerate() {
             let mg_idx = mat + pt;
             let eg_idx = mat + 6 + pt;
+
             if eg_idx >= params.len() {
                 break;
             }
@@ -185,6 +188,12 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             writeln!(w, "], // [MG, EG]").ok();
         }
 
+        if params.len() > psqt::LAYOUT.rook_open_offset {
+            write!(w, "    ROOK_OPEN_WEIGHTS   = [").ok();
+            write_weight_array(w, psqt::LAYOUT.rook_open_offset, 2, values, params, initial);
+            writeln!(w, "], // [MG, EG]").ok();
+        }
+
         writeln!(w, "}}").ok();
     }
 
@@ -206,6 +215,7 @@ pub fn write_weight_array<W: Write>(
 ) {
     for i in 0..count {
         let idx = offset + i;
+
         if idx >= values.len() {
             break;
         }
