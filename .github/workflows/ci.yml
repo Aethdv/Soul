@@ -69,7 +69,6 @@ jobs:
           toolchain: nightly-2026-02-10
       - name: Verify Bench Signature
         run: |
-          make v3
           benchref=$(git show -s --format=%B HEAD | sed '1!G;h;$!d' | grep -m 1 -o -i 'bench[: ]\+[1-9][0-9]*\b' | sed 's/[^0-9]//g')
           if [[ -n "$benchref" ]]; then
             echo "Reference bench: $benchref"
@@ -78,7 +77,7 @@ jobs:
             exit 1
           fi
           
-          obtained=$(./soul bench 2>&1 | tail -n 1 | awk '{print $2}')
+          obtained=$(make bench 2>&1 | grep -i '^Bench:' | awk '{print $2}')
           echo "Obtained bench: $obtained"
           
           if [ "$benchref" != "$obtained" ]; then
