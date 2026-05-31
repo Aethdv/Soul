@@ -66,3 +66,8 @@ opt-level = 3
 debug = true
 panic = "abort"
 split-debuginfo = "unpacked"
+
+[profile.quick]
+inherits = "dev"
+opt-level = 1
+debug = false
