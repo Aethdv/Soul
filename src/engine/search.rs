@@ -1378,7 +1378,7 @@ impl Worker<'_> {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval = match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction) {
+        let eval = match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, mv) {
             Ok(v) => v,
             Err(e) => {
                 searcher.zobrist_trail.pop();
@@ -1445,6 +1445,7 @@ impl Worker<'_> {
         is_first: bool,
         is_pv_move: bool,
         reduction: i32,
+        mv: Move,
     ) -> Result<i32, SearchAborted> {
         // Retrieve the expected PV move for the NEXT ply (ply + 1 is the child node's level).
         // If we are on the PV line AND we just played the PV move, we expect the child to also have a PV move.
@@ -1464,6 +1465,39 @@ impl Worker<'_> {
         // Re-search at full depth if the reduced scout found something.
         if score > alpha && reduction > 0 {
             score = -self.negamax::<NonPvNode>(searcher, depth - 1, -alpha - 1, -alpha, ply + 1, None)?;
+
+            // ── Post-LMR Continuation History (~8 Elo) ──
+            // The reduced scout beat alpha; the full-depth re-search settles it.
+            // A fail-low means the reduction over-promised, a fail-high means a cutoff
+            // punish or reward continuation history accordingly, ordering only.
+            if mv.is_history_quiet() && (score <= alpha || score >= beta) {
+                let stm = self.pos.stm.opposite();
+                let pt = self.stack[ply].moved_pt;
+                let to = self.stack[ply].moved_to;
+
+                let cont1 = if ply > 0 {
+                    ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
+                } else {
+                    ContContext::default()
+                };
+
+                let cont2 = if ply > 1 {
+                    ContContext { pt: self.stack[ply - 2].moved_pt, to: self.stack[ply - 2].moved_to }
+                } else {
+                    ContContext::default()
+                };
+
+                let cont4 = if ply > 3 {
+                    ContContext { pt: self.stack[ply - 4].moved_pt, to: self.stack[ply - 4].moved_to }
+                } else {
+                    ContContext::default()
+                };
+
+                let bonus = (depth.pow(2) * hist_bonus_mult()).min(hist_bonus_cap());
+                let signed = if score <= alpha { -bonus } else { bonus };
+
+                self.history.update_conthist(stm, pt, to, cont1, cont2, cont4, signed);
+            }
         }
 
         if score > alpha && score < beta {

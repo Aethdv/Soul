@@ -1,6 +1,6 @@
 [package]
 name = "soul"
-version = "0.5.8"
+version = "0.5.9"
 license = "AGPL-3.0"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
@@ -44,7 +44,6 @@ zerocopy = { version = "0.8.48", default-features = false, features = ["derive",
 
 [features]
 searchtune = []
-# Instrument correction-history reads/updates for diagnosis. Off in release.
 corrstats = []
 
 [profile.release]
