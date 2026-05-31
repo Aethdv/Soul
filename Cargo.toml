@@ -71,3 +71,6 @@ split-debuginfo = "unpacked"
 inherits = "dev"
 opt-level = 1
 debug = false
+
+[profile.test]
+opt-level = 1
