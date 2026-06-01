@@ -86,9 +86,9 @@ pub struct XrayTerm;
 pub struct BishopPairTerm;
 /// Tapered bonus for a rook on an open file with no pawns of either color (~5 Elo).
 pub struct RookOpenTerm;
-/// Tapered passed-pawn bonus, indexed by how far the pawn has advanced.
+/// Tapered passed-pawn bonus, indexed by how far the pawn has advanced (~15 Elo).
 pub struct PassedPawnTerm;
-/// Tapered passed-pawn bonus, indexed by the enemy king's distance to the passer.
+/// Tapered passed-pawn bonus, indexed by the enemy king's distance to the passer (~12 Elo).
 pub struct EnemyKingDistTerm;
 
 pub struct DetailedEval {
