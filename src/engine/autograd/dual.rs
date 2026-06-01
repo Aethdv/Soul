@@ -1,8 +1,8 @@
 //! Forward-mode AD via dual numbers for the HCE eval graph.
 //!
-//! The eval has 30 tunable inputs (2 accumulator lanes + 28 EvalParams weights)
-//! producing 1 scalar. Each dual number carries partial derivatives in `[f32; 32]`
-//! (padded for AVX2: exactly 4 · ymm256 registers).
+//! The eval has 32 tunable inputs (2 accumulator lanes + 30 EvalParams weights)
+//! producing 1 scalar. Each dual number carries partial derivatives in `[f32; 64]`
+//! (8 · ymm256 registers), which also fills the `u64` active bitmask exactly.
 //!
 //! Because the current eval is linear in its parameters, the production training
 //! loop uses `eval_linear_grad` — direct feature extraction that's "~30× cheaper".
@@ -21,8 +21,8 @@ use std::{
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
 use crate::weave::Vf32x8;
 
-/// 30 slots (2 acc lanes + 28 params) padded to 32 for alignment.
-pub const DUAL_N: usize = 32;
+/// 32 slots (2 acc lanes + 30 params) padded to 64.
+pub const DUAL_N: usize = 64;
 
 /// A dual number: value + gradient vector + active-slot bitmask.
 ///
@@ -33,7 +33,7 @@ pub const DUAL_N: usize = 32;
 pub struct DualNode {
     pub grad: [f32; DUAL_N],
     pub val: f64,
-    pub active: u32,
+    pub active: u64,
 }
 
 impl DualNode {
@@ -55,7 +55,7 @@ impl DualNode {
     pub fn seed(val: f64, idx: usize) -> Self {
         let mut grad = [0.0f32; DUAL_N];
         grad[idx] = 1.0;
-        Self { grad, val, active: 1 << idx }
+        Self { grad, val, active: 1u64 << idx }
     }
 
     /// Zero value, zero gradient.
@@ -67,7 +67,7 @@ impl DualNode {
 
 impl fmt::Debug for DualNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dual({:.4}, active={:#010x})", self.val, self.active)
+        write!(f, "Dual({:.4}, active={:#018x})", self.val, self.active)
     }
 }
 
@@ -75,21 +75,21 @@ impl fmt::Debug for DualNode {
 // Ideally for the ~50% of eval operations involving a constant,
 // this eliminates the gradient computation entirely.
 //
-// The gradient loop lives in grad_map1/grad_map2 — 4 AVX2 chunks of 8 f32
-// (32 f32s = 4 · ymm256) behind one audited unsafe surface; each operator
+// The gradient loop lives in grad_map1/grad_map2 — DUAL_N / 8 AVX2 chunks of
+// 8 f32 (64 f32s = 8 · ymm256) behind one audited unsafe surface; each operator
 // supplies only its chain-rule formula as a closure.
 
-/// Map `f` lane-wise across two gradient vectors into `out`, in 4 chunks of
-/// 8 f32. The single unsafe surface every binary operator's gradient shares.
+/// Map `f` lane-wise across two gradient vectors into `out`, in `DUAL_N / 8`
+/// chunks of 8 f32. The single unsafe surface every binary operator's gradient shares.
 #[inline(always)]
 fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(Vf32x8, Vf32x8) -> Vf32x8) {
-    // SAFETY: a, b, out are each exactly DUAL_N (32) f32s. 4 iterations · stride 8
-    // cover offsets 0, 8, 16, 24; each load/store touches 8 f32s, so the max
-    // access is 24 + 8 = 32 = DUAL_N.
+    // SAFETY: a, b, out are each exactly DUAL_N f32s, and DUAL_N is a multiple
+    // of 8. Each iteration's stride-8 load/store touches offsets [off, off+8),
+    // and the last is [DUAL_N-8, DUAL_N) — never out of bounds.
     unsafe {
         let (pa, pb, po) = (a.as_ptr(), b.as_ptr(), out.as_mut_ptr());
 
-        for i in 0..4 {
+        for i in 0..DUAL_N / 8 {
             let off = i * 8;
             let ga = Vf32x8::loadu(pa.add(off));
             let gb = Vf32x8::loadu(pb.add(off));
@@ -102,11 +102,11 @@ fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: i
 /// Unary counterpart of [`grad_map2`] for single-input gradients (Neg, scale).
 #[inline(always)]
 fn grad_map1(a: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(Vf32x8) -> Vf32x8) {
-    // SAFETY: a, out are each exactly DUAL_N (32) f32s; see grad_map2.
+    // SAFETY: a, out are each exactly DUAL_N f32s, DUAL_N a multiple of 8; see grad_map2.
     unsafe {
         let (pa, po) = (a.as_ptr(), out.as_mut_ptr());
 
-        for i in 0..4 {
+        for i in 0..DUAL_N / 8 {
             let off = i * 8;
 
             f(Vf32x8::loadu(pa.add(off))).storeu(po.add(off));

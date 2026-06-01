@@ -97,7 +97,7 @@ soul::define_tunables!(impl_scatter);
 /// derivative is known.
 pub struct DualEvalResult {
     pub score: f64,
-    /// Raw partial derivatives from the dual pass (29 active slots in 32).
+    /// Raw partial derivatives from the dual pass (32 active slots in 64).
     pub grad: [f32; DUAL_N],
     /// Board pieces recorded during accumulation for PSQT scatter.
     pub active: [ActivePiece; 32],
@@ -109,7 +109,7 @@ impl DualEvalResult {
     pub fn scatter_grads(&self, outer_deriv: f64, param_grads: &mut [f64]) {
         self.scatter_dynamic(outer_deriv, param_grads);
 
-        // PSQT gradients: d(output)/d(psqt_i) = d(output)/d(lane_j) * d(lane_j)/d(psqt_i)
+        // PSQT gradients: d(output)/d(psqt_i) = d(output)/d(lane_j) · d(lane_j)/d(psqt_i)
         let d_mg = outer_deriv * f64::from(self.grad[0]); // Mg slot = 0
         let d_eg = outer_deriv * f64::from(self.grad[1]); // Eg slot = 1
 
