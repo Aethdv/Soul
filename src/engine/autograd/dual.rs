@@ -1,17 +1,17 @@
 //! Forward-mode AD via dual numbers for the HCE eval graph.
 //!
-//! The eval has 44 tunable inputs (2 accumulator lanes + 42 EvalParams weights)
-//! producing 1 scalar. Each dual number carries partial derivatives in `[f32; 64]`
-//! (8 · ymm256 registers), which also fills the `u64` active bitmask exactly.
+//! Tunable inputs are the 2 accumulator lanes plus every EvalParams weight.
+//! Each dual number carries one partial per input in `[f32; DUAL_N]`, where
+//! `DUAL_N` is derived from the param count, so adding a term grows it for free.
 //!
 //! Because the current eval is linear in its parameters, the production training
 //! loop uses `eval_linear_grad` — direct feature extraction that's "~30× cheaper".
 //! This dual path serves as a correctness oracle:
 //! run both, compare, and any disagreement means the hand-derived gradient has a bug.
 //!
-//! An `active` bitmask tracks which gradient slots are non-zero. Constants
-//! have `active = 0`, enabling short-circuit paths that skip gradient
-//! computation entirely when one operand is constant.
+//! An `active` flag marks whether a node carries any gradient. Constants have
+//! `active = false`, enabling a short-circuit that skips gradient computation
+//! entirely when one operand is constant.
 
 use std::{
     fmt,
@@ -19,21 +19,22 @@ use std::{
 };
 
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
-use crate::weave::Vf32x8;
+use crate::{engine::eval_params, weave::Vf32x8};
 
-/// 44 slots (2 acc lanes + 42 params) padded to 64.
-pub const DUAL_N: usize = 64;
+/// Partials per dual number; the tunable input count rounded up to a multiple
+/// of 8 for the AVX2 chunk loop. Auto-grows when an eval term is added.
+pub const DUAL_N: usize = (eval_params::DUAL_SLOTS + 7) & !7;
 
-/// A dual number: value + gradient vector + active-slot bitmask.
+/// A dual number: value + gradient vector + active flag.
 ///
-/// The bitmask enables 𝒪(1) constant detection; when `active == 0`,
-/// all gradient slots are zero and we can skip gradient work entirely.
+/// `active` is `false` exactly when every gradient slot is zero (a constant),
+/// which lets the operators skip gradient work in 𝒪(1).
 #[derive(Clone, Copy)]
 #[repr(C, align(32))]
 pub struct DualNode {
     pub grad: [f32; DUAL_N],
     pub val: f64,
-    pub active: u64,
+    pub active: bool,
 }
 
 impl DualNode {
@@ -47,7 +48,7 @@ impl DualNode {
     /// Constant — zero gradient, no active slots.
     #[inline(always)]
     pub fn constant(val: f64) -> Self {
-        Self { grad: [0.0; DUAL_N], val, active: 0 }
+        Self { grad: [0.0; DUAL_N], val, active: false }
     }
 
     /// Seed a dual variable; `grad[idx] = 1.0`, active bit set.
@@ -55,29 +56,29 @@ impl DualNode {
     pub fn seed(val: f64, idx: usize) -> Self {
         let mut grad = [0.0f32; DUAL_N];
         grad[idx] = 1.0;
-        Self { grad, val, active: 1u64 << idx }
+        Self { grad, val, active: true }
     }
 
     /// Zero value, zero gradient.
     #[inline(always)]
     pub fn zero() -> Self {
-        Self { grad: [0.0; DUAL_N], val: 0.0, active: 0 }
+        Self { grad: [0.0; DUAL_N], val: 0.0, active: false }
     }
 }
 
 impl fmt::Debug for DualNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dual({:.4}, active={:#018x})", self.val, self.active)
+        write!(f, "Dual({:.4}, active={})", self.val, self.active)
     }
 }
 
-// Each operator checks `active == 0` (constant) to skip gradient work.
+// Each operator checks `!active` (constant) to skip gradient work.
 // Ideally for the ~50% of eval operations involving a constant,
 // this eliminates the gradient computation entirely.
 //
 // The gradient loop lives in grad_map1/grad_map2 — DUAL_N / 8 AVX2 chunks of
-// 8 f32 (64 f32s = 8 · ymm256) behind one audited unsafe surface; each operator
-// supplies only its chain-rule formula as a closure.
+// 8 f32 behind one audited unsafe surface; each operator supplies only its
+// chain-rule formula as a closure.
 
 /// Map `f` lane-wise across two gradient vectors into `out`, in `DUAL_N / 8`
 /// chunks of 8 f32. The single unsafe surface every binary operator's gradient shares.
@@ -131,17 +132,17 @@ impl Add for DualNode {
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
         let val = self.val + rhs.val;
-        let active = self.active | rhs.active;
+        let active = self.active || rhs.active;
 
-        if active == 0 {
+        if !active {
             return Self { grad: self.grad, val, active };
         }
 
         let mut grad = [0.0f32; DUAL_N];
 
-        if self.active != 0 && rhs.active != 0 {
+        if self.active && rhs.active {
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| ga + gb);
-        } else if self.active != 0 {
+        } else if self.active {
             grad.copy_from_slice(&self.grad);
         } else {
             grad.copy_from_slice(&rhs.grad);
@@ -159,17 +160,17 @@ impl Sub for DualNode {
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
         let val = self.val - rhs.val;
-        let active = self.active | rhs.active;
+        let active = self.active || rhs.active;
 
-        if active == 0 {
+        if !active {
             return Self { grad: self.grad, val, active };
         }
 
         let mut grad = [0.0f32; DUAL_N];
 
-        if self.active != 0 && rhs.active != 0 {
+        if self.active && rhs.active {
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| ga - gb);
-        } else if self.active != 0 {
+        } else if self.active {
             grad.copy_from_slice(&self.grad);
         } else {
             grad_map1(&rhs.grad, &mut grad, |gb| Vf32x8::zero() - gb);
@@ -187,9 +188,9 @@ impl Mul for DualNode {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         let val = self.val * rhs.val;
-        let active = self.active | rhs.active;
+        let active = self.active || rhs.active;
 
-        if active == 0 {
+        if !active {
             return Self { grad: self.grad, val, active };
         }
 
@@ -197,10 +198,10 @@ impl Mul for DualNode {
         let b = rhs.val as f32;
         let mut grad = [0.0f32; DUAL_N];
 
-        if self.active != 0 && rhs.active != 0 {
+        if self.active && rhs.active {
             let (va, vb) = (Vf32x8::splat(a), Vf32x8::splat(b));
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| vb * ga + va * gb);
-        } else if self.active != 0 {
+        } else if self.active {
             let vb = Vf32x8::splat(b);
             grad_map1(&self.grad, &mut grad, |ga| vb * ga);
         } else {
@@ -220,9 +221,9 @@ impl Div for DualNode {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         let val = self.val / rhs.val;
-        let active = self.active | rhs.active;
+        let active = self.active || rhs.active;
 
-        if active == 0 {
+        if !active {
             return Self { grad: self.grad, val, active };
         }
 
@@ -231,10 +232,10 @@ impl Div for DualNode {
         let a = self.val as f32;
         let mut grad = [0.0f32; DUAL_N];
 
-        if self.active != 0 && rhs.active != 0 {
+        if self.active && rhs.active {
             let (va, vb, vb2) = (Vf32x8::splat(a), Vf32x8::splat(b), Vf32x8::splat(b2));
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| (vb * ga - va * gb) / vb2);
-        } else if self.active != 0 {
+        } else if self.active {
             let vb = Vf32x8::splat(b);
             grad_map1(&self.grad, &mut grad, |ga| ga / vb);
         } else {
@@ -253,8 +254,8 @@ impl Neg for DualNode {
 
     #[inline(always)]
     fn neg(self) -> Self {
-        if self.active == 0 {
-            return Self { grad: self.grad, val: -self.val, active: 0 };
+        if !self.active {
+            return Self { grad: self.grad, val: -self.val, active: false };
         }
 
         let mut grad = [0.0f32; DUAL_N];
@@ -360,11 +361,11 @@ impl EvalMath for DualNode {
     #[inline(always)]
     fn math_clamp(self, min: Self, max: Self) -> Self {
         if self.val <= min.val {
-            return Self { val: min.val, grad: [0.0; DUAL_N], active: 0 };
+            return Self { val: min.val, grad: [0.0; DUAL_N], active: false };
         }
 
         if self.val >= max.val {
-            return Self { val: max.val, grad: [0.0; DUAL_N], active: 0 };
+            return Self { val: max.val, grad: [0.0; DUAL_N], active: false };
         }
         self
     }

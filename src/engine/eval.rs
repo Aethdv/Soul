@@ -65,7 +65,7 @@ macro_rules! impl_eval_params {
                 }
             }
         }
-    }
+    };
 }
 
 crate::define_tunables! {impl_eval_params}

@@ -55,6 +55,7 @@ const fn CV(v: i32) -> Param {
 fn collect_params_from_arrays<const N: usize>(name: &str, arr: &[Param; N]) -> Vec<Tunable> {
     let mut params = Vec::new();
     let freeze_resistant = name.starts_with("ATTACKER_WEIGHTS");
+
     for (i, param) in arr.iter().enumerate() {
         let (val, is_fixed) = match param {
             Param::Val(v) => (*v, false),
@@ -114,6 +115,7 @@ macro_rules! define_psqt_params {
                 $(
                     for (i, param) in $name.iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
+
                         params.push(Tunable {
                             value: param.mg as f64,
                             name: format!("MG_{}[{i}]", stringify!($name)),
@@ -124,6 +126,7 @@ macro_rules! define_psqt_params {
                     }
                     for (i, param) in $name.iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
+
                         params.push(Tunable {
                             value: param.eg as f64,
                             name: format!("EG_{}[{i}]", stringify!($name)),
@@ -176,6 +179,7 @@ macro_rules! define_simple_params {
                 $(
                     for (i, param) in $name.iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
+
                         params.push(Tunable {
                             value: param.mg as f64,
                             name: format!("MG_{}[{i}]", stringify!($name)),
@@ -186,6 +190,7 @@ macro_rules! define_simple_params {
                     }
                     for (i, param) in $name.iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
+
                         params.push(Tunable {
                             value: param.eg as f64,
                             name: format!("EG_{}[{i}]", stringify!($name)),
@@ -270,6 +275,27 @@ macro_rules! define_tunables {
         }
     };
 }
+
+/// Slot count each `EvalParams` field consumes in the dual-AD gradient vector.
+#[rustfmt::skip]
+macro_rules! slot_width {
+    (Scalar) => (1);
+    (Vec4)   => (4);
+    (Array4) => (4);
+    (Array6) => (6);
+}
+
+/// Sum the dual-AD footprint over the tunable list; 2 accumulator lanes (MG/EG)
+/// plus one slot per scalar weight.
+macro_rules! count_dual_slots {
+    ($( ($name:ident, $ty:ident, $off:ident, $extra:expr) ),* $(,)?) => {
+        2usize $( + slot_width!($ty) )*
+    };
+}
+
+/// Total dual-AD inputs; the 2 accumulator lanes plus every tunable weight.
+/// Drives `DUAL_N`, so the gradient array sizes itself as eval terms are added.
+pub const DUAL_SLOTS: usize = crate::define_tunables!(count_dual_slots);
 
 pub struct Layout {
     pub psqt_offset: usize,

@@ -84,7 +84,7 @@ macro_rules! impl_scatter {
                 }
             }
         }
-    }
+    };
 }
 
 soul::define_tunables!(impl_scatter);

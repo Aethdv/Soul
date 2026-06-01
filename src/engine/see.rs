@@ -213,10 +213,10 @@ mod tests {
     };
 
     macro_rules! pc {
-            ($($n:ident = $p:expr;)*) => {
-                $(const fn $n() -> i32 { MG_MATERIAL[$p as usize] })*
-            };
-        }
+        ($($n:ident = $p:expr;)*) => {
+            $(const fn $n() -> i32 { MG_MATERIAL[$p as usize] })*
+        };
+    }
 
     pc! {
         p = PieceType::Pawn;
