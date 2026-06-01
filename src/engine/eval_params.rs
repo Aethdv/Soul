@@ -262,7 +262,9 @@ macro_rules! define_tunables {
             (w_bp_mg,       Scalar, bishop_pair_offset,     0),
             (w_bp_eg,       Scalar, bishop_pair_offset,     1),
             (w_rook_open_mg, Scalar, rook_open_offset,      0),
-            (w_rook_open_eg, Scalar, rook_open_offset,      1)
+            (w_rook_open_eg, Scalar, rook_open_offset,      1),
+            (passed_mg,     Array6, passed_mg_offset,       0),
+            (passed_eg,     Array6, passed_eg_offset,       0)
         }
     };
 }
@@ -288,6 +290,10 @@ pub struct Layout {
     pub bishop_pair_len: usize,
     pub rook_open_offset: usize,
     pub rook_open_len: usize,
+    pub passed_mg_offset: usize,
+    pub passed_mg_len: usize,
+    pub passed_eg_offset: usize,
+    pub passed_eg_len: usize,
 }
 
 pub const LAYOUT: Layout = calc_layout();
@@ -302,6 +308,8 @@ const fn calc_layout() -> Layout {
     let xray_len = XRAY_WEIGHTS.len();
     let bishop_pair_len = BISHOP_PAIR_WEIGHTS.len();
     let rook_open_len = ROOK_OPEN_WEIGHTS.len();
+    let passed_mg_len = PASSED_PAWN_MG.len();
+    let passed_eg_len = PASSED_PAWN_EG.len();
 
     let psqt_offset = 0;
     let material_offset = psqt_offset + psqt_len;
@@ -313,6 +321,8 @@ const fn calc_layout() -> Layout {
     let xray_offset = king_safety_offset + safety_len;
     let bishop_pair_offset = xray_offset + xray_len;
     let rook_open_offset = bishop_pair_offset + bishop_pair_len;
+    let passed_mg_offset = rook_open_offset + rook_open_len;
+    let passed_eg_offset = passed_mg_offset + passed_mg_len;
 
     Layout {
         psqt_offset,
@@ -335,6 +345,10 @@ const fn calc_layout() -> Layout {
         bishop_pair_len,
         rook_open_offset,
         rook_open_len,
+        passed_mg_offset,
+        passed_mg_len,
+        passed_eg_offset,
+        passed_eg_len,
     }
 }
 
@@ -375,98 +389,100 @@ define_psqt_params! {
     // Files A-D (mirrored to E-H) × 8 ranks
     PAWN = [
         CS(  0,    0),  CS(  0,    0),  CS(  0,    0),  CS(  0,    0),
-        S(   6,  284),  S(  29,  269),  S(  78,  238),  S( 115,  190),
-        S( -20,  168),  S(   2,  176),  S(  55,  113),  S(  50,  110),
-        S( -25,   66),  S(   0,   56),  S(   4,   29),  S(  19,   18),
-        S( -33,   34),  S( -13,   38),  S(  -8,   15),  S(  10,   12),
-        S( -28,   28),  S(   1,   33),  S( -14,   16),  S(  -2,   24),
-        S( -35,   30),  S(  -2,   34),  S( -13,   24),  S( -16,   34),
+        S( -45,  245),  S( -15,  223),  S(  37,  187),  S(  74,  138),
+        S(   3,   96),  S(  26,   95),  S(  77,   31),  S(  66,  -10),
+        S( -13,   74),  S(  12,   70),  S(  14,   39),  S(  30,   20),
+        S( -21,   56),  S(  -2,   65),  S(   2,   42),  S(  21,   35),
+        S( -17,   51),  S(  12,   59),  S(  -5,   41),  S(   7,   47),
+        S( -24,   53),  S(   9,   59),  S(  -5,   47),  S(  -8,   51),
         CS(  0,    0),  CS(  0,    0),  CS(  0,    0),  CS(  0,    0),
     ],
 
     KNIGHT = [
-        S(-126,   33),  S( -94,  114),  S( -32,  123),  S(  22,  128),
-        S(  35,  102),  S(  43,  140),  S(  97,  138),  S(  74,  145),
-        S(  55,  123),  S(  80,  148),  S( 104,  167),  S( 122,  163),
-        S(  58,  144),  S(  53,  170),  S(  95,  182),  S(  88,  193),
-        S(  31,  149),  S(  64,  157),  S(  61,  184),  S(  72,  194),
-        S(  14,  134),  S(  43,  155),  S(  50,  160),  S(  66,  182),
-        S(  21,  134),  S(  10,  139),  S(  32,  154),  S(  44,  162),
-        S( -39,  104),  S(   1,  116),  S(  10,  129),  S(   7,  142),
+        S(-128,   25),  S(-106,  119),  S( -34,  132),  S(  29,  134),
+        S(  32,  115),  S(  45,  144),  S( 100,  144),  S(  78,  151),
+        S(  60,  125),  S(  87,  152),  S( 111,  171),  S( 127,  170),
+        S(  63,  149),  S(  56,  178),  S( 100,  189),  S(  93,  199),
+        S(  33,  155),  S(  69,  163),  S(  65,  190),  S(  77,  201),
+        S(  14,  139),  S(  45,  161),  S(  53,  167),  S(  70,  190),
+        S(  22,  141),  S(  11,  146),  S(  34,  160),  S(  47,  168),
+        S( -44,  119),  S(   2,  122),  S(  11,  135),  S(   8,  145),
     ],
 
     BISHOP = [
-        S(  10,  126),  S(  -3,  135),  S(  -9,  134),  S( -39,  145),
-        S(  44,  108),  S(  57,  138),  S(  64,  131),  S(  53,  134),
-        S(  77,  136),  S(  84,  137),  S(  87,  147),  S(  88,  139),
-        S(  48,  135),  S(  64,  149),  S(  79,  152),  S(  91,  161),
-        S(  53,  118),  S(  50,  150),  S(  62,  156),  S(  80,  157),
-        S(  58,  124),  S(  65,  136),  S(  63,  152),  S(  67,  153),
-        S(  66,  112),  S(  71,  131),  S(  81,  118),  S(  56,  144),
-        S(  45,   96),  S(  70,  119),  S(  38,  118),  S(  34,  127),
+        S(  11,  131),  S(  -1,  147),  S( -13,  138),  S( -45,  150),
+        S(  43,  116),  S(  53,  143),  S(  62,  139),  S(  55,  138),
+        S(  77,  140),  S(  88,  142),  S(  88,  152),  S(  89,  142),
+        S(  48,  138),  S(  64,  154),  S(  80,  156),  S(  94,  167),
+        S(  53,  124),  S(  52,  155),  S(  63,  161),  S(  80,  165),
+        S(  58,  129),  S(  66,  141),  S(  64,  158),  S(  68,  161),
+        S(  67,  119),  S(  72,  135),  S(  82,  123),  S(  57,  148),
+        S(  43,  100),  S(  71,  122),  S(  37,  122),  S(  32,  132),
     ],
 
     ROOK = [
-        S( -34,  214),  S( -57,  223),  S( -47,  228),  S( -54,  223),
-        S( -33,  208),  S( -36,  220),  S( -11,  219),  S(  -8,  214),
-        S( -32,  203),  S(  10,  202),  S(  -4,  202),  S(  -1,  199),
-        S( -33,  204),  S( -14,  198),  S( -15,  204),  S( -19,  200),
-        S( -51,  198),  S( -43,  201),  S( -44,  204),  S( -29,  201),
-        S( -48,  191),  S( -22,  181),  S( -35,  190),  S( -32,  195),
-        S( -63,  196),  S( -39,  190),  S( -36,  192),  S( -35,  191),
-        S( -38,  206),  S( -37,  198),  S( -43,  202),  S( -28,  189),
+        S( -30,  220),  S( -47,  228),  S( -47,  235),  S( -55,  230),
+        S( -29,  215),  S( -32,  226),  S(   0,  223),  S(   1,  218),
+        S( -26,  208),  S(  16,  205),  S(   5,  204),  S(   8,  201),
+        S( -27,  209),  S(  -7,  202),  S(  -8,  206),  S( -11,  203),
+        S( -47,  207),  S( -34,  207),  S( -39,  211),  S( -23,  208),
+        S( -43,  198),  S( -16,  188),  S( -30,  196),  S( -26,  201),
+        S( -58,  202),  S( -34,  196),  S( -29,  196),  S( -30,  196),
+        S( -31,  212),  S( -31,  202),  S( -38,  206),  S( -21,  192),
     ],
 
     QUEEN = [
-        S( -15,  535),  S(  -2,  544),  S( -17,  586),  S(   4,  572),
-        S(  26,  526),  S( -28,  578),  S( -15,  609),  S( -41,  643),
-        S(  39,  530),  S(  39,  542),  S(   1,  609),  S(  12,  615),
-        S(  37,  541),  S(  13,  585),  S(  10,  593),  S(  -3,  617),
-        S(  24,  554),  S(  28,  572),  S(   9,  588),  S(  10,  601),
-        S(  28,  526),  S(  33,  549),  S(  32,  561),  S(  24,  565),
-        S(  40,  489),  S(  37,  499),  S(  45,  503),  S(  40,  536),
-        S(  14,  511),  S(  10,  505),  S(  12,  503),  S(  33,  514),
+        S( -11,  547),  S(  -2,  557),  S( -23,  609),  S( -11,  598),
+        S(  34,  542),  S( -25,  593),  S(  -7,  618),  S( -41,  659),
+        S(  48,  542),  S(  47,  556),  S(   5,  621),  S(  18,  625),
+        S(  43,  559),  S(  19,  599),  S(  16,  607),  S(   1,  632),
+        S(  32,  569),  S(  33,  590),  S(  15,  601),  S(  16,  614),
+        S(  35,  539),  S(  41,  562),  S(  39,  574),  S(  30,  583),
+        S(  47,  501),  S(  44,  502),  S(  53,  512),  S(  48,  546),
+        S(  20,  520),  S(  16,  516),  S(  19,  510),  S(  40,  523),
     ],
 
     KING = [
-        S(  84, -151),  S(   9,  -53),  S(   9,  -35),  S( -36,  -17),
-        S(-114,    2),  S(  -5,   41),  S( -46,   61),  S(  51,   36),
-        S(-107,   18),  S(  19,   55),  S(  14,   70),  S( -15,   80),
-        S(-138,   14),  S( -63,   56),  S( -59,   77),  S( -94,   91),
-        S(-150,    2),  S( -82,   36),  S( -63,   60),  S( -98,   83),
-        S( -78,  -19),  S( -20,    6),  S( -56,   36),  S( -55,   51),
-        S(  20,  -53),  S(  22,  -25),  S( -11,    5),  S( -33,   20),
-        S(  26, -111),  S(  40,  -68),  S(  16,  -42),  S(  22,  -48),
+        S( 101, -166),  S(  28,  -60),  S(  38,  -42),  S( -59,   -9),
+        S( -96,   -8),  S(  11,   40),  S( -17,   55),  S(  63,   36),
+        S(-110,   12),  S(  32,   51),  S(  42,   64),  S(  -4,   77),
+        S(-148,   11),  S( -63,   55),  S( -59,   79),  S(-101,   94),
+        S(-174,    5),  S( -83,   35),  S( -72,   64),  S(-110,   90),
+        S( -85,  -17),  S( -26,    7),  S( -62,   41),  S( -60,   57),
+        S(  19,  -54),  S(  22,  -23),  S( -15,    8),  S( -37,   23),
+        S(  25, -117),  S(  39,  -70),  S(  15,  -41),  S(  21,  -49),
     ],
 }
 
 define_simple_params! {
     MATERIAL = [
-         S(  88,  137), // Pawn
-         S( 323,  335), // Knight
-         S( 319,  367), // Bishop
-         S( 508,  688), // Rook
-         S(1013, 1133), // Queen
+         S(  91,  104), // Pawn
+         S( 335,  365), // Knight
+         S( 333,  399), // Bishop
+         S( 519,  747), // Rook
+         S(1043, 1239), // Queen
          S(   0,    0), // King
     ],
 }
 
 define_simd_params! {
     MG_MOBILITY_OPEN = [
-        V(5), V(-7), V(5), V(3)],
+        V(5), V(-7), V(5), V(4)],
     EG_MOBILITY_OPEN = [
-        V(-4), V(-4), V(-7), V(-9)],
+        V(-5), V(-7), V(-5), V(-13)],
     MG_MOBILITY_CLOSED = [
-        V(2), V(10), V(-20), V(-1)],
+        V(1), V(8), V(-20), V(-2)],
     EG_MOBILITY_CLOSED = [
-        V(19), V(3), V(43), V(-29)],
+        V(22), V(7), V(38), V(-23)],
 }
 
 define_weight_params! {
     PHASE_WEIGHTS       = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    ATTACKER_WEIGHTS    = [CV(0), V(140), V(240), V(416), V(490), V(532)], // [0, 1, 2, 3, 4, 5] attackers × weak
-    KING_SAFETY_WEIGHTS = [V(15), V(11), V(8)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    XRAY_WEIGHTS        = [V(10)], // [Ortho King]
-    BISHOP_PAIR_WEIGHTS = [V(29), V(82)], // [MG, EG]
-    ROOK_OPEN_WEIGHTS   = [V(36), V(5)], // [MG, EG]
+    ATTACKER_WEIGHTS    = [CV(0), V(160), V(260), V(439), V(518), V(568)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    KING_SAFETY_WEIGHTS = [V(16), V(12), V(8)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    XRAY_WEIGHTS        = [V(11)], // [Ortho King]
+    BISHOP_PAIR_WEIGHTS = [V(32), V(84)], // [MG, EG]
+    ROOK_OPEN_WEIGHTS   = [V(39), V(3)], // [MG, EG]
+    PASSED_PAWN_MG      = [V(-17), V(-26), V(-22), V(7), V(1), V(43)], // by relative rank 1-6
+    PASSED_PAWN_EG      = [V(1), V(8), V(41), V(80), V(178), V(112)], // by relative rank 1-6
 }
