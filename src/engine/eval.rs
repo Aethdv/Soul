@@ -22,7 +22,7 @@ use crate::{
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
             self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS,
-            MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -74,6 +74,7 @@ crate::register_terms! {
     mobility::KingSafetyTerm => king_safety,
     BishopPairTerm => bonus,
     RookOpenTerm => bonus,
+    PassedPawnTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -83,6 +84,8 @@ pub struct XrayTerm;
 pub struct BishopPairTerm;
 /// Tapered bonus for a rook on an open file with no pawns of either color (~5 Elo).
 pub struct RookOpenTerm;
+/// Tapered passed-pawn bonus, indexed by how far the pawn has advanced.
+pub struct PassedPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -105,6 +108,8 @@ pub struct SharedFeatures {
     pub bishop_pair_diff: i32,
     /// White minus black rooks standing on a fully open file with no pawns of either color.
     pub rook_open_diff: i32,
+    /// White minus black passed pawns, bucketed by relative rank (index 0 = rank 2, 5 = rank 7).
+    pub passed_pawn: [i32; 6],
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -227,6 +232,8 @@ impl EvalParams<i32> {
             w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
             w_rook_open_mg: ROOK_OPEN_WEIGHTS[0],
             w_rook_open_eg: ROOK_OPEN_WEIGHTS[1],
+            passed_mg: PASSED_PAWN_MG,
+            passed_eg: PASSED_PAWN_EG,
         }
     }
 }
@@ -259,7 +266,32 @@ impl SharedFeatures {
         let b_open = (rooks_open & board.side_bb[Color::Black]).popcount() as i32;
         let rook_open_diff = w_open - b_open;
 
-        Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff }
+        // Passed pawns; no enemy pawn on the pawn's file or its neighbors ahead.
+        // Bucketed white-minus-black by relative rank (how far advanced).
+        let wp = board.pieces(PieceType::Pawn, Color::White);
+        let bp = board.pieces(PieceType::Pawn, Color::Black);
+        let mut passed_pawn = [0i32; 6];
+        let mut w = wp;
+
+        while w.is_not_empty() {
+            let sq = w.pop_lsb();
+
+            if (bitboard::passed_span(sq, Color::White) & bp).is_empty() {
+                passed_pawn[(sq.rank() - 1) as usize] += 1;
+            }
+        }
+
+        let mut b = bp;
+
+        while b.is_not_empty() {
+            let sq = b.pop_lsb();
+
+            if (bitboard::passed_span(sq, Color::Black) & wp).is_empty() {
+                passed_pawn[(6 - sq.rank()) as usize] -= 1;
+            }
+        }
+
+        Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff, passed_pawn }
     }
 }
 
@@ -314,6 +346,34 @@ impl term::LinearTerm for RookOpenTerm {
         let feature = features.rook_open_diff as f64;
         grads[eval_params::LAYOUT.rook_open_offset] += upstream.d_mg * feature;
         grads[eval_params::LAYOUT.rook_open_offset + 1] += upstream.d_eg * feature;
+    }
+}
+
+impl term::LinearTerm for PassedPawnTerm {
+    type Upstream = term::TaperPair;
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
+        let total = T::from_i32(TOTAL_PHASE);
+        let eg_phase = total - phase;
+
+        for r in 0..6 {
+            let feature = T::from_i32(features.passed_pawn[r]);
+            let tapered = params.passed_mg[r] * phase + params.passed_eg[r] * eg_phase;
+            acc.bonus += (tapered * feature / total).trunc();
+        }
+    }
+
+    #[inline]
+    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
+        let mg = eval_params::LAYOUT.passed_mg_offset;
+        let eg = eval_params::LAYOUT.passed_eg_offset;
+
+        for r in 0..6 {
+            let feature = features.passed_pawn[r] as f64;
+            grads[mg + r] += upstream.d_mg * feature;
+            grads[eg + r] += upstream.d_eg * feature;
+        }
     }
 }
 

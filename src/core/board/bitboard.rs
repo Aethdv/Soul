@@ -27,6 +27,9 @@ pub static KING_ATTACKS: [Bitboard; 64] = init_king_attacks();
 pub static PSEUDO_ROOK_ATTACKS: [Bitboard; 64] = init_pseudo_rook_attacks();
 /// Bishop rays on an empty board (all four diagonals through the square).
 pub static PSEUDO_BISHOP_ATTACKS: [Bitboard; 64] = init_pseudo_bishop_attacks();
+/// Squares ahead of a pawn on its own and adjacent files, indexed `[color][square]`.
+/// A pawn is passed when no enemy pawn occupies this mask.
+pub static PASSED_PAWN_MASKS: [[Bitboard; 64]; 2] = init_passed_pawn_masks();
 
 // Build-time generated tables: ROOKS, BISHOPS, ATTACK_TABLE, LINES, BETWEEN.
 include!(concat!(env!("OUT_DIR"), "/magics.rs"));
@@ -76,6 +79,13 @@ macro_rules! magic_index {
 #[inline(always)]
 pub fn atk_pawn(sq: Square, color: Color) -> Bitboard {
     PAWN_ATTACKS[color][sq]
+}
+
+/// Forward span a pawn must clear of enemy pawns to count as passed;
+/// its own file and both neighbors, every rank ahead toward promotion.
+#[inline(always)]
+pub fn passed_span(sq: Square, color: Color) -> Bitboard {
+    PASSED_PAWN_MASKS[color][sq]
 }
 
 /// Knight attack mask — the eight possible L-shaped destinations.
@@ -129,12 +139,57 @@ pub fn between_bb(sq1: Square, sq2: Square) -> Bitboard {
 const fn init_pawn_attacks() -> [[Bitboard; 64]; 2] {
     let mut table = [[Bitboard(0); 64]; 2];
     let mut sq = 0;
+
     while sq < 64 {
         let bb = 1u64 << sq;
         // White captures northeast & northwest
         table[0][sq as usize] = Bitboard(((bb << 9) & !FILE_A.0) | ((bb << 7) & !FILE_H.0));
         // Black captures southeast & southwest
         table[1][sq as usize] = Bitboard(((bb >> 9) & !FILE_H.0) | ((bb >> 7) & !FILE_A.0));
+        sq += 1;
+    }
+    table
+}
+
+/// Passed-pawn spans: own file ∪ adjacent files, every rank ahead of the pawn.
+/// White looks toward rank 8, black toward rank 1.
+const fn init_passed_pawn_masks() -> [[Bitboard; 64]; 2] {
+    let mut table = [[Bitboard(0); 64]; 2];
+    let mut sq = 0usize;
+
+    while sq < 64 {
+        let file = sq % 8;
+        let rank = sq / 8;
+
+        // The pawn's own file plus both neighbors.
+        let mut files = FILE_MASKS[file].0;
+
+        if file > 0 {
+            files |= FILE_MASKS[file - 1].0;
+        }
+
+        if file < 7 {
+            files |= FILE_MASKS[file + 1].0;
+        }
+
+        let mut above = 0u64;
+        let mut r = rank + 1;
+
+        while r < 8 {
+            above |= RANK_MASKS[r].0;
+            r += 1;
+        }
+
+        let mut below = 0u64;
+        let mut r = 0;
+
+        while r < rank {
+            below |= RANK_MASKS[r].0;
+            r += 1;
+        }
+
+        table[0][sq] = Bitboard(files & above);
+        table[1][sq] = Bitboard(files & below);
         sq += 1;
     }
     table
@@ -153,6 +208,7 @@ const fn init_pawn_attacks() -> [[Bitboard; 64]; 2] {
 const fn init_knight_attacks() -> [Bitboard; 64] {
     let mut table = [Bitboard(0); 64];
     let mut sq = 0;
+
     while sq < 64 {
         let bb = 1u64 << sq;
         table[sq as usize] = Bitboard(
@@ -181,6 +237,7 @@ const fn init_knight_attacks() -> [Bitboard; 64] {
 const fn init_king_attacks() -> [Bitboard; 64] {
     let mut table = [Bitboard(0); 64];
     let mut sq = 0;
+
     while sq < 64 {
         let bb = 1u64 << sq;
         table[sq as usize] = Bitboard(
@@ -204,6 +261,7 @@ const fn init_king_attacks() -> [Bitboard; 64] {
 const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
     let mut table = [Bitboard(0); 64];
     let mut sq = 0;
+
     while sq < 64 {
         let rank = sq / 8;
         let file = sq % 8;
@@ -224,6 +282,7 @@ const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
 const fn init_pseudo_bishop_attacks() -> [Bitboard; 64] {
     let mut table = [Bitboard(0); 64];
     let mut sq = 0;
+
     while sq < 64 {
         let rank = (sq / 8) as i8;
         let file = (sq % 8) as i8;
@@ -232,9 +291,11 @@ const fn init_pseudo_bishop_attacks() -> [Bitboard; 64] {
         // Walk each diagonal until we fall off the board.
         let dirs: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
         let mut d = 0;
+
         while d < 4 {
             let (dr, df) = dirs[d];
             let (mut r, mut f) = (rank + dr, file + df);
+
             while r >= 0 && r < 8 && f >= 0 && f < 8 {
                 attacks |= 1u64 << (r * 8 + f);
                 r += dr;

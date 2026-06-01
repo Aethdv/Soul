@@ -3,7 +3,11 @@
 use super::SoulEntry;
 use crate::{
     core::{
-        board::{Position, bitboard::atk_king, spatial::SpatialTensor},
+        board::{
+            Position,
+            bitboard::{atk_king, passed_span},
+            spatial::SpatialTensor,
+        },
         defs::{Color, PieceType, Square},
         phase::compute_phase_weights_f64,
         psqt,
@@ -26,6 +30,7 @@ pub struct FeatureSlots {
     pub xray_ortho: Vec<i8>,
     pub bishop_pair: Vec<i8>,
     pub rook_open: Vec<i8>,
+    pub passed_pawn: Vec<[i8; 6]>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -39,6 +44,7 @@ impl FeatureSlots {
             xray_ortho: Vec::with_capacity(cap),
             bishop_pair: Vec::with_capacity(cap),
             rook_open: Vec::with_capacity(cap),
+            passed_pawn: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -90,6 +96,36 @@ impl FeatureSlots {
         let b_open = (rooks_open & pos.side_bb[Color::Black]).popcount() as i8;
         let open_diff = w_open - b_open;
         self.rook_open.push(if pos.stm == Color::Black { -open_diff } else { open_diff });
+
+        let wp = pos.pieces(PieceType::Pawn, Color::White);
+        let bp = pos.pieces(PieceType::Pawn, Color::Black);
+        let mut passed = [0i8; 6];
+        let mut w = wp;
+
+        while w.is_not_empty() {
+            let sq = w.pop_lsb();
+
+            if (passed_span(sq, Color::White) & bp).is_empty() {
+                passed[(sq.rank() - 1) as usize] += 1;
+            }
+        }
+
+        let mut b = bp;
+
+        while b.is_not_empty() {
+            let sq = b.pop_lsb();
+
+            if (passed_span(sq, Color::Black) & wp).is_empty() {
+                passed[(6 - sq.rank()) as usize] -= 1;
+            }
+        }
+
+        if pos.stm == Color::Black {
+            for v in &mut passed {
+                *v = -*v;
+            }
+        }
+        self.passed_pawn.push(passed);
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
@@ -184,6 +220,15 @@ pub fn accumulate_gradient_cached(
     grads[ro_offset] += gradient * ro * mg_w;
     grads[ro_offset + 1] += gradient * ro * eg_w;
 
+    let pmg = psqt::LAYOUT.passed_mg_offset;
+    let peg = psqt::LAYOUT.passed_eg_offset;
+    let passed = slots.passed_pawn[idx];
+    for r in 0..6 {
+        let pf = f64::from(passed[r]);
+        grads[pmg + r] += gradient * pf * mg_w;
+        grads[peg + r] += gradient * pf * eg_w;
+    }
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
@@ -272,6 +317,14 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let ro_offset = psqt::LAYOUT.rook_open_offset;
     let ro = f64::from(slots.rook_open[idx]);
     score += (ro * (values[ro_offset] * mg_w + values[ro_offset + 1] * eg_w)).trunc();
+
+    let pmg = psqt::LAYOUT.passed_mg_offset;
+    let peg = psqt::LAYOUT.passed_eg_offset;
+    let passed = slots.passed_pawn[idx];
+    for r in 0..6 {
+        let pf = f64::from(passed[r]);
+        score += (pf * (values[pmg + r] * mg_w + values[peg + r] * eg_w)).trunc();
+    }
 
     score
 }

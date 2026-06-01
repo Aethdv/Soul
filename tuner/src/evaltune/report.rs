@@ -194,6 +194,18 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             writeln!(w, "], // [MG, EG]").ok();
         }
 
+        if params.len() > psqt::LAYOUT.passed_mg_offset {
+            write!(w, "    PASSED_PAWN_MG      = [").ok();
+            write_weight_array(w, psqt::LAYOUT.passed_mg_offset, 6, values, params, initial);
+            writeln!(w, "], // by relative rank 1-6").ok();
+        }
+
+        if params.len() > psqt::LAYOUT.passed_eg_offset {
+            write!(w, "    PASSED_PAWN_EG      = [").ok();
+            write_weight_array(w, psqt::LAYOUT.passed_eg_offset, 6, values, params, initial);
+            writeln!(w, "], // by relative rank 1-6").ok();
+        }
+
         writeln!(w, "}}").ok();
     }
 
