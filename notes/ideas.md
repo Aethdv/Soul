@@ -17,6 +17,25 @@ Then yolo `wdl_blend=0.5`.
 Failure mode: Soul's eval is very often wrong at 16k soft nodes, so.. the WDL prediction is wrong.
 But. At least, the threshold isn't fighting the material scaling problem on top of the eval accuracy problem.
 
+### Aeth Distance, or tunable anisotropic distance.
+
+Convex blend of Chebyshev (w=0) and Manhattan (w=100):
+
+`d(a,b,w) = max(Δf,Δr) + (w/100)·min(Δf,Δr)`
+
+Parameterized octile distance (standard A* heuristic), not novel — there's just no name for the *tunable* form, hence the label.
+Not Minkowski either (that curves via the exponent; this is linear).
+
+Integer form to ship:
+
+`d(a,b,w) = 100·max(Δf,Δr) + w·min(Δf,Δr)`
+
+The round was the trap. At min=1, `round((w/100)·min)` bins all of w to 0 or 1, killing the asymmetry. Scaling by 100 keeps it integer without rounding, and the tropism coefficient absorbs the scale.
+
+A Chebyshev-indexed bonus array dominates it wherever params are free, and Aeth Distance's one edge is a single param that keeps the asymmetry a table throws away ((3,0) ≈ (3,3) to a table).
+
+Real application is King tropism. Metric choice genuinely matters there; diagonal-vs-straight maps to how bishops/rooks reach the king, and one knob beats a 2D (Δf,Δr) table.
+
 
 ## Already Poked At.
 
