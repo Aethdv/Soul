@@ -21,8 +21,9 @@ use crate::{
         autograd::EvalMath,
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
-            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_SAFETY_WEIGHTS,
-            MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG,
+            ENEMY_KING_DIST_MG, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG,
+            ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -75,6 +76,7 @@ crate::register_terms! {
     BishopPairTerm => bonus,
     RookOpenTerm => bonus,
     PassedPawnTerm => bonus,
+    EnemyKingDistTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -84,8 +86,10 @@ pub struct XrayTerm;
 pub struct BishopPairTerm;
 /// Tapered bonus for a rook on an open file with no pawns of either color (~5 Elo).
 pub struct RookOpenTerm;
-/// Tapered passed-pawn bonus, indexed by how far the pawn has advanced.
+/// Tapered passed-pawn bonus, indexed by how far the pawn has advanced (~15 Elo).
 pub struct PassedPawnTerm;
+/// Tapered passed-pawn bonus, indexed by the enemy king's distance to the passer (~12 Elo).
+pub struct EnemyKingDistTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -110,6 +114,8 @@ pub struct SharedFeatures {
     pub rook_open_diff: i32,
     /// White minus black passed pawns, bucketed by relative rank (index 0 = rank 2, 5 = rank 7).
     pub passed_pawn: [i32; 6],
+    /// White minus black passers, bucketed by enemy-king Chebyshev distance (index 0 = dist 1, 5 = dist 6+).
+    pub enemy_king_dist: [i32; 6],
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -234,6 +240,8 @@ impl EvalParams<i32> {
             w_rook_open_eg: ROOK_OPEN_WEIGHTS[1],
             passed_mg: PASSED_PAWN_MG,
             passed_eg: PASSED_PAWN_EG,
+            enemy_king_dist_mg: ENEMY_KING_DIST_MG,
+            enemy_king_dist_eg: ENEMY_KING_DIST_EG,
         }
     }
 }
@@ -271,6 +279,8 @@ impl SharedFeatures {
         let wp = board.pieces(PieceType::Pawn, Color::White);
         let bp = board.pieces(PieceType::Pawn, Color::Black);
         let mut passed_pawn = [0i32; 6];
+        // Enemy-king Chebyshev distance to each passer, bucketed (1..=6, 7 clamps to 6).
+        let mut enemy_king_dist = [0i32; 6];
         let mut w = wp;
 
         while w.is_not_empty() {
@@ -278,6 +288,7 @@ impl SharedFeatures {
 
             if (bitboard::passed_span(sq, Color::White) & bp).is_empty() {
                 passed_pawn[(sq.rank() - 1) as usize] += 1;
+                enemy_king_dist[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
             }
         }
 
@@ -288,10 +299,11 @@ impl SharedFeatures {
 
             if (bitboard::passed_span(sq, Color::Black) & wp).is_empty() {
                 passed_pawn[(6 - sq.rank()) as usize] -= 1;
+                enemy_king_dist[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
             }
         }
 
-        Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff, passed_pawn }
+        Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff, passed_pawn, enemy_king_dist }
     }
 }
 
@@ -373,6 +385,34 @@ impl term::LinearTerm for PassedPawnTerm {
             let feature = features.passed_pawn[r] as f64;
             grads[mg + r] += upstream.d_mg * feature;
             grads[eg + r] += upstream.d_eg * feature;
+        }
+    }
+}
+
+impl term::LinearTerm for EnemyKingDistTerm {
+    type Upstream = term::TaperPair;
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
+        let total = T::from_i32(TOTAL_PHASE);
+        let eg_phase = total - phase;
+
+        for d in 0..6 {
+            let feature = T::from_i32(features.enemy_king_dist[d]);
+            let tapered = params.enemy_king_dist_mg[d] * phase + params.enemy_king_dist_eg[d] * eg_phase;
+            acc.bonus += (tapered * feature / total).trunc();
+        }
+    }
+
+    #[inline]
+    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
+        let mg = eval_params::LAYOUT.enemy_king_dist_mg_offset;
+        let eg = eval_params::LAYOUT.enemy_king_dist_eg_offset;
+
+        for d in 0..6 {
+            let feature = features.enemy_king_dist[d] as f64;
+            grads[mg + d] += upstream.d_mg * feature;
+            grads[eg + d] += upstream.d_eg * feature;
         }
     }
 }

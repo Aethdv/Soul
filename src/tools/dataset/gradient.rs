@@ -31,6 +31,7 @@ pub struct FeatureSlots {
     pub bishop_pair: Vec<i8>,
     pub rook_open: Vec<i8>,
     pub passed_pawn: Vec<[i8; 6]>,
+    pub enemy_king_dist: Vec<[i8; 6]>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -45,6 +46,7 @@ impl FeatureSlots {
             bishop_pair: Vec::with_capacity(cap),
             rook_open: Vec::with_capacity(cap),
             passed_pawn: Vec::with_capacity(cap),
+            enemy_king_dist: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -100,6 +102,7 @@ impl FeatureSlots {
         let wp = pos.pieces(PieceType::Pawn, Color::White);
         let bp = pos.pieces(PieceType::Pawn, Color::Black);
         let mut passed = [0i8; 6];
+        let mut enemy_king = [0i8; 6];
         let mut w = wp;
 
         while w.is_not_empty() {
@@ -107,6 +110,7 @@ impl FeatureSlots {
 
             if (passed_span(sq, Color::White) & bp).is_empty() {
                 passed[(sq.rank() - 1) as usize] += 1;
+                enemy_king[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
             }
         }
 
@@ -117,6 +121,7 @@ impl FeatureSlots {
 
             if (passed_span(sq, Color::Black) & wp).is_empty() {
                 passed[(6 - sq.rank()) as usize] -= 1;
+                enemy_king[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
             }
         }
 
@@ -124,8 +129,12 @@ impl FeatureSlots {
             for v in &mut passed {
                 *v = -*v;
             }
+            for v in &mut enemy_king {
+                *v = -*v;
+            }
         }
         self.passed_pawn.push(passed);
+        self.enemy_king_dist.push(enemy_king);
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
@@ -229,6 +238,15 @@ pub fn accumulate_gradient_cached(
         grads[peg + r] += gradient * pf * eg_w;
     }
 
+    let ekmg = psqt::LAYOUT.enemy_king_dist_mg_offset;
+    let ekeg = psqt::LAYOUT.enemy_king_dist_eg_offset;
+    let enemy_king = slots.enemy_king_dist[idx];
+    for d in 0..6 {
+        let ef = f64::from(enemy_king[d]);
+        grads[ekmg + d] += gradient * ef * mg_w;
+        grads[ekeg + d] += gradient * ef * eg_w;
+    }
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
@@ -321,11 +339,20 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let pmg = psqt::LAYOUT.passed_mg_offset;
     let peg = psqt::LAYOUT.passed_eg_offset;
     let passed = slots.passed_pawn[idx];
+
     for r in 0..6 {
         let pf = f64::from(passed[r]);
         score += (pf * (values[pmg + r] * mg_w + values[peg + r] * eg_w)).trunc();
     }
 
+    let ekmg = psqt::LAYOUT.enemy_king_dist_mg_offset;
+    let ekeg = psqt::LAYOUT.enemy_king_dist_eg_offset;
+    let enemy_king = slots.enemy_king_dist[idx];
+
+    for d in 0..6 {
+        let ef = f64::from(enemy_king[d]);
+        score += (ef * (values[ekmg + d] * mg_w + values[ekeg + d] * eg_w)).trunc();
+    }
     score
 }
 
@@ -367,6 +394,7 @@ fn extract_board(entry: &SoulEntry) -> BoardFeatures {
         let is_black = (nibble & 0x08) != 0;
         let pt = if pt_raw == 6 { 3 } else { pt_raw }; // unmoved rook → rook
         debug_assert!(pt <= 5, "malformed nibble: pt={pt}");
+
         if pt > 5 {
             continue;
         }
@@ -427,5 +455,6 @@ fn interpolate_weight(
         ((values[open_offset] * openness * 1024.0 + values[closed_offset] * closedness * 1024.0 + 512.0) / 1024.0).floor();
     let w_eg_val =
         ((values[open_offset + 4] * openness * 1024.0 + values[closed_offset + 4] * closedness * 1024.0 + 512.0) / 1024.0).floor();
+
     w_mg_val * mg_w + w_eg_val * eg_w
 }
