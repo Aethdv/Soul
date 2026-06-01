@@ -97,7 +97,7 @@ soul::define_tunables!(impl_scatter);
 /// derivative is known.
 pub struct DualEvalResult {
     pub score: f64,
-    /// Raw partial derivatives from the dual pass (32 active slots in 64).
+    /// Raw partial derivatives from the dual pass (44 active slots in 64).
     pub grad: [f32; DUAL_N],
     /// Board pieces recorded during accumulation for PSQT scatter.
     pub active: [ActivePiece; 32],

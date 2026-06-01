@@ -1,6 +1,6 @@
 //! Forward-mode AD via dual numbers for the HCE eval graph.
 //!
-//! The eval has 32 tunable inputs (2 accumulator lanes + 30 EvalParams weights)
+//! The eval has 44 tunable inputs (2 accumulator lanes + 42 EvalParams weights)
 //! producing 1 scalar. Each dual number carries partial derivatives in `[f32; 64]`
 //! (8 · ymm256 registers), which also fills the `u64` active bitmask exactly.
 //!
@@ -21,7 +21,7 @@ use std::{
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
 use crate::weave::Vf32x8;
 
-/// 32 slots (2 acc lanes + 30 params) padded to 64.
+/// 44 slots (2 acc lanes + 42 params) padded to 64.
 pub const DUAL_N: usize = 64;
 
 /// A dual number: value + gradient vector + active-slot bitmask.
