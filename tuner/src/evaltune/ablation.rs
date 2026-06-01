@@ -129,20 +129,20 @@ fn build_groups() -> Vec<Group> {
 
     #[rustfmt::skip]
     let terms: &[(&str, usize, usize)] = &[
-        ("Material",         l.material_offset,        12),
-        ("Mobility Open",    l.mobility_open_offset,    8),
-        ("Mobility Closed",  l.mobility_closed_offset,  8),
-        ("Phase Weights",    l.weight_offset,           6),
-        ("Attacker Weights", l.attacker_offset,         6),
-        ("King Safety",      l.king_safety_offset,      3),
-        ("Xray",             l.xray_offset,             1),
-        ("Bishop Pair",      l.bishop_pair_offset,      2),
-        ("Rook Open",        l.rook_open_offset,        2),
-        ("Passed Pawn",      l.passed_mg_offset,        12),
+        ("Material",         l.material_offset,           12),
+        ("Mobility Open",    l.mobility_open_offset,       8),
+        ("Mobility Closed",  l.mobility_closed_offset,     8),
+        ("Phase Weights",    l.weight_offset,              6),
+        ("Attacker Weights", l.attacker_offset,            6),
+        ("King Safety",      l.king_safety_offset,         3),
+        ("Xray",             l.xray_offset,                1),
+        ("Bishop Pair",      l.bishop_pair_offset,         2),
+        ("Rook Open",        l.rook_open_offset,           2),
+        ("Passed Pawn",      l.passed_mg_offset,          12),
+        ("Enemy King Dist",  l.enemy_king_dist_mg_offset, 12),
     ];
 
     groups.extend(terms.iter().map(|&(name, off, len)| Group { name, range: off..off + len }));
-
     groups
 }
 

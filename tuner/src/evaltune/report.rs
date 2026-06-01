@@ -20,6 +20,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
     println!();
     println!("Best Snapshot (Epoch {best_epoch}):");
     let mut best_values = vec![0.0; values.len()];
+
     for t in all_params {
         if let Some(&v) = best_snap.params.get(&t.name) {
             best_values[t.idx] = v;
@@ -34,6 +35,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
     if let Ok(mut f) = File::create("top-snapshots.txt") {
         let mut w = BufWriter::new(&mut f);
         writeln!(w, "Top {count} snapshots (sorted by L_val):").ok();
+
         for (i, snap) in snapshots.iter().enumerate() {
             writeln!(w, "  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error).ok();
         }
@@ -102,6 +104,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             writeln!(w).ok();
         }
         writeln!(w, "    ],").ok();
+
         if p_idx < 5 {
             writeln!(w).ok();
         }
@@ -204,6 +207,18 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             write!(w, "    PASSED_PAWN_EG      = [").ok();
             write_weight_array(w, psqt::LAYOUT.passed_eg_offset, 6, values, params, initial);
             writeln!(w, "], // by relative rank 1-6").ok();
+        }
+
+        if params.len() > psqt::LAYOUT.enemy_king_dist_mg_offset {
+            write!(w, "    ENEMY_KING_DIST_MG  = [").ok();
+            write_weight_array(w, psqt::LAYOUT.enemy_king_dist_mg_offset, 6, values, params, initial);
+            writeln!(w, "], // enemy king→passer dist, 7 clamps to 6").ok();
+        }
+
+        if params.len() > psqt::LAYOUT.enemy_king_dist_eg_offset {
+            write!(w, "    ENEMY_KING_DIST_EG  = [").ok();
+            write_weight_array(w, psqt::LAYOUT.enemy_king_dist_eg_offset, 6, values, params, initial);
+            writeln!(w, "], // enemy king→passer dist, 7 clamps to 6").ok();
         }
 
         writeln!(w, "}}").ok();

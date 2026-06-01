@@ -465,6 +465,8 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let ro = psqt::LAYOUT.rook_open_offset;
     let pmg = psqt::LAYOUT.passed_mg_offset;
     let peg = psqt::LAYOUT.passed_eg_offset;
+    let ekmg = psqt::LAYOUT.enemy_king_dist_mg_offset;
+    let ekeg = psqt::LAYOUT.enemy_king_dist_eg_offset;
 
     let params = EvalParams {
         mg_mob_open: F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
@@ -482,6 +484,22 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
         w_rook_open_eg: values[ro + 1],
         passed_mg: [values[pmg], values[pmg + 1], values[pmg + 2], values[pmg + 3], values[pmg + 4], values[pmg + 5]],
         passed_eg: [values[peg], values[peg + 1], values[peg + 2], values[peg + 3], values[peg + 4], values[peg + 5]],
+        enemy_king_dist_mg: [
+            values[ekmg],
+            values[ekmg + 1],
+            values[ekmg + 2],
+            values[ekmg + 3],
+            values[ekmg + 4],
+            values[ekmg + 5],
+        ],
+        enemy_king_dist_eg: [
+            values[ekeg],
+            values[ekeg + 1],
+            values[ekeg + 2],
+            values[ekeg + 3],
+            values[ekeg + 4],
+            values[ekeg + 5],
+        ],
     };
 
     let features = SharedFeatures::compute(board);
@@ -573,6 +591,7 @@ mod tests {
         "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
         "8/2k5/8/3K4/2P5/8/8/8 w - - 0 1",
         "8/4P3/6k1/4K3/8/8/8/8 w - - 0 1",
+        "8/8/P7/8/2K5/8/8/7k w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;
@@ -596,8 +615,10 @@ mod tests {
             "BishopPairTerm"
         } else if slot < LAYOUT.passed_mg_offset {
             "RookOpenTerm"
-        } else {
+        } else if slot < LAYOUT.enemy_king_dist_mg_offset {
             "PassedPawnTerm"
+        } else {
+            "EnemyKingDistTerm"
         }
     }
 
@@ -629,7 +650,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.passed_eg_offset + LAYOUT.passed_eg_len];
+        let mut values = vec![0.0f64; LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -641,7 +662,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.passed_eg_offset + LAYOUT.passed_eg_len];
+        let mut values = vec![0.0f64; LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -694,6 +715,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_enemy_king_dist_term_oracle() {
+        assert_oracle_matches(
+            "EnemyKingDistTerm alone",
+            &values_in_range(LAYOUT.enemy_king_dist_mg_offset..LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len),
+        );
+    }
+
     const ENCODED_FENS: &[&str] = &[
         // White-to-move
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -709,6 +738,8 @@ mod tests {
         // Passed pawns: mid-board and near-promotion
         "8/2k5/8/3K4/2P5/8/8/8 w - - 0 1",
         "8/4P3/6k1/4K3/8/8/8/8 w - - 0 1",
+        // Passer far from the enemy king
+        "8/8/P7/8/2K5/8/8/7k w - - 0 1",
     ];
 
     /// `accumulate_gradient` shares math with the board-based gradient paths.

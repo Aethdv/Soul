@@ -225,6 +225,15 @@ impl Square {
         self.0 >> 3
     }
 
+    /// The number of king moves between the two squares.
+    #[inline(always)]
+    #[must_use]
+    pub const fn chebyshev_distance(self, other: Self) -> u8 {
+        let file_d = self.file().abs_diff(other.file());
+        let rank_d = self.rank().abs_diff(other.rank());
+        if file_d > rank_d { file_d } else { rank_d }
+    }
+
     /// Returns `true` if the index is in `0..64`.
     #[inline(always)]
     #[must_use]
