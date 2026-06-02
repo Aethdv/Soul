@@ -91,7 +91,7 @@ pub struct RookOpenTerm;
 pub struct PassedPawnTerm;
 /// Tapered passed-pawn bonus, indexed by the enemy king's distance to the passer (~12 Elo).
 pub struct EnemyKingDistTerm;
-/// Tapered penalty for doubled pawns; friendly pawns stacked on the same file.
+/// Tapered penalty for doubled pawns; friendly pawns stacked on the same file (~10 Elo).
 pub struct DoubledPawnTerm;
 
 pub struct DetailedEval {
