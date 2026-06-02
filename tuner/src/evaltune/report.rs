@@ -143,18 +143,19 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     if params.len() > psqt::LAYOUT.mobility_open_offset {
         writeln!(w, "\ndefine_simd_params! {{").ok();
 
+        #[rustfmt::skip]
         let mobility_bands = [
-            ("MG_MOBILITY_OPEN", psqt::LAYOUT.mobility_open_offset),
-            ("EG_MOBILITY_OPEN", psqt::LAYOUT.mobility_open_offset + 4),
-            ("MG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset),
-            ("EG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset + 4),
+            ("MG_MOBILITY_OPEN",   psqt::LAYOUT.mobility_open_offset,       " // [mobility, battery, threats, xray threats]"),
+            ("EG_MOBILITY_OPEN",   psqt::LAYOUT.mobility_open_offset + 4,   ""),
+            ("MG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset,     ""),
+            ("EG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset + 4, ""),
         ];
 
-        for (name, offset) in &mobility_bands {
+        for (name, offset, comment) in &mobility_bands {
             writeln!(w, "    {name} = [").ok();
             write!(w, "        ").ok();
             write_weight_array(w, *offset, 4, values, params, initial);
-            writeln!(w, "],").ok();
+            writeln!(w, "],{comment}").ok();
         }
 
         writeln!(w, "}}").ok();
