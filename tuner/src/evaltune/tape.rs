@@ -15,7 +15,6 @@ use soul::{
         autograd::{
             EnvVec8, EvalMath,
             dual::{DUAL_N, DualNode, DualVec8},
-            traits::F64Vec4,
         },
         combiner::{Combiner, LinearCombiner},
         eval::{EvalParams, SharedFeatures, evaluate_generic, scatter_all_terms},
@@ -446,7 +445,6 @@ pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
 /// Score-only evaluation that also returns the trace accumulator and piece counts.
 ///
 /// Used by `eval_linear_grad` to avoid redundant board iterations.
-#[allow(clippy::too_many_lines)]
 pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
     let mut trace_acc = <f64 as EvalMath>::Vec8::zero();
     let mut piece_counts = [0.0f64; 6];
@@ -456,52 +454,8 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let phase_raw = compute_phase(&piece_counts, values);
     let phase = phase_raw.math_clamp(0.0, 24.0).trunc();
 
-    let lo = psqt::LAYOUT.mobility_open_offset;
-    let lc = psqt::LAYOUT.mobility_closed_offset;
-    let ks = psqt::LAYOUT.king_safety_offset;
-    let ao = psqt::LAYOUT.attacker_offset;
-    let xr = psqt::LAYOUT.xray_offset;
-    let bp = psqt::LAYOUT.bishop_pair_offset;
-    let ro = psqt::LAYOUT.rook_open_offset;
-    let pmg = psqt::LAYOUT.passed_mg_offset;
-    let peg = psqt::LAYOUT.passed_eg_offset;
-    let ekmg = psqt::LAYOUT.enemy_king_dist_mg_offset;
-    let ekeg = psqt::LAYOUT.enemy_king_dist_eg_offset;
-
-    let params = EvalParams {
-        mg_mob_open: F64Vec4([values[lo], values[lo + 1], values[lo + 2], values[lo + 3]]),
-        eg_mob_open: F64Vec4([values[lo + 4], values[lo + 5], values[lo + 6], values[lo + 7]]),
-        mg_mob_closed: F64Vec4([values[lc], values[lc + 1], values[lc + 2], values[lc + 3]]),
-        eg_mob_closed: F64Vec4([values[lc + 4], values[lc + 5], values[lc + 6], values[lc + 7]]),
-        w_shield: values[ks],
-        w_ortho: values[ks + 1],
-        w_diag: values[ks + 2],
-        atk_weights: [values[ao], values[ao + 1], values[ao + 2], values[ao + 3], values[ao + 4], values[ao + 5]],
-        w_xray_ortho: values[xr],
-        w_bp_mg: values[bp],
-        w_bp_eg: values[bp + 1],
-        w_rook_open_mg: values[ro],
-        w_rook_open_eg: values[ro + 1],
-        passed_mg: [values[pmg], values[pmg + 1], values[pmg + 2], values[pmg + 3], values[pmg + 4], values[pmg + 5]],
-        passed_eg: [values[peg], values[peg + 1], values[peg + 2], values[peg + 3], values[peg + 4], values[peg + 5]],
-        enemy_king_dist_mg: [
-            values[ekmg],
-            values[ekmg + 1],
-            values[ekmg + 2],
-            values[ekmg + 3],
-            values[ekmg + 4],
-            values[ekmg + 5],
-        ],
-        enemy_king_dist_eg: [
-            values[ekeg],
-            values[ekeg + 1],
-            values[ekeg + 2],
-            values[ekeg + 3],
-            values[ekeg + 4],
-            values[ekeg + 5],
-        ],
-    };
-
+    // Same generator the DualNode path uses — no per-term hand literal to drift.
+    let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }

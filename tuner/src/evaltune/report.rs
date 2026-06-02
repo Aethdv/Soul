@@ -163,62 +163,28 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     if params.len() > psqt::LAYOUT.weight_offset {
         writeln!(w, "\ndefine_weight_params! {{").ok();
 
-        write!(w, "    PHASE_WEIGHTS       = [").ok();
-        write_weight_array(w, psqt::LAYOUT.weight_offset, 6, values, params, initial);
-        writeln!(w, "], // [P, N, B, R, Q, K]").ok();
+        let l = psqt::LAYOUT;
 
-        if params.len() > psqt::LAYOUT.attacker_offset {
-            write!(w, "    ATTACKER_WEIGHTS    = [").ok();
-            write_weight_array(w, psqt::LAYOUT.attacker_offset, 6, values, params, initial);
-            writeln!(w, "], // [0, 1, 2, 3, 4, 5] attackers × weak").ok();
-        }
+        #[rustfmt::skip]
+        let bands: &[(&str, usize, usize, &str)] = &[
+            ("PHASE_WEIGHTS",       l.weight_offset,             6, " // [P, N, B, R, Q, K]"),
+            ("ATTACKER_WEIGHTS",    l.attacker_offset,           6, " // [0, 1, 2, 3, 4, 5] attackers × weak"),
+            ("KING_SAFETY_WEIGHTS", l.king_safety_offset,        3, " // [Pawn Shield, Ortho Exp, Diag Exp]"),
+            ("XRAY_WEIGHTS",        l.xray_offset,               1, " // [Ortho King]"),
+            ("BISHOP_PAIR_WEIGHTS", l.bishop_pair_offset,        2, " // [MG, EG]"),
+            ("ROOK_OPEN_WEIGHTS",   l.rook_open_offset,          2, " // [MG, EG]"),
+            ("PASSED_PAWN_MG",      l.passed_mg_offset,          6, " // by relative rank 1-6"),
+            ("PASSED_PAWN_EG",      l.passed_eg_offset,          6, " // by relative rank 1-6"),
+            ("ENEMY_KING_DIST_MG",  l.enemy_king_dist_mg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
+            ("ENEMY_KING_DIST_EG",  l.enemy_king_dist_eg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
+        ];
 
-        if params.len() > psqt::LAYOUT.king_safety_offset {
-            write!(w, "    KING_SAFETY_WEIGHTS = [").ok();
-            write_weight_array(w, psqt::LAYOUT.king_safety_offset, 3, values, params, initial);
-            writeln!(w, "], // [Pawn Shield, Ortho Exp, Diag Exp]").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.xray_offset {
-            write!(w, "    XRAY_WEIGHTS        = [").ok();
-            write_weight_array(w, psqt::LAYOUT.xray_offset, 1, values, params, initial);
-            writeln!(w, "], // [Ortho King]").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.bishop_pair_offset {
-            write!(w, "    BISHOP_PAIR_WEIGHTS = [").ok();
-            write_weight_array(w, psqt::LAYOUT.bishop_pair_offset, 2, values, params, initial);
-            writeln!(w, "], // [MG, EG]").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.rook_open_offset {
-            write!(w, "    ROOK_OPEN_WEIGHTS   = [").ok();
-            write_weight_array(w, psqt::LAYOUT.rook_open_offset, 2, values, params, initial);
-            writeln!(w, "], // [MG, EG]").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.passed_mg_offset {
-            write!(w, "    PASSED_PAWN_MG      = [").ok();
-            write_weight_array(w, psqt::LAYOUT.passed_mg_offset, 6, values, params, initial);
-            writeln!(w, "], // by relative rank 1-6").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.passed_eg_offset {
-            write!(w, "    PASSED_PAWN_EG      = [").ok();
-            write_weight_array(w, psqt::LAYOUT.passed_eg_offset, 6, values, params, initial);
-            writeln!(w, "], // by relative rank 1-6").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.enemy_king_dist_mg_offset {
-            write!(w, "    ENEMY_KING_DIST_MG  = [").ok();
-            write_weight_array(w, psqt::LAYOUT.enemy_king_dist_mg_offset, 6, values, params, initial);
-            writeln!(w, "], // enemy king→passer dist, 7 clamps to 6").ok();
-        }
-
-        if params.len() > psqt::LAYOUT.enemy_king_dist_eg_offset {
-            write!(w, "    ENEMY_KING_DIST_EG  = [").ok();
-            write_weight_array(w, psqt::LAYOUT.enemy_king_dist_eg_offset, 6, values, params, initial);
-            writeln!(w, "], // enemy king→passer dist, 7 clamps to 6").ok();
+        for &(name, offset, count, comment) in bands {
+            if params.len() > offset {
+                write!(w, "    {name:<20}= [").ok();
+                write_weight_array(w, offset, count, values, params, initial);
+                writeln!(w, "],{comment}").ok();
+            }
         }
 
         writeln!(w, "}}").ok();
