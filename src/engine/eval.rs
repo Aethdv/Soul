@@ -173,7 +173,7 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 /// Generic evaluation — monomorphized to `i32` for search, `AutogradNode` for tuning.
 ///
 /// WARNING: Autograd Linearity Booby Trap
-/// If you introduce any non-linear math (e.g. `feature * feature * weight` or `max(feature, 0)`)
+/// If you introduce any non-linear math (e.g. `feature · feature · weight` or `max(feature, 0)`)
 /// to the evaluation parameters, the affected [`crate::engine::term::LinearTerm::scatter`]
 /// impl will silently compute mathematically invalid gradients because
 /// [`LinearTerm`] assumes perfect parameter linearity (`y = w · x`).
@@ -307,116 +307,6 @@ impl SharedFeatures {
     }
 }
 
-impl term::LinearTerm for XrayTerm {
-    /// Scalar upstream — x-ray is tapered MG-only inside the combiner's
-    /// king-safety block, same cadence as king safety.
-    type Upstream = f64;
-
-    #[inline(always)]
-    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-        acc.xray = params.w_xray_ortho * T::from_i32(features.xray_ortho);
-    }
-
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
-        grads[psqt::LAYOUT.xray_offset] += upstream * features.xray_ortho as f64;
-    }
-}
-
-impl term::LinearTerm for BishopPairTerm {
-    type Upstream = term::TaperPair;
-
-    #[inline(always)]
-    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-        let feature = T::from_i32(features.bishop_pair_diff);
-        let eg_phase = T::from_i32(TOTAL_PHASE) - phase;
-        let tapered = params.w_bp_mg * phase + params.w_bp_eg * eg_phase;
-        acc.bonus += (tapered * feature / T::from_i32(TOTAL_PHASE)).trunc();
-    }
-
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
-        let feature = features.bishop_pair_diff as f64;
-        grads[eval_params::LAYOUT.bishop_pair_offset] += upstream.d_mg * feature;
-        grads[eval_params::LAYOUT.bishop_pair_offset + 1] += upstream.d_eg * feature;
-    }
-}
-
-impl term::LinearTerm for RookOpenTerm {
-    type Upstream = term::TaperPair;
-
-    #[inline(always)]
-    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-        let feature = T::from_i32(features.rook_open_diff);
-        let eg_phase = T::from_i32(TOTAL_PHASE) - phase;
-        let tapered = params.w_rook_open_mg * phase + params.w_rook_open_eg * eg_phase;
-        acc.bonus += (tapered * feature / T::from_i32(TOTAL_PHASE)).trunc();
-    }
-
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
-        let feature = features.rook_open_diff as f64;
-        grads[eval_params::LAYOUT.rook_open_offset] += upstream.d_mg * feature;
-        grads[eval_params::LAYOUT.rook_open_offset + 1] += upstream.d_eg * feature;
-    }
-}
-
-impl term::LinearTerm for PassedPawnTerm {
-    type Upstream = term::TaperPair;
-
-    #[inline(always)]
-    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-        let total = T::from_i32(TOTAL_PHASE);
-        let eg_phase = total - phase;
-
-        for r in 0..6 {
-            let feature = T::from_i32(features.passed_pawn[r]);
-            let tapered = params.passed_mg[r] * phase + params.passed_eg[r] * eg_phase;
-            acc.bonus += (tapered * feature / total).trunc();
-        }
-    }
-
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
-        let mg = eval_params::LAYOUT.passed_mg_offset;
-        let eg = eval_params::LAYOUT.passed_eg_offset;
-
-        for r in 0..6 {
-            let feature = features.passed_pawn[r] as f64;
-            grads[mg + r] += upstream.d_mg * feature;
-            grads[eg + r] += upstream.d_eg * feature;
-        }
-    }
-}
-
-impl term::LinearTerm for EnemyKingDistTerm {
-    type Upstream = term::TaperPair;
-
-    #[inline(always)]
-    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-        let total = T::from_i32(TOTAL_PHASE);
-        let eg_phase = total - phase;
-
-        for d in 0..6 {
-            let feature = T::from_i32(features.enemy_king_dist[d]);
-            let tapered = params.enemy_king_dist_mg[d] * phase + params.enemy_king_dist_eg[d] * eg_phase;
-            acc.bonus += (tapered * feature / total).trunc();
-        }
-    }
-
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
-        let mg = eval_params::LAYOUT.enemy_king_dist_mg_offset;
-        let eg = eval_params::LAYOUT.enemy_king_dist_eg_offset;
-
-        for d in 0..6 {
-            let feature = features.enemy_king_dist[d] as f64;
-            grads[mg + d] += upstream.d_mg * feature;
-            grads[eg + d] += upstream.d_eg * feature;
-        }
-    }
-}
-
 /// Build the per-bucket accumulator by initializing the PSQT-level `mg_eg` bucket
 /// from the SIMD accumulator, zeroing the rest, and applying every registered term.
 /// Isolated so both `compute_macro_eval` and `detailed_eval` produce identical
@@ -438,4 +328,89 @@ fn fill_accumulators<T: EvalMath<Scalar = T>>(
     };
     apply_all_terms::<T>(features, params, phase, &mut buckets);
     buckets
+}
+
+impl term::LinearTerm for XrayTerm {
+    /// Scalar upstream — x-ray is tapered MG-only inside the combiner's
+    /// king-safety block, same cadence as king safety.
+    type Upstream = f64;
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
+        acc.xray = params.w_xray_ortho * T::from_i32(features.xray_ortho);
+    }
+
+    #[inline]
+    fn scatter(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
+        grads[psqt::LAYOUT.xray_offset] += upstream * features.xray_ortho as f64;
+    }
+}
+
+/// Generates the `LinearTerm` impl for a taper bonus — a feature dotted with its
+/// (MG, EG) weight pair, summed into the bonus bucket. `scalar` is one feature on a
+/// contiguous `(mg, eg)` slot pair; `array` is an N-bucket vector with separate MG
+/// and EG slot blocks. Same forward/backward shape, so neither is hand-copied.
+macro_rules! tapered_bonus_term {
+    ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+        $( tapered_bonus_term!(@$kind $term, $($spec)*); )*
+    };
+
+    (@scalar $term:ident, $feat:ident, $mg:ident, $eg:ident, $off:ident) => {
+        impl term::LinearTerm for $term {
+            type Upstream = term::TaperPair;
+
+            #[inline(always)]
+            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
+                let total = T::from_i32(TOTAL_PHASE);
+                let feature = T::from_i32(features.$feat);
+                let tapered = params.$mg * phase + params.$eg * (total - phase);
+                acc.bonus += (tapered * feature / total).trunc();
+            }
+
+            #[inline]
+            fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
+                let off = eval_params::LAYOUT.$off;
+                let feature = features.$feat as f64;
+                grads[off] += upstream.d_mg * feature;
+                grads[off + 1] += upstream.d_eg * feature;
+            }
+        }
+    };
+
+    (@array $term:ident, $feat:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, $n:literal) => {
+        impl term::LinearTerm for $term {
+            type Upstream = term::TaperPair;
+
+            #[inline(always)]
+            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
+                let total = T::from_i32(TOTAL_PHASE);
+                let eg_phase = total - phase;
+
+                for i in 0..$n {
+                    let feature = T::from_i32(features.$feat[i]);
+                    let tapered = params.$mg[i] * phase + params.$eg[i] * eg_phase;
+                    acc.bonus += (tapered * feature / total).trunc();
+                }
+            }
+
+            #[inline]
+            fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
+                let mg = eval_params::LAYOUT.$mg_off;
+                let eg = eval_params::LAYOUT.$eg_off;
+
+                for i in 0..$n {
+                    let feature = features.$feat[i] as f64;
+                    grads[mg + i] += upstream.d_mg * feature;
+                    grads[eg + i] += upstream.d_eg * feature;
+                }
+            }
+        }
+    };
+}
+
+tapered_bonus_term! {
+    BishopPairTerm    = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
+    RookOpenTerm      = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
+    PassedPawnTerm    = array(passed_pawn, passed_mg, passed_eg, passed_mg_offset, passed_eg_offset, 6);
+    EnemyKingDistTerm = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
 }
