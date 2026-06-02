@@ -558,6 +558,8 @@ mod tests {
         "8/8/P7/8/2K5/8/8/7k w - - 0 1",
         // Doubled pawns
         "4k3/pp4pp/8/8/8/2P5/2P2PPP/4K3 w - - 0 1",
+        // Isolated pawns
+        "4k3/p1p1p1p1/7p/8/3P4/8/PP4PP/4K3 w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;
@@ -585,8 +587,10 @@ mod tests {
             "PassedPawnTerm"
         } else if slot < LAYOUT.doubled_pawn_offset {
             "EnemyKingDistTerm"
-        } else {
+        } else if slot < LAYOUT.isolated_pawn_offset {
             "DoubledPawnTerm"
+        } else {
+            "IsolatedPawnTerm"
         }
     }
 
@@ -618,7 +622,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len];
+        let mut values = vec![0.0f64; LAYOUT.isolated_pawn_offset + LAYOUT.isolated_pawn_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -630,7 +634,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len];
+        let mut values = vec![0.0f64; LAYOUT.isolated_pawn_offset + LAYOUT.isolated_pawn_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -696,6 +700,14 @@ mod tests {
         assert_oracle_matches(
             "DoubledPawnTerm alone",
             &values_in_range(LAYOUT.doubled_pawn_offset..LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len),
+        );
+    }
+
+    #[test]
+    fn test_isolated_pawn_term_oracle() {
+        assert_oracle_matches(
+            "IsolatedPawnTerm alone",
+            &values_in_range(LAYOUT.isolated_pawn_offset..LAYOUT.isolated_pawn_offset + LAYOUT.isolated_pawn_len),
         );
     }
 

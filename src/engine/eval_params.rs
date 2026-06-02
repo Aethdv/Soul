@@ -11,7 +11,7 @@ use crate::weave::Vi32x4;
 #[rustfmt::skip]
 macro_rules! slot_width {
     (Scalar) => (1);
-    (Vec4)   => (4);
+    (Vec4)   => (4);inconceivable
     (Array4) => (4);
     (Array6) => (6);
 }
@@ -294,7 +294,9 @@ macro_rules! define_tunables {
             (enemy_king_dist_mg, Array6, enemy_king_dist_mg_offset, 0),
             (enemy_king_dist_eg, Array6, enemy_king_dist_eg_offset, 0),
             (w_doubled_pawn_mg,  Scalar, doubled_pawn_offset,       0),
-            (w_doubled_pawn_eg,  Scalar, doubled_pawn_offset,       1)
+            (w_doubled_pawn_eg,  Scalar, doubled_pawn_offset,       1),
+            (w_isolated_pawn_mg, Scalar, isolated_pawn_offset,      0),
+            (w_isolated_pawn_eg, Scalar, isolated_pawn_offset,      1)
         }
     };
 }
@@ -338,11 +340,12 @@ define_layout! {
     xray               = XRAY_WEIGHTS.len(),
     bishop_pair        = BISHOP_PAIR_WEIGHTS.len(),
     rook_open          = ROOK_OPEN_WEIGHTS.len(),
-    passed_pawn_mg          = PASSED_PAWN_MG.len(),
-    passed_pawn_eg          = PASSED_PAWN_EG.len(),
+    passed_pawn_mg     = PASSED_PAWN_MG.len(),
+    passed_pawn_eg     = PASSED_PAWN_EG.len(),
     enemy_king_dist_mg = ENEMY_KING_DIST_MG.len(),
     enemy_king_dist_eg = ENEMY_KING_DIST_EG.len(),
     doubled_pawn       = DOUBLED_PAWN_WEIGHTS.len(),
+    isolated_pawn      = ISOLATED_PAWN_WEIGHTS.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -469,15 +472,16 @@ define_simd_params! {
 }
 
 define_weight_params! {
-    PHASE_WEIGHTS        = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    ATTACKER_WEIGHTS     = [CV(0), V(180), V(305), V(525), V(630), V(698)], // [0, 1, 2, 3, 4, 5] attackers × weak
-    KING_SAFETY_WEIGHTS  = [V(19), V(12), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    XRAY_WEIGHTS         = [V(12)], // [Ortho King]
-    BISHOP_PAIR_WEIGHTS  = [V(35), V(93)], // [MG, EG]
-    ROOK_OPEN_WEIGHTS    = [V(42), V(2)], // [MG, EG]
-    PASSED_PAWN_MG       = [V(-39), V(-57), V(-60), V(-32), V(-24), V(57)], // by relative rank 1-6
-    PASSED_PAWN_EG       = [V(-58), V(-40), V(12), V(69), V(176), V(109)], // by relative rank 1-6
-    ENEMY_KING_DIST_MG   = [V(-107), V(43), V(32), V(25), V(21), V(14)], // enemy king→passer dist, 7 clamps to 6
-    ENEMY_KING_DIST_EG   = [V(-46), V(-5), V(36), V(51), V(63), V(72)], // enemy king→passer dist, 7 clamps to 6
-    DOUBLED_PAWN_WEIGHTS = [V(-26), V(-73)], // [MG, EG]
+    PHASE_WEIGHTS         = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
+    ATTACKER_WEIGHTS      = [CV(0), V(180), V(305), V(525), V(630), V(698)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    KING_SAFETY_WEIGHTS   = [V(19), V(12), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    XRAY_WEIGHTS          = [V(12)], // [Ortho King]
+    BISHOP_PAIR_WEIGHTS   = [V(35), V(93)], // [MG, EG]
+    ROOK_OPEN_WEIGHTS     = [V(42), V(2)], // [MG, EG]
+    PASSED_PAWN_MG        = [V(-39), V(-57), V(-60), V(-32), V(-24), V(57)], // by relative rank 1-6
+    PASSED_PAWN_EG        = [V(-58), V(-40), V(12), V(69), V(176), V(109)], // by relative rank 1-6
+    ENEMY_KING_DIST_MG    = [V(-107), V(43), V(32), V(25), V(21), V(14)], // enemy king→passer dist, 7 clamps to 6
+    ENEMY_KING_DIST_EG    = [V(-46), V(-5), V(36), V(51), V(63), V(72)], // enemy king→passer dist, 7 clamps to 6
+    DOUBLED_PAWN_WEIGHTS  = [V(-26), V(-73)], // [MG, EG]
+    ISOLATED_PAWN_WEIGHTS = [V(-7), V(-15)], // [MG, EG]
 }

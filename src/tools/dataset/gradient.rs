@@ -29,6 +29,7 @@ pub struct FeatureSlots {
     pub passed_pawn: Vec<[i8; 6]>,
     pub enemy_king_dist: Vec<[i8; 6]>,
     pub doubled_pawn: Vec<i8>,
+    pub isolated_pawn: Vec<i8>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -45,6 +46,7 @@ impl FeatureSlots {
             passed_pawn: Vec::with_capacity(cap),
             enemy_king_dist: Vec::with_capacity(cap),
             doubled_pawn: Vec::with_capacity(cap),
+            isolated_pawn: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -95,6 +97,7 @@ impl FeatureSlots {
         self.passed_pawn.push(std::array::from_fn(|i| (sf.passed_pawn[i] * sign) as i8));
         self.enemy_king_dist.push(std::array::from_fn(|i| (sf.enemy_king_dist[i] * sign) as i8));
         self.doubled_pawn.push((sf.doubled_pawn_diff * sign) as i8);
+        self.isolated_pawn.push((sf.isolated_pawn_diff * sign) as i8);
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
@@ -212,6 +215,11 @@ pub fn accumulate_gradient_cached(
     grads[dp_offset] += gradient * dp * mg_w;
     grads[dp_offset + 1] += gradient * dp * eg_w;
 
+    let ip_offset = psqt::LAYOUT.isolated_pawn_offset;
+    let ip = f64::from(slots.isolated_pawn[idx]);
+    grads[ip_offset] += gradient * ip * mg_w;
+    grads[ip_offset + 1] += gradient * ip * eg_w;
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
@@ -322,6 +330,10 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let dp_offset = psqt::LAYOUT.doubled_pawn_offset;
     let dp = f64::from(slots.doubled_pawn[idx]);
     score += (dp * (values[dp_offset] * mg_w + values[dp_offset + 1] * eg_w)).trunc();
+
+    let ip_offset = psqt::LAYOUT.isolated_pawn_offset;
+    let ip = f64::from(slots.isolated_pawn[idx]);
+    score += (ip * (values[ip_offset] * mg_w + values[ip_offset + 1] * eg_w)).trunc();
 
     score
 }
