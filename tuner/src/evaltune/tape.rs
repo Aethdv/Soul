@@ -537,14 +537,24 @@ mod tests {
     use super::*;
     use crate::evaltune::training::sigmoid;
 
+    // Each must round-trip cleanly through `SoulEntry`.
     const FENS: &[&str] = &[
+        // White-to-move
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        // Black-to-move
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
+        // Bishop pair imbalance
+        "r1bqkbnr/1pp2ppp/p1p5/4p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5",
+        // Rook open-file imbalance
         "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
+        // Passed pawns: mid-board and near-promotion
         "8/2k5/8/3K4/2P5/8/8/8 w - - 0 1",
         "8/4P3/6k1/4K3/8/8/8/8 w - - 0 1",
+        // Passer far from the enemy king
         "8/8/P7/8/2K5/8/8/7k w - - 0 1",
     ];
 
@@ -677,25 +687,6 @@ mod tests {
         );
     }
 
-    const ENCODED_FENS: &[&str] = &[
-        // White-to-move
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        // Black-to-move
-        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
-        // Bishop pair imbalance
-        "r1bqkbnr/1pp2ppp/p1p5/4p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5",
-        // Rook open-file imbalance
-        "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
-        // Passed pawns: mid-board and near-promotion
-        "8/2k5/8/3K4/2P5/8/8/8 w - - 0 1",
-        "8/4P3/6k1/4K3/8/8/8/8 w - - 0 1",
-        // Passer far from the enemy king
-        "8/8/P7/8/2K5/8/8/7k w - - 0 1",
-    ];
-
     /// `accumulate_gradient` shares math with the board-based gradient paths.
     /// A drift here corrupts every `run_encoded` session.
     #[test]
@@ -703,7 +694,7 @@ mod tests {
         let values = full_values();
         let n_params = values.len();
 
-        for fen in ENCODED_FENS {
+        for fen in FENS {
             let pos = Position::from_fen(fen);
             let entry = SoulEntry::from_board(&pos, TARGET, None, Some(20));
 

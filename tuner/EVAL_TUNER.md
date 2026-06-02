@@ -1,64 +1,40 @@
 # The Eval Tuner
 
-*How it works and why it's structured the way it is.*
+How it works, and why it's shaped this way.
 
 ---
 
-## The Core Idea
+## The core idea
 
-Think of evaluation parameters like the knobs on a mixing board.
-Each knob controls how much weight a specific positional feature gets — how important is a pawn shield?
-How much do we reward mobility?
-The tuner's job is to find the knob positions that minimize the gap between what the engine
-thinks about a position and what actually happened in real games.
+Evaluation parameters are the knobs on a mixing board.
+Each one sets how much a positional feature counts — what a pawn shield is worth, how much mobility earns.
+Tuning is finding the knob positions that close the gap between what the engine thinks of a position and what actually happened in the games.
 
-The engine computes `score = Σ(feature_i · weight_i)`. The tuner adjusts the weights
-to minimize `(sigmoid(score) - game_result)²` across millions of positions.
+The engine computes `score = Σ(featureᵢ · weightᵢ)`.
+The tuner moves the weights to minimize `(sigmoid(score) − result)²` over millions of positions.
+To move a weight you need its gradient — which way to turn the knob, and how far.
 
-To do that, we need gradients — for each weight, which direction should we turn
-the knob, and how far?
+## Two ways to get the gradient
 
-## Two Gradient Engines
+The eval is linear in its parameters: every weight shows up as `weight · feature`.
+So a weight's gradient is just its feature coefficient — no calculus at runtime, only bookkeeping.
+If `score = 3·w_shield + 7·w_mobility + …`, then `∂score/∂w_shield = 3`, and that `3` is a fact about the board, not about the weight's value.
 
-The tuner has two independent systems for computing gradients.
-They produce the same answers but work in fundamentally different ways:
+**Direct (`eval_linear_grad`) — production.** Evaluate the position, read each feature coefficient straight off the board, phase, and openness, scatter `outer_deriv · coefficient` into the gradient vector. ~90 f64 ops on top of the eval itself. This is what runs every epoch.
 
-### The Direct Path — production (`eval_linear_grad`)
+For encoded `.soul.zst` datasets the direct path has a cached twin in `src/tools/dataset/gradient.rs`: the features are packed into `i8` once at startup, so the epoch loop never recomputes the spatial tensor. Same math, packed storage — and it's a hand-rolled mirror, so a new term has to be wired there by hand or it's silently wrong on encoded data.
 
-Since our eval is a linear function of its parameters — every weight appears as
-`weight · board_feature` — the gradient for each weight is simply its feature
-coefficient. No calculus required at runtime, just bookkeeping.
-
-If you know `score = 3 · w_shield + 7 · w_mobility + ...`, then `d(score)/d(w_shield) = 3`.
-That number `3` depends on the board, not on the weight values.
-
-This is what `eval_linear_grad` computes: it evaluates the position, then extracts
-each feature coefficient directly from the board state, phase, and openness.
-Cost: ~90 f64 operations for feature coefficients, plus the eval itself.
-This is what runs in the training loop.
-
-### The Dual Number Path — oracle (`eval_dual_fused`)
-
-This is a general-purpose automatic differentiation engine.
-It works by replacing every number in the computation with a "dual number",
-value paired with a gradient vector. When you multiply two dual numbers,
-the product rule happens automatically. When you add them, the gradients add.
-
-It handles any function, not just linear ones.
-If you ever added `sigmoid(w₁ · w₂)` to the eval, the dual path would still give correct gradients.
-The direct path would not — you'd need to update it.
-
-The dual path lives as a correctness oracle. When you add a new eval term and write
-its gradient formula, you can run both paths and compare.
-If they disagree, your hand-derived formula has a bug.
+**Dual (`eval_dual_fused`) — oracle.** Forward-mode autodiff: every number carries its gradient vector, the product rule fires on each multiply, the chain rule falls out for free.
+It handles any function, linear or not — drop a `sigmoid(w₁·w₂)` into the eval and it still returns the right gradient where the direct path would quietly hand you a wrong one.
+It earns its keep as a check; run both, diff the gradients, and disagreement means the hand-derived formula has a bug. The per-term tests in `tape.rs` are exactly that diff.
 
 ## Architecture
 
-### Training Loop
+### Training loop
 
 ```mermaid
 flowchart LR
-    EPD["Positions (EPD)"] --> EF64
+    EPD["Positions (EPD / .soul.zst)"] --> EF64
 
     subgraph Forward ["Forward Pass"]
         EF64["eval_f64 → score"] --> SIG["sigmoid σ(score)"] --> LOSS["(σ − target)²"]
@@ -77,80 +53,60 @@ flowchart LR
     W -. "next epoch" .-> EF64
 ```
 
-### Eval Internals
+### The eval, by bucket
+
+`evaluate_generic<T>` fills per-bucket accumulators, the combiner sums them, then the score flips for side to move.
+Each term writes one bucket; the buckets are the stable shape, not the term list.
+Anything non-linear lives in the combiner, never in a term — that's the line that keeps the direct gradient honest.
 
 ```mermaid
 flowchart TD
-    PSQT["PSQT (384 + 12 material)"] --> TAP
-    PH["Phase (6 weights)"] --> TAP
-    PH --> SDIFF
-    OPEN["Openness (pawn structure)"] --> SDIFF
+    ACC["SIMD accumulator — PSQT + material"] --> MGEG["mg_eg"]
+    MOB["mobility / threats / battery / xray reach"] --> MOBB["mobility"]
+    BON["bishop pair · rook-open · passers · king-distance · …"] --> BONB["bonus"]
+    SAF["shield / exposure / weak squares · xray ring"] --> SAFB["safety − safety + xray"]
+    PHASE["phase"] --> MGEG
+    PHASE --> SAFB
+    OPEN["openness"] --> MOBB
 
-    subgraph EvalParams ["EvalParams — 26 weights"]
-        MW["Mobility (8 open + 8 closed)"]
-        KS["King safety (3)"]
-        ATK["Attackers (6)"]
-        XR["X-Ray (1)"]
-    end
-
-    subgraph Board ["Board-derived features"]
-        MOB["Mobility / threats / shadow"]
-        SAFE_F["Shield, exposure, weak squares"]
-        XR_F["X-Ray ortho diff"]
-    end
-
-    MOB --> SDIFF
-    SAFE_F --> SAFE
-    XR_F --> SAFE
-
-    KS --> SAFE
-    ATK --> SAFE
-    XR --> SAFE
-    MW --> SDIFF
-
-    subgraph eval ["evaluate_generic‹T›"]
-        TAP["tapered(mg, eg, phase)"]
-        SAFE["safety.score()"]
-        SDIFF["evaluate_score_diff()"]
-        TAP & SAFE & SDIFF --> SUM(("Σ"))
+    subgraph Combiner ["LinearCombiner"]
+        MGEG & MOBB & BONB & SAFB --> SUM(("Σ"))
         SUM --> FLIP["· stm_sign"]
     end
-
-    FLIP --> OUT(["Score"])
+    FLIP --> OUT(["score"])
 ```
 
-**Three instantiations of `T`:**
+The `bonus` bucket is the cheap home for any pre-tapered linear term; a term earns its own bucket only when it needs a combiner shape of its own — an activation, a different taper.
+See [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md).
 
-| Context | `T` type | What it does |
-|---------|----------|-------------|
-| Engine search | `i32` | Fast integer eval, const-inlined weights |
-| Tuner score | `f64` | Floating-point eval for sigmoid/loss |
-| Tuner oracle | `DualNode` | Forward-mode AD, carries `[f32; 32]` gradient array |
+**`T` resolves three ways, one code path:**
+
+|    Context    |     `T`    |                                      What it does                                     |
+|---------------|------------|---------------------------------------------------------------------------------------|
+| Engine search | `i32`      | Fast integer eval, weights const-inlined                                              |
+| Tuner score   | `f64`      | Float eval for sigmoid and loss                                                       |
+| Tuner oracle  | `DualNode` | Forward-mode AD, carries `[f32; DUAL_N]` — `DUAL_N` self-sizes from the tunable count |
 
 ## Files
 
-| File | What it does |
-|------|-------------|
-| `src/engine/eval.rs` | `evaluate_generic<T>` — the eval, generic over math type |
-| `src/engine/eval_params.rs` | Const arrays for weights, `Tunable` descriptors |
-| `src/engine/autograd/dual.rs` | `DualNode` — forward-mode AD engine |
-| `src/core/psqt.rs` | PSQT layout, parameter offsets, index mapping |
-| `tuner/src/evaltune/tape.rs` | `eval_linear_grad` (production), `eval_dual_fused` (oracle), `eval_f64` (score-only) |
-| `tuner/src/evaltune/evaltuner.rs` | Training loop, optimizer, scheduling |
-| `tuner/src/evaltune/training.rs` | `TrainableEntry` trait (used by encoded `.soul.zst` path) |
+|                File               |                                               What it does                                             |
+|-----------------------------------|--------------------------------------------------------------------------------------------------------|
+| `src/engine/eval.rs`              | `evaluate_generic<T>` — the eval, generic over the math type; terms and `register_terms!`              |
+| `src/engine/eval_params.rs`       | Weight arrays, the `define_layout!` slot map, `Tunable` descriptors                                    |
+| `src/engine/combiner.rs`          | `LinearCombiner` — collapses buckets to a scalar, owns every non-linearity                             |
+| `src/engine/autograd/dual.rs`     | `DualNode` — forward-mode AD engine                                                                    |
+| `src/core/psqt.rs`                | PSQT layout, parameter offsets, index mapping                                                          |
+| `tuner/src/evaltune/tape.rs`      | `eval_linear_grad` (production), `eval_dual_fused` (oracle), `eval_f64` (score-only)                   |
+| `src/tools/dataset/gradient.rs`   | Cached SoA gradient for `.soul.zst` — `FeatureSlots`, `eval_soul_cached`, `accumulate_gradient_cached` |
+| `tuner/src/evaltune/evaltuner.rs` | Training loop, optimizer, scheduling                                                                   |
 
-## Performance Notes
+## Performance notes
 
-The direct path adds zero overhead to the eval itself — it calls `eval_f64`
-for the score and computes feature coefficients separately.
-The cost is dominated by the eval, not the gradients.
+The direct path adds nothing to the eval — it calls `eval_f64` for the score and derives the feature coefficients alongside. The cost is the eval, not the gradient.
 
-The FTZ/DAZ flags (Flush-To-Zero, Denormals-Are-Zero) are set on every Rayon worker
-thread via a `start_handler` in `evaltune.rs`.
-Without these, subnormal floats *might* cause 4-10× slowdowns on specific gradient values as training converges.
+FTZ/DAZ (flush-to-zero, denormals-are-zero) are set on every Rayon worker via a `start_handler` in `evaltune.rs`.
+Without them, subnormal floats can drag specific gradient values into a 4–10× slowdown as training converges on small numbers.
 
 ---
 
-
-**→ See [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md) for the step-by-step recipe
-for wiring new evaluation parameters.**
+**→ [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md) — the step-by-step recipe for wiring a new term.**
