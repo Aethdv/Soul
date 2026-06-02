@@ -14,16 +14,16 @@
 use crate::{
     core::{
         board::{Position, bitboard, spatial::SpatialTensor},
-        defs::{Color, LANE_PHASE, PieceType, TOTAL_PHASE},
+        defs::{Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
         psqt,
     },
     engine::{
         autograd::EvalMath,
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
-            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG,
-            ENEMY_KING_DIST_MG, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG,
-            ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN,
+            ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG,
+            PASSED_PAWN_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -77,6 +77,7 @@ crate::register_terms! {
     RookOpenTerm => bonus,
     PassedPawnTerm => bonus,
     EnemyKingDistTerm => bonus,
+    DoubledPawnTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -90,6 +91,8 @@ pub struct RookOpenTerm;
 pub struct PassedPawnTerm;
 /// Tapered passed-pawn bonus, indexed by the enemy king's distance to the passer (~12 Elo).
 pub struct EnemyKingDistTerm;
+/// Tapered penalty for doubled pawns; friendly pawns stacked on the same file (~10 Elo).
+pub struct DoubledPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -116,6 +119,8 @@ pub struct SharedFeatures {
     pub passed_pawn: [i32; 6],
     /// White minus black passers, bucketed by enemy-king Chebyshev distance (index 0 = dist 1, 5 = dist 6+).
     pub enemy_king_dist: [i32; 6],
+    /// White minus black doubled pawns; friendly pawns stacked on a file (adjacent pairs only).
+    pub doubled_pawn_diff: i32,
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -238,10 +243,12 @@ impl EvalParams<i32> {
             w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
             w_rook_open_mg: ROOK_OPEN_WEIGHTS[0],
             w_rook_open_eg: ROOK_OPEN_WEIGHTS[1],
-            passed_mg: PASSED_PAWN_MG,
-            passed_eg: PASSED_PAWN_EG,
+            passed_pawn_mg: PASSED_PAWN_MG,
+            passed_pawn_eg: PASSED_PAWN_EG,
             enemy_king_dist_mg: ENEMY_KING_DIST_MG,
             enemy_king_dist_eg: ENEMY_KING_DIST_EG,
+            w_doubled_pawn_mg: DOUBLED_PAWN_WEIGHTS[0],
+            w_doubled_pawn_eg: DOUBLED_PAWN_WEIGHTS[1],
         }
     }
 }
@@ -279,6 +286,7 @@ impl SharedFeatures {
         let wp = board.pieces(PieceType::Pawn, Color::White);
         let bp = board.pieces(PieceType::Pawn, Color::Black);
         let mut passed_pawn = [0i32; 6];
+
         // Enemy-king Chebyshev distance to each passer, bucketed (1..=6, 7 clamps to 6).
         let mut enemy_king_dist = [0i32; 6];
         let mut w = wp;
@@ -303,7 +311,23 @@ impl SharedFeatures {
             }
         }
 
-        Self { openness, data, xray_ortho, bishop_pair_diff, rook_open_diff, passed_pawn, enemy_king_dist }
+        // Doubled pawns; a pawn directly ahead of a friendly pawn on the same file.
+        // & shift(North) marks the front pawn of each adjacent vertical pair;
+        // gapped stacks go uncounted.
+        let w_doubled = (wp & wp.shift(Direction::North)).popcount() as i32;
+        let b_doubled = (bp & bp.shift(Direction::North)).popcount() as i32;
+        let doubled_pawn_diff = w_doubled - b_doubled;
+
+        Self {
+            openness,
+            data,
+            xray_ortho,
+            bishop_pair_diff,
+            rook_open_diff,
+            passed_pawn,
+            enemy_king_dist,
+            doubled_pawn_diff,
+        }
     }
 }
 
@@ -411,6 +435,7 @@ macro_rules! tapered_bonus_term {
 tapered_bonus_term! {
     BishopPairTerm    = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
     RookOpenTerm      = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
-    PassedPawnTerm    = array(passed_pawn, passed_mg, passed_eg, passed_mg_offset, passed_eg_offset, 6);
+    PassedPawnTerm    = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
     EnemyKingDistTerm = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
+    DoubledPawnTerm   = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
 }

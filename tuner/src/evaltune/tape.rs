@@ -556,6 +556,8 @@ mod tests {
         "8/4P3/6k1/4K3/8/8/8/8 w - - 0 1",
         // Passer far from the enemy king
         "8/8/P7/8/2K5/8/8/7k w - - 0 1",
+        // Doubled pawns
+        "4k3/pp4pp/8/8/8/2P5/2P2PPP/4K3 w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;
@@ -577,12 +579,14 @@ mod tests {
             "XrayTerm"
         } else if slot < LAYOUT.rook_open_offset {
             "BishopPairTerm"
-        } else if slot < LAYOUT.passed_mg_offset {
+        } else if slot < LAYOUT.passed_pawn_mg_offset {
             "RookOpenTerm"
         } else if slot < LAYOUT.enemy_king_dist_mg_offset {
             "PassedPawnTerm"
-        } else {
+        } else if slot < LAYOUT.doubled_pawn_offset {
             "EnemyKingDistTerm"
+        } else {
+            "DoubledPawnTerm"
         }
     }
 
@@ -614,7 +618,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len];
+        let mut values = vec![0.0f64; LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -626,7 +630,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len];
+        let mut values = vec![0.0f64; LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -675,7 +679,7 @@ mod tests {
     fn test_passed_pawn_term_oracle() {
         assert_oracle_matches(
             "PassedPawnTerm alone",
-            &values_in_range(LAYOUT.passed_mg_offset..LAYOUT.passed_eg_offset + LAYOUT.passed_eg_len),
+            &values_in_range(LAYOUT.passed_pawn_mg_offset..LAYOUT.passed_pawn_eg_offset + LAYOUT.passed_pawn_eg_len),
         );
     }
 
@@ -684,6 +688,14 @@ mod tests {
         assert_oracle_matches(
             "EnemyKingDistTerm alone",
             &values_in_range(LAYOUT.enemy_king_dist_mg_offset..LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len),
+        );
+    }
+
+    #[test]
+    fn test_doubled_pawn_term_oracle() {
+        assert_oracle_matches(
+            "DoubledPawnTerm alone",
+            &values_in_range(LAYOUT.doubled_pawn_offset..LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len),
         );
     }
 

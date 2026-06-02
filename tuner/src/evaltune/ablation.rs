@@ -138,7 +138,7 @@ fn build_groups() -> Vec<Group> {
         ("Xray",             l.xray_offset,                1),
         ("Bishop Pair",      l.bishop_pair_offset,         2),
         ("Rook Open",        l.rook_open_offset,           2),
-        ("Passed Pawn",      l.passed_mg_offset,          12),
+        ("Passed Pawn",      l.passed_pawn_mg_offset,          12),
         ("Enemy King Dist",  l.enemy_king_dist_mg_offset, 12),
     ];
 
