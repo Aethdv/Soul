@@ -26,7 +26,7 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune searchtune test seeformat format clippy profile \
+        evaltune searchtune test oracle seeformat format clippy profile \
         releases avx2 avx2-bmi2 avx512 corrstats
 
 all: openbench
@@ -153,6 +153,9 @@ searchtune:
 
 test: ## Run test suite
 	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="-C target-cpu=native" cargo test --workspace -- --nocapture
+
+oracle: ## Run the eval-tuner gradient oracle tests
+	@RUSTFLAGS="-C target-cpu=native" cargo test -p tuner --release oracle
 
 seeformat: ## Check formatting (no changes)
 	@cargo fmt --check

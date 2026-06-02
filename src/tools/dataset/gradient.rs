@@ -3,18 +3,14 @@
 use super::SoulEntry;
 use crate::{
     core::{
-        board::{
-            Position,
-            bitboard::{atk_king, passed_span},
-            spatial::SpatialTensor,
-        },
-        defs::{Color, PieceType, Square},
+        board::Position,
+        defs::{Color, Square},
         phase::compute_phase_weights_f64,
         psqt,
     },
     engine::{
-        eval::{evaluate_fast, extract_phase},
-        mobility::{Mobility, OPEN_UNITY, SafetyMetrics, compute_openness_raw},
+        eval::{SharedFeatures, evaluate_fast, extract_phase},
+        mobility::{OPEN_UNITY, SafetyMetrics, SideMetrics, compute_openness_raw},
     },
 };
 
@@ -60,81 +56,42 @@ impl FeatureSlots {
     pub fn push_entry(&mut self, entry: &SoulEntry) {
         let pos = Position::from_fen(&entry.to_fen());
 
-        let pinned_w = pos.pinned_pieces(Color::White);
-        let pinned_b = pos.pinned_pieces(Color::Black);
-        let tensor = SpatialTensor::compute(&pos, pinned_w.0, pinned_b.0);
-        let mob = Mobility::compute_all(&pos, pos.stm, &tensor, pinned_w, pinned_b);
+        // SharedFeatures is White-relative; the cache is STM-relative, so flip
+        // perspective here. Side-symmetric metrics (mobility, safety) swap halves
+        // for Black; white-minus-black differentials (xray, pairs, passers) negate.
+        let sf = SharedFeatures::compute(&pos);
+        let black = pos.stm == Color::Black;
+
+        let (mob_us, mob_them, saf_us, saf_them) = if black {
+            (&sf.data.metrics_them, &sf.data.metrics_us, &sf.data.safety_them, &sf.data.safety_us)
+        } else {
+            (&sf.data.metrics_us, &sf.data.metrics_them, &sf.data.safety_us, &sf.data.safety_them)
+        };
+
+        let pack_side = |m: &SideMetrics| {
+            [
+                m.mobility.clamp(-127, 127) as i8,
+                m.shadow_mobility.clamp(-127, 127) as i8,
+                m.threats.clamp(-127, 127) as i8,
+                m.shadow_threats.clamp(-127, 127) as i8,
+            ]
+        };
 
         let mut mob_arr = [0i8; 8];
-        mob_arr[0] = mob.metrics_us.mobility.clamp(-127, 127) as i8;
-        mob_arr[1] = mob.metrics_us.shadow_mobility.clamp(-127, 127) as i8;
-        mob_arr[2] = mob.metrics_us.threats.clamp(-127, 127) as i8;
-        mob_arr[3] = mob.metrics_us.shadow_threats.clamp(-127, 127) as i8;
-        mob_arr[4] = mob.metrics_them.mobility.clamp(-127, 127) as i8;
-        mob_arr[5] = mob.metrics_them.shadow_mobility.clamp(-127, 127) as i8;
-        mob_arr[6] = mob.metrics_them.threats.clamp(-127, 127) as i8;
-        mob_arr[7] = mob.metrics_them.shadow_threats.clamp(-127, 127) as i8;
+        mob_arr[..4].copy_from_slice(&pack_side(mob_us));
+        mob_arr[4..].copy_from_slice(&pack_side(mob_them));
         self.mobility.push(mob_arr);
 
-        self.safety_us.push(pack_safety(&mob.safety_us));
-        self.safety_them.push(pack_safety(&mob.safety_them));
+        self.safety_us.push(pack_safety(saf_us));
+        self.safety_them.push(pack_safety(saf_them));
 
-        let w_ksq = pos.pieces(PieceType::King, Color::White).lsb();
-        let b_ksq = pos.pieces(PieceType::King, Color::Black).lsb();
-        let w_ring = atk_king(w_ksq).0;
-        let b_ring = atk_king(b_ksq).0;
-        let xray_val = (tensor.w_ortho_xray() & b_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_ring).count_ones() as i32;
-        let stm_xray = if pos.stm == Color::White { xray_val } else { -xray_val };
-        self.xray_ortho.push(stm_xray as i8);
+        let sign = if black { -1 } else { 1 };
+        self.xray_ortho.push((sf.xray_ortho * sign) as i8);
+        self.bishop_pair.push((sf.bishop_pair_diff * sign) as i8);
+        self.rook_open.push((sf.rook_open_diff * sign) as i8);
 
-        let white_bp = i8::from(pos.pieces(PieceType::Bishop, Color::White).more_than_one());
-        let black_bp = i8::from(pos.pieces(PieceType::Bishop, Color::Black).more_than_one());
-        let bp_diff = white_bp - black_bp;
-        self.bishop_pair.push(if pos.stm == Color::Black { -bp_diff } else { bp_diff });
-
-        let open = !pos.role_bb[PieceType::Pawn].file_fill();
-        let rooks_open = pos.role_bb[PieceType::Rook] & open;
-        let w_open = (rooks_open & pos.side_bb[Color::White]).popcount() as i8;
-        let b_open = (rooks_open & pos.side_bb[Color::Black]).popcount() as i8;
-        let open_diff = w_open - b_open;
-        self.rook_open.push(if pos.stm == Color::Black { -open_diff } else { open_diff });
-
-        let wp = pos.pieces(PieceType::Pawn, Color::White);
-        let bp = pos.pieces(PieceType::Pawn, Color::Black);
-        let mut passed = [0i8; 6];
-        let mut enemy_king = [0i8; 6];
-        let mut w = wp;
-
-        while w.is_not_empty() {
-            let sq = w.pop_lsb();
-
-            if (passed_span(sq, Color::White) & bp).is_empty() {
-                passed[(sq.rank() - 1) as usize] += 1;
-                enemy_king[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
-            }
-        }
-
-        let mut b = bp;
-
-        while b.is_not_empty() {
-            let sq = b.pop_lsb();
-
-            if (passed_span(sq, Color::Black) & wp).is_empty() {
-                passed[(6 - sq.rank()) as usize] -= 1;
-                enemy_king[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
-            }
-        }
-
-        if pos.stm == Color::Black {
-            for v in &mut passed {
-                *v = -*v;
-            }
-            for v in &mut enemy_king {
-                *v = -*v;
-            }
-        }
-        self.passed_pawn.push(passed);
-        self.enemy_king_dist.push(enemy_king);
+        self.passed_pawn.push(std::array::from_fn(|i| (sf.passed_pawn[i] * sign) as i8));
+        self.enemy_king_dist.push(std::array::from_fn(|i| (sf.enemy_king_dist[i] * sign) as i8));
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);

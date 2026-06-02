@@ -7,6 +7,27 @@
 
 use crate::weave::Vi32x4;
 
+/// Slot count each `EvalParams` field consumes in the dual-AD gradient vector.
+#[rustfmt::skip]
+macro_rules! slot_width {
+    (Scalar) => (1);
+    (Vec4)   => (4);
+    (Array4) => (4);
+    (Array6) => (6);
+}
+
+/// Sum the dual-AD footprint over the tunable list; 2 accumulator lanes (MG/EG)
+/// plus one slot per scalar weight.
+macro_rules! count_dual_slots {
+    ($( ($name:ident, $ty:ident, $off:ident, $extra:expr) ),* $(,)?) => {
+        2usize $( + slot_width!($ty) )*
+    };
+}
+
+/// Total dual-AD inputs; the 2 accumulator lanes plus every tunable weight.
+/// Drives `DUAL_N`, so the gradient array sizes itself as eval terms are added.
+pub const DUAL_SLOTS: usize = crate::define_tunables!(count_dual_slots);
+
 #[derive(Debug, Clone)]
 pub struct Tunable {
     pub name: String,
@@ -276,120 +297,49 @@ macro_rules! define_tunables {
     };
 }
 
-/// Slot count each `EvalParams` field consumes in the dual-AD gradient vector.
-#[rustfmt::skip]
-macro_rules! slot_width {
-    (Scalar) => (1);
-    (Vec4)   => (4);
-    (Array4) => (4);
-    (Array6) => (6);
-}
+/// One ordered row per parameter block: name and slot width.
+/// Generates the `Layout` struct (`<name>_offset` / `<name>_len`) and the `LAYOUT` prefix-sum.
+/// The order *is* the slot map — it must match `collect_parameters`'s collection
+/// order, or every gradient indexes the wrong slot.
+macro_rules! define_layout {
+    ($( $name:ident = $len:expr ),* $(,)?) => {
+        paste::paste! {
+            pub struct Layout {
+                $(
+                    pub [<$name _offset>]: usize,
+                    pub [<$name _len>]: usize,
+                )*
+            }
 
-/// Sum the dual-AD footprint over the tunable list; 2 accumulator lanes (MG/EG)
-/// plus one slot per scalar weight.
-macro_rules! count_dual_slots {
-    ($( ($name:ident, $ty:ident, $off:ident, $extra:expr) ),* $(,)?) => {
-        2usize $( + slot_width!($ty) )*
+            pub const LAYOUT: Layout = {
+                $( let [<$name _len>]: usize = $len; )*
+                let mut acc = 0usize;
+                $(
+                    let [<$name _offset>] = acc;
+                    acc += [<$name _len>];
+                )*
+                let _total = acc;
+                Layout { $( [<$name _offset>], [<$name _len>], )* }
+            };
+        }
     };
 }
 
-/// Total dual-AD inputs; the 2 accumulator lanes plus every tunable weight.
-/// Drives `DUAL_N`, so the gradient array sizes itself as eval terms are added.
-pub const DUAL_SLOTS: usize = crate::define_tunables!(count_dual_slots);
-
-pub struct Layout {
-    pub psqt_offset: usize,
-    pub psqt_len: usize,
-    pub material_offset: usize,
-    pub material_len: usize,
-    pub mobility_open_offset: usize,
-    pub mobility_open_len: usize,
-    pub mobility_closed_offset: usize,
-    pub mobility_closed_len: usize,
-    pub weight_offset: usize,
-    pub weight_len: usize,
-    pub attacker_offset: usize,
-    pub attacker_len: usize,
-    pub king_safety_offset: usize,
-    pub king_safety_len: usize,
-    pub xray_offset: usize,
-    pub xray_len: usize,
-    pub bishop_pair_offset: usize,
-    pub bishop_pair_len: usize,
-    pub rook_open_offset: usize,
-    pub rook_open_len: usize,
-    pub passed_mg_offset: usize,
-    pub passed_mg_len: usize,
-    pub passed_eg_offset: usize,
-    pub passed_eg_len: usize,
-    pub enemy_king_dist_mg_offset: usize,
-    pub enemy_king_dist_mg_len: usize,
-    pub enemy_king_dist_eg_offset: usize,
-    pub enemy_king_dist_eg_len: usize,
-}
-
-pub const LAYOUT: Layout = calc_layout();
-
-const fn calc_layout() -> Layout {
-    let psqt_len = (PAWN.len() + KNIGHT.len() + BISHOP.len() + ROOK.len() + QUEEN.len() + KING.len()) * 2;
-    let material_len = MATERIAL.len() * 2;
-    let mobility_len = 4 * 2; // MG + EG
-    let phase_len = PHASE_WEIGHTS.len();
-    let attacker_len = ATTACKER_WEIGHTS.len();
-    let safety_len = KING_SAFETY_WEIGHTS.len();
-    let xray_len = XRAY_WEIGHTS.len();
-    let bishop_pair_len = BISHOP_PAIR_WEIGHTS.len();
-    let rook_open_len = ROOK_OPEN_WEIGHTS.len();
-    let passed_mg_len = PASSED_PAWN_MG.len();
-    let passed_eg_len = PASSED_PAWN_EG.len();
-    let enemy_king_dist_mg_len = ENEMY_KING_DIST_MG.len();
-    let enemy_king_dist_eg_len = ENEMY_KING_DIST_EG.len();
-
-    let psqt_offset = 0;
-    let material_offset = psqt_offset + psqt_len;
-    let mobility_open_offset = material_offset + material_len;
-    let mobility_closed_offset = mobility_open_offset + mobility_len;
-    let weight_offset = mobility_closed_offset + mobility_len;
-    let attacker_offset = weight_offset + phase_len;
-    let king_safety_offset = attacker_offset + attacker_len;
-    let xray_offset = king_safety_offset + safety_len;
-    let bishop_pair_offset = xray_offset + xray_len;
-    let rook_open_offset = bishop_pair_offset + bishop_pair_len;
-    let passed_mg_offset = rook_open_offset + rook_open_len;
-    let passed_eg_offset = passed_mg_offset + passed_mg_len;
-    let enemy_king_dist_mg_offset = passed_eg_offset + passed_eg_len;
-    let enemy_king_dist_eg_offset = enemy_king_dist_mg_offset + enemy_king_dist_mg_len;
-
-    Layout {
-        psqt_offset,
-        psqt_len,
-        material_offset,
-        material_len,
-        mobility_open_offset,
-        mobility_open_len: mobility_len,
-        mobility_closed_offset,
-        mobility_closed_len: mobility_len,
-        weight_offset,
-        weight_len: phase_len,
-        attacker_offset,
-        attacker_len,
-        king_safety_offset,
-        king_safety_len: safety_len,
-        xray_offset,
-        xray_len,
-        bishop_pair_offset,
-        bishop_pair_len,
-        rook_open_offset,
-        rook_open_len,
-        passed_mg_offset,
-        passed_mg_len,
-        passed_eg_offset,
-        passed_eg_len,
-        enemy_king_dist_mg_offset,
-        enemy_king_dist_mg_len,
-        enemy_king_dist_eg_offset,
-        enemy_king_dist_eg_len,
-    }
+define_layout! {
+    psqt               = (PAWN.len() + KNIGHT.len() + BISHOP.len() + ROOK.len() + QUEEN.len() + KING.len()) * 2,
+    material           = MATERIAL.len() * 2,
+    mobility_open      = 4 * 2, // MG + EG
+    mobility_closed    = 4 * 2,
+    weight             = PHASE_WEIGHTS.len(),
+    attacker           = ATTACKER_WEIGHTS.len(),
+    king_safety        = KING_SAFETY_WEIGHTS.len(),
+    xray               = XRAY_WEIGHTS.len(),
+    bishop_pair        = BISHOP_PAIR_WEIGHTS.len(),
+    rook_open          = ROOK_OPEN_WEIGHTS.len(),
+    passed_mg          = PASSED_PAWN_MG.len(),
+    passed_eg          = PASSED_PAWN_EG.len(),
+    enemy_king_dist_mg = ENEMY_KING_DIST_MG.len(),
+    enemy_king_dist_eg = ENEMY_KING_DIST_EG.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -506,7 +456,7 @@ define_simple_params! {
 
 define_simd_params! {
     MG_MOBILITY_OPEN = [
-        V(5), V(-6), V(6), V(2)],
+        V(5), V(-6), V(6), V(2)], // [mobility, battery, threats, xray threats]
     EG_MOBILITY_OPEN = [
         V(-5), V(-8), V(-4), V(-12)],
     MG_MOBILITY_CLOSED = [
