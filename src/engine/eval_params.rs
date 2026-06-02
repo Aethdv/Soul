@@ -289,10 +289,12 @@ macro_rules! define_tunables {
             (w_bp_eg,            Scalar, bishop_pair_offset,        1),
             (w_rook_open_mg,     Scalar, rook_open_offset,          0),
             (w_rook_open_eg,     Scalar, rook_open_offset,          1),
-            (passed_mg,          Array6, passed_mg_offset,          0),
-            (passed_eg,          Array6, passed_eg_offset,          0),
+            (passed_pawn_mg,     Array6, passed_pawn_mg_offset,     0),
+            (passed_pawn_eg,     Array6, passed_pawn_eg_offset,     0),
             (enemy_king_dist_mg, Array6, enemy_king_dist_mg_offset, 0),
-            (enemy_king_dist_eg, Array6, enemy_king_dist_eg_offset, 0)
+            (enemy_king_dist_eg, Array6, enemy_king_dist_eg_offset, 0),
+            (w_doubled_pawn_mg,  Scalar, doubled_pawn_offset,       0),
+            (w_doubled_pawn_eg,  Scalar, doubled_pawn_offset,       1)
         }
     };
 }
@@ -336,10 +338,11 @@ define_layout! {
     xray               = XRAY_WEIGHTS.len(),
     bishop_pair        = BISHOP_PAIR_WEIGHTS.len(),
     rook_open          = ROOK_OPEN_WEIGHTS.len(),
-    passed_mg          = PASSED_PAWN_MG.len(),
-    passed_eg          = PASSED_PAWN_EG.len(),
+    passed_pawn_mg          = PASSED_PAWN_MG.len(),
+    passed_pawn_eg          = PASSED_PAWN_EG.len(),
     enemy_king_dist_mg = ENEMY_KING_DIST_MG.len(),
     enemy_king_dist_eg = ENEMY_KING_DIST_EG.len(),
+    doubled_pawn       = DOUBLED_PAWN_WEIGHTS.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -476,4 +479,5 @@ define_weight_params! {
     PASSED_PAWN_EG      = [V(-50), V(-31), V(17), V(70), V(170), V(101)], // by relative rank 1-6
     ENEMY_KING_DIST_MG  = [V(-97), V(46), V(37), V(30), V(25), V(14)], // enemy king→passer dist, 7 clamps to 6
     ENEMY_KING_DIST_EG  = [V(-44), V(-6), V(31), V(46), V(56), V(65)], // enemy king→passer dist, 7 clamps to 6
+    DOUBLED_PAWN_WEIGHTS = [V(-7), V(-25)], // [MG, EG]
 }
