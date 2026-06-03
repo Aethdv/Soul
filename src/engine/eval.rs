@@ -97,7 +97,7 @@ pub struct EnemyKingDistTerm;
 pub struct DoubledPawnTerm;
 /// Tapered penalty for isolated pawns; no friendly pawn on either adjacent file (~8 Elo).
 pub struct IsolatedPawnTerm;
-/// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank.
+/// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
 pub struct PhalanxTerm;
 
 pub struct DetailedEval {
