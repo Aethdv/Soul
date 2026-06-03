@@ -94,7 +94,7 @@ pub struct PassedPawnTerm;
 pub struct EnemyKingDistTerm;
 /// Tapered penalty for doubled pawns; friendly pawns stacked on the same file (~10 Elo).
 pub struct DoubledPawnTerm;
-/// Tapered penalty for isolated pawns; no friendly pawn on either adjacent file.
+/// Tapered penalty for isolated pawns; no friendly pawn on either adjacent file (~8 Elo).
 pub struct IsolatedPawnTerm;
 
 pub struct DetailedEval {
