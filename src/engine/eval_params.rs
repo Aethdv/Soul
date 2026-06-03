@@ -296,7 +296,9 @@ macro_rules! define_tunables {
             (w_doubled_pawn_mg,  Scalar, doubled_pawn_offset,       0),
             (w_doubled_pawn_eg,  Scalar, doubled_pawn_offset,       1),
             (w_isolated_pawn_mg, Scalar, isolated_pawn_offset,      0),
-            (w_isolated_pawn_eg, Scalar, isolated_pawn_offset,      1)
+            (w_isolated_pawn_eg, Scalar, isolated_pawn_offset,      1),
+            (phalanx_mg,         Array6, phalanx_mg_offset,         0),
+            (phalanx_eg,         Array6, phalanx_eg_offset,         0)
         }
     };
 }
@@ -346,6 +348,8 @@ define_layout! {
     enemy_king_dist_eg = ENEMY_KING_DIST_EG.len(),
     doubled_pawn       = DOUBLED_PAWN_WEIGHTS.len(),
     isolated_pawn      = ISOLATED_PAWN_WEIGHTS.len(),
+    phalanx_mg         = PHALANX_MG.len(),
+    phalanx_eg         = PHALANX_EG.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -484,4 +488,6 @@ define_weight_params! {
     ENEMY_KING_DIST_EG    = [V(-36), V(6), V(45), V(61), V(73), V(82)], // enemy king→passer dist, 7 clamps to 6
     DOUBLED_PAWN_WEIGHTS  = [V(-9), V(-42)], // [MG, EG]
     ISOLATED_PAWN_WEIGHTS = [V(-21), V(-20)], // [MG, EG]
+    PHALANX_MG            = [V(0), V(2), V(5), V(10), V(20), V(35)], // by relative rank 2-7
+    PHALANX_EG            = [V(0), V(3), V(8), V(15), V(30), V(50)], // by relative rank 2-7
 }
