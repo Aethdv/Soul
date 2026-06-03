@@ -23,7 +23,7 @@ use crate::{
         eval_params::{
             self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN,
             ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED,
-            MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -79,6 +79,7 @@ crate::register_terms! {
     EnemyKingDistTerm => bonus,
     DoubledPawnTerm => bonus,
     IsolatedPawnTerm => bonus,
+    PhalanxTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -96,6 +97,8 @@ pub struct EnemyKingDistTerm;
 pub struct DoubledPawnTerm;
 /// Tapered penalty for isolated pawns; no friendly pawn on either adjacent file (~8 Elo).
 pub struct IsolatedPawnTerm;
+/// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
+pub struct PhalanxTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -126,6 +129,8 @@ pub struct SharedFeatures {
     pub doubled_pawn_diff: i32,
     /// White minus black isolated pawns; no friendly pawn on either adjacent file.
     pub isolated_pawn_diff: i32,
+    /// White minus black pawn phalanxes, bucketed by relative rank (index 0 = rank 2, 5 = rank 7).
+    pub phalanx: [i32; 6],
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -256,6 +261,8 @@ impl EvalParams<i32> {
             w_doubled_pawn_eg: DOUBLED_PAWN_WEIGHTS[1],
             w_isolated_pawn_mg: ISOLATED_PAWN_WEIGHTS[0],
             w_isolated_pawn_eg: ISOLATED_PAWN_WEIGHTS[1],
+            phalanx_mg: PHALANX_MG,
+            phalanx_eg: PHALANX_EG,
         }
     }
 }
@@ -333,6 +340,23 @@ impl SharedFeatures {
         let b_isolated = (bp & !(b_files.shift(Direction::East) | b_files.shift(Direction::West))).popcount() as i32;
         let isolated_pawn_diff = w_isolated - b_isolated;
 
+        // Phalanx; side-by-side friendly pawns. & shift(East) marks the east pawn of
+        // each pair; bucket white-minus-black by relative rank.
+        let mut phalanx = [0i32; 6];
+        let mut wph = wp & wp.shift(Direction::East);
+
+        while wph.is_not_empty() {
+            let sq = wph.pop_lsb();
+            phalanx[(sq.rank() - 1) as usize] += 1;
+        }
+
+        let mut bph = bp & bp.shift(Direction::East);
+
+        while bph.is_not_empty() {
+            let sq = bph.pop_lsb();
+            phalanx[(6 - sq.rank()) as usize] -= 1;
+        }
+
         Self {
             openness,
             data,
@@ -343,6 +367,7 @@ impl SharedFeatures {
             enemy_king_dist,
             doubled_pawn_diff,
             isolated_pawn_diff,
+            phalanx,
         }
     }
 }
@@ -455,4 +480,5 @@ tapered_bonus_term! {
     EnemyKingDistTerm = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
     DoubledPawnTerm   = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
     IsolatedPawnTerm  = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
+    PhalanxTerm       = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
 }

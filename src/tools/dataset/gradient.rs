@@ -30,6 +30,7 @@ pub struct FeatureSlots {
     pub enemy_king_dist: Vec<[i8; 6]>,
     pub doubled_pawn: Vec<i8>,
     pub isolated_pawn: Vec<i8>,
+    pub phalanx: Vec<[i8; 6]>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -47,6 +48,7 @@ impl FeatureSlots {
             enemy_king_dist: Vec::with_capacity(cap),
             doubled_pawn: Vec::with_capacity(cap),
             isolated_pawn: Vec::with_capacity(cap),
+            phalanx: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -98,6 +100,7 @@ impl FeatureSlots {
         self.enemy_king_dist.push(std::array::from_fn(|i| (sf.enemy_king_dist[i] * sign) as i8));
         self.doubled_pawn.push((sf.doubled_pawn_diff * sign) as i8);
         self.isolated_pawn.push((sf.isolated_pawn_diff * sign) as i8);
+        self.phalanx.push(std::array::from_fn(|i| (sf.phalanx[i] * sign) as i8));
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
@@ -220,6 +223,15 @@ pub fn accumulate_gradient_cached(
     grads[ip_offset] += gradient * ip * mg_w;
     grads[ip_offset + 1] += gradient * ip * eg_w;
 
+    let phmg = psqt::LAYOUT.phalanx_mg_offset;
+    let pheg = psqt::LAYOUT.phalanx_eg_offset;
+    let phalanx = slots.phalanx[idx];
+    for r in 0..6 {
+        let phf = f64::from(phalanx[r]);
+        grads[phmg + r] += gradient * phf * mg_w;
+        grads[pheg + r] += gradient * phf * eg_w;
+    }
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
@@ -334,6 +346,14 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
     let ip_offset = psqt::LAYOUT.isolated_pawn_offset;
     let ip = f64::from(slots.isolated_pawn[idx]);
     score += (ip * (values[ip_offset] * mg_w + values[ip_offset + 1] * eg_w)).trunc();
+
+    let phmg = psqt::LAYOUT.phalanx_mg_offset;
+    let pheg = psqt::LAYOUT.phalanx_eg_offset;
+    let phalanx = slots.phalanx[idx];
+    for r in 0..6 {
+        let phf = f64::from(phalanx[r]);
+        score += (phf * (values[phmg + r] * mg_w + values[pheg + r] * eg_w)).trunc();
+    }
 
     score
 }
