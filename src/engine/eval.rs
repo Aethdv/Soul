@@ -21,9 +21,10 @@ use crate::{
         autograd::EvalMath,
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
-            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN,
-            ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED,
-            MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG, DOUBLED_PAWN_WEIGHTS,
+            EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN_WEIGHTS,
+            KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG,
+            ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -80,6 +81,7 @@ crate::register_terms! {
     DoubledPawnTerm => bonus,
     IsolatedPawnTerm => bonus,
     PhalanxTerm => bonus,
+    DefendedPawnTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -99,6 +101,8 @@ pub struct DoubledPawnTerm;
 pub struct IsolatedPawnTerm;
 /// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
 pub struct PhalanxTerm;
+/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative rank.
+pub struct DefendedPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -131,6 +135,9 @@ pub struct SharedFeatures {
     pub isolated_pawn_diff: i32,
     /// White minus black pawn phalanxes, bucketed by relative rank (index 0 = rank 2, 5 = rank 7).
     pub phalanx: [i32; 6],
+    /// White minus black pawns defended by a friendly pawn, bucketed by relative rank
+    /// (index 0 = rank 2, 5 = rank 7; rank 2 is unreachable since the defender would sit on rank 1).
+    pub defended_pawn: [i32; 6],
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -263,6 +270,8 @@ impl EvalParams<i32> {
             w_isolated_pawn_eg: ISOLATED_PAWN_WEIGHTS[1],
             phalanx_mg: PHALANX_MG,
             phalanx_eg: PHALANX_EG,
+            defended_pawn_mg: DEFENDED_PAWN_MG,
+            defended_pawn_eg: DEFENDED_PAWN_EG,
         }
     }
 }
@@ -357,6 +366,23 @@ impl SharedFeatures {
             phalanx[(6 - sq.rank()) as usize] -= 1;
         }
 
+        // Defended; a pawn standing on a square its own side's pawns attack.
+        // Bucket white-minus-black by relative rank.
+        let mut defended_pawn = [0i32; 6];
+        let mut wdef = wp & board.pawn_attacks(Color::White);
+
+        while wdef.is_not_empty() {
+            let sq = wdef.pop_lsb();
+            defended_pawn[(sq.rank() - 1) as usize] += 1;
+        }
+
+        let mut bdef = bp & board.pawn_attacks(Color::Black);
+
+        while bdef.is_not_empty() {
+            let sq = bdef.pop_lsb();
+            defended_pawn[(6 - sq.rank()) as usize] -= 1;
+        }
+
         Self {
             openness,
             data,
@@ -368,6 +394,7 @@ impl SharedFeatures {
             doubled_pawn_diff,
             isolated_pawn_diff,
             phalanx,
+            defended_pawn,
         }
     }
 }
@@ -481,4 +508,5 @@ tapered_bonus_term! {
     DoubledPawnTerm   = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
     IsolatedPawnTerm  = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
     PhalanxTerm       = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
+    DefendedPawnTerm  = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
 }
