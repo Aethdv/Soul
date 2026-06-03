@@ -168,22 +168,23 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
         #[rustfmt::skip]
         let bands: &[(&str, usize, usize, &str)] = &[
-            ("PHASE_WEIGHTS",       l.weight_offset,             6, " // [P, N, B, R, Q, K]"),
-            ("ATTACKER_WEIGHTS",    l.attacker_offset,           6, " // [0, 1, 2, 3, 4, 5] attackers × weak"),
-            ("KING_SAFETY_WEIGHTS", l.king_safety_offset,        3, " // [Pawn Shield, Ortho Exp, Diag Exp]"),
-            ("XRAY_WEIGHTS",        l.xray_offset,               1, " // [Ortho King]"),
-            ("BISHOP_PAIR_WEIGHTS", l.bishop_pair_offset,        2, " // [MG, EG]"),
-            ("ROOK_OPEN_WEIGHTS",   l.rook_open_offset,          2, " // [MG, EG]"),
-            ("PASSED_PAWN_MG",      l.passed_pawn_mg_offset,     6, " // by relative rank 1-6"),
-            ("PASSED_PAWN_EG",      l.passed_pawn_eg_offset,     6, " // by relative rank 1-6"),
-            ("ENEMY_KING_DIST_MG",  l.enemy_king_dist_mg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
-            ("ENEMY_KING_DIST_EG",  l.enemy_king_dist_eg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
-            ("DOUBLED_PAWN_WEIGHTS", l.doubled_pawn_offset,      2, " // [MG, EG]"),
+            ("PHASE_WEIGHTS",         l.weight_offset,             6, " // [P, N, B, R, Q, K]"),
+            ("ATTACKER_WEIGHTS",      l.attacker_offset,           6, " // [0, 1, 2, 3, 4, 5] attackers × weak"),
+            ("KING_SAFETY_WEIGHTS",   l.king_safety_offset,        3, " // [Pawn Shield, Ortho Exp, Diag Exp]"),
+            ("XRAY_WEIGHTS",          l.xray_offset,               1, " // [Ortho King]"),
+            ("BISHOP_PAIR_WEIGHTS",   l.bishop_pair_offset,        2, " // [MG, EG]"),
+            ("ROOK_OPEN_WEIGHTS",     l.rook_open_offset,          2, " // [MG, EG]"),
+            ("PASSED_PAWN_MG",        l.passed_pawn_mg_offset,     6, " // by relative rank 1-6"),
+            ("PASSED_PAWN_EG",        l.passed_pawn_eg_offset,     6, " // by relative rank 1-6"),
+            ("ENEMY_KING_DIST_MG",    l.enemy_king_dist_mg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
+            ("ENEMY_KING_DIST_EG",    l.enemy_king_dist_eg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
+            ("DOUBLED_PAWN_WEIGHTS",  l.doubled_pawn_offset,       2, " // [MG, EG]"),
+            ("ISOLATED_PAWN_WEIGHTS", l.isolated_pawn_offset,      2, " // [MG, EG]"),
         ];
 
         for &(name, offset, count, comment) in bands {
             if params.len() > offset {
-                write!(w, "    {name:<21}= [").ok();
+                write!(w, "    {name:<22}= [").ok();
                 write_weight_array(w, offset, count, values, params, initial);
                 writeln!(w, "],{comment}").ok();
             }

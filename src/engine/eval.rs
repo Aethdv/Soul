@@ -22,8 +22,8 @@ use crate::{
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
             self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN,
-            ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG,
-            PASSED_PAWN_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED,
+            MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -78,6 +78,7 @@ crate::register_terms! {
     PassedPawnTerm => bonus,
     EnemyKingDistTerm => bonus,
     DoubledPawnTerm => bonus,
+    IsolatedPawnTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -93,6 +94,8 @@ pub struct PassedPawnTerm;
 pub struct EnemyKingDistTerm;
 /// Tapered penalty for doubled pawns; friendly pawns stacked on the same file (~10 Elo).
 pub struct DoubledPawnTerm;
+/// Tapered penalty for isolated pawns; no friendly pawn on either adjacent file (~8 Elo).
+pub struct IsolatedPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -121,6 +124,8 @@ pub struct SharedFeatures {
     pub enemy_king_dist: [i32; 6],
     /// White minus black doubled pawns; friendly pawns stacked on a file (adjacent pairs only).
     pub doubled_pawn_diff: i32,
+    /// White minus black isolated pawns; no friendly pawn on either adjacent file.
+    pub isolated_pawn_diff: i32,
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -249,6 +254,8 @@ impl EvalParams<i32> {
             enemy_king_dist_eg: ENEMY_KING_DIST_EG,
             w_doubled_pawn_mg: DOUBLED_PAWN_WEIGHTS[0],
             w_doubled_pawn_eg: DOUBLED_PAWN_WEIGHTS[1],
+            w_isolated_pawn_mg: ISOLATED_PAWN_WEIGHTS[0],
+            w_isolated_pawn_eg: ISOLATED_PAWN_WEIGHTS[1],
         }
     }
 }
@@ -318,6 +325,14 @@ impl SharedFeatures {
         let b_doubled = (bp & bp.shift(Direction::North)).popcount() as i32;
         let doubled_pawn_diff = w_doubled - b_doubled;
 
+        // Isolated pawns; no friendly pawn on either adjacent file. file_fill smears
+        // each pawn across its file, so shifting east/west gives the neighbor-file mask.
+        let w_files = wp.file_fill();
+        let b_files = bp.file_fill();
+        let w_isolated = (wp & !(w_files.shift(Direction::East) | w_files.shift(Direction::West))).popcount() as i32;
+        let b_isolated = (bp & !(b_files.shift(Direction::East) | b_files.shift(Direction::West))).popcount() as i32;
+        let isolated_pawn_diff = w_isolated - b_isolated;
+
         Self {
             openness,
             data,
@@ -327,6 +342,7 @@ impl SharedFeatures {
             passed_pawn,
             enemy_king_dist,
             doubled_pawn_diff,
+            isolated_pawn_diff,
         }
     }
 }
@@ -438,4 +454,5 @@ tapered_bonus_term! {
     PassedPawnTerm    = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
     EnemyKingDistTerm = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
     DoubledPawnTerm   = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
+    IsolatedPawnTerm  = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
 }
