@@ -174,6 +174,28 @@ impl Bitboard {
         Bitboard(b)
     }
 
+    /// Smears every set bit northward (toward rank 8), inclusive.
+    #[inline(always)]
+    #[must_use]
+    pub const fn north_fill(self) -> Self {
+        let mut b = self.0;
+        b |= b << 8;
+        b |= b << 16;
+        b |= b << 32;
+        Bitboard(b)
+    }
+
+    /// Smears every set bit southward (toward rank 1), inclusive.
+    #[inline(always)]
+    #[must_use]
+    pub const fn south_fill(self) -> Self {
+        let mut b = self.0;
+        b |= b >> 8;
+        b |= b >> 16;
+        b |= b >> 32;
+        Bitboard(b)
+    }
+
     #[inline(always)]
     pub const fn shift(self, dir: Direction) -> Self {
         match dir {

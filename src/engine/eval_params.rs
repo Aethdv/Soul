@@ -299,8 +299,10 @@ macro_rules! define_tunables {
             (w_isolated_pawn_eg, Scalar, isolated_pawn_offset,      1),
             (phalanx_mg,         Array6, phalanx_mg_offset,         0),
             (phalanx_eg,         Array6, phalanx_eg_offset,         0),
-            (defended_pawn_mg,        Array6, defended_pawn_mg_offset,        0),
-            (defended_pawn_eg,        Array6, defended_pawn_eg_offset,        0)
+            (defended_pawn_mg,   Array6, defended_pawn_mg_offset,   0),
+            (defended_pawn_eg,   Array6, defended_pawn_eg_offset,   0),
+            (w_backward_pawn_mg, Scalar, backward_pawn_offset,      0),
+            (w_backward_pawn_eg, Scalar, backward_pawn_offset,      1)
         }
     };
 }
@@ -352,8 +354,9 @@ define_layout! {
     isolated_pawn      = ISOLATED_PAWN_WEIGHTS.len(),
     phalanx_mg         = PHALANX_MG.len(),
     phalanx_eg         = PHALANX_EG.len(),
-    defended_pawn_mg        = DEFENDED_PAWN_MG.len(),
-    defended_pawn_eg        = DEFENDED_PAWN_EG.len(),
+    defended_pawn_mg   = DEFENDED_PAWN_MG.len(),
+    defended_pawn_eg   = DEFENDED_PAWN_EG.len(),
+    backward_pawn      = BACKWARD_PAWN_WEIGHTS.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -494,6 +497,7 @@ define_weight_params! {
     ISOLATED_PAWN_WEIGHTS = [V(-9), V(-11)], // [MG, EG]
     PHALANX_MG            = [V(9), V(22), V(33), V(68), V(188), V(-380)], // by relative rank 2-7
     PHALANX_EG            = [V(-5), V(8), V(31), V(104), V(232), V(638)], // by relative rank 2-7
-    DEFENDED_PAWN_MG      = [V(0), V(36), V(22), V(20), V(34), V(259)], // by relative rank 2-7 (rank 2 unreachable)
-    DEFENDED_PAWN_EG      = [V(0), V(20), V(14), V(28), V(65), V(4)], // by relative rank 2-7 (rank 2 unreachable)
+    DEFENDED_PAWN_MG      = [CV(0), V(36), V(22), V(20), V(34), V(259)], // by relative rank 2-7 (rank 2 unreachable)
+    DEFENDED_PAWN_EG      = [CV(0), V(20), V(14), V(28), V(65), V(4)], // by relative rank 2-7 (rank 2 unreachable)
+    BACKWARD_PAWN_WEIGHTS = [V(-9), V(-24)], // [MG, EG]
 }

@@ -564,6 +564,8 @@ mod tests {
         "4k3/p5p1/2p3pp/8/3PP3/8/P5PP/4K3 w - - 0 1",
         // Defended pawns
         "4k3/2p3pp/1p3p2/8/2P2P2/1P4P1/7P/4K3 w - - 0 1",
+        // Backward pawn
+        "8/3p2k1/2p5/4p3/2P1P3/3P4/K7/8 w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;
@@ -597,8 +599,10 @@ mod tests {
             "IsolatedPawnTerm"
         } else if slot < LAYOUT.defended_pawn_mg_offset {
             "PhalanxTerm"
-        } else {
+        } else if slot < LAYOUT.backward_pawn_offset {
             "DefendedPawnTerm"
+        } else {
+            "BackwardPawnTerm"
         }
     }
 
@@ -630,7 +634,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.defended_pawn_eg_offset + LAYOUT.defended_pawn_eg_len];
+        let mut values = vec![0.0f64; LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -642,7 +646,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.defended_pawn_eg_offset + LAYOUT.defended_pawn_eg_len];
+        let mut values = vec![0.0f64; LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -732,6 +736,14 @@ mod tests {
         assert_oracle_matches(
             "DefendedPawnTerm alone",
             &values_in_range(LAYOUT.defended_pawn_mg_offset..LAYOUT.defended_pawn_eg_offset + LAYOUT.defended_pawn_eg_len),
+        );
+    }
+
+    #[test]
+    fn test_backward_pawn_term_oracle() {
+        assert_oracle_matches(
+            "BackwardPawnTerm alone",
+            &values_in_range(LAYOUT.backward_pawn_offset..LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len),
         );
     }
 
