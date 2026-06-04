@@ -21,10 +21,10 @@ use crate::{
         autograd::EvalMath,
         combiner::{Accumulators, Combiner, LinearCombiner},
         eval_params::{
-            self, ATTACKER_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG, DOUBLED_PAWN_WEIGHTS,
-            EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN_WEIGHTS,
-            KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG,
-            ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            self, ATTACKER_WEIGHTS, BACKWARD_PAWN_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG,
+            DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG,
+            ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG,
+            PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -82,6 +82,7 @@ crate::register_terms! {
     IsolatedPawnTerm => bonus,
     PhalanxTerm => bonus,
     DefendedPawnTerm => bonus,
+    BackwardPawnTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -103,6 +104,8 @@ pub struct IsolatedPawnTerm;
 pub struct PhalanxTerm;
 /// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative (~10 Elo).
 pub struct DefendedPawnTerm;
+/// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
+pub struct BackwardPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -138,6 +141,8 @@ pub struct SharedFeatures {
     /// White minus black pawns defended by a friendly pawn, bucketed by relative rank
     /// (index 0 = rank 2, 5 = rank 7; rank 2 is unreachable since the defender would sit on rank 1).
     pub defended_pawn: [i32; 6],
+    /// White minus black backward pawns; behind all neighbors with a stop square the enemy controls.
+    pub backward_pawn_diff: i32,
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -272,6 +277,8 @@ impl EvalParams<i32> {
             phalanx_eg: PHALANX_EG,
             defended_pawn_mg: DEFENDED_PAWN_MG,
             defended_pawn_eg: DEFENDED_PAWN_EG,
+            w_backward_pawn_mg: BACKWARD_PAWN_WEIGHTS[0],
+            w_backward_pawn_eg: BACKWARD_PAWN_WEIGHTS[1],
         }
     }
 }
@@ -343,10 +350,11 @@ impl SharedFeatures {
 
         // Isolated pawns; no friendly pawn on either adjacent file. file_fill smears
         // each pawn across its file, so shifting east/west gives the neighbor-file mask.
-        let w_files = wp.file_fill();
-        let b_files = bp.file_fill();
-        let w_isolated = (wp & !(w_files.shift(Direction::East) | w_files.shift(Direction::West))).popcount() as i32;
-        let b_isolated = (bp & !(b_files.shift(Direction::East) | b_files.shift(Direction::West))).popcount() as i32;
+        // The adjacency masks are shared with the backward-pawn detection below.
+        let w_adj = wp.file_fill().shift(Direction::East) | wp.file_fill().shift(Direction::West);
+        let b_adj = bp.file_fill().shift(Direction::East) | bp.file_fill().shift(Direction::West);
+        let w_isolated = (wp & !w_adj).popcount() as i32;
+        let b_isolated = (bp & !b_adj).popcount() as i32;
         let isolated_pawn_diff = w_isolated - b_isolated;
 
         // Phalanx; side-by-side friendly pawns. & shift(East) marks the east pawn of
@@ -367,21 +375,40 @@ impl SharedFeatures {
         }
 
         // Defended; a pawn standing on a square its own side's pawns attack.
-        // Bucket white-minus-black by relative rank.
+        // Bucket white-minus-black by relative rank. Pawn-attack maps are shared
+        // with the backward-pawn detection below.
+        let w_pawn_atk = board.pawn_attacks(Color::White);
+        let b_pawn_atk = board.pawn_attacks(Color::Black);
         let mut defended_pawn = [0i32; 6];
-        let mut wdef = wp & board.pawn_attacks(Color::White);
+        let mut wdef = wp & w_pawn_atk;
 
         while wdef.is_not_empty() {
             let sq = wdef.pop_lsb();
             defended_pawn[(sq.rank() - 1) as usize] += 1;
         }
 
-        let mut bdef = bp & board.pawn_attacks(Color::Black);
+        let mut bdef = bp & b_pawn_atk;
 
         while bdef.is_not_empty() {
             let sq = bdef.pop_lsb();
             defended_pawn[(6 - sq.rank()) as usize] -= 1;
         }
+
+        // Backward pawns; behind all neighbors (no friendly pawn at or behind on an
+        // adjacent file) with a stop square the enemy controls — it can neither
+        // advance nor be supported. Isolated pawns are excluded by the adjacency mask;
+        // they score as isolated, not backward. Smearing each pawn forward (north for
+        // white, south for black) then to adjacent files marks every square with a
+        // friendly pawn at or behind its rank.
+        let w_fill = wp.north_fill();
+        let b_fill = bp.south_fill();
+        let w_rear = w_fill.shift(Direction::East) | w_fill.shift(Direction::West);
+        let b_rear = b_fill.shift(Direction::East) | b_fill.shift(Direction::West);
+        let w_stop_bad = (bp | b_pawn_atk) >> 8; // stop square blocked or pawn-attacked
+        let b_stop_bad = (wp | w_pawn_atk) << 8;
+        let w_backward = (wp & w_adj & !w_rear & w_stop_bad).popcount() as i32;
+        let b_backward = (bp & b_adj & !b_rear & b_stop_bad).popcount() as i32;
+        let backward_pawn_diff = w_backward - b_backward;
 
         Self {
             openness,
@@ -395,6 +422,7 @@ impl SharedFeatures {
             isolated_pawn_diff,
             phalanx,
             defended_pawn,
+            backward_pawn_diff,
         }
     }
 }
@@ -509,4 +537,5 @@ tapered_bonus_term! {
     IsolatedPawnTerm  = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
     PhalanxTerm       = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
     DefendedPawnTerm  = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
+    BackwardPawnTerm  = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
 }

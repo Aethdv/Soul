@@ -32,6 +32,7 @@ pub struct FeatureSlots {
     pub isolated_pawn: Vec<i8>,
     pub phalanx: Vec<[i8; 6]>,
     pub defended_pawn: Vec<[i8; 6]>,
+    pub backward_pawn: Vec<i8>,
     /// Raw static eval for volatility filtering at training time.
     pub static_eval: Vec<i16>,
 }
@@ -51,6 +52,7 @@ impl FeatureSlots {
             isolated_pawn: Vec::with_capacity(cap),
             phalanx: Vec::with_capacity(cap),
             defended_pawn: Vec::with_capacity(cap),
+            backward_pawn: Vec::with_capacity(cap),
             static_eval: Vec::with_capacity(cap),
         }
     }
@@ -104,6 +106,7 @@ impl FeatureSlots {
         self.isolated_pawn.push((sf.isolated_pawn_diff * sign) as i8);
         self.phalanx.push(std::array::from_fn(|i| (sf.phalanx[i] * sign) as i8));
         self.defended_pawn.push(std::array::from_fn(|i| (sf.defended_pawn[i] * sign) as i8));
+        self.backward_pawn.push((sf.backward_pawn_diff * sign) as i8);
 
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
@@ -244,6 +247,11 @@ pub fn accumulate_gradient_cached(
         grads[dfeg + r] += gradient * dff * eg_w;
     }
 
+    let bw_offset = psqt::LAYOUT.backward_pawn_offset;
+    let bw = f64::from(slots.backward_pawn[idx]);
+    grads[bw_offset] += gradient * bw * mg_w;
+    grads[bw_offset + 1] += gradient * bw * eg_w;
+
     let (openness, closedness) = openness_factors(f.white_pawns, f.black_pawns);
     let mobility_open_offset = psqt::LAYOUT.mobility_open_offset;
     let mobility_closed_offset = psqt::LAYOUT.mobility_closed_offset;
@@ -374,6 +382,10 @@ pub fn eval_soul_cached(entry: &SoulEntry, slots: &FeatureSlots, idx: usize, val
         let dff = f64::from(defended_pawn[r]);
         score += (dff * (values[dfmg + r] * mg_w + values[dfeg + r] * eg_w)).trunc();
     }
+
+    let bw_offset = psqt::LAYOUT.backward_pawn_offset;
+    let bw = f64::from(slots.backward_pawn[idx]);
+    score += (bw * (values[bw_offset] * mg_w + values[bw_offset + 1] * eg_w)).trunc();
 
     score
 }
