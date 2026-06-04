@@ -182,6 +182,8 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             ("ISOLATED_PAWN_WEIGHTS", l.isolated_pawn_offset,      2, " // [MG, EG]"),
             ("PHALANX_MG",            l.phalanx_mg_offset,         6, " // by relative rank 2-7"),
             ("PHALANX_EG",            l.phalanx_eg_offset,         6, " // by relative rank 2-7"),
+            ("DEFENDED_PAWN_MG",      l.defended_pawn_mg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
+            ("DEFENDED_PAWN_EG",      l.defended_pawn_eg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
         ];
 
         for &(name, offset, count, comment) in bands {
