@@ -302,7 +302,9 @@ macro_rules! define_tunables {
             (defended_pawn_mg,   Array6, defended_pawn_mg_offset,   0),
             (defended_pawn_eg,   Array6, defended_pawn_eg_offset,   0),
             (w_backward_pawn_mg, Scalar, backward_pawn_offset,      0),
-            (w_backward_pawn_eg, Scalar, backward_pawn_offset,      1)
+            (w_backward_pawn_eg, Scalar, backward_pawn_offset,      1),
+            (w_tempo_mg,         Scalar, tempo_offset,              0),
+            (w_tempo_eg,         Scalar, tempo_offset,              1)
         }
     };
 }
@@ -357,6 +359,7 @@ define_layout! {
     defended_pawn_mg   = DEFENDED_PAWN_MG.len(),
     defended_pawn_eg   = DEFENDED_PAWN_EG.len(),
     backward_pawn      = BACKWARD_PAWN_WEIGHTS.len(),
+    tempo              = TEMPO_WEIGHTS.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -500,4 +503,5 @@ define_weight_params! {
     DEFENDED_PAWN_MG      = [CV(0), V(31), V(21), V(21), V(36), V(265)], // by relative rank 2-7 (rank 2 unreachable)
     DEFENDED_PAWN_EG      = [CV(0), V(16), V(14), V(29), V(65), V(-2)], // by relative rank 2-7 (rank 2 unreachable)
     BACKWARD_PAWN_WEIGHTS = [V(-10), V(-18)], // [MG, EG]
+    TEMPO_WEIGHTS         = [V(20), V(10)], // [MG, EG] — side-to-move initiative
 }

@@ -24,7 +24,7 @@ use crate::{
             self, ATTACKER_WEIGHTS, BACKWARD_PAWN_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG,
             DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG,
             ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG,
-            PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, XRAY_WEIGHTS,
+            PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, TEMPO_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -83,6 +83,7 @@ crate::register_terms! {
     PhalanxTerm => bonus,
     DefendedPawnTerm => bonus,
     BackwardPawnTerm => bonus,
+    TempoTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -106,6 +107,8 @@ pub struct PhalanxTerm;
 pub struct DefendedPawnTerm;
 /// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
 pub struct BackwardPawnTerm;
+/// Tapered bonus for the side to move — the half-move of initiative every position carries.
+pub struct TempoTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -143,6 +146,9 @@ pub struct SharedFeatures {
     pub defended_pawn: [i32; 6],
     /// White minus black backward pawns; behind all neighbors with a stop square the enemy controls.
     pub backward_pawn_diff: i32,
+    /// Side-to-move tempo in the white-relative frame: `+1` if white is to move, `-1` if black.
+    /// The combiner's STM flip turns this into `+tempo` for whoever holds the move.
+    pub tempo: i32,
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -279,6 +285,8 @@ impl EvalParams<i32> {
             defended_pawn_eg: DEFENDED_PAWN_EG,
             w_backward_pawn_mg: BACKWARD_PAWN_WEIGHTS[0],
             w_backward_pawn_eg: BACKWARD_PAWN_WEIGHTS[1],
+            w_tempo_mg: TEMPO_WEIGHTS[0],
+            w_tempo_eg: TEMPO_WEIGHTS[1],
         }
     }
 }
@@ -410,6 +418,8 @@ impl SharedFeatures {
         let b_backward = (bp & b_adj & !b_rear & b_stop_bad).popcount() as i32;
         let backward_pawn_diff = w_backward - b_backward;
 
+        let tempo = if board.stm == Color::White { 1 } else { -1 };
+
         Self {
             openness,
             data,
@@ -423,6 +433,7 @@ impl SharedFeatures {
             phalanx,
             defended_pawn,
             backward_pawn_diff,
+            tempo,
         }
     }
 }
@@ -538,4 +549,5 @@ tapered_bonus_term! {
     PhalanxTerm       = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
     DefendedPawnTerm  = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
     BackwardPawnTerm  = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
+    TempoTerm         = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
 }

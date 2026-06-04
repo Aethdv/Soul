@@ -185,6 +185,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             ("DEFENDED_PAWN_MG",      l.defended_pawn_mg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
             ("DEFENDED_PAWN_EG",      l.defended_pawn_eg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
             ("BACKWARD_PAWN_WEIGHTS", l.backward_pawn_offset,      2, " // [MG, EG]"),
+            ("TEMPO_WEIGHTS",         l.tempo_offset,              2, " // [MG, EG] — side-to-move initiative"),
         ];
 
         for &(name, offset, count, comment) in bands {
