@@ -104,7 +104,7 @@ pub struct IsolatedPawnTerm;
 pub struct PhalanxTerm;
 /// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative (~10 Elo).
 pub struct DefendedPawnTerm;
-/// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square.
+/// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
 pub struct BackwardPawnTerm;
 
 pub struct DetailedEval {
