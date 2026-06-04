@@ -101,7 +101,7 @@ pub struct DoubledPawnTerm;
 pub struct IsolatedPawnTerm;
 /// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
 pub struct PhalanxTerm;
-/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative rank.
+/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative (~10 Elo).
 pub struct DefendedPawnTerm;
 
 pub struct DetailedEval {
