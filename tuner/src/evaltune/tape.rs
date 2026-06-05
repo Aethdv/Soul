@@ -22,16 +22,6 @@ use soul::{
     },
 };
 
-/// Active piece entry for PSQT gradient scatter.
-#[derive(Copy, Clone, Default)]
-pub struct ActivePiece {
-    pub mg_idx: u32,
-    pub eg_idx: u32,
-    pub mat_mg_idx: u32,
-    pub mat_eg_idx: u32,
-    pub sign: f32,
-}
-
 mod scatter {
     #[inline(always)]
     pub(super) fn scatter_scalar(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
@@ -88,142 +78,12 @@ macro_rules! impl_scatter {
 
 soul::define_tunables!(impl_scatter);
 
-/// Result of a forward-mode dual evaluation.
-///
-/// Captures the score and raw gradient array from the dual forward pass,
-/// plus the piece locations needed to scatter PSQT gradients.
-/// Designed as a snapshot that can be consumed later once the outer loss
-/// derivative is known.
+/// Gradient snapshot from the dual forward pass — the raw partial derivatives,
+/// consumed by `scatter_dynamic` once the outer loss derivative is known.
 pub struct DualEvalResult {
-    pub score: f64,
-    /// Raw partial derivatives from the dual pass (44 active slots in 64).
+    /// Raw partial derivatives from the dual pass — one slot per dual-tracked
+    /// input (`DUAL_SLOTS`), zero-padded to `DUAL_N`.
     pub grad: [f32; DUAL_N],
-    /// Board pieces recorded during accumulation for PSQT scatter.
-    pub active: [ActivePiece; 32],
-    pub active_count: usize,
-}
-
-impl DualEvalResult {
-    /// Scatter gradients into `param_grads`, scaled by `outer_deriv`.
-    pub fn scatter_grads(&self, outer_deriv: f64, param_grads: &mut [f64]) {
-        self.scatter_dynamic(outer_deriv, param_grads);
-
-        // PSQT gradients: d(output)/d(psqt_i) = d(output)/d(lane_j) · d(lane_j)/d(psqt_i)
-        let d_mg = outer_deriv * f64::from(self.grad[0]); // Mg slot = 0
-        let d_eg = outer_deriv * f64::from(self.grad[1]); // Eg slot = 1
-
-        debug_assert!(
-            param_grads.len() >= psqt::LAYOUT.mobility_open_offset,
-            "param_grads too small: {} < {} (material+PSQT footprint)",
-            param_grads.len(),
-            psqt::LAYOUT.mobility_open_offset,
-        );
-
-        for i in 0..self.active_count {
-            let a = &self.active[i];
-            let s = f64::from(a.sign);
-
-            param_grads[a.mg_idx as usize] += d_mg * s;
-            param_grads[a.eg_idx as usize] += d_eg * s;
-            param_grads[a.mat_mg_idx as usize] += d_mg * s;
-            param_grads[a.mat_eg_idx as usize] += d_eg * s;
-        }
-    }
-}
-
-/// Run forward-mode AD on a position. Returns a `DualEvalResult` containing
-/// the score and all information needed to scatter gradients later.
-pub fn eval_dual_forward(board: &Board, values: &[f64]) -> DualEvalResult {
-    // PSQT + Material accumulator (plain f64, no tape)
-    let mut lane_vals = [0.0f64; 8];
-    let mut piece_counts = [0.0f64; 6];
-
-    let mut active = [ActivePiece::default(); 32];
-    let mut active_count = 0;
-
-    for piece in PieceType::ALL {
-        let pt = piece.as_usize();
-        piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
-
-        let mat_mg_idx = psqt::LAYOUT.material_offset + pt;
-        let mat_eg_idx = psqt::LAYOUT.material_offset + 6 + pt;
-        let mat_mg_val = values.get(mat_mg_idx).copied().unwrap_or(0.0);
-        let mat_eg_val = values.get(mat_eg_idx).copied().unwrap_or(0.0);
-
-        let mut bb_w = board.pieces(piece, Color::White);
-
-        while bb_w.is_not_empty() {
-            let sq = bb_w.pop_lsb();
-            let sq_idx = usize::from(sq.flip_rank());
-            let mirror_idx = psqt::mirror_sq(sq_idx);
-            let mg_idx = pt * 64 + mirror_idx;
-            let eg_idx = pt * 64 + 32 + mirror_idx;
-
-            lane_vals[0] += values.get(mg_idx).copied().unwrap_or(0.0) + mat_mg_val;
-            lane_vals[1] += values.get(eg_idx).copied().unwrap_or(0.0) + mat_eg_val;
-
-            active[active_count] = ActivePiece {
-                mg_idx: mg_idx as u32,
-                eg_idx: eg_idx as u32,
-                mat_mg_idx: mat_mg_idx as u32,
-                mat_eg_idx: mat_eg_idx as u32,
-                sign: 1.0,
-            };
-            active_count += 1;
-        }
-
-        let mut bb_b = board.pieces(piece, Color::Black);
-
-        while bb_b.is_not_empty() {
-            let sq = bb_b.pop_lsb();
-            let sq_idx = usize::from(sq);
-            let mirror_idx = psqt::mirror_sq(sq_idx);
-            let mg_idx = pt * 64 + mirror_idx;
-            let eg_idx = pt * 64 + 32 + mirror_idx;
-
-            lane_vals[0] -= values.get(mg_idx).copied().unwrap_or(0.0) + mat_mg_val;
-            lane_vals[1] -= values.get(eg_idx).copied().unwrap_or(0.0) + mat_eg_val;
-
-            active[active_count] = ActivePiece {
-                mg_idx: mg_idx as u32,
-                eg_idx: eg_idx as u32,
-                mat_mg_idx: mat_mg_idx as u32,
-                mat_eg_idx: mat_eg_idx as u32,
-                sign: -1.0,
-            };
-            active_count += 1;
-        }
-    }
-
-    let mut phase_dual = DualNode::zero();
-
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
-
-        if phase_idx < values.len() {
-            phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
-        }
-    }
-
-    let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
-
-    // Seed DualNode values
-    // Only lanes 0 (MG) and 1 (EG) need gradient tracking.
-    // Lane 2 is the Phase counter. Lanes 3-7 are unused padding.
-    let mut dual_acc = DualVec8::zero();
-
-    dual_acc.0[0] = DualNode::seed(lane_vals[0], 0);
-    dual_acc.0[1] = DualNode::seed(lane_vals[1], 1);
-
-    for (dual, &val) in dual_acc.0[2..8].iter_mut().zip(&lane_vals[2..8]) {
-        *dual = DualNode::constant(val);
-    }
-
-    let params = EvalParams::<DualNode>::load_tunable(values);
-    let features = SharedFeatures::compute(board);
-    let result = evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
-
-    DualEvalResult { score: result.val, grad: result.grad, active, active_count }
 }
 
 /// Fully fused eval + gradient scatter via forward-mode AD.
@@ -279,7 +139,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
 
     // EvalParams gradients (slots 2..29)
-    let dummy = DualEvalResult { score: 0.0, grad: result.grad, active: [ActivePiece::default(); 32], active_count: 0 };
+    let dummy = DualEvalResult { grad: result.grad };
     dummy.scatter_dynamic(outer_deriv, param_grads);
 
     // PSQT gradients — re-iterate board pieces (still hot in L1)
