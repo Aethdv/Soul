@@ -167,14 +167,12 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     // `train`/`val` and `records` are parallel arrays indexed by the same subscript.
     let records_ref = &records;
 
-    // Phase-stratified balancing: weight each train sample by the inverse
-    // frequency of its phase bucket, so sparse endgame phases pull a fair share
-    // of the gradient instead of drowning under the midgame-heavy crowd.
-    let phase_weights = if config.phase_balance {
-        build_phase_weights(&records[..train_count], config.phase_balance_cap)
-    } else {
-        Vec::new()
-    };
+    // Phase-stratified balancing: weight each sample by the inverse frequency of
+    // its phase bucket, so sparse endgame phases pull a fair share of the gradient
+    // — and of the loss — instead of drowning under the midgame crowd. Weighting
+    // the loss too keeps optimization, validation, and model selection on one
+    // objective; weighting only the gradient leaves selection fighting training.
+    let phase_weights = if config.phase_balance { build_phase_weights(&records, config.phase_balance_cap) } else { Vec::new() };
     let phase_weights_ref = &phase_weights;
 
     let vol_threshold = config.volatility_threshold;
@@ -214,7 +212,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                         let sig = sigmoid(loader::eval_record(record, values), k);
                         let w = if phase_weights_ref.is_empty() { 1.0 } else { phase_weights_ref[i] };
 
-                        loss += loss_fn.loss(sig, target);
+                        loss += w * loss_fn.loss(sig, target);
                         loader::accumulate_record_grad(record, values, loss_fn.grad_scale(sig, target, k) * w, &mut g);
                         count += 1;
                     }
@@ -231,29 +229,30 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     };
 
     let val_eval = |values: &[f64], k: f64, blend: f64| -> f64 {
-        let (sum, count) = val
+        let (wsum, weight) = val
             .par_iter()
             .enumerate()
             .fold(
-                || (0.0_f64, 0usize),
-                |(mut sum, mut count), (idx, entry): (usize, &loader::SoulEntry)| {
+                || (0.0_f64, 0.0_f64),
+                |(mut wsum, mut weight), (idx, entry): (usize, &loader::SoulEntry)| {
                     let record = &records_ref[train_count + idx];
 
                     if !passes_vol_filter(entry, record.static_eval) {
-                        return (sum, count);
+                        return (wsum, weight);
                     }
 
                     let score = loader::eval_record(record, values);
                     let sig = sigmoid(score, k);
                     let target = wdl_target(entry, k, blend);
+                    let w = if phase_weights_ref.is_empty() { 1.0 } else { phase_weights_ref[train_count + idx] };
 
-                    sum += loss_fn.loss(sig, target);
-                    count += 1;
-                    (sum, count)
+                    wsum += w * loss_fn.loss(sig, target);
+                    weight += w;
+                    (wsum, weight)
                 },
             )
-            .reduce(|| (0.0_f64, 0usize), |(s1, c1), (s2, c2)| (s1 + s2, c1 + c2));
-        if count > 0 { sum / count as f64 } else { 0.0 }
+            .reduce(|| (0.0_f64, 0.0_f64), |(s1, w1), (s2, w2)| (s1 + s2, w1 + w2));
+        if weight > 0.0 { wsum / weight } else { 0.0 }
     };
 
     train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, batch_grad, val_eval);
@@ -324,13 +323,7 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
 
     let bars: String = hist
         .iter()
-        .map(|&c| {
-            if c == 0 {
-                ' '
-            } else {
-                BLOCKS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)]
-            }
-        })
+        .map(|&c| if c == 0 { ' ' } else { BLOCKS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
         .collect();
 
     let wmin = weights.iter().copied().fold(f64::INFINITY, f64::min);
