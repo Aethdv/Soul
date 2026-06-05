@@ -92,7 +92,7 @@ pub trait TrainableEntry: TunableData {
 
 impl TunableData for loader::SoulEntry {
     /// Evaluation via FEN round-trip — valid but slow.
-    /// Production code uses `eval_soul_cached` with `FeatureSlots`.
+    /// Production code uses `eval_record` with a packed `FeatureRecord`.
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {
         let board = Position::from_fen(&self.to_fen());
@@ -140,7 +140,7 @@ impl TrainableEntry for loader::SoulEntry {
     #[inline]
     fn accumulate_grad(&self, _values: &[f64], _gradient: f64, _grads: &mut [f64], _: &Self::GradState) {
         unimplemented!(
-            "SoulEntry gradient accumulation requires FeatureSlots; production code uses the cached path via eval_soul_cached / accumulate_gradient_cached"
+            "SoulEntry gradient accumulation requires a FeatureRecord; production code uses the packed path via eval_record / accumulate_record_grad"
         );
     }
 }

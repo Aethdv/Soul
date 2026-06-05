@@ -1,4 +1,5 @@
 use std::{
+    fs,
     fs::File,
     io::{self, BufWriter, Write},
     path,
@@ -10,7 +11,7 @@ use soul::{
     color,
     core::{defs::Color, psqt},
     engine::eval_params::{self, Tunable},
-    tools::dataset::FeatureSlots,
+    tools::dataset::FeatureRecord,
 };
 
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
@@ -141,15 +142,13 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     rng.shuffle(&mut entries);
 
-    // Populate cached features at startup: reconstruct a Position from each
-    // nibble-encoded entry, compute mobility / king safety / x-ray, and store
-    // in SoA (Structure of Arrays) layout for cache-friendly training access.
-    // This is the one-time cost — training reads from the slot arrays directly.
+    // Decode every nibble-encoded entry into a packed FeatureRecord at startup:
+    // reconstruct the Position, compute mobility / king safety / x-ray / pawn
+    // structure, pre-resolve the PSQT gather indices, and pack it all into one
+    // contiguous record. This is the one-time cost — training reads the records
+    // straight through. Parallel because the entries are independent.
     println!("Extracting features ({} entries)...", entries.len());
-    let mut slots = FeatureSlots::with_capacity(entries.len());
-    for entry in &entries {
-        slots.push_entry(entry);
-    }
+    let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
 
     let val_count = entries.len() / 10;
     let train_count = entries.len() - val_count;
@@ -162,8 +161,8 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     });
 
     // Shared reference for the closure captures below.
-    // `train` and `slots` are parallel arrays indexed by the same subscript.
-    let slots_ref = &slots;
+    // `train`/`val` and `records` are parallel arrays indexed by the same subscript.
+    let records_ref = &records;
     let vol_threshold = config.volatility_threshold;
     let vol_adaptive = config.volatility_adaptive;
     let loss_fn = config.loss;
@@ -172,12 +171,14 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         if vol_threshold == 0 || entry.score == i16::MAX {
             return true;
         }
+
         let t = if vol_adaptive {
             let short = 10i16.saturating_sub(entry.occupancy.count_ones() as i16);
             vol_threshold + short.saturating_mul(2)
         } else {
             vol_threshold
         };
+
         (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
     };
 
@@ -189,13 +190,14 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                 |(mut g, mut loss, mut count), chunk| {
                     for &i in chunk {
                         let entry = &train[i];
+                        let record = &records_ref[i];
 
-                        if !passes_vol_filter(entry, slots_ref.static_eval[i]) {
+                        if !passes_vol_filter(entry, record.static_eval) {
                             continue;
                         }
 
                         let target = entry.target(k, blend);
-                        let sig = sigmoid(loader::eval_soul_cached(entry, slots_ref, i, values), k);
+                        let sig = sigmoid(loader::eval_record(record, values), k);
                         let err = sig - target;
 
                         match loss_fn {
@@ -203,13 +205,13 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                                 // L = -target·ln(S) - (1-target)·ln(1-S), dL/dx = (S - target)·K
                                 let s = sig.clamp(1e-7, 1.0 - 1e-7);
                                 loss -= target * s.ln() + (1.0 - target) * (1.0 - s).ln();
-                                loader::accumulate_gradient_cached(entry, slots_ref, i, values, err * k, &mut g);
+                                loader::accumulate_record_grad(record, values, err * k, &mut g);
                             },
                             LossFn::Mse => {
                                 // dJ/dx = 2·(S - target)·K·S·(1 - S)
                                 let d = 2.0 * err * sig * (1.0 - sig) * k;
                                 loss = err.mul_add(err, loss);
-                                loader::accumulate_gradient_cached(entry, slots_ref, i, values, d, &mut g);
+                                loader::accumulate_record_grad(record, values, d, &mut g);
                             },
                         }
                         count += 1;
@@ -235,12 +237,16 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
             .fold(
                 || (0.0_f64, 0usize),
                 |(mut sum, mut count), (idx, entry): (usize, &loader::SoulEntry)| {
-                    if !passes_vol_filter(entry, slots_ref.static_eval[train_count + idx]) {
+                    let record = &records_ref[train_count + idx];
+
+                    if !passes_vol_filter(entry, record.static_eval) {
                         return (sum, count);
                     }
-                    let score = loader::eval_soul_cached(entry, slots_ref, train_count + idx, values);
+
+                    let score = loader::eval_record(record, values);
                     let sig = sigmoid(score, k);
                     let target = entry.target(k, blend);
+
                     match loss_fn {
                         LossFn::CrossEntropy => {
                             let s = sig.clamp(1e-7, 1.0 - 1e-7);
@@ -270,6 +276,7 @@ trait PipeGrads {
 impl PipeGrads for (Vec<f64>, f64, usize) {
     fn pipe_grads(self, out: &mut [f64]) -> (f64, usize) {
         let (grads, loss, count) = self;
+
         for (o, g) in out.iter_mut().zip(grads.iter()) {
             *o += g;
         }
@@ -292,6 +299,7 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
+
         if (r - 1.0).abs() < 1e-4 {
             (w + 1, b, d)
         } else if r.abs() < 1e-4 {
@@ -313,11 +321,13 @@ fn loss_sparkline(history: &[f64]) -> String {
     if history.is_empty() {
         return String::new();
     }
+
     let lo = history.iter().copied().fold(f64::MAX, f64::min);
     let hi = history.iter().copied().fold(f64::MIN, f64::max);
     let span = (hi - lo).max(1e-12);
 
     let mut out = String::with_capacity(history.len() * 20);
+
     for &v in history {
         let frac = (v - lo) / span; // 0 = best (lowest), 1 = worst (highest)
         let level = (frac * 8.0).min(7.0) as usize;
@@ -417,6 +427,7 @@ fn train_loop<G, V>(
         writeln!(w).unwrap();
         writeln!(w, "epoch   L_train     L_val       L_ref       LR").unwrap();
     }
+
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
@@ -522,6 +533,7 @@ fn train_loop<G, V>(
             let threshold = clip_thresh * n;
 
             let scale = if norm > threshold { threshold / norm } else { 1.0 };
+
             for (i, g) in grads.iter_mut().enumerate() {
                 *g = *g / n * scale;
                 total_grads[i] += *g;
@@ -568,6 +580,7 @@ fn train_loop<G, V>(
             for i in 0..values.len() {
                 if !fixed_mask[i] && grad_ema_per_param[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
                     stagnant_epochs[i] += 1;
+
                     if stagnant_epochs[i] >= config.freeze_consecutive {
                         fixed_mask[i] = true;
                         frozen += 1;
@@ -576,6 +589,7 @@ fn train_loop<G, V>(
                     stagnant_epochs[i] = 0;
                 }
             }
+
             if frozen > 0 {
                 println!("  Auto-frozen {frozen} stagnant parameters.");
             }
@@ -709,7 +723,7 @@ fn train_loop<G, V>(
 
 /// Sensitivity Analysis — writes `sensitivity-report.txt`.
 fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
-    let Ok(mut f) = std::fs::File::create("sensitivity-report.txt") else { return };
+    let Ok(mut f) = fs::File::create("sensitivity-report.txt") else { return };
     let mut w = io::BufWriter::new(&mut f);
     writeln!(w, "Sensitivity Analysis").ok();
     writeln!(w).ok();
@@ -718,6 +732,7 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
 
     for p in params {
         let delta = grad_ema[p.idx];
+
         if p.is_fixed || fixed_mask[p.idx] {
             frozen.push((delta, p.idx, p.name.as_str()));
         } else {
@@ -733,12 +748,14 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
     let frozen_width = frozen.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
 
     writeln!(w, "  Top Load-Bearing Parameters:").ok();
+
     for (i, (delta, _, name)) in sensitivities.iter().take(10).enumerate() {
         writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
 
     writeln!(w).ok();
     writeln!(w, "  Lowest-Impact Parameters:").ok();
+
     for (i, (delta, _, name)) in sensitivities.iter().rev().take(10).enumerate() {
         writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
@@ -746,6 +763,7 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
     if !frozen.is_empty() {
         writeln!(w).ok();
         writeln!(w, "  Highest Sensitivity Auto-Frozen/Fixed Parameters:").ok();
+
         for (i, (delta, _, name)) in frozen.iter().take(10).enumerate() {
             writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = frozen_width).ok();
         }
@@ -755,10 +773,12 @@ fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool])
 fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
     if input == "default" {
         let mut paths = Vec::new();
-        if let Ok(entries) = std::fs::read_dir("data") {
+
+        if let Ok(entries) = fs::read_dir("data") {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let name = path.to_string_lossy();
+
                 if name.ends_with(".soul.zst") || name.ends_with(".soul") {
                     paths.push(name.to_string());
                 }

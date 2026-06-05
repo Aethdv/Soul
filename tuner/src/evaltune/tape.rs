@@ -425,10 +425,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
             param_grads[eg_idx] -= d_eg;
         }
     }
-
     // Adding a new term = one line in `register_terms!`
     scatter_all_terms(&features, &upstreams, param_grads);
-
     err * err
 }
 
@@ -457,6 +455,7 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     // Same generator the DualNode path uses — no per-term hand literal to drift.
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
+
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }
 
@@ -531,7 +530,7 @@ mod tests {
 
     use soul::{
         core::{board::Position, psqt::LAYOUT},
-        tools::dataset::{FeatureSlots, SoulEntry, accumulate_gradient_cached, eval_soul_cached},
+        tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record},
     };
 
     use super::*;
@@ -637,6 +636,7 @@ mod tests {
 
     fn full_values() -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.tempo_offset + LAYOUT.tempo_len];
+
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -649,6 +649,7 @@ mod tests {
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.tempo_offset + LAYOUT.tempo_len];
+
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -775,11 +776,10 @@ mod tests {
                 "Round-trip score mismatch on '{fen}': orig={orig_score} reconstructed={rt_score}",
             );
 
-            let mut slots = FeatureSlots::with_capacity(1);
-            slots.push_entry(&entry);
+            let record = FeatureRecord::from_entry(&entry);
 
             let board_score = eval_f64(&pos, &values);
-            let entry_score = eval_soul_cached(&entry, &slots, 0, &values);
+            let entry_score = eval_record(&record, &values);
             assert!(
                 (board_score - entry_score).abs() < 1e-4,
                 "Score mismatch on '{fen}': board={board_score} encoded={entry_score}",
@@ -793,7 +793,7 @@ mod tests {
             let outer = 2.0 * err * sig * (1.0 - sig) * K;
 
             let mut encoded_grads = vec![0.0f64; n_params];
-            accumulate_gradient_cached(&entry, &slots, 0, &values, outer, &mut encoded_grads);
+            accumulate_record_grad(&record, &values, outer, &mut encoded_grads);
 
             let enc_loss = err * err;
             assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}");

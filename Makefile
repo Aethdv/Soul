@@ -1,6 +1,10 @@
 EXE_NAME := soul
 DEPTH    ?= 12
 
+# Evaltune profiling dataset + epoch count.
+ET_DATA   ?= data/big3.txt
+ET_EPOCHS ?= 100
+
 HAS_PGO := $(shell command -v cargo-pgo 2> /dev/null)
 RUST_HOST := $(shell rustc -vV | sed -n 's/host: //p')
 
@@ -26,7 +30,7 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune searchtune test oracle seeformat format clippy profile \
+        evaltune searchtune test oracle seeformat format clippy profile etprofile \
         releases avx2 avx2-bmi2 avx512 corrstats
 
 all: openbench
@@ -125,6 +129,19 @@ profile: ## Generate CPU performance profile
 	@perf report --stdio --header --inline --children --max-stack 15 --percent-limit 1.0 > profile_data.txt
 	@echo "\nThe profiling report has been generated in profile_data.txt"
 	@echo "Done: profile_data.txt"
+
+etprofile: ## Generate CPU performance profile for evaltune (set ET_DATA / ET_EPOCHS)
+	@echo "Building evaltune with debug symbols..."
+	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+		cargo build --profile profiling -p tuner --bin evaltune --quiet
+	@cp target/profiling/evaltune eval$(EXE_EXT)
+	@echo "Recording profile ($(ET_DATA), $(ET_EPOCHS) epochs)..."
+	@rm -f perf.data
+	@perf record -g --call-graph fp -F 999 ./eval$(EXE_EXT) -d $(ET_DATA) -e $(ET_EPOCHS) --seed 1
+	@echo "Generating profiling report..."
+	@perf report --stdio --header --inline --children --max-stack 15 --percent-limit 1.0 > evaltune_profile_data.txt
+	@echo "\nThe profiling report has been generated in evaltune_profile_data.txt"
+	@echo "Done: evaltune_profile_data.txt"
 
 openbench:
 ifdef HAS_PGO
