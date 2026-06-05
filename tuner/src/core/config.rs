@@ -216,6 +216,12 @@ pub struct EvalTuneConfig {
     /// Cap on the per-sample phase-balancing weight (clamped to `[1/cap, cap]`).
     #[serde(default = "default_phase_balance_cap")]
     pub phase_balance_cap: f64,
+    /// Target phase distribution to reweight toward — one density per phase
+    /// (`0..=TOTAL_PHASE`, 25 values; need not sum to 1). The per-sample weight
+    /// becomes `target[phase] / observed[phase]`. None = uniform (inverse
+    /// frequency, the default). Applies only when `phase_balance` is on.
+    #[serde(default)]
+    pub phase_target: Option<Vec<f64>>,
 }
 
 fn default_patience() -> usize {
@@ -374,6 +380,7 @@ impl Default for TunerConfig {
                 volatility_adaptive: true,
                 phase_balance: false,
                 phase_balance_cap: 8.0,
+                phase_target: None,
                 lr_psqt: 1.0,
                 lr_material: 0.3,
                 lr_mobility: 0.5,

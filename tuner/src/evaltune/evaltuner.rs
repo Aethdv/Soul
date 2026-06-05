@@ -172,7 +172,12 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     // — and of the loss — instead of drowning under the midgame crowd. Weighting
     // the loss too keeps optimization, validation, and model selection on one
     // objective; weighting only the gradient leaves selection fighting training.
-    let phase_weights = if config.phase_balance { build_phase_weights(&records, config.phase_balance_cap) } else { Vec::new() };
+    let phase_weights = if config.phase_balance {
+        build_phase_weights(&records, config.phase_balance_cap, config.phase_target.as_deref())
+    } else {
+        Vec::new()
+    };
+
     let phase_weights_ref = &phase_weights;
 
     let vol_threshold = config.volatility_threshold;
@@ -260,11 +265,12 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 
 /// Per-sample phase-balancing weights for `records`, normalized to mean 1.
 ///
-/// Buckets each position by game phase (0..=`TOTAL_PHASE`) and assigns the
-/// inverse bucket frequency, clamped to `[1/cap, cap]`, so sparse endgame phases
-/// pull their share of the gradient instead of drowning under midgame-heavy data.
-/// Mean-1 normalization keeps the overall gradient scale equal to an unweighted run.
-fn build_phase_weights(records: &[FeatureRecord], cap: f64) -> Vec<f64> {
+/// Reweights each position toward a `target` phase distribution, clamped to
+/// `[1/cap, cap]`. `None` is uniform — inverse bucket frequency, lifting sparse
+/// phases toward even representation. `Some(t)` is an importance weight,
+/// `target[phase] / observed[phase]`, toward the density `t`. Mean-1
+/// normalization keeps the overall gradient scale equal to an unweighted run.
+fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64]>) -> Vec<f64> {
     let cap = cap.max(1.0);
     let params = eval_params::collect_parameters();
     let woff = psqt::LAYOUT.weight_offset;
@@ -285,13 +291,25 @@ fn build_phase_weights(records: &[FeatureRecord], cap: f64) -> Vec<f64> {
 
     let used = hist.iter().filter(|&&c| c > 0).count().max(1);
     let avg = records.len() as f64 / used as f64;
+    let n = records.len() as f64;
+    let target_sum: f64 = target.map_or(1.0, |t| t.iter().sum::<f64>().max(1e-12));
     let (lo, hi) = (1.0 / cap, cap);
 
     let mut clamped = 0usize;
     let mut weights: Vec<f64> = records
         .iter()
         .map(|rec| {
-            let raw = avg / hist[phase_of(rec)] as f64;
+            let p = phase_of(rec);
+            let raw = match target {
+                // Uniform: inverse frequency, lifting sparse phases toward even weight.
+                None => avg / hist[p] as f64,
+                // Custom: importance weight toward the target density `t`.
+                Some(t) => {
+                    let observed = hist[p] as f64 / n;
+                    if observed > 0.0 { (t.get(p).copied().unwrap_or(0.0) / target_sum) / observed } else { 0.0 }
+                },
+            };
+
             if raw < lo || raw > hi {
                 clamped += 1;
             }
@@ -374,6 +392,7 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
 /// highest is tallest and reddest, so a descending run cools to a green floor.
 fn loss_sparkline(history: &[f64]) -> String {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
     if history.is_empty() {
         return String::new();
     }
@@ -387,6 +406,7 @@ fn loss_sparkline(history: &[f64]) -> String {
     for &v in history {
         let frac = (v - lo) / span; // 0 = best (lowest), 1 = worst (highest)
         let level = (frac * 8.0).min(7.0) as usize;
+
         out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
         out.push(BLOCKS[level]);
     }
