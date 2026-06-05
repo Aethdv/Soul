@@ -810,6 +810,29 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Parameter group by position in the layout, the axis the per-group optimizer
+/// masks (decay, momentum, learning rate) all key off.
+enum ParamGroup {
+    Psqt,
+    Material,
+    Mobility,
+    Other,
+}
+
+/// Classify a parameter index into its layout group — the single source of the
+/// group boundaries the masks below share.
+fn param_group(i: usize) -> ParamGroup {
+    if i < psqt::LAYOUT.material_offset {
+        ParamGroup::Psqt
+    } else if i < psqt::LAYOUT.mobility_open_offset {
+        ParamGroup::Material
+    } else if i < psqt::LAYOUT.weight_offset {
+        ParamGroup::Mobility
+    } else {
+        ParamGroup::Other
+    }
+}
+
 /// Weight decay mask: not all parameters deserve equal punishment.
 ///
 /// - PSQT center squares decay at 0.5× (central values are more structurally
@@ -818,25 +841,16 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
 ///   features are unbounded integer counts).
 /// - Everything else decays at 1.0×.
 fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
-    let psqt_end = psqt::LAYOUT.material_offset;
-    let mat_end = psqt::LAYOUT.mobility_open_offset;
-    let mob_end = psqt::LAYOUT.weight_offset;
-
     (0..params.len())
-        .map(|i| {
-            if i < psqt_end {
+        .map(|i| match param_group(i) {
+            ParamGroup::Psqt => {
                 let sq = i % 32;
-                let row = sq / 4;
-                let col = sq % 4;
+                let (row, col) = (sq / 4, sq % 4);
                 let is_center = (2..=5).contains(&row) && (2..=3).contains(&col);
                 if is_center { 0.5 } else { 1.0 }
-            } else if i < mat_end {
-                1.0
-            } else if i < mob_end {
-                1.5
-            } else {
-                1.0
-            }
+            },
+            ParamGroup::Mobility => 1.5,
+            ParamGroup::Material | ParamGroup::Other => 1.0,
         })
         .collect()
 }
@@ -850,41 +864,22 @@ fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
 ///   lets weights track the faster dynamics without lag.
 /// - Everything else (0.99): the existing default from the config.
 fn build_beta2_mask(params: &[Tunable], default_beta2: f64) -> Vec<f64> {
-    let psqt_end = psqt::LAYOUT.material_offset;
-    let mat_end = psqt::LAYOUT.mobility_open_offset;
-    let mob_end = psqt::LAYOUT.weight_offset;
-
     (0..params.len())
-        .map(|i| {
-            if i < psqt_end {
-                0.995
-            } else if i < mat_end {
-                default_beta2
-            } else if i < mob_end {
-                0.95
-            } else {
-                default_beta2
-            }
+        .map(|i| match param_group(i) {
+            ParamGroup::Psqt => 0.995,
+            ParamGroup::Mobility => 0.95,
+            ParamGroup::Material | ParamGroup::Other => default_beta2,
         })
         .collect()
 }
 
 fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
-    let psqt_end = psqt::LAYOUT.material_offset;
-    let mat_end = psqt::LAYOUT.mobility_open_offset;
-    let mob_end = psqt::LAYOUT.weight_offset;
-
     (0..params.len())
-        .map(|i| {
-            if i < psqt_end {
-                config.lr_psqt
-            } else if i < mat_end {
-                config.lr_material
-            } else if i < mob_end {
-                config.lr_mobility
-            } else {
-                config.lr_other
-            }
+        .map(|i| match param_group(i) {
+            ParamGroup::Psqt => config.lr_psqt,
+            ParamGroup::Material => config.lr_material,
+            ParamGroup::Mobility => config.lr_mobility,
+            ParamGroup::Other => config.lr_other,
         })
         .collect()
 }
