@@ -102,7 +102,7 @@ unsafe fn enable_ftz_daz() {
 /// new boundary, and only one new probe is evaluated per iteration.
 ///
 /// `range` tracks the current interval width. The probe offset from each boundary is
-/// `C * range` (not `range`) because after shrinking, the reused probe already sits
+/// `C · range` (not `range`) because after shrinking, the reused probe already sits
 /// at `C²` of the *old* width from the surviving boundary — placing the fresh probe
 /// at `C` of the *new* width mirrors it correctly.
 pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
@@ -182,8 +182,8 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
     };
 
-    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64, grads: &mut [f64]| -> (f64, usize) {
-        let reduce_res = batch_indices
+    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64| -> (Vec<f64>, f64, usize) {
+        batch_indices
             .par_chunks(256)
             .fold(
                 || (vec![0.0; values.len()], 0.0, 0usize),
@@ -225,9 +225,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                     let (g, l) = grad_combine((g1, l1), (g2, l2));
                     (g, l, c1 + c2)
                 },
-            );
-
-        reduce_res.pipe_grads(grads)
+            )
     };
 
     let val_eval = |values: &[f64], k: f64, blend: f64| -> f64 {
@@ -266,22 +264,6 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     };
 
     train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, batch_grad, val_eval);
-}
-
-/// Scatter rayon-reduced gradients into the caller's accumulator.
-trait PipeGrads {
-    fn pipe_grads(self, out: &mut [f64]) -> (f64, usize);
-}
-
-impl PipeGrads for (Vec<f64>, f64, usize) {
-    fn pipe_grads(self, out: &mut [f64]) -> (f64, usize) {
-        let (grads, loss, count) = self;
-
-        for (o, g) in out.iter_mut().zip(grads.iter()) {
-            *o += g;
-        }
-        (loss, count)
-    }
 }
 
 fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
@@ -350,7 +332,7 @@ fn train_loop<G, V>(
     batch_grad: G,
     val_eval: V,
 ) where
-    G: Fn(&[usize], &[f64], f64, f64, &mut [f64]) -> (f64, usize),
+    G: Fn(&[usize], &[f64], f64, f64) -> (Vec<f64>, f64, usize),
     V: Fn(&[f64], f64, f64) -> f64,
 {
     let all_params = eval_params::collect_parameters();
@@ -516,8 +498,7 @@ fn train_loop<G, V>(
         let mut total_grads = vec![0.0; values.len()];
 
         for batch in indices.chunks(config.batch_size) {
-            let mut grads = vec![0.0; values.len()];
-            let (batch_loss, batch_count) = batch_grad(batch, &values, k, blend, &mut grads);
+            let (mut grads, batch_loss, batch_count) = batch_grad(batch, &values, k, blend);
 
             train_loss += batch_loss;
             train_count += batch_count;
