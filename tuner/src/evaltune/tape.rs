@@ -601,8 +601,10 @@ mod tests {
             "PhalanxTerm"
         } else if slot < LAYOUT.backward_pawn_offset {
             "DefendedPawnTerm"
-        } else {
+        } else if slot < LAYOUT.tempo_offset {
             "BackwardPawnTerm"
+        } else {
+            "TempoTerm"
         }
     }
 
@@ -634,7 +636,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len];
+        let mut values = vec![0.0f64; LAYOUT.tempo_offset + LAYOUT.tempo_len];
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
@@ -646,7 +648,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len];
+        let mut values = vec![0.0f64; LAYOUT.tempo_offset + LAYOUT.tempo_len];
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
@@ -745,6 +747,11 @@ mod tests {
             "BackwardPawnTerm alone",
             &values_in_range(LAYOUT.backward_pawn_offset..LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len),
         );
+    }
+
+    #[test]
+    fn test_tempo_term_oracle() {
+        assert_oracle_matches("TempoTerm alone", &values_in_range(LAYOUT.tempo_offset..LAYOUT.tempo_offset + LAYOUT.tempo_len));
     }
 
     /// `accumulate_gradient` shares math with the board-based gradient paths.

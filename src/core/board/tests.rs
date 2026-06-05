@@ -330,14 +330,14 @@ fn startpos_piece_layout() {
 }
 
 #[test]
-fn eval_startpos_zero() {
-    use crate::engine::eval::evaluate;
+fn eval_startpos_tempo_only() {
+    use crate::engine::{eval::evaluate, eval_params::TEMPO_WEIGHTS};
 
     let pos = Position::from_fen(STARTPOS);
     let acc = pos.get_initial_accumulator();
     let score = evaluate(&pos, &acc);
 
-    assert!(score.abs() < 1, "Startpos should be zero, got {score}");
+    assert_eq!(score, TEMPO_WEIGHTS[0], "got {score}");
 }
 
 #[test]
