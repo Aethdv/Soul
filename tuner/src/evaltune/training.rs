@@ -1,6 +1,6 @@
 use soul::core::{board::Position, defs::Color};
 
-use crate::evaltune::{loader, tape, tape::eval_f64};
+use crate::evaltune::{loader, tape::eval_f64};
 
 /// Adaptive gradient clipping based on exponentially weighted percentile estimation.
 ///
@@ -65,29 +65,34 @@ pub fn sigmoid(score: f64, k: f64) -> f64 {
 
 /// Read-only evaluation trait: can compute a score and knows the game result.
 ///
-/// Implemented by both `Entry` (raw EPD) and `SoulEntry` (encoded).
-/// This is the base layer — `TrainableEntry` extends it with gradient support.
+/// Implemented by both `Entry` (raw EPD) and `SoulEntry` (encoded); the ablation
+/// tool is generic over it.
 pub trait TunableData: Sync + Send {
     fn eval(&self, values: &[f64]) -> f64;
     fn result(&self) -> f64;
 }
 
-/// Gradient-capable evaluation trait.
+/// Training target for an encoded entry: the game result, blended toward the
+/// search eval by instance-confidence WDL.
 ///
-/// Adds `target()` (result with optional WDL blending), `eval_with_state()`
-/// (evaluation that may capture internal state for gradient scatter), and
-/// `accumulate_grad()` (scatter gradients into the parameter vector).
-///
-/// For raw EPD entries, this trait is **not used in the production loop** —
-/// `eval_linear_grad` bypasses it entirely. It remains active for the
-/// encoded `.soul.zst` pipeline.
-pub trait TrainableEntry: TunableData {
-    type GradState: Default + Send;
+/// Near-zero search scores (low engine confidence) fall back to the game result;
+/// high-magnitude scores trust the eval fully. `wdl_blend >= 1.0` bypasses the
+/// instance scaling — the target is pure `sigmoid(score)`, for random-restart
+/// data with no game outcome. 400 cp is the empirical confidence saturation point.
+pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
+    const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
-    fn target(&self, k: f64, wdl_blend: f64) -> f64;
-    fn eval_with_state(&self, values: &[f64], state: &mut Self::GradState) -> f64;
+    // i16::MAX sentinel = EPD data with no search score — pure outcome.
+    if entry.score == i16::MAX {
+        return f64::from(entry.result) / 2.0;
+    }
+    let score = f64::from(entry.score);
 
-    fn accumulate_grad(&self, values: &[f64], gradient: f64, grads: &mut [f64], state: &Self::GradState);
+    let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / CONFIDENCE_THRESHOLD).min(1.0) };
+
+    let expected = sigmoid(score, k);
+    // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
+    (1.0 - instance_blend).mul_add(f64::from(entry.result) / 2.0, instance_blend * expected)
 }
 
 impl TunableData for loader::SoulEntry {
@@ -105,46 +110,6 @@ impl TunableData for loader::SoulEntry {
     }
 }
 
-impl TrainableEntry for loader::SoulEntry {
-    type GradState = ();
-
-    #[inline]
-    fn target(&self, k: f64, wdl_blend: f64) -> f64 {
-        // i16::MAX sentinel = EPD data with no search score — pure outcome.
-        if self.score == i16::MAX {
-            return f64::from(self.result) / 2.0;
-        }
-        let score = f64::from(self.score);
-
-        // Instance-Confidence WDL blending:
-        // Scale the global `wdl_blend` based on the magnitude of the search score.
-        // Near-zero scores (low engine confidence) fall back to the game result;
-        // high-magnitude scores trust the search eval fully.
-        //
-        // wdl_blend >= 1.0 bypasses instance-confidence entirely — the target
-        // is pure sigmoid(score). Used for random-restart data with no game outcome.
-        // 400 cp is the empirical confidence saturation point.
-        let confidence_threshold = 400.0;
-        let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / confidence_threshold).min(1.0) };
-
-        let expected = sigmoid(score, k);
-        // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
-        (1.0 - instance_blend).mul_add(f64::from(self.result) / 2.0, instance_blend * expected)
-    }
-
-    #[inline]
-    fn eval_with_state(&self, values: &[f64], _: &mut Self::GradState) -> f64 {
-        self.eval(values)
-    }
-
-    #[inline]
-    fn accumulate_grad(&self, _values: &[f64], _gradient: f64, _grads: &mut [f64], _: &Self::GradState) {
-        unimplemented!(
-            "SoulEntry gradient accumulation requires a FeatureRecord; production code uses the packed path via eval_record / accumulate_record_grad"
-        );
-    }
-}
-
 impl TunableData for loader::Entry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {
@@ -157,29 +122,5 @@ impl TunableData for loader::Entry {
         // The eval produces a score relative to the side-to-move,
         // so we flip for Black.
         if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
-    }
-}
-
-impl TrainableEntry for loader::Entry {
-    type GradState = Option<tape::DualEvalResult>;
-
-    #[inline]
-    fn target(&self, _k: f64, _wdl_blend: f64) -> f64 {
-        self.result()
-    }
-
-    #[inline]
-    fn eval_with_state(&self, values: &[f64], state: &mut Self::GradState) -> f64 {
-        let result = tape::eval_dual_forward(&self.board, values);
-        let val = result.score;
-        *state = Some(result);
-        val
-    }
-
-    #[inline]
-    fn accumulate_grad(&self, _: &[f64], gradient: f64, grads: &mut [f64], state: &Self::GradState) {
-        if let Some(result) = state {
-            result.scatter_grads(gradient, grads);
-        }
     }
 }

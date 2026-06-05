@@ -196,7 +196,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                             continue;
                         }
 
-                        let target = entry.target(k, blend);
+                        let target = wdl_target(entry, k, blend);
                         let sig = sigmoid(loader::eval_record(record, values), k);
                         let err = sig - target;
 
@@ -245,7 +245,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 
                     let score = loader::eval_record(record, values);
                     let sig = sigmoid(score, k);
-                    let target = entry.target(k, blend);
+                    let target = wdl_target(entry, k, blend);
 
                     match loss_fn {
                         LossFn::CrossEntropy => {
