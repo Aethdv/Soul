@@ -208,6 +208,14 @@ pub struct EvalTuneConfig {
     /// Scale the threshold with piece count (higher in complex positions).
     #[serde(default = "default_true")]
     pub volatility_adaptive: bool,
+    /// Phase-stratified gradient balancing: reweight each training sample by the
+    /// inverse frequency of its game-phase bucket, so endgame params aren't
+    /// drowned by midgame-heavy data. Off by default.
+    #[serde(default)]
+    pub phase_balance: bool,
+    /// Cap on the per-sample phase-balancing weight (clamped to `[1/cap, cap]`).
+    #[serde(default = "default_phase_balance_cap")]
+    pub phase_balance_cap: f64,
 }
 
 fn default_patience() -> usize {
@@ -242,6 +250,10 @@ fn default_lr_material() -> f64 {
 
 fn default_lr_mobility() -> f64 {
     0.5
+}
+
+fn default_phase_balance_cap() -> f64 {
+    8.0
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -360,6 +372,8 @@ impl Default for TunerConfig {
                 freeze_consecutive: 2,
                 volatility_threshold: 0,
                 volatility_adaptive: true,
+                phase_balance: false,
+                phase_balance_cap: 8.0,
                 lr_psqt: 1.0,
                 lr_material: 0.3,
                 lr_mobility: 0.5,

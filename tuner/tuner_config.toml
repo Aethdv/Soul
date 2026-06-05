@@ -25,6 +25,19 @@ loss = "cross_entropy" # mse
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
 
+# Phase-stratified gradient balancing.
+# Re-weights each training sample by the inverse frequency of its game-phase
+# bucket (0..24), so rare endgame phases aren't drowned by the midgame-heavy
+# crowd. Weights are mean-normalized — overall gradient scale is unchanged.
+#
+# _cap bounds the per-sample weight to [1/cap, cap] — the bias↔variance knob:
+#   small (≈2)  : gentle nudge, endgames stay under-trained.
+#   large (≈16) : near-full equalization, but sparse buckets turn noisy.
+# Startup prints the phase histogram + the data's imbalance ratio + clamp %;
+# set the cap toward the imbalance you actually want to correct.
+phase_balance = true
+phase_balance_cap = 8.0
+
 # Per-group LR multipliers for Lion sign-step.
 # at 1.0 full LR
 lr_psqt = 1.0
