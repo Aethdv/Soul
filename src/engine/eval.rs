@@ -107,7 +107,7 @@ pub struct PhalanxTerm;
 pub struct DefendedPawnTerm;
 /// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
 pub struct BackwardPawnTerm;
-/// Tapered bonus for the side to move — the half-move of initiative every position carries.
+/// Tapered bonus for the side to move — the half-move of initiative every position carries (~9 Elo).
 pub struct TempoTerm;
 
 pub struct DetailedEval {
