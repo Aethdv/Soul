@@ -16,7 +16,7 @@ use soul::{
 
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
 use crate::core::{
-    config::{EvalTuneConfig, LossFn, LrScheduleConfig},
+    config::{EvalTuneConfig, LrScheduleConfig},
     logger::JsonLogger,
 };
 
@@ -198,22 +198,9 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 
                         let target = wdl_target(entry, k, blend);
                         let sig = sigmoid(loader::eval_record(record, values), k);
-                        let err = sig - target;
 
-                        match loss_fn {
-                            LossFn::CrossEntropy => {
-                                // L = -target·ln(S) - (1-target)·ln(1-S), dL/dx = (S - target)·K
-                                let s = sig.clamp(1e-7, 1.0 - 1e-7);
-                                loss -= target * s.ln() + (1.0 - target) * (1.0 - s).ln();
-                                loader::accumulate_record_grad(record, values, err * k, &mut g);
-                            },
-                            LossFn::Mse => {
-                                // dJ/dx = 2·(S - target)·K·S·(1 - S)
-                                let d = 2.0 * err * sig * (1.0 - sig) * k;
-                                loss = err.mul_add(err, loss);
-                                loader::accumulate_record_grad(record, values, d, &mut g);
-                            },
-                        }
+                        loss += loss_fn.loss(sig, target);
+                        loader::accumulate_record_grad(record, values, loss_fn.grad_scale(sig, target, k), &mut g);
                         count += 1;
                     }
                     (g, loss, count)
@@ -245,16 +232,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                     let sig = sigmoid(score, k);
                     let target = wdl_target(entry, k, blend);
 
-                    match loss_fn {
-                        LossFn::CrossEntropy => {
-                            let s = sig.clamp(1e-7, 1.0 - 1e-7);
-                            sum -= target * s.ln() + (1.0 - target) * (1.0 - s).ln();
-                        },
-                        LossFn::Mse => {
-                            let err = sig - target;
-                            sum = err.mul_add(err, sum);
-                        },
-                    }
+                    sum += loss_fn.loss(sig, target);
                     count += 1;
                     (sum, count)
                 },

@@ -17,6 +17,37 @@ pub enum LossFn {
     CrossEntropy,
 }
 
+impl LossFn {
+    /// Per-sample loss for tracking, from the model win probability `sig` and the
+    /// blended `target`. Cross-entropy clamps `S` so `ln` stays finite at the ends.
+    pub fn loss(self, sig: f64, target: f64) -> f64 {
+        match self {
+            // L = (S − target)²
+            Self::Mse => {
+                let err = sig - target;
+                err * err
+            },
+            // L = −target·ln(S) − (1−target)·ln(1−S)
+            Self::CrossEntropy => {
+                let s = sig.clamp(1e-7, 1.0 - 1e-7);
+                -(target * s.ln() + (1.0 - target) * (1.0 - s).ln())
+            },
+        }
+    }
+
+    /// Outer derivative ∂L/∂score — the upstream gradient handed to the parameter
+    /// scatter. `k` is the sigmoid scaling constant.
+    pub fn grad_scale(self, sig: f64, target: f64, k: f64) -> f64 {
+        let err = sig - target;
+        match self {
+            // dJ/dx = 2·(S − target)·K·S·(1 − S)
+            Self::Mse => 2.0 * err * sig * (1.0 - sig) * k,
+            // dL/dx = (S − target)·K
+            Self::CrossEntropy => err * k,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LrScheduleConfig {
