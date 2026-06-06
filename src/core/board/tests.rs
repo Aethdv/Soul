@@ -55,6 +55,7 @@ fn zobrist_make_unmake_identity() {
         let original_fen = pos.as_fen();
 
         let moves = gen_legal_moves(&pos);
+
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);
@@ -73,6 +74,7 @@ fn zobrist_incremental_matches_full() {
     let mut acc = pos.get_initial_accumulator();
 
     let moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"];
+
     for uci in moves {
         let mv = find_uci_move(&pos, uci);
         pos.make_move(mv, &mut acc);
@@ -98,8 +100,37 @@ fn zobrist_long_sequence() {
         pos.make_move(mv, &mut acc);
         assert_eq!(pos.hash, pos.calc_zobrist(), "Hash diverged after move {uci}. Position: {}", pos.as_fen());
 
+        assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after move {uci}. Position: {}", pos.as_fen());
+        assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after move {uci}. Position: {}", pos.as_fen());
+        assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after move {uci}. Position: {}", pos.as_fen());
+
         let fresh_acc = pos.get_initial_accumulator();
         assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator diverged after move {uci}");
+    }
+}
+
+#[test]
+fn correction_keys_promotion_and_en_passant() {
+    let cases = [
+        ("8/P7/8/8/8/8/k7/7K w - - 0 1", "a7a8q"),     // queen promotion → major_key
+        ("8/P7/8/8/8/8/k7/7K w - - 0 1", "a7a8n"),     // knight underpromotion → minor_key
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"), // en passant → pawn_key
+    ];
+
+    for (fen, uci) in cases {
+        let mut pos = Position::from_fen(fen);
+        let mut acc = pos.get_initial_accumulator();
+        let before = (pos.pawn_key, pos.minor_key, pos.major_key);
+
+        let mv = find_uci_move(&pos, uci);
+        let undo = pos.make_move(mv, &mut acc);
+
+        assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after {uci} from {fen}");
+        assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after {uci} from {fen}");
+        assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after {uci} from {fen}");
+
+        pos.unmake_move(mv, &undo);
+        assert_eq!((pos.pawn_key, pos.minor_key, pos.major_key), before, "Keys not restored after unmaking {uci} from {fen}");
     }
 }
 
@@ -112,6 +143,7 @@ fn accumulator_incremental_matches_full() {
         let mut acc = pos.get_initial_accumulator();
 
         let moves = gen_legal_moves(&pos);
+
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);

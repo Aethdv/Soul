@@ -27,6 +27,9 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
     let state = StateInfo {
         castling_rights: pos.castling_rights,
         hash: pos.hash,
+        pawn_key: pos.pawn_key,
+        minor_key: pos.minor_key,
+        major_key: pos.major_key,
         captured,
         halfmove_clock: pos.halfmove_clock,
         en_passant: pos.en_passant,
@@ -41,10 +44,12 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
 
     if captured != PieceType::None {
         pos.hash ^= zobrist::key_piece(captured, opp, to);
+        toggle_corr_key(pos, captured, opp, to);
         pos.remove_piece(to, captured, opp);
     } else if mv.is_en_passant() {
         let victim_sq = to ^ 8;
         pos.hash ^= zobrist::key_piece(PieceType::Pawn, opp, victim_sq);
+        toggle_corr_key(pos, PieceType::Pawn, opp, victim_sq);
         pos.remove_piece(victim_sq, PieceType::Pawn, opp);
     }
 
@@ -53,34 +58,40 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
     } else {
         pos.remove_piece(from, pt, stm);
         pos.hash ^= zobrist::key_piece(pt, stm, from);
+        toggle_corr_key(pos, pt, stm, from);
 
         pos.add_piece(to, placed, stm);
         pos.hash ^= zobrist::key_piece(placed, stm, to);
+        toggle_corr_key(pos, placed, stm, to);
     }
 
     pos.stm = opp;
+
     if stm == Color::Black {
         pos.fullmove_number += 1;
     }
+
     pos.hash ^= zobrist::key_side();
 
     refresh_castling_rights(pos, pt, stm, from, to, state.castling_rights);
     refresh_en_passant(pos, mv, from, to, state.en_passant);
-
     state
 }
 
 /// Reverses a move, perfectly restoring the prior position.
 ///
-/// The accumulator must be bulk-restored from the snapshot by the caller
-/// — no incremental undo needed. This keeps unmake fast and avoids tricky sign-flip bugs.
+/// The accumulator must be bulk-restored from the snapshot
+/// by the caller — no incremental undo needed.
+/// This keeps unmake fast and avoids tricky sign-flip bugs.
 #[inline(always)]
 pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.stm = pos.stm.opposite();
     let stm = pos.stm;
+
     if stm == Color::Black {
         pos.fullmove_number -= 1;
     }
+
     let opp = stm.opposite();
     let from = mv.from();
     let to = mv.to();
@@ -89,6 +100,9 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.en_passant = info.en_passant;
     pos.halfmove_clock = info.halfmove_clock;
     pos.hash = info.hash;
+    pos.pawn_key = info.pawn_key;
+    pos.minor_key = info.minor_key;
+    pos.major_key = info.major_key;
 
     if mv.is_castling() {
         revert_castling(pos, from, to);
@@ -164,6 +178,23 @@ pub fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceTy
     }
 }
 
+/// Routes one piece's Zobrist key into the correction key its type owns;
+/// pawns to `pawn_key`, knight/bishop to `minor_key`, rook/queen to `major_key`,
+/// king to neither. Mirrors the inline `hash` toggles in `make_move`; XOR is
+/// self-inverse, so the same call serves a piece leaving its origin and arriving
+/// on its destination.
+#[inline(always)]
+fn toggle_corr_key(pos: &mut Position, pt: PieceType, color: Color, sq: Square) {
+    let key = zobrist::key_piece(pt, color, sq);
+
+    match pt {
+        PieceType::Pawn => pos.pawn_key ^= key,
+        PieceType::Knight | PieceType::Bishop => pos.minor_key ^= key,
+        PieceType::Rook | PieceType::Queen => pos.major_key ^= key,
+        PieceType::King | PieceType::None => {},
+    }
+}
+
 /// Undoes a castling move on the board.
 /// Hash and accumulator are bulk-restored from the snapshot — only bitboards
 /// and the mailbox need rewinding.
@@ -209,12 +240,14 @@ fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm:
     pos.hash ^= zobrist::key_piece(PieceType::King, stm, king_from);
     pos.remove_piece(rook_from, PieceType::Rook, stm);
     pos.hash ^= zobrist::key_piece(PieceType::Rook, stm, rook_from);
+    toggle_corr_key(pos, PieceType::Rook, stm, rook_from);
 
     // Land at final squares.
     pos.add_piece(king_to, PieceType::King, stm);
     pos.hash ^= zobrist::key_piece(PieceType::King, stm, king_to);
     pos.add_piece(rook_to, PieceType::Rook, stm);
     pos.hash ^= zobrist::key_piece(PieceType::Rook, stm, rook_to);
+    toggle_corr_key(pos, PieceType::Rook, stm, rook_to);
 }
 
 /// Revokes castling rights touched by the move's origin and destination.
@@ -240,6 +273,7 @@ fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: 
     if from == pos.castling_rooks[ROOK_W_QS] || to == pos.castling_rooks[ROOK_W_QS] {
         rights &= !WHITE_OOO;
     }
+
     if from == pos.castling_rooks[ROOK_B_KS] || to == pos.castling_rooks[ROOK_B_KS] {
         rights &= !BLACK_OO;
     }

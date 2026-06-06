@@ -897,9 +897,9 @@ impl Worker<'_> {
         // raw_static_eval stays untouched so the update at the end of this
         // frame learns from the unshifted baseline, not the already-corrected
         // value we use for pruning.
-        let pawn_hash = if in_check { 0 } else { self.pos.calc_pawn_hash() };
-        let minor_hash = if in_check { 0 } else { self.pos.calc_minor_hash() };
-        let major_hash = if in_check { 0 } else { self.pos.calc_major_hash() };
+        let pawn_hash = if in_check { 0 } else { self.pos.pawn_key };
+        let minor_hash = if in_check { 0 } else { self.pos.minor_key };
+        let major_hash = if in_check { 0 } else { self.pos.major_key };
         let static_eval = if in_check {
             tt::SCORE_NONE
         } else {
@@ -1571,9 +1571,9 @@ impl Worker<'_> {
             -INF
         } else {
             let raw_eval = evaluate(&self.pos, &self.accumulator);
-            let pawn_hash = self.pos.calc_pawn_hash();
-            let minor_hash = self.pos.calc_minor_hash();
-            let major_hash = self.pos.calc_major_hash();
+            let pawn_hash = self.pos.pawn_key;
+            let minor_hash = self.pos.minor_key;
+            let major_hash = self.pos.major_key;
             let correction =
                 self.history
                     .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, minor_corr_weight(), major_corr_weight())
