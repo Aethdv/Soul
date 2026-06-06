@@ -11,7 +11,7 @@
 //! Zobrist hash and SIMD accumulator are maintained incrementally — updated
 //! diff-style in `make_move`, restored from snapshots in `unmake_move`.
 
-use std::fmt;
+use std::{fmt, iter};
 
 use crate::{
     core::{
@@ -84,7 +84,7 @@ pub const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58];
 const _: () = {
     use std::mem::{align_of, offset_of, size_of};
 
-    assert!(size_of::<Position>() == 160, "Position must be exactly 160 bytes");
+    assert!(size_of::<Position>() == 192, "Position must be exactly 192 bytes");
     assert!(align_of::<Position>() == 32, "Position must be 32-byte aligned");
 
     // Hot fields packed at the front for cache locality during move gen.
@@ -92,14 +92,17 @@ const _: () = {
     assert!(offset_of!(Position, role_bb) == 16);
     assert!(offset_of!(Position, occ) == 64);
     assert!(offset_of!(Position, hash) == 72);
+    assert!(offset_of!(Position, pawn_key) == 80);
+    assert!(offset_of!(Position, minor_key) == 88);
+    assert!(offset_of!(Position, major_key) == 96);
 
-    assert!(size_of::<StateInfo>() == 16, "StateInfo must be exactly 16 bytes");
+    assert!(size_of::<StateInfo>() == 40, "StateInfo must be exactly 40 bytes");
     assert!(align_of::<StateInfo>() == 8);
 };
 
 pub use fen::Fen;
 
-//  160 bytes — spans up to three cache lines.
+//  192 bytes — spans three cache lines.
 //
 //  ┌──────────────────┬────────┬───────┐
 //  │ Field            │ Offset │ Bytes │
@@ -108,15 +111,18 @@ pub use fen::Fen;
 //  │ role_bb          │     16 │    48 │
 //  │ occ              │     64 │     8 │
 //  │ hash             │     72 │     8 │
-//  │ pieces           │     80 │    64 │
-//  │ castling_rooks   │    144 │     4 │
-//  │ castling_rights  │    148 │     1 │
-//  │ stm              │    149 │     1 │
-//  │ halfmove_clock   │    150 │     1 │
-//  │ en_passant       │    151 │     2 │
-//  │ is_frc           │    153 │     1 │
-//  │ fullmove_number  │    154 │     2 │
-//  │ (tail padding)   │    156 │     4 │
+//  │ pawn_key         │     80 │     8 │
+//  │ minor_key        │     88 │     8 │
+//  │ major_key        │     96 │     8 │
+//  │ pieces           │    104 │    64 │
+//  │ castling_rooks   │    168 │     4 │
+//  │ castling_rights  │    172 │     1 │
+//  │ stm              │    173 │     1 │
+//  │ halfmove_clock   │    174 │     1 │
+//  │ en_passant       │    175 │     2 │
+//  │ is_frc           │    177 │     1 │
+//  │ fullmove_number  │    178 │     2 │
+//  │ (tail padding)   │    180 │    12 │
 //  └──────────────────┴────────┴───────┘
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(32))]
@@ -129,6 +135,12 @@ pub struct Position {
     pub occ: Bitboard,
     /// Incrementally maintained Zobrist hash.
     pub hash: u64,
+    /// Incremental pawn-only Zobrist key; keys pawn correction history.
+    pub pawn_key: u64,
+    /// Incremental minor-piece (knight + bishop) Zobrist key; keys minor correction history.
+    pub minor_key: u64,
+    /// Incremental major-piece (rook + queen) Zobrist key; keys major correction history.
+    pub major_key: u64,
     /// Mailbox: `pos.piece_at(sq)` gives the piece type (or `None` if empty).
     pub pieces: [PieceType; 64],
     /// Rook home squares for castling, indexed by rights bit position.
@@ -158,11 +170,14 @@ impl fmt::Display for Position {
 // We snapshot these irreversible fields before each move so unmake_move
 // can restore them perfectly — no costly recalculation, just a memcpy.
 
-/// The irreversible state needed to undo a move. 16 bytes, stack-allocated.
+/// The irreversible state needed to undo a move — stack-allocated, snapshotted per move.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StateInfo {
     pub hash: u64,
+    pub pawn_key: u64,
+    pub minor_key: u64,
+    pub major_key: u64,
     pub en_passant: Option<Square>,
     pub castling_rights: u8,
     pub captured: PieceType,
@@ -171,7 +186,16 @@ pub struct StateInfo {
 
 impl Default for StateInfo {
     fn default() -> Self {
-        Self { hash: 0, en_passant: None, castling_rights: 0, captured: PieceType::None, halfmove_clock: 0 }
+        Self {
+            hash: 0,
+            pawn_key: 0,
+            minor_key: 0,
+            major_key: 0,
+            en_passant: None,
+            castling_rights: 0,
+            captured: PieceType::None,
+            halfmove_clock: 0,
+        }
     }
 }
 
@@ -183,6 +207,9 @@ impl Position {
             role_bb: [Bitboard(0); 6],
             occ: Bitboard(0),
             hash: 0,
+            pawn_key: 0,
+            minor_key: 0,
+            major_key: 0,
             pieces: [PieceType::None; 64],
             castling_rooks: [Square(0); 4],
             castling_rights: 0,
@@ -209,7 +236,7 @@ impl Position {
 
     /// Parse from pre-split FEN tokens
     /// (useful for UCI `position` commands where the token stream is already available).
-    pub fn try_from_tokens<'a, I>(parts: &mut std::iter::Peekable<I>) -> Result<Self, FenError>
+    pub fn try_from_tokens<'a, I>(parts: &mut iter::Peekable<I>) -> Result<Self, FenError>
     where I: Iterator<Item = &'a str> {
         fen::try_from_tokens(parts)
     }
@@ -227,12 +254,16 @@ impl Position {
         make::unmake_move(self, mv, info);
     }
 
-    /// Pass the turn without moving. Returns the undo packet.
+    /// Pass the turn without moving.
+    /// Returns the undo packet.
     /// Used by null move pruning — the opponent gets a free move.
     #[inline]
     pub fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
             hash: self.hash,
+            pawn_key: self.pawn_key,
+            minor_key: self.minor_key,
+            major_key: self.major_key,
             en_passant: self.en_passant,
             castling_rights: self.castling_rights,
             captured: PieceType::None,
@@ -257,6 +288,9 @@ impl Position {
     pub fn unmake_null_move(&mut self, info: &StateInfo) {
         self.stm = self.stm.opposite();
         self.hash = info.hash;
+        self.pawn_key = info.pawn_key;
+        self.minor_key = info.minor_key;
+        self.major_key = info.major_key;
         self.en_passant = info.en_passant;
         self.halfmove_clock = info.halfmove_clock;
     }
@@ -318,6 +352,7 @@ impl Position {
         for &h in history[limit..].iter().rev().skip(2).step_by(2) {
             if h == self.hash {
                 count += 1;
+
                 if count >= 3 {
                     return true;
                 }
@@ -390,6 +425,7 @@ impl Position {
             if sq == ksq.0 || sq == rsq.0 {
                 continue;
             }
+
             if occ.check_bit(Square(sq)) {
                 return false;
             }
@@ -399,6 +435,7 @@ impl Position {
         let k_lo = ksq.0.min(king_dst);
         let k_hi = ksq.0.max(king_dst);
         let king_bb = Bitboard(1u64 << ksq.0);
+
         for sq in k_lo..=k_hi {
             // We use VIRTUAL = true, passing the king's current square as mask_out.
             // Otherwise, an enemy slider attacking the traversal path might be
@@ -508,6 +545,7 @@ impl Position {
     #[inline]
     pub fn pawn_attacks(&self, color: Color) -> Bitboard {
         let pawns = self.pieces(PieceType::Pawn, color);
+
         match color {
             Color::White => ((pawns << 9) & !FILE_A) | ((pawns << 7) & !FILE_H),
             Color::Black => ((pawns >> 9) & !FILE_H) | ((pawns >> 7) & !FILE_A),
@@ -561,9 +599,11 @@ impl Position {
         if self.stm == Color::Black {
             key ^= zobrist::key_side();
         }
+
         if self.castling_rights != 0 {
             key ^= zobrist::key_castling(self.castling_rights);
         }
+
         if let Some(ep) = self.en_passant {
             key ^= zobrist::key_ep(ep);
         }
@@ -571,9 +611,12 @@ impl Position {
         key
     }
 
+    /// Zobrist hash of all pawns (both colors). Recomputed from scratch — for
+    /// initialization and debug verification against the incremental [`Self::pawn_key`].
     pub fn calc_pawn_hash(&self) -> u64 {
         let mut key = 0u64;
         let pawns = self.role_bb[PieceType::Pawn];
+
         for sq in pawns {
             key ^= zobrist::key_piece(PieceType::Pawn, self.color_at(sq), sq);
         }
@@ -586,6 +629,7 @@ impl Position {
     pub fn calc_minor_hash(&self) -> u64 {
         let mut key = 0u64;
         let minors = self.role_bb[PieceType::Knight] | self.role_bb[PieceType::Bishop];
+
         for sq in minors {
             key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
         }
@@ -597,6 +641,7 @@ impl Position {
     pub fn calc_major_hash(&self) -> u64 {
         let mut key = 0u64;
         let majors = self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen];
+
         for sq in majors {
             key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
         }

@@ -9,7 +9,10 @@
 //! STM-relative on the way into SoulEntry. The header's score field is a
 //! stale placeholder — real evals live in the move pairs.
 
-use std::io::{self, Read};
+use std::{
+    fs,
+    io::{self, Read},
+};
 
 use super::SoulEntry;
 use crate::{
@@ -25,7 +28,7 @@ const PACKED_BOARD_SIZE: usize = 32;
 const SENTINEL: [u8; 4] = [0, 0, 0, 0];
 
 pub fn parse_viri_file(path: &str) -> io::Result<Vec<SoulEntry>> {
-    let mut file = std::fs::File::open(path)?;
+    let mut file = fs::File::open(path)?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
@@ -108,6 +111,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
     let en_passant = if ep < 64 { Some(Square(ep)) } else { None };
 
     let mut pos = Position::new();
+
     pos.stm = stm;
     pos.en_passant = en_passant;
 
@@ -131,6 +135,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
         if piece_idx >= 32 {
             break;
         }
+
         let nibble = if piece_idx.is_multiple_of(2) { pieces[piece_idx / 2] & 0x0F } else { pieces[piece_idx / 2] >> 4 };
         piece_idx += 1;
 
@@ -169,6 +174,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
     if let Some(king_sq) = white_king {
         for &rook_idx in &unmoved_rooks[Color::White as usize] {
             let rook = Square(rook_idx);
+
             if rook.file() > king_sq.file() {
                 set_castling_rights |= WHITE_OO;
                 pos.castling_rooks[ROOK_W_KS] = rook;
@@ -181,6 +187,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
     if let Some(king_sq) = black_king {
         for &rook_idx in &unmoved_rooks[Color::Black as usize] {
             let rook = Square(rook_idx);
+
             if rook.file() > king_sq.file() {
                 set_castling_rights |= BLACK_OO;
                 pos.castling_rooks[ROOK_B_KS] = rook;
@@ -199,6 +206,9 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
         || pos.castling_rooks[ROOK_B_QS] != Square(56);
 
     pos.hash = pos.calc_zobrist();
+    pos.pawn_key = pos.calc_pawn_hash();
+    pos.minor_key = pos.calc_minor_hash();
+    pos.major_key = pos.calc_major_hash();
 
     Some((pos, result))
 }
@@ -223,9 +233,11 @@ fn viri_to_soul_move(viri_move: u16, pos: &Position) -> Option<Move> {
     }
 
     let moving_piece = pos.piece_at(from);
+
     if moving_piece == PieceType::None {
         return None;
     }
+
     let capture = pos.piece_at(to) != PieceType::None;
 
     let flag: u16 = match move_type {
