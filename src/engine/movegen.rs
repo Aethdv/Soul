@@ -139,14 +139,29 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
     match piece {
         PieceType::Pawn => {
             let fwd = stm.forward_dir().delta();
+            let (start_rank, last_rank) = if stm == Color::White { (1u8, 7u8) } else { (6u8, 0u8) };
+
+            // A promotion flag belongs exactly on the last rank, and a non-promoting
+            // pawn move must never land there — the generator always promotes.
+            // A collision that breaks either would queen mid-board or push
+            // a pawn onto the back rank.
+            if mv.is_promotion() != (to.rank() == last_rank) {
+                return false;
+            }
 
             if mv.is_en_passant() {
                 return board.en_passant == Some(to) && atk_pawn(from, stm).check_bit(to);
             }
 
             if mv.is_double_push() {
+                // From the start rank only. Otherwise the move arms a phantom en
+                // passant square that a later EP capture turns into board corruption.
                 let mid = Square((from.0 as i8 + fwd) as u8);
-                return to.0 as i8 == from.0 as i8 + fwd * 2 && !occ.check_bit(mid) && !occ.check_bit(to);
+
+                return from.rank() == start_rank
+                    && to.0 as i8 == from.0 as i8 + fwd * 2
+                    && !occ.check_bit(mid)
+                    && !occ.check_bit(to);
             }
 
             if mv.is_capture() {
@@ -554,5 +569,20 @@ mod tests {
 
         assert!(!is_pseudo_legal(&pos, kingside), "kingside castle through the g1 knight must be rejected");
         assert!(is_pseudo_legal(&pos, queenside), "queenside castle with a clear corridor must pass");
+    }
+
+    #[test]
+    fn tt_double_push_validates_start_rank() {
+        // A TT collision can hand back a DOUBLE_PUSH from the wrong rank. Played,
+        // it arms a phantom en passant square; a later EP capture removes a pawn
+        // that isn't there and unmake then conjures one — board corruption that
+        // outlives the move. The origin must be the pawn's start rank.
+        let pos = Position::from_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1"); // pawn on e3
+        let phantom = Move::new(Square::from_coords(4, 2), Square::from_coords(4, 4), Move::DOUBLE_PUSH);
+        assert!(!is_pseudo_legal(&pos, phantom), "double push from the third rank must be rejected");
+
+        let start = Position::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"); // pawn on e2
+        let real = Move::new(Square::from_coords(4, 1), Square::from_coords(4, 3), Move::DOUBLE_PUSH);
+        assert!(is_pseudo_legal(&start, real), "double push from the second rank must pass");
     }
 }
