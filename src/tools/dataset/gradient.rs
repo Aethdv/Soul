@@ -59,6 +59,7 @@ pub struct FeatureRecord {
     pub isolated_pawn: i8,
     pub backward_pawn: i8,
     pub tempo: i8,
+    pub minor_behind_pawn: i8,
     pub piece_count: u8,
 }
 
@@ -127,6 +128,7 @@ impl FeatureRecord {
             isolated_pawn: (sf.isolated_pawn_diff * sign) as i8,
             backward_pawn: (sf.backward_pawn_diff * sign) as i8,
             tempo: (sf.tempo * sign) as i8,
+            minor_behind_pawn: (sf.minor_behind_pawn_diff * sign) as i8,
             piece_count,
         }
     }
@@ -225,6 +227,13 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
 
     score += taper(record.backward_pawn, values[l.backward_pawn_offset], values[l.backward_pawn_offset + 1], mg_w, eg_w);
     score += taper(record.tempo, values[l.tempo_offset], values[l.tempo_offset + 1], mg_w, eg_w);
+    score += taper(
+        record.minor_behind_pawn,
+        values[l.minor_behind_pawn_offset],
+        values[l.minor_behind_pawn_offset + 1],
+        mg_w,
+        eg_w,
+    );
 
     score
 }
@@ -320,6 +329,15 @@ pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: 
 
     taper_grad(record.backward_pawn, gradient, mg_w, eg_w, grads, l.backward_pawn_offset, l.backward_pawn_offset + 1);
     taper_grad(record.tempo, gradient, mg_w, eg_w, grads, l.tempo_offset, l.tempo_offset + 1);
+    taper_grad(
+        record.minor_behind_pawn,
+        gradient,
+        mg_w,
+        eg_w,
+        grads,
+        l.minor_behind_pawn_offset,
+        l.minor_behind_pawn_offset + 1,
+    );
 
     // Mobility: open/closed weights scaled by openness, both phases.
     let (openness, closedness) = openness_pair(record.open_raw);

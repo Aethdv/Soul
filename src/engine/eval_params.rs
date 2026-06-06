@@ -276,35 +276,37 @@ macro_rules! define_weight_params {
 macro_rules! define_tunables {
     ($macro:ident) => {
         $macro! {
-            (mg_mob_open,        Vec4,   mobility_open_offset,      0),
-            (eg_mob_open,        Vec4,   mobility_open_offset,      4),
-            (mg_mob_closed,      Vec4,   mobility_closed_offset,    0),
-            (eg_mob_closed,      Vec4,   mobility_closed_offset,    4),
-            (w_shield,           Scalar, king_safety_offset,        0),
-            (w_ortho,            Scalar, king_safety_offset,        1),
-            (w_diag,             Scalar, king_safety_offset,        2),
-            (atk_weights,        Array6, attacker_offset,           0),
-            (w_xray_ortho,       Scalar, xray_offset,               0),
-            (w_bp_mg,            Scalar, bishop_pair_offset,        0),
-            (w_bp_eg,            Scalar, bishop_pair_offset,        1),
-            (w_rook_open_mg,     Scalar, rook_open_offset,          0),
-            (w_rook_open_eg,     Scalar, rook_open_offset,          1),
-            (passed_pawn_mg,     Array6, passed_pawn_mg_offset,     0),
-            (passed_pawn_eg,     Array6, passed_pawn_eg_offset,     0),
-            (enemy_king_dist_mg, Array6, enemy_king_dist_mg_offset, 0),
-            (enemy_king_dist_eg, Array6, enemy_king_dist_eg_offset, 0),
-            (w_doubled_pawn_mg,  Scalar, doubled_pawn_offset,       0),
-            (w_doubled_pawn_eg,  Scalar, doubled_pawn_offset,       1),
-            (w_isolated_pawn_mg, Scalar, isolated_pawn_offset,      0),
-            (w_isolated_pawn_eg, Scalar, isolated_pawn_offset,      1),
-            (phalanx_mg,         Array6, phalanx_mg_offset,         0),
-            (phalanx_eg,         Array6, phalanx_eg_offset,         0),
-            (defended_pawn_mg,   Array6, defended_pawn_mg_offset,   0),
-            (defended_pawn_eg,   Array6, defended_pawn_eg_offset,   0),
-            (w_backward_pawn_mg, Scalar, backward_pawn_offset,      0),
-            (w_backward_pawn_eg, Scalar, backward_pawn_offset,      1),
-            (w_tempo_mg,         Scalar, tempo_offset,              0),
-            (w_tempo_eg,         Scalar, tempo_offset,              1)
+            (mg_mob_open,            Vec4,   mobility_open_offset,      0),
+            (eg_mob_open,            Vec4,   mobility_open_offset,      4),
+            (mg_mob_closed,          Vec4,   mobility_closed_offset,    0),
+            (eg_mob_closed,          Vec4,   mobility_closed_offset,    4),
+            (w_shield,               Scalar, king_safety_offset,        0),
+            (w_ortho,                Scalar, king_safety_offset,        1),
+            (w_diag,                 Scalar, king_safety_offset,        2),
+            (atk_weights,            Array6, attacker_offset,           0),
+            (w_xray_ortho,           Scalar, xray_offset,               0),
+            (w_bp_mg,                Scalar, bishop_pair_offset,        0),
+            (w_bp_eg,                Scalar, bishop_pair_offset,        1),
+            (w_rook_open_mg,         Scalar, rook_open_offset,          0),
+            (w_rook_open_eg,         Scalar, rook_open_offset,          1),
+            (passed_pawn_mg,         Array6, passed_pawn_mg_offset,     0),
+            (passed_pawn_eg,         Array6, passed_pawn_eg_offset,     0),
+            (enemy_king_dist_mg,     Array6, enemy_king_dist_mg_offset, 0),
+            (enemy_king_dist_eg,     Array6, enemy_king_dist_eg_offset, 0),
+            (w_doubled_pawn_mg,      Scalar, doubled_pawn_offset,       0),
+            (w_doubled_pawn_eg,      Scalar, doubled_pawn_offset,       1),
+            (w_isolated_pawn_mg,     Scalar, isolated_pawn_offset,      0),
+            (w_isolated_pawn_eg,     Scalar, isolated_pawn_offset,      1),
+            (phalanx_mg,             Array6, phalanx_mg_offset,         0),
+            (phalanx_eg,             Array6, phalanx_eg_offset,         0),
+            (defended_pawn_mg,       Array6, defended_pawn_mg_offset,   0),
+            (defended_pawn_eg,       Array6, defended_pawn_eg_offset,   0),
+            (w_backward_pawn_mg,     Scalar, backward_pawn_offset,      0),
+            (w_backward_pawn_eg,     Scalar, backward_pawn_offset,      1),
+            (w_tempo_mg,             Scalar, tempo_offset,              0),
+            (w_tempo_eg,             Scalar, tempo_offset,              1),
+            (w_minor_behind_pawn_mg, Scalar, minor_behind_pawn_offset,  0),
+            (w_minor_behind_pawn_eg, Scalar, minor_behind_pawn_offset,  1)
         }
     };
 }
@@ -360,6 +362,7 @@ define_layout! {
     defended_pawn_eg   = DEFENDED_PAWN_EG.len(),
     backward_pawn      = BACKWARD_PAWN_WEIGHTS.len(),
     tempo              = TEMPO_WEIGHTS.len(),
+    minor_behind_pawn  = MINOR_BEHIND_PAWN_WEIGHTS.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -398,68 +401,68 @@ define_psqt_params! {
     // Files A-D (mirrored to E-H) × 8 ranks
     PAWN = [
         CS(  0,    0),  CS(  0,    0),  CS(  0,    0),  CS(  0,    0),
-        S(  64,  177),  S(  88,  142),  S(  73,  173),  S(  87,  149),
-        S(   6,   45),  S(  13,   47),  S(  63,    1),  S(  45,  -23),
-        S( -23,   25),  S( -14,   18),  S(  -5,    2),  S(  12,  -13),
-        S( -35,   15),  S( -32,   19),  S( -23,   11),  S(  -5,    5),
-        S( -43,   11),  S( -35,   13),  S( -37,   18),  S( -28,   18),
-        S( -40,   17),  S( -28,   19),  S( -28,   25),  S( -34,   24),
+        S(  79,  184),  S( 115,  145),  S(  97,  178),  S( 113,  150),
+        S(  11,   56),  S(  20,   55),  S(  71,    9),  S(  55,  -17),
+        S( -18,   33),  S(  -7,   25),  S(   4,    9),  S(  20,   -6),
+        S( -31,   23),  S( -27,   27),  S( -20,   19),  S(   0,   14),
+        S( -39,   19),  S( -34,   22),  S( -34,   27),  S( -27,   27),
+        S( -37,   25),  S( -25,   27),  S( -27,   34),  S( -32,   33),
         CS(  0,    0),  CS(  0,    0),  CS(  0,    0),  CS(  0,    0),
     ],
 
     KNIGHT = [
-        S(-195,  -57),  S(-143,   24),  S(-128,   52),  S( -74,   55),
-        S( -40,   34),  S( -31,   64),  S(  19,   62),  S( -11,   71),
-        S( -22,   51),  S(   9,   72),  S(  30,   89),  S(  45,   87),
-        S( -19,   68),  S( -26,   95),  S(  17,  109),  S(  13,  117),
-        S( -51,   74),  S( -14,   88),  S( -19,  109),  S(  -8,  123),
-        S( -73,   60),  S( -39,   81),  S( -34,   89),  S( -17,  112),
-        S( -65,   65),  S( -73,   73),  S( -51,   85),  S( -42,   87),
-        S(-121,   42),  S( -88,   36),  S( -72,   56),  S( -74,   71),
+        S(-188,  -40),  S(-161,   58),  S(-108,   79),  S( -58,   81),
+        S( -21,   61),  S(  -9,   93),  S(  40,   89),  S(  15,   98),
+        S(  -8,   75),  S(  21,   97),  S(  47,  112),  S(  70,  114),
+        S(  -3,   90),  S(  -9,  117),  S(  39,  130),  S(  29,  144),
+        S( -32,   97),  S(   6,  110),  S(   0,  132),  S(   9,  146),
+        S( -55,   86),  S( -19,  105),  S( -16,  116),  S(  -2,  136),
+        S( -52,   85),  S( -62,   91),  S( -36,  109),  S( -25,  114),
+        S(-109,   62),  S( -77,   52),  S( -60,   81),  S( -56,  100),
     ],
 
     BISHOP = [
-        S( -81,   53),  S( -93,   66),  S(-110,   58),  S(-155,   74),
-        S( -36,   42),  S( -16,   63),  S( -20,   59),  S( -26,   59),
-        S(  -3,   61),  S(   0,   65),  S(   4,   76),  S(   8,   63),
-        S( -31,   58),  S( -19,   72),  S(  -4,   77),  S(  11,   84),
-        S( -31,   45),  S( -29,   70),  S( -23,   80),  S(  -3,   84),
-        S( -33,   51),  S( -19,   61),  S( -23,   77),  S( -21,   80),
-        S( -25,   43),  S( -15,   48),  S(  -8,   44),  S( -31,   65),
-        S( -39,   25),  S( -18,   54),  S( -51,   41),  S( -50,   54),
+        S( -69,   83),  S( -76,   95),  S( -93,   86),  S(-145,  105),
+        S( -16,   71),  S(   5,   92),  S(   0,   90),  S(  -3,   86),
+        S(   8,   85),  S(  12,   91),  S(  19,  100),  S(  26,   92),
+        S( -14,   80),  S(  -2,   95),  S(  18,  100),  S(  29,  110),
+        S( -11,   69),  S( -11,   95),  S(  -3,  104),  S(  14,  106),
+        S( -14,   75),  S(   0,   85),  S(  -4,  100),  S(  -6,  103),
+        S( -14,   59),  S(  -1,   65),  S(   9,   66),  S( -15,   91),
+        S( -26,   49),  S(  -4,   76),  S( -37,   64),  S( -30,   82),
     ],
 
     ROOK = [
-        S(-171,   61),  S(-198,   73),  S(-195,   77),  S(-195,   69),
-        S(-153,   55),  S(-159,   64),  S(-134,   60),  S(-132,   54),
-        S(-148,   50),  S(-109,   44),  S(-121,   44),  S(-120,   40),
-        S(-153,   53),  S(-137,   46),  S(-136,   49),  S(-139,   45),
-        S(-176,   54),  S(-157,   50),  S(-163,   52),  S(-151,   50),
-        S(-170,   41),  S(-144,   29),  S(-158,   39),  S(-156,   44),
-        S(-185,   43),  S(-164,   37),  S(-160,   37),  S(-160,   36),
-        S(-167,   46),  S(-160,   40),  S(-171,   45),  S(-153,   32),
+        S(-145,  113),  S(-174,  125),  S(-171,  130),  S(-170,  121),
+        S(-126,  105),  S(-131,  114),  S(-104,  110),  S(-103,  104),
+        S(-122,  101),  S( -82,   95),  S( -90,   91),  S( -91,   87),
+        S(-127,  105),  S(-112,   97),  S(-107,   99),  S(-113,   95),
+        S(-150,  105),  S(-132,  102),  S(-139,  103),  S(-125,  100),
+        S(-146,   92),  S(-119,   80),  S(-133,   89),  S(-132,   95),
+        S(-160,   93),  S(-139,   87),  S(-133,   87),  S(-134,   86),
+        S(-141,   95),  S(-135,   92),  S(-145,   95),  S(-126,   81),
     ],
 
     QUEEN = [
-        S(-527,  272),  S(-515,  286),  S(-535,  332),  S(-520,  329),
-        S(-472,  308),  S(-521,  346),  S(-508,  365),  S(-538,  398),
-        S(-464,  321),  S(-458,  319),  S(-490,  373),  S(-488,  381),
-        S(-472,  335),  S(-493,  372),  S(-489,  362),  S(-505,  394),
-        S(-487,  343),  S(-481,  354),  S(-497,  368),  S(-495,  378),
-        S(-481,  306),  S(-480,  333),  S(-483,  349),  S(-488,  352),
-        S(-469,  263),  S(-472,  270),  S(-468,  285),  S(-474,  319),
-        S(-505,  291),  S(-499,  283),  S(-499,  282),  S(-485,  299),
+        S(-489,  371),  S(-471,  384),  S(-485,  427),  S(-478,  429),
+        S(-428,  409),  S(-480,  445),  S(-468,  469),  S(-496,  500),
+        S(-422,  423),  S(-414,  415),  S(-448,  472),  S(-447,  484),
+        S(-431,  435),  S(-452,  474),  S(-447,  461),  S(-468,  498),
+        S(-446,  445),  S(-439,  455),  S(-458,  470),  S(-456,  480),
+        S(-440,  403),  S(-437,  431),  S(-442,  449),  S(-447,  452),
+        S(-428,  358),  S(-432,  371),  S(-427,  383),  S(-432,  420),
+        S(-464,  382),  S(-460,  379),  S(-459,  382),  S(-444,  397),
     ],
 
     KING = [
-        S(  16, -142),  S(  -7,  -50),  S( -26,  -34),  S( -93,  -21),
-        S(-151,    5),  S(   2,   30),  S( -47,   39),  S(  36,   14),
-        S(-161,    7),  S(   2,   37),  S( -12,   46),  S( -37,   51),
-        S(-179,   -2),  S( -62,   27),  S( -82,   50),  S(-125,   60),
-        S(-160,  -21),  S( -84,    9),  S( -82,   32),  S(-125,   53),
-        S( -85,  -38),  S( -31,  -14),  S( -59,   12),  S( -62,   23),
-        S(  11,  -65),  S(   9,  -35),  S( -20,  -11),  S( -39,    1),
-        S(  15, -119),  S(  27,  -78),  S(   1,  -50),  S(   5,  -59),
+        S(  34, -140),  S( -20,  -49),  S( -10,  -37),  S( -77,  -20),
+        S(-161,    8),  S( -15,   39),  S( -61,   49),  S(  32,   19),
+        S(-146,    9),  S(  -7,   45),  S(   1,   50),  S( -35,   58),
+        S(-171,    1),  S( -67,   34),  S( -87,   58),  S(-129,   68),
+        S(-166,  -18),  S( -86,   14),  S( -83,   38),  S(-130,   60),
+        S( -86,  -36),  S( -32,  -11),  S( -60,   17),  S( -63,   29),
+        S(  15,  -64),  S(  14,  -33),  S( -19,   -8),  S( -38,    5),
+        S(  19, -121),  S(  31,  -79),  S(   4,  -48),  S(   8,  -58),
     ],
 }
 
@@ -476,32 +479,33 @@ define_simple_params! {
 
 define_simd_params! {
     MG_MOBILITY_OPEN = [
-        V(5), V(-6), V(6), V(5)], // [mobility, battery, threats, xray threats]
+        V(5), V(-6), V(5), V(5)], // [mobility, battery, threats, xray threats]
     EG_MOBILITY_OPEN = [
-        V(-6), V(-8), V(5), V(-7)],
+        V(-6), V(-9), V(7), V(-8)],
     MG_MOBILITY_CLOSED = [
-        V(0), V(7), V(-17), V(-7)],
+        V(0), V(7), V(-16), V(-5)],
     EG_MOBILITY_CLOSED = [
-        V(25), V(9), V(39), V(-29)],
+        V(26), V(12), V(39), V(-28)],
 }
 
 define_weight_params! {
-    PHASE_WEIGHTS         = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    ATTACKER_WEIGHTS      = [CV(0), V(160), V(256), V(430), V(512), V(528)], // [0, 1, 2, 3, 4, 5] attackers × weak
-    KING_SAFETY_WEIGHTS   = [V(19), V(10), V(8)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    XRAY_WEIGHTS          = [V(9)], // [Ortho King]
-    BISHOP_PAIR_WEIGHTS   = [V(33), V(71)], // [MG, EG]
-    ROOK_OPEN_WEIGHTS     = [V(39), V(2)], // [MG, EG]
-    PASSED_PAWN_MG        = [V(-18), V(-32), V(-36), V(-13), V(-19), V(-15)], // by relative rank 1-6
-    PASSED_PAWN_EG        = [V(-38), V(-17), V(28), V(77), V(166), V(97)], // by relative rank 1-6
-    ENEMY_KING_DIST_MG    = [V(-85), V(35), V(20), V(16), V(14), V(9)], // enemy king→passer dist, 7 clamps to 6
-    ENEMY_KING_DIST_EG    = [V(-51), V(-4), V(33), V(46), V(57), V(64)], // enemy king→passer dist, 7 clamps to 6
-    DOUBLED_PAWN_WEIGHTS  = [V(1), V(-41)], // [MG, EG]
-    ISOLATED_PAWN_WEIGHTS = [V(-8), V(-12)], // [MG, EG]
-    PHALANX_MG            = [V(6), V(16), V(27), V(57), V(152), V(-364)], // by relative rank 2-7
-    PHALANX_EG            = [V(-6), V(2), V(22), V(84), V(188), V(607)], // by relative rank 2-7
-    DEFENDED_PAWN_MG      = [CV(0), V(29), V(19), V(17), V(26), V(227)], // by relative rank 2-7 (rank 2 unreachable)
-    DEFENDED_PAWN_EG      = [CV(0), V(14), V(12), V(25), V(58), V(1)], // by relative rank 2-7 (rank 2 unreachable)
-    BACKWARD_PAWN_WEIGHTS = [V(-8), V(-16)], // [MG, EG]
-    TEMPO_WEIGHTS         = [V(29), V(35)], // [MG, EG] — side-to-move initiative
+    PHASE_WEIGHTS             = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
+    ATTACKER_WEIGHTS          = [CV(0), V(170), V(270), V(453), V(537), V(557)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    KING_SAFETY_WEIGHTS       = [V(21), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    XRAY_WEIGHTS              = [V(10)], // [Ortho King]
+    BISHOP_PAIR_WEIGHTS       = [V(36), V(73)], // [MG, EG]
+    ROOK_OPEN_WEIGHTS         = [V(41), V(1)], // [MG, EG]
+    PASSED_PAWN_MG            = [V(-14), V(-28), V(-32), V(-11), V(-15), V(-25)], // by relative rank 1-6
+    PASSED_PAWN_EG            = [V(-44), V(-22), V(26), V(78), V(173), V(112)], // by relative rank 1-6
+    ENEMY_KING_DIST_MG        = [V(-98), V(32), V(16), V(12), V(9), V(4)], // enemy king→passer dist, 7 clamps to 6
+    ENEMY_KING_DIST_EG        = [V(-50), V(0), V(39), V(52), V(65), V(72)], // enemy king→passer dist, 7 clamps to 6
+    DOUBLED_PAWN_WEIGHTS      = [V(3), V(-44)], // [MG, EG]
+    ISOLATED_PAWN_WEIGHTS     = [V(-9), V(-13)], // [MG, EG]
+    PHALANX_MG                = [V(6), V(16), V(26), V(57), V(138), V(-364)], // by relative rank 2-7
+    PHALANX_EG                = [V(-7), V(1), V(22), V(89), V(212), V(575)], // by relative rank 2-7
+    DEFENDED_PAWN_MG          = [CV(0), V(30), V(20), V(17), V(27), V(210)], // by relative rank 2-7 (rank 2 unreachable)
+    DEFENDED_PAWN_EG          = [CV(0), V(16), V(13), V(27), V(62), V(6)], // by relative rank 2-7 (rank 2 unreachable)
+    BACKWARD_PAWN_WEIGHTS     = [V(-7), V(-17)], // [MG, EG]
+    TEMPO_WEIGHTS             = [V(30), V(37)], // [MG, EG] — side-to-move initiative
+    MINOR_BEHIND_PAWN_WEIGHTS = [V(13), V(32)], // [MG, EG]
 }

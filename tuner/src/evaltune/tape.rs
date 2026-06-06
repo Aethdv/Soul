@@ -425,6 +425,8 @@ mod tests {
         "4k3/2p3pp/1p3p2/8/2P2P2/1P4P1/7P/4K3 w - - 0 1",
         // Backward pawn
         "8/3p2k1/2p5/4p3/2P1P3/3P4/K7/8 w - - 0 1",
+        // Minor behind pawn
+        "4k3/5p2/5n2/8/4P3/4N3/8/4K3 w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;
@@ -462,8 +464,10 @@ mod tests {
             "DefendedPawnTerm"
         } else if slot < LAYOUT.tempo_offset {
             "BackwardPawnTerm"
-        } else {
+        } else if slot < LAYOUT.minor_behind_pawn_offset {
             "TempoTerm"
+        } else {
+            "MinorBehindPawnTerm"
         }
     }
 
@@ -495,7 +499,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.tempo_offset + LAYOUT.tempo_len];
+        let mut values = vec![0.0f64; LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len];
 
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
@@ -508,7 +512,7 @@ mod tests {
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.tempo_offset + LAYOUT.tempo_len];
+        let mut values = vec![0.0f64; LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len];
 
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
@@ -613,6 +617,14 @@ mod tests {
     #[test]
     fn test_tempo_term_oracle() {
         assert_oracle_matches("TempoTerm alone", &values_in_range(LAYOUT.tempo_offset..LAYOUT.tempo_offset + LAYOUT.tempo_len));
+    }
+
+    #[test]
+    fn test_minor_behind_pawn_term_oracle() {
+        assert_oracle_matches(
+            "MinorBehindPawnTerm alone",
+            &values_in_range(LAYOUT.minor_behind_pawn_offset..LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len),
+        );
     }
 
     /// `accumulate_gradient` shares math with the board-based gradient paths.
