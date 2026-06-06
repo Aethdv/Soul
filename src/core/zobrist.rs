@@ -91,6 +91,7 @@ const fn init_keys() -> ZobristKeys {
 
     let mut pieces = [0; PIECE_KEYS_LEN];
     let mut pt = 0;
+
     while pt < 6 {
         let mut sq = 0;
         while sq < 64 {
@@ -103,6 +104,7 @@ const fn init_keys() -> ZobristKeys {
 
     let mut en_passant = [0; EP_KEYS_LEN];
     let mut j = 0;
+
     while j < EP_KEYS_LEN {
         en_passant[j] = rng.next();
         j += 1;
@@ -110,10 +112,16 @@ const fn init_keys() -> ZobristKeys {
 
     let mut castling = [0; CASTLING_KEYS_LEN];
     let mut k = 0;
+
     while k < CASTLING_KEYS_LEN {
         castling[k] = rng.next();
         k += 1;
     }
+    // Empty rights must hash to nothing. make_move XORs key_castling on every rights
+    // change, so a non-zero key at index 0 desyncs the incremental hash from
+    // calc_zobrist (which skips zero rights) the moment castling rights run out. Drawn
+    // above, then zeroed, so the non-zero-rights keys keep their values.
+    castling[0] = 0;
 
     let side = rng.next();
 
