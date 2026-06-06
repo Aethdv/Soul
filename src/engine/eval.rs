@@ -23,8 +23,8 @@ use crate::{
         eval_params::{
             self, ATTACKER_WEIGHTS, BACKWARD_PAWN_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG,
             DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG,
-            ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, PASSED_PAWN_EG, PASSED_PAWN_MG,
-            PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, TEMPO_WEIGHTS, XRAY_WEIGHTS,
+            ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, MINOR_BEHIND_PAWN_WEIGHTS,
+            PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, TEMPO_WEIGHTS, XRAY_WEIGHTS,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -84,6 +84,7 @@ crate::register_terms! {
     DefendedPawnTerm => bonus,
     BackwardPawnTerm => bonus,
     TempoTerm => bonus,
+    MinorBehindPawnTerm => bonus,
     XrayTerm => xray,
 }
 
@@ -109,6 +110,8 @@ pub struct DefendedPawnTerm;
 pub struct BackwardPawnTerm;
 /// Tapered bonus for the side to move — the half-move of initiative every position carries (~9 Elo).
 pub struct TempoTerm;
+/// Tapered bonus for a minor behind a pawn; a knight or bishop with a pawn (either color) directly ahead shielding it.
+pub struct MinorBehindPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -149,6 +152,8 @@ pub struct SharedFeatures {
     /// Side-to-move tempo in the white-relative frame: `+1` if white is to move, `-1` if black.
     /// The combiner's STM flip turns this into `+tempo` for whoever holds the move.
     pub tempo: i32,
+    /// White minus black minors (knight/bishop) with a pawn of either color directly ahead.
+    pub minor_behind_pawn_diff: i32,
 }
 
 /// The standard integer evaluation used in the alpha-beta search.
@@ -287,6 +292,8 @@ impl EvalParams<i32> {
             w_backward_pawn_eg: BACKWARD_PAWN_WEIGHTS[1],
             w_tempo_mg: TEMPO_WEIGHTS[0],
             w_tempo_eg: TEMPO_WEIGHTS[1],
+            w_minor_behind_pawn_mg: MINOR_BEHIND_PAWN_WEIGHTS[0],
+            w_minor_behind_pawn_eg: MINOR_BEHIND_PAWN_WEIGHTS[1],
         }
     }
 }
@@ -418,6 +425,17 @@ impl SharedFeatures {
         let b_backward = (bp & b_adj & !b_rear & b_stop_bad).popcount() as i32;
         let backward_pawn_diff = w_backward - b_backward;
 
+        // Minor behind pawn; a knight or bishop shielded by a pawn (either color)
+        // directly ahead. Shifting all pawns toward us drops a front pawn onto the
+        // minor's own square, so the AND counts shielded minors.
+        let minors = board.role_bb[PieceType::Knight] | board.role_bb[PieceType::Bishop];
+        let w_minors = minors & board.side_bb[Color::White];
+        let b_minors = minors & board.side_bb[Color::Black];
+        let all_pawns = board.role_bb[PieceType::Pawn];
+        let w_minor_behind = (w_minors & all_pawns.shift(Direction::South)).popcount() as i32;
+        let b_minor_behind = (b_minors & all_pawns.shift(Direction::North)).popcount() as i32;
+        let minor_behind_pawn_diff = w_minor_behind - b_minor_behind;
+
         let tempo = if board.stm == Color::White { 1 } else { -1 };
 
         Self {
@@ -434,6 +452,7 @@ impl SharedFeatures {
             defended_pawn,
             backward_pawn_diff,
             tempo,
+            minor_behind_pawn_diff,
         }
     }
 }
@@ -540,14 +559,15 @@ macro_rules! tapered_bonus_term {
 }
 
 tapered_bonus_term! {
-    BishopPairTerm    = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
-    RookOpenTerm      = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
-    PassedPawnTerm    = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
-    EnemyKingDistTerm = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
-    DoubledPawnTerm   = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
-    IsolatedPawnTerm  = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
-    PhalanxTerm       = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
-    DefendedPawnTerm  = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
-    BackwardPawnTerm  = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
-    TempoTerm         = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
+    BishopPairTerm      = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
+    RookOpenTerm        = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
+    PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
+    EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
+    DoubledPawnTerm     = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
+    IsolatedPawnTerm    = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
+    PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
+    DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
+    BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
+    TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
+    MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
 }

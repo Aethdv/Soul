@@ -276,35 +276,37 @@ macro_rules! define_weight_params {
 macro_rules! define_tunables {
     ($macro:ident) => {
         $macro! {
-            (mg_mob_open,        Vec4,   mobility_open_offset,      0),
-            (eg_mob_open,        Vec4,   mobility_open_offset,      4),
-            (mg_mob_closed,      Vec4,   mobility_closed_offset,    0),
-            (eg_mob_closed,      Vec4,   mobility_closed_offset,    4),
-            (w_shield,           Scalar, king_safety_offset,        0),
-            (w_ortho,            Scalar, king_safety_offset,        1),
-            (w_diag,             Scalar, king_safety_offset,        2),
-            (atk_weights,        Array6, attacker_offset,           0),
-            (w_xray_ortho,       Scalar, xray_offset,               0),
-            (w_bp_mg,            Scalar, bishop_pair_offset,        0),
-            (w_bp_eg,            Scalar, bishop_pair_offset,        1),
-            (w_rook_open_mg,     Scalar, rook_open_offset,          0),
-            (w_rook_open_eg,     Scalar, rook_open_offset,          1),
-            (passed_pawn_mg,     Array6, passed_pawn_mg_offset,     0),
-            (passed_pawn_eg,     Array6, passed_pawn_eg_offset,     0),
-            (enemy_king_dist_mg, Array6, enemy_king_dist_mg_offset, 0),
-            (enemy_king_dist_eg, Array6, enemy_king_dist_eg_offset, 0),
-            (w_doubled_pawn_mg,  Scalar, doubled_pawn_offset,       0),
-            (w_doubled_pawn_eg,  Scalar, doubled_pawn_offset,       1),
-            (w_isolated_pawn_mg, Scalar, isolated_pawn_offset,      0),
-            (w_isolated_pawn_eg, Scalar, isolated_pawn_offset,      1),
-            (phalanx_mg,         Array6, phalanx_mg_offset,         0),
-            (phalanx_eg,         Array6, phalanx_eg_offset,         0),
-            (defended_pawn_mg,   Array6, defended_pawn_mg_offset,   0),
-            (defended_pawn_eg,   Array6, defended_pawn_eg_offset,   0),
-            (w_backward_pawn_mg, Scalar, backward_pawn_offset,      0),
-            (w_backward_pawn_eg, Scalar, backward_pawn_offset,      1),
-            (w_tempo_mg,         Scalar, tempo_offset,              0),
-            (w_tempo_eg,         Scalar, tempo_offset,              1)
+            (mg_mob_open,            Vec4,   mobility_open_offset,      0),
+            (eg_mob_open,            Vec4,   mobility_open_offset,      4),
+            (mg_mob_closed,          Vec4,   mobility_closed_offset,    0),
+            (eg_mob_closed,          Vec4,   mobility_closed_offset,    4),
+            (w_shield,               Scalar, king_safety_offset,        0),
+            (w_ortho,                Scalar, king_safety_offset,        1),
+            (w_diag,                 Scalar, king_safety_offset,        2),
+            (atk_weights,            Array6, attacker_offset,           0),
+            (w_xray_ortho,           Scalar, xray_offset,               0),
+            (w_bp_mg,                Scalar, bishop_pair_offset,        0),
+            (w_bp_eg,                Scalar, bishop_pair_offset,        1),
+            (w_rook_open_mg,         Scalar, rook_open_offset,          0),
+            (w_rook_open_eg,         Scalar, rook_open_offset,          1),
+            (passed_pawn_mg,         Array6, passed_pawn_mg_offset,     0),
+            (passed_pawn_eg,         Array6, passed_pawn_eg_offset,     0),
+            (enemy_king_dist_mg,     Array6, enemy_king_dist_mg_offset, 0),
+            (enemy_king_dist_eg,     Array6, enemy_king_dist_eg_offset, 0),
+            (w_doubled_pawn_mg,      Scalar, doubled_pawn_offset,       0),
+            (w_doubled_pawn_eg,      Scalar, doubled_pawn_offset,       1),
+            (w_isolated_pawn_mg,     Scalar, isolated_pawn_offset,      0),
+            (w_isolated_pawn_eg,     Scalar, isolated_pawn_offset,      1),
+            (phalanx_mg,             Array6, phalanx_mg_offset,         0),
+            (phalanx_eg,             Array6, phalanx_eg_offset,         0),
+            (defended_pawn_mg,       Array6, defended_pawn_mg_offset,   0),
+            (defended_pawn_eg,       Array6, defended_pawn_eg_offset,   0),
+            (w_backward_pawn_mg,     Scalar, backward_pawn_offset,      0),
+            (w_backward_pawn_eg,     Scalar, backward_pawn_offset,      1),
+            (w_tempo_mg,             Scalar, tempo_offset,              0),
+            (w_tempo_eg,             Scalar, tempo_offset,              1),
+            (w_minor_behind_pawn_mg, Scalar, minor_behind_pawn_offset,  0),
+            (w_minor_behind_pawn_eg, Scalar, minor_behind_pawn_offset,  1)
         }
     };
 }
@@ -360,6 +362,7 @@ define_layout! {
     defended_pawn_eg   = DEFENDED_PAWN_EG.len(),
     backward_pawn      = BACKWARD_PAWN_WEIGHTS.len(),
     tempo              = TEMPO_WEIGHTS.len(),
+    minor_behind_pawn  = MINOR_BEHIND_PAWN_WEIGHTS.len(),
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
@@ -486,22 +489,23 @@ define_simd_params! {
 }
 
 define_weight_params! {
-    PHASE_WEIGHTS         = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    ATTACKER_WEIGHTS      = [CV(0), V(160), V(256), V(430), V(512), V(528)], // [0, 1, 2, 3, 4, 5] attackers × weak
-    KING_SAFETY_WEIGHTS   = [V(19), V(10), V(8)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    XRAY_WEIGHTS          = [V(9)], // [Ortho King]
-    BISHOP_PAIR_WEIGHTS   = [V(33), V(71)], // [MG, EG]
-    ROOK_OPEN_WEIGHTS     = [V(39), V(2)], // [MG, EG]
-    PASSED_PAWN_MG        = [V(-18), V(-32), V(-36), V(-13), V(-19), V(-15)], // by relative rank 1-6
-    PASSED_PAWN_EG        = [V(-38), V(-17), V(28), V(77), V(166), V(97)], // by relative rank 1-6
-    ENEMY_KING_DIST_MG    = [V(-85), V(35), V(20), V(16), V(14), V(9)], // enemy king→passer dist, 7 clamps to 6
-    ENEMY_KING_DIST_EG    = [V(-51), V(-4), V(33), V(46), V(57), V(64)], // enemy king→passer dist, 7 clamps to 6
-    DOUBLED_PAWN_WEIGHTS  = [V(1), V(-41)], // [MG, EG]
-    ISOLATED_PAWN_WEIGHTS = [V(-8), V(-12)], // [MG, EG]
-    PHALANX_MG            = [V(6), V(16), V(27), V(57), V(152), V(-364)], // by relative rank 2-7
-    PHALANX_EG            = [V(-6), V(2), V(22), V(84), V(188), V(607)], // by relative rank 2-7
-    DEFENDED_PAWN_MG      = [CV(0), V(29), V(19), V(17), V(26), V(227)], // by relative rank 2-7 (rank 2 unreachable)
-    DEFENDED_PAWN_EG      = [CV(0), V(14), V(12), V(25), V(58), V(1)], // by relative rank 2-7 (rank 2 unreachable)
-    BACKWARD_PAWN_WEIGHTS = [V(-8), V(-16)], // [MG, EG]
-    TEMPO_WEIGHTS         = [V(29), V(35)], // [MG, EG] — side-to-move initiative
+    PHASE_WEIGHTS             = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
+    ATTACKER_WEIGHTS          = [CV(0), V(160), V(256), V(430), V(512), V(528)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    KING_SAFETY_WEIGHTS       = [V(19), V(10), V(8)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    XRAY_WEIGHTS              = [V(9)], // [Ortho King]
+    BISHOP_PAIR_WEIGHTS       = [V(33), V(71)], // [MG, EG]
+    ROOK_OPEN_WEIGHTS         = [V(39), V(2)], // [MG, EG]
+    PASSED_PAWN_MG            = [V(-18), V(-32), V(-36), V(-13), V(-19), V(-15)], // by relative rank 1-6
+    PASSED_PAWN_EG            = [V(-38), V(-17), V(28), V(77), V(166), V(97)], // by relative rank 1-6
+    ENEMY_KING_DIST_MG        = [V(-85), V(35), V(20), V(16), V(14), V(9)], // enemy king→passer dist, 7 clamps to 6
+    ENEMY_KING_DIST_EG        = [V(-51), V(-4), V(33), V(46), V(57), V(64)], // enemy king→passer dist, 7 clamps to 6
+    DOUBLED_PAWN_WEIGHTS      = [V(1), V(-41)], // [MG, EG]
+    ISOLATED_PAWN_WEIGHTS     = [V(-8), V(-12)], // [MG, EG]
+    PHALANX_MG                = [V(6), V(16), V(27), V(57), V(152), V(-364)], // by relative rank 2-7
+    PHALANX_EG                = [V(-6), V(2), V(22), V(84), V(188), V(607)], // by relative rank 2-7
+    DEFENDED_PAWN_MG          = [CV(0), V(29), V(19), V(17), V(26), V(227)], // by relative rank 2-7 (rank 2 unreachable)
+    DEFENDED_PAWN_EG          = [CV(0), V(14), V(12), V(25), V(58), V(1)], // by relative rank 2-7 (rank 2 unreachable)
+    BACKWARD_PAWN_WEIGHTS     = [V(-8), V(-16)], // [MG, EG]
+    TEMPO_WEIGHTS             = [V(29), V(35)], // [MG, EG] — side-to-move initiative
+    MINOR_BEHIND_PAWN_WEIGHTS = [V(5), V(2)], // [MG, EG]
 }
