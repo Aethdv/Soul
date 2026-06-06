@@ -3,12 +3,14 @@
 //! # Notes
 //!
 //! Lockless single-threaded design: probe and store take `&self` and
-//! mutate entries through raw pointers. The 64-bit full-key match prevents
-//! hash collisions from corrupting position data. Replacement is depth-
-//! preferred with exact-position upgrades; qsearch stores are conservative
-//! to avoid evicting deeper negamax entries.
+//! mutate entries through raw pointers. A 16-bit verification key guards
+//! against hash collisions; the rare aliasing that slips through (~1 in 2¹⁶
+//! within a probed cluster) can only return a stale score, never a corrupting
+//! move, because every stored move is re-validated by `is_pseudo_legal` before
+//! use. Replacement is depth-preferred with exact-position upgrades; qsearch
+//! stores are conservative to avoid evicting deeper negamax entries.
 //!
-//! Three-entry clusters (48 bytes per cluster): each hash index maps to
+//! Three-entry clusters (30 bytes per cluster): each hash index maps to
 //! a 3-slot bucket, giving the replacement formula three candidates to
 //! select from instead of one.
 
@@ -30,9 +32,9 @@ pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 
 pub const SCORE_NONE: i32 = 32000;
 
-const _: () = assert!(mem::size_of::<TtEntry>() == 16);
+const _: () = assert!(mem::size_of::<TtEntry>() == 10);
 
-/// `quality = depth - gen_diff * AGE_FACTOR`.
+/// `quality = depth - gen_diff · AGE_FACTOR`.
 /// Higher values evict stale entries faster.
 /// Sirius: 2, Obsidian: 8
 const AGE_FACTOR: i32 = 4;
@@ -45,11 +47,20 @@ pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
     bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
 }
 
+/// The slot's verification key: the low 16 bits of the Zobrist hash. The
+/// cluster index already consumes the high bits, so these are the discriminating
+/// bits left over within a bucket.
+#[inline(always)]
+const fn verification_key(hash: u64) -> u16 {
+    hash as u16
+}
+
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct TtEntry {
-    /// Full 64-bit Zobrist key to mathematically prevent hash collisions
-    pub key: u64,
+    /// 16-bit verification key (low bits of the Zobrist hash). Collisions that
+    /// survive it are caught downstream by `is_pseudo_legal` on the stored move.
+    pub key: u16,
     /// Best move found in this position
     pub mv: u16,
     pub score: i16,
@@ -99,7 +110,9 @@ impl TranspositionTable {
         if self.entries.is_empty() {
             return;
         }
+
         let ptr = self.entries.as_ptr() as *mut TtEntry;
+
         unsafe {
             ptr::write_bytes(ptr, 0, self.entries.len());
         }
@@ -119,6 +132,7 @@ impl TranspositionTable {
         }
 
         let idx = self.index(hash);
+
         unsafe {
             let ptr = self.entries.as_ptr().add(idx) as *const i8;
             #[cfg(target_arch = "x86_64")]
@@ -133,11 +147,13 @@ impl TranspositionTable {
         }
 
         let idx = self.index(hash);
+        let key16 = verification_key(hash);
 
         for i in 0..CLUSTER_SIZE {
             let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
-            // 64-bit exact match completely prevents hash-collision-induced memory corruption.
-            if entry.key == hash && entry.bound != BOUND_NONE {
+            // The bound guard keeps an empty slot (key 0) from matching a real
+            // position whose low 16 bits happen to be 0.
+            if entry.key == key16 && entry.bound != BOUND_NONE {
                 let score = Self::score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
 
@@ -154,6 +170,7 @@ impl TranspositionTable {
         }
 
         let idx = self.index(hash);
+        let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed);
         let mut replace_idx = idx;
         let mut worst_quality = i32::MAX;
@@ -161,13 +178,14 @@ impl TranspositionTable {
         for i in 0..CLUSTER_SIZE {
             let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
 
-            if entry.bound == BOUND_NONE || entry.key == hash {
+            if entry.bound == BOUND_NONE || entry.key == key16 {
                 replace_idx = idx + i;
                 break;
             }
 
             let gen_diff = cur.wrapping_sub(entry.age) as i32;
             let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+
             if quality < worst_quality {
                 worst_quality = quality;
                 replace_idx = idx + i;
@@ -177,8 +195,8 @@ impl TranspositionTable {
         // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
         // Standard high-performance lockless TT approach.
         let entry = unsafe { &mut *(self.entries.as_ptr().add(replace_idx) as *mut TtEntry) };
-        let is_exact_match = entry.key == hash;
-        entry.key = hash;
+        let is_exact_match = entry.key == key16;
+        entry.key = key16;
 
         let mut store_mv = mv.inner();
         let mut store_pv = pv as u8;
@@ -211,6 +229,7 @@ impl TranspositionTable {
         }
 
         let idx = self.index(hash);
+        let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed);
         let mut best_idx: Option<usize> = None;
         let mut best_quality = i32::MAX;
@@ -219,14 +238,15 @@ impl TranspositionTable {
         for i in 0..CLUSTER_SIZE {
             let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
 
-            if entry.key == hash || entry.bound == BOUND_NONE || entry.depth == 0 {
+            if entry.key == key16 || entry.bound == BOUND_NONE || entry.depth == 0 {
                 best_idx = Some(idx + i);
-                is_key_match = entry.key == hash;
+                is_key_match = entry.key == key16;
                 break;
             }
 
             let gen_diff = cur.wrapping_sub(entry.age) as i32;
             let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+
             if quality <= 0 && quality < best_quality {
                 best_quality = quality;
                 best_idx = Some(idx + i);
@@ -241,7 +261,8 @@ impl TranspositionTable {
             // position — qs visits would otherwise erase the propagated flag
             // stamped by a previous negamax store.
             let store_pv = if is_key_match { (pv as u8) | entry.pv } else { pv as u8 };
-            entry.key = hash;
+
+            entry.key = key16;
             entry.mv = mv.inner();
             entry.score = Self::score_to_tt(score, ply) as i16;
             entry.depth = 0;
