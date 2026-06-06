@@ -5,8 +5,7 @@
 
 use crate::core::{
     board::{
-        B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS, CASTLE_B_QS_CHECK, CASTLE_W_KS,
-        CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position, W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
+        BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO,
         bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb, line_bb},
     },
     defs::{Bitboard, Color, Direction, FILE_A, FILE_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
@@ -61,6 +60,7 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
 #[inline]
 pub fn gen_pseudo_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
+
     match board.stm {
         Color::White => gen_all::<{ Color::White }, false>(board, &mut list),
         Color::Black => gen_all::<{ Color::Black }, false>(board, &mut list),
@@ -72,6 +72,7 @@ pub fn gen_pseudo_moves(board: &Position) -> MoveList {
 #[inline]
 pub fn gen_tactical_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
+
     match board.stm {
         Color::White => gen_all::<{ Color::White }, true>(board, &mut list),
         Color::Black => gen_all::<{ Color::Black }, true>(board, &mut list),
@@ -105,11 +106,15 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
     // A TT collision with the CASTLE flag but a garbage 'to' would make
     // apply_castling lift a non-rook piece and place a phantom rook,
     // permanently corrupting the board after unmake.
+    // Geometry guards reject that cheaply; the legality check then rejects
+    // a castle whose right is gone, whose corridor is blocked, or that crosses
+    // check — none of which were verified for a move that never went through generation.
     if mv.is_castling() {
         return piece == PieceType::King
             && board.piece_at(to) == PieceType::Rook
             && us.check_bit(to)
-            && board.castling_rooks.contains(&to);
+            && board.castling_rooks.contains(&to)
+            && board.is_castle_move_legal(stm, from, to);
     }
 
     // Destination must not hold a friendly piece.
@@ -253,8 +258,10 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     // the king, the move is illegal.
     if ksq.rank() == from.rank() {
         let rq = board.pieces(PieceType::Rook, opp) | board.pieces(PieceType::Queen, opp);
+
         if rq.is_not_empty() {
             let rank_occ = board.occ ^ from.bitboard() ^ cap_sq.bitboard();
+
             if (atk_rook(ksq, rank_occ) & rq).is_not_empty() {
                 return false;
             }
@@ -269,6 +276,7 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     let bq = board.pieces(PieceType::Bishop, opp) | board.pieces(PieceType::Queen, opp);
     if bq.is_not_empty() {
         let ep_occ = (board.occ ^ from.bitboard() ^ cap_sq.bitboard()) | to.bitboard();
+
         if (atk_bishop(ksq, ep_occ) & bq).is_not_empty() {
             return false;
         }
@@ -290,7 +298,7 @@ fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut Mo
     gen_king::<TACTICAL>(board, acc, us, them);
 
     if !TACTICAL {
-        gen_castling::<US>(board, acc, occ);
+        gen_castling::<US>(board, acc);
     }
 }
 
@@ -385,6 +393,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
     // ── En passant ──
     if let Some(ep_sq) = board.en_passant {
         let mut attackers = board.get_attackers_on(ep_sq, US) & pawns;
+
         while attackers.is_not_empty() {
             acc.push(Move::new(attackers.pop_lsb(), ep_sq, Move::EP_CAPTURE));
         }
@@ -396,6 +405,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::Knight] & us {
         let mut targets = atk_knight(from) & !us;
+
         if TACTICAL {
             targets &= them;
         }
@@ -413,6 +423,7 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
     while diags.is_not_empty() {
         let from = diags.pop_lsb();
         let mut targets = atk_bishop(from, occ) & !us;
+
         if TACTICAL {
             targets &= them;
         }
@@ -424,6 +435,7 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
     while orthos.is_not_empty() {
         let from = orthos.pop_lsb();
         let mut targets = atk_rook(from, occ) & !us;
+
         if TACTICAL {
             targets &= them;
         }
@@ -436,6 +448,7 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
 fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::King] & us {
         let mut targets = atk_king(from) & !us;
+
         if TACTICAL {
             targets &= them;
         }
@@ -453,35 +466,29 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
 ///   2. King is not currently in check.
 ///   3. King does not pass through or land on an attacked square.
 #[inline]
-fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList, occ: Bitboard) {
+fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList) {
     let k_bb = board.role_bb[PieceType::King] & board.side_bb[US];
+
     if k_bb.is_empty() {
         return;
     }
 
     let ksq = k_bb.lsb();
-    let opp = US.opposite();
+    let (oo_mask, oo_idx, ooo_mask, ooo_idx) =
+        if US == Color::White { (WHITE_OO, ROOK_W_KS, WHITE_OOO, ROOK_W_QS) } else { (BLACK_OO, ROOK_B_KS, BLACK_OOO, ROOK_B_QS) };
 
-    let (oo_mask, ooo_mask, oo_idx, ooo_idx) =
-        if US == Color::White { (WHITE_OO, WHITE_OOO, 0, 1) } else { (BLACK_OO, BLACK_OOO, 2, 3) };
-
-    // Compute both castle data upfront, then check each right.
-    let (oo_data, oo_checks, oo_empty, ooo_data, ooo_checks, ooo_empty) = if US == Color::White {
-        (&CASTLE_W_KS, &CASTLE_W_KS_CHECK, W_OO_EMPTY, &CASTLE_W_QS, &CASTLE_W_QS_CHECK, W_OOO_EMPTY)
-    } else {
-        (&CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY, &CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY)
-    };
-
-    if (board.castling_rights & oo_mask) != 0 {
-        let rsq = board.castling_rooks[oo_idx];
-        if board.is_castle_legal(occ, ksq, rsq, oo_data, oo_checks, oo_empty, opp) {
-            acc.push(Move::new(ksq, rsq, Move::CASTLE));
+    // The right must be held before we read its rook-home slot: an unheld slot
+    // can alias the other side's and double-generate. With the right held the
+    // slot is live, and `is_castle_move_legal` — shared verbatim with TT-move
+    // validation — owns the corridor and through-check logic.
+    for (mask, idx) in [(oo_mask, oo_idx), (ooo_mask, ooo_idx)] {
+        if board.castling_rights & mask == 0 {
+            continue;
         }
-    }
 
-    if (board.castling_rights & ooo_mask) != 0 {
-        let rsq = board.castling_rooks[ooo_idx];
-        if board.is_castle_legal(occ, ksq, rsq, ooo_data, ooo_checks, ooo_empty, opp) {
+        let rsq = board.castling_rooks[idx];
+
+        if board.is_castle_move_legal(US, ksq, rsq) {
             acc.push(Move::new(ksq, rsq, Move::CASTLE));
         }
     }
@@ -530,5 +537,22 @@ mod tests {
             !moves2.contains(&ep_move),
             "EP move should be illegal due to horizontal discovered check exposing the mover's king"
         );
+    }
+
+    #[test]
+    fn tt_castle_move_validates_corridor() {
+        // A TT hash collision can hand back a CASTLE-flagged move from an
+        // unrelated position. King-home/rook-home geometry alone is not enough:
+        // castling through an occupied corridor makes apply_castling drop a rook
+        // onto the blocker and corrupt the board. is_pseudo_legal must run the
+        // full legality check, not just the geometry.
+        let pos = Position::from_fen("r3k2r/8/8/8/8/8/8/R3K1NR w KQkq - 0 1");
+
+        let e1 = Square(4);
+        let kingside = Move::new(e1, Square(7), Move::CASTLE); // blocked by the knight on g1
+        let queenside = Move::new(e1, Square(0), Move::CASTLE); // corridor clear
+
+        assert!(!is_pseudo_legal(&pos, kingside), "kingside castle through the g1 knight must be rejected");
+        assert!(is_pseudo_legal(&pos, queenside), "queenside castle with a clear corridor must pass");
     }
 }
