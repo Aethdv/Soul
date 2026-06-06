@@ -110,7 +110,7 @@ pub struct DefendedPawnTerm;
 pub struct BackwardPawnTerm;
 /// Tapered bonus for the side to move — the half-move of initiative every position carries (~9 Elo).
 pub struct TempoTerm;
-/// Tapered bonus for a minor behind a pawn; a knight or bishop with a pawn (either color) directly ahead shielding it.
+/// Tapered bonus for a minor behind a pawn; a knight or bishop with a pawn (either color) directly ahead shielding it (~3 Elo).
 pub struct MinorBehindPawnTerm;
 
 pub struct DetailedEval {
