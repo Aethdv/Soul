@@ -48,11 +48,6 @@ Same shape as the instance-confidence blend, moved off the target onto the gradi
 Uses all the data, one knob, one SPRT. Not novel — the thing HCE tuners skip.
 Needs scored data; outcomes-only has nothing to disagree with.
 
-### Phase-stratified gradient balancing
-
-Midgame-heavy data drowns the endgame params — they train on a sliver and undertrain. Reweight per phase bucket so each pulls its weight.
-Cheap. The endgame PSQT and the king/pawn terms finally see a fair gradient instead of whatever's left after the 24-material crowd.
-
 ### Search-bootstrapped targets
 
 Tune eval to predict WDL from a static position, and search uses it ply to ply — different objective. Search wants consistency across plies, not just a calibrated win-prob.
