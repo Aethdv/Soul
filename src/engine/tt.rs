@@ -10,7 +10,7 @@
 //! use. Replacement is depth-preferred with exact-position upgrades; qsearch
 //! stores are conservative to avoid evicting deeper negamax entries.
 //!
-//! Three-entry clusters (30 bytes per cluster): each hash index maps to
+//! Three-entry clusters (36 bytes per cluster): each hash index maps to
 //! a 3-slot bucket, giving the replacement formula three candidates to
 //! select from instead of one.
 
@@ -32,7 +32,7 @@ pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 
 pub const SCORE_NONE: i32 = 32000;
 
-const _: () = assert!(mem::size_of::<TtEntry>() == 10);
+const _: () = assert!(mem::size_of::<TtEntry>() == 12);
 
 /// `quality = depth - gen_diff · AGE_FACTOR`.
 /// Higher values evict stale entries faster.
@@ -64,6 +64,9 @@ pub struct TtEntry {
     /// Best move found in this position
     pub mv: u16,
     pub score: i16,
+    /// Raw static eval at store time (`SCORE_NONE` when stored in check), so a
+    /// hit can reuse it instead of recomputing the full evaluation.
+    pub eval: i16,
     pub depth: u8,
     pub bound: u8,
     /// Generation at store time — prior-generation entries evict first.
@@ -141,7 +144,7 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8, bool)> {
+    pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8, bool, i32)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -157,14 +160,14 @@ impl TranspositionTable {
                 let score = Self::score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
 
-                return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0));
+                return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0, entry.eval as i32));
             }
         }
         None
     }
 
     #[inline(always)]
-    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool) {
+    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
         if self.entries.is_empty() {
             return;
         }
@@ -211,6 +214,7 @@ impl TranspositionTable {
 
         entry.mv = store_mv;
         entry.score = Self::score_to_tt(score, ply) as i16;
+        entry.eval = eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         entry.depth = depth as u8;
         entry.bound = bound;
         entry.age = cur;
@@ -223,7 +227,7 @@ impl TranspositionTable {
     /// only overwrites empty slots, existing depth-0 entries, or stale entries
     /// whose aged quality has dropped to zero — never evicts a fresh deep entry.
     #[inline(always)]
-    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8, pv: bool) {
+    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
         if self.entries.is_empty() {
             return;
         }
@@ -265,6 +269,7 @@ impl TranspositionTable {
             entry.key = key16;
             entry.mv = mv.inner();
             entry.score = Self::score_to_tt(score, ply) as i16;
+            entry.eval = eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             entry.depth = 0;
             entry.bound = bound;
             entry.age = cur;
