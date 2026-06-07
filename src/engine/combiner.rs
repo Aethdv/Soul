@@ -27,22 +27,34 @@ use crate::{
 
 /// Per-bucket score accumulators filled by the term layer before combination.
 ///
-/// Fields are either **pre-tapered** (`mg_eg`, `mobility`, `bonus`) — the mg/eg blend
-/// happened inside the term — or **raw** (`safety_us`, `safety_them`, `xray`), tapered
-/// together by the combiner as a single `(us - them + xray) * phase / TOTAL_PHASE` block.
+/// Fields are either **pre-tapered** (`mg_eg`, `mobility`) — the mg/eg blend happened
+/// inside the SIMD lanes to keep them vectorized — or **raw** (`bonus_mg`/`bonus_eg`,
+/// `safety_us`, `safety_them`, `xray`), which the combiner tapers. Tapering raw keeps
+/// the divide-and-truncate at one site, so per-term rounding never accumulates.
 pub struct Accumulators<T: EvalMath> {
     /// Material + PSQT, read from the SIMD accumulator.
     pub mg_eg: T,
     /// Mobility differential, blended inside the SIMD lanes to preserve vectorization.
     pub mobility: T,
-    /// Simple linear bonuses; each term adds its own `mg * phase + eg * eg_phase` share.
-    pub bonus: T,
+    /// Raw bonus coefficients; each term adds its pure `mg · feature` and
+    /// `eg · feature`, and the combiner tapers the summed pair once.
+    pub bonus_mg: T,
+    pub bonus_eg: T,
     /// Raw king-safety score for the side to move.
     pub safety_us: T,
     /// Raw king-safety score for the opponent.
     pub safety_them: T,
     /// Raw x-ray king-ring differential; separate bucket so it can be rerouted independently.
     pub xray: T,
+}
+
+/// The tapered mg/eg blend: weight by phase, divide back to centipawns, truncate.
+/// The one rounding site in the combiner — `eg = zero` degenerates to the
+/// mg-only taper the king-safety block wants.
+#[inline(always)]
+pub fn taper<T: EvalMath<Scalar = T>>(mg: T, eg: T, phase: T) -> T {
+    let total = T::from_i32(TOTAL_PHASE);
+    ((mg * phase + eg * (total - phase)) / total).trunc()
 }
 
 /// Strategy for collapsing [`Accumulators`] into a final evaluation scalar.
@@ -64,8 +76,10 @@ impl Combiner for LinearCombiner {
     #[inline(always)]
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T) -> T {
         let safety_diff = buckets.safety_us - buckets.safety_them + buckets.xray;
-        let safety_tapered = (safety_diff * phase / T::from_i32(TOTAL_PHASE)).trunc();
-        buckets.mg_eg + buckets.mobility + buckets.bonus + safety_tapered
+        let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
+        let safety = taper(safety_diff, T::zero(), phase);
+
+        buckets.mg_eg + buckets.mobility + bonus + safety
     }
 
     #[inline]
@@ -74,6 +88,7 @@ impl Combiner for LinearCombiner {
         let t_eg = 1.0 - t_mg;
         let taper = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };
         let safety_block = d_loss * t_mg;
+
         BucketUpstreams { mg_eg: taper, mobility: taper, bonus: taper, king_safety: safety_block, xray: safety_block }
     }
 }
