@@ -845,26 +845,27 @@ impl Worker<'_> {
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
         // This is what makes iterative deepening fast — earlier iterations populate the table for later ones.
-        let (tt_move, tt_pv) = if let Some((mv, score, depth_stored, bound, pv)) = searcher.tt.probe(self.pos.hash, ply) {
-            // Hash collisions can inject moves from unrelated positions.
-            // Full pseudo-legality check rejects garbage before it reaches
-            // the move picker or triggers a cutoff with a bogus score.
-            let valid = mv.is_null() || is_pseudo_legal(&self.pos, mv);
+        let (tt_move, tt_pv, tt_eval) =
+            if let Some((mv, score, depth_stored, bound, pv, eval)) = searcher.tt.probe(self.pos.hash, ply) {
+                // Hash collisions can inject moves from unrelated positions.
+                // Full pseudo-legality check rejects garbage before it reaches
+                // the move picker or triggers a cutoff with a bogus score.
+                let valid = mv.is_null() || is_pseudo_legal(&self.pos, mv);
 
-            #[rustfmt::skip]
-            if valid
-                && !N::PV
-                && depth_stored >= depth
-                && tt::can_cutoff(bound, score, alpha, beta)
-            {
-                return Ok(score);
-            }
+                #[rustfmt::skip]
+                if valid
+                    && !N::PV
+                    && depth_stored >= depth
+                    && tt::can_cutoff(bound, score, alpha, beta)
+                {
+                    return Ok(score);
+                }
 
-            let tt_move = if valid && !mv.is_null() { Some(mv) } else { None };
-            (tt_move, pv)
-        } else {
-            (None, false)
-        };
+                let tt_move = if valid && !mv.is_null() { Some(mv) } else { None };
+                (tt_move, pv, Some(eval))
+            } else {
+                (None, false, None)
+            };
 
         // ── TT Move Ordering (~56 Elo) ──
         // Even when the TT score didn't produce a cutoff, the move it stored
@@ -886,7 +887,15 @@ impl Worker<'_> {
         // Used as a baseline for pruning decisions — if the position looks
         // overwhelmingly good or hopeless, we can take shortcuts.
         // Meaningless when in check (we're forced to respond, not evaluate).
-        let raw_static_eval = if in_check { tt::SCORE_NONE } else { evaluate(&self.pos, &self.accumulator) };
+        // A TT hit already carries this position's raw eval, so reuse it and skip
+        // the full evaluation; the stored sentinel (an in-check store) falls through.
+        let raw_static_eval = if in_check {
+            tt::SCORE_NONE
+        } else if let Some(eval) = tt_eval.filter(|&e| e != tt::SCORE_NONE) {
+            eval
+        } else {
+            evaluate(&self.pos, &self.accumulator)
+        };
 
         // ── Correction History ──
         // The evaluator has systematic biases tied to structural features
@@ -1316,7 +1325,7 @@ impl Worker<'_> {
         // ── TT store ──
         searcher
             .tt
-            .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv);
+            .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv, raw_static_eval);
 
         // ── Correction History Update ──
         // Only learn from positions resolved by quiet moves — tactical
@@ -1548,15 +1557,17 @@ impl Worker<'_> {
         // sequence for accurate PV reporting.
         //
         // Quiescence TT Move (~9 Elo)
-        let (qs_tt_move, qs_tt_pv) = if let Some((mv, score, _depth, bound, pv)) = searcher.tt.probe(self.pos.hash, ply) {
-            if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
-                return Ok(score);
-            }
-            let mv = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
-            (mv, pv)
-        } else {
-            (None, false)
-        };
+        let (qs_tt_move, qs_tt_pv, qs_tt_eval) =
+            if let Some((mv, score, _depth, bound, pv, eval)) = searcher.tt.probe(self.pos.hash, ply) {
+                if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
+                    return Ok(score);
+                }
+
+                let mv = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
+                (mv, pv, Some(eval))
+            } else {
+                (None, false, None)
+            };
 
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
@@ -1567,10 +1578,19 @@ impl Worker<'_> {
         // If we are in check, the position is forced and static evaluation is meaningless.
         // We drop the stand-pat evaluation (-INF) and the MovePicker will generate
         // all legal evasions instead of just captures/queen promotions.
+        // A TT hit already carries this position's raw eval; reuse it over a fresh
+        // evaluation. SCORE_NONE in check, and is also the store value below.
+        let raw_eval = if in_check {
+            tt::SCORE_NONE
+        } else if let Some(eval) = qs_tt_eval.filter(|&e| e != tt::SCORE_NONE) {
+            eval
+        } else {
+            evaluate(&self.pos, &self.accumulator)
+        };
+
         let mut best_eval = if in_check {
             -INF
         } else {
-            let raw_eval = evaluate(&self.pos, &self.accumulator);
             let pawn_hash = self.pos.pawn_key;
             let minor_hash = self.pos.minor_key;
             let major_hash = self.pos.major_key;
@@ -1689,7 +1709,10 @@ impl Worker<'_> {
         } else {
             tt::BOUND_UPPER
         };
-        searcher.tt.store_qs(self.pos.hash, ply, best_eval, best_move, bound, N::PV || qs_tt_pv);
+
+        searcher
+            .tt
+            .store_qs(self.pos.hash, ply, best_eval, best_move, bound, N::PV || qs_tt_pv, raw_eval);
 
         Ok(best_eval)
     }
