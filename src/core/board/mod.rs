@@ -385,6 +385,29 @@ impl Position {
         minors <= 1
     }
 
+    /// Full legality of a castling move encoded king→rook (`ksq`→`rsq`) for `color`;
+    /// the right must be held, the corridor clear, and the king must neither stand
+    /// in nor cross an attacked square.
+    ///
+    /// The single source of truth shared by move generation and TT-move validation;
+    /// a TT collision can hand back a `CASTLE`-flagged move from an unrelated position,
+    /// and only the full check (not bare geometry) keeps it from castling through
+    /// pieces and corrupting the board. The side is read off the rook's file relative
+    /// to the king (FRC-safe); callers first establish that the king sits on `ksq` and
+    /// the castling rook on `rsq`.
+    #[inline]
+    pub fn is_castle_move_legal(&self, color: Color, ksq: Square, rsq: Square) -> bool {
+        let queenside = rsq.file() < ksq.file();
+        let (mask, data, check_sqs, empty): (u8, &[u8; 4], &[u8], Bitboard) = match (color, queenside) {
+            (Color::White, false) => (WHITE_OO, &CASTLE_W_KS, &CASTLE_W_KS_CHECK, W_OO_EMPTY),
+            (Color::White, true) => (WHITE_OOO, &CASTLE_W_QS, &CASTLE_W_QS_CHECK, W_OOO_EMPTY),
+            (Color::Black, false) => (BLACK_OO, &CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY),
+            (Color::Black, true) => (BLACK_OOO, &CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY),
+        };
+
+        self.castling_rights & mask != 0 && self.is_castle_legal(self.occ, ksq, rsq, data, check_sqs, empty, color.opposite())
+    }
+
     /// Evaluates if a castling maneuver is strictly legal.
     ///
     /// It handles both fast-path standard chess, and the more rigorous
