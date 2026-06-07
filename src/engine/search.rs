@@ -31,7 +31,7 @@ use crate::{
         moves::Move,
     },
     engine::{
-        eval::evaluate,
+        eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, extract_phase},
         history::{self, ContContext, History},
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
@@ -145,6 +145,8 @@ pub struct Worker<'h> {
     pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 1]>,
     pub history: &'h mut History,
+    /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
+    pub pawn_cache: PawnCache,
     /// Set while a null-move verification search is on the stack.
     /// Suppresses nested NMP, which would otherwise recurse forever on
     /// the same position at ever-shrinking depth.
@@ -444,6 +446,7 @@ impl<'cfg> Searcher<'cfg> {
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
             history,
+            pawn_cache: PawnCache::new(),
             is_nmp_verif: false,
         };
 
@@ -775,6 +778,17 @@ impl<'cfg> Searcher<'cfg> {
 }
 
 impl Worker<'_> {
+    /// Static evaluation with the pawn structure pulled from the cache.
+    #[inline]
+    fn evaluate(&mut self) -> i32 {
+        let phase = extract_phase(&self.accumulator);
+        let params = EvalParams::<i32>::from_const();
+        let pawn = self.pawn_cache.probe(&self.pos);
+        let features = SharedFeatures::with_pawn(&self.pos, &pawn);
+
+        evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &params, Some(&features))
+    }
+
     /// Negamax with alpha-beta pruning. Since chess is zero-sum, we maximize the
     /// score from the current side's perspective at every node, negating the score
     /// as it returns up the tree.
@@ -814,7 +828,7 @@ impl Worker<'_> {
         }
 
         if ply >= MAX_PLY {
-            return Ok(evaluate(&self.pos, &self.accumulator));
+            return Ok(self.evaluate());
         }
 
         // ── Mate Distance Pruning ──
@@ -894,7 +908,7 @@ impl Worker<'_> {
         } else if let Some(eval) = tt_eval.filter(|&e| e != tt::SCORE_NONE) {
             eval
         } else {
-            evaluate(&self.pos, &self.accumulator)
+            self.evaluate()
         };
 
         // ── Correction History ──
@@ -1546,7 +1560,7 @@ impl Worker<'_> {
         }
 
         if ply >= MAX_PLY {
-            return Ok(evaluate(&self.pos, &self.accumulator));
+            return Ok(self.evaluate());
         }
 
         let alpha_orig = alpha;
@@ -1585,7 +1599,7 @@ impl Worker<'_> {
         } else if let Some(eval) = qs_tt_eval.filter(|&e| e != tt::SCORE_NONE) {
             eval
         } else {
-            evaluate(&self.pos, &self.accumulator)
+            self.evaluate()
         };
 
         let mut best_eval = if in_check {

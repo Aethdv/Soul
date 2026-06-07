@@ -14,7 +14,7 @@
 use crate::{
     core::{
         board::{Position, bitboard, spatial::SpatialTensor},
-        defs::{Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
+        defs::{Bitboard, Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
         psqt,
     },
     engine::{
@@ -298,42 +298,50 @@ impl EvalParams<i32> {
     }
 }
 
-impl SharedFeatures {
-    #[inline]
-    pub fn compute(board: &Position) -> Self {
-        let pinned_w = board.pinned_pieces(Color::White);
-        let pinned_b = board.pinned_pieces(Color::Black);
-        let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
+/// Everything a position's pawns alone determine, so it caches on the
+/// incremental `pawn_key`. The `passed_span` scan that detects passers is the
+/// hot part of `SharedFeatures::compute`; caching it is the point. Passer
+/// squares ride along so `enemy_king_dist` — the lone king-dependent bucket;
+/// rebuilds without re-running the scan.
+#[derive(Clone, Copy, Default)]
+pub struct PawnFeatures {
+    openness: i32,
+    passed_pawn: [i32; 6],
+    doubled_pawn_diff: i32,
+    isolated_pawn_diff: i32,
+    phalanx: [i32; 6],
+    defended_pawn: [i32; 6],
+    backward_pawn_diff: i32,
+    w_passers: Bitboard,
+    b_passers: Bitboard,
+}
 
-        let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+/// Per-search pawn-structure hash, keyed on `pawn_key`. Pawn structure barely
+/// shifts walking the tree, so the hit rate is high and the scan collapses to
+/// a probe.
+pub struct PawnCache {
+    entries: Box<[PawnEntry]>,
+}
+
+#[derive(Clone, Copy)]
+struct PawnEntry {
+    key: u64,
+    pawn: PawnFeatures,
+}
+
+impl PawnFeatures {
+    fn compute(board: &Position) -> Self {
         let openness = Mobility::compute_openness(board);
 
-        let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
-        let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
-        let w_king_ring = bitboard::atk_king(w_ksq).0;
-        let b_king_ring = bitboard::atk_king(b_ksq).0;
-
-        let xray_ortho =
-            (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
-
-        let w_pair = i32::from(board.pieces(PieceType::Bishop, Color::White).more_than_one());
-        let b_pair = i32::from(board.pieces(PieceType::Bishop, Color::Black).more_than_one());
-        let bishop_pair_diff = w_pair - b_pair;
-
-        let open = !board.role_bb[PieceType::Pawn].file_fill();
-        let rooks_open = board.role_bb[PieceType::Rook] & open;
-        let w_open = (rooks_open & board.side_bb[Color::White]).popcount() as i32;
-        let b_open = (rooks_open & board.side_bb[Color::Black]).popcount() as i32;
-        let rook_open_diff = w_open - b_open;
-
-        // Passed pawns; no enemy pawn on the pawn's file or its neighbors ahead.
-        // Bucketed white-minus-black by relative rank (how far advanced).
         let wp = board.pieces(PieceType::Pawn, Color::White);
         let bp = board.pieces(PieceType::Pawn, Color::Black);
-        let mut passed_pawn = [0i32; 6];
 
-        // Enemy-king Chebyshev distance to each passer, bucketed (1..=6, 7 clamps to 6).
-        let mut enemy_king_dist = [0i32; 6];
+        // Passed pawns; no enemy pawn on the pawn's file or its neighbors ahead.
+        // Bucketed white-minus-black by relative rank (how far advanced). Passer
+        // squares are retained for the enemy-king distance rebucket downstream.
+        let mut passed_pawn = [0i32; 6];
+        let mut w_passers = Bitboard::default();
+        let mut b_passers = Bitboard::default();
         let mut w = wp;
 
         while w.is_not_empty() {
@@ -341,7 +349,7 @@ impl SharedFeatures {
 
             if (bitboard::passed_span(sq, Color::White) & bp).is_empty() {
                 passed_pawn[(sq.rank() - 1) as usize] += 1;
-                enemy_king_dist[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
+                w_passers |= sq.bitboard();
             }
         }
 
@@ -352,7 +360,7 @@ impl SharedFeatures {
 
             if (bitboard::passed_span(sq, Color::Black) & wp).is_empty() {
                 passed_pawn[(6 - sq.rank()) as usize] -= 1;
-                enemy_king_dist[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
+                b_passers |= sq.bitboard();
             }
         }
 
@@ -425,6 +433,103 @@ impl SharedFeatures {
         let b_backward = (bp & b_adj & !b_rear & b_stop_bad).popcount() as i32;
         let backward_pawn_diff = w_backward - b_backward;
 
+        Self {
+            openness,
+            passed_pawn,
+            doubled_pawn_diff,
+            isolated_pawn_diff,
+            phalanx,
+            defended_pawn,
+            backward_pawn_diff,
+            w_passers,
+            b_passers,
+        }
+    }
+}
+
+impl Default for PawnCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PawnCache {
+    const SIZE: usize = 1 << 14;
+
+    pub fn new() -> Self {
+        // u64::MAX sentinel; a real pawnless position hashes to 0, and must not
+        // false-hit a fresh slot's default zero key.
+        let empty = PawnEntry { key: u64::MAX, pawn: PawnFeatures::default() };
+        Self { entries: vec![empty; Self::SIZE].into_boxed_slice() }
+    }
+
+    /// Probe by `pawn_key`, recomputing pawn structure on a miss.
+    #[inline]
+    pub fn probe(&mut self, board: &Position) -> PawnFeatures {
+        let key = board.pawn_key;
+        let slot = &mut self.entries[key as usize & (Self::SIZE - 1)];
+
+        if slot.key == key {
+            slot.pawn
+        } else {
+            let pawn = PawnFeatures::compute(board);
+            *slot = PawnEntry { key, pawn };
+            pawn
+        }
+    }
+}
+
+impl SharedFeatures {
+    #[inline]
+    pub fn compute(board: &Position) -> Self {
+        Self::with_pawn(board, &PawnFeatures::compute(board))
+    }
+
+    /// The piece-dependent terms computed fresh, the pawn terms taken from
+    /// `pawn`. `enemy_king_dist` is the one pawn-derived bucket rebuilt here;
+    /// it moves with the enemy king, not the pawns.
+    pub fn with_pawn(board: &Position, pawn: &PawnFeatures) -> Self {
+        let pinned_w = board.pinned_pieces(Color::White);
+        let pinned_b = board.pinned_pieces(Color::Black);
+        let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
+
+        let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+
+        let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
+        let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
+        let w_king_ring = bitboard::atk_king(w_ksq).0;
+        let b_king_ring = bitboard::atk_king(b_ksq).0;
+
+        let xray_ortho =
+            (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+
+        let w_pair = i32::from(board.pieces(PieceType::Bishop, Color::White).more_than_one());
+        let b_pair = i32::from(board.pieces(PieceType::Bishop, Color::Black).more_than_one());
+        let bishop_pair_diff = w_pair - b_pair;
+
+        let open = !board.role_bb[PieceType::Pawn].file_fill();
+        let rooks_open = board.role_bb[PieceType::Rook] & open;
+        let w_open = (rooks_open & board.side_bb[Color::White]).popcount() as i32;
+        let b_open = (rooks_open & board.side_bb[Color::Black]).popcount() as i32;
+        let rook_open_diff = w_open - b_open;
+
+        // Enemy-king Chebyshev distance to each passer, bucketed (1..=6, 7 clamps
+        // to 6). Walks the cached passer sets rather than re-detecting them.
+        let mut enemy_king_dist = [0i32; 6];
+        let mut w = pawn.w_passers;
+
+        while w.is_not_empty() {
+            let sq = w.pop_lsb();
+            enemy_king_dist[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
+        }
+
+        let mut b = pawn.b_passers;
+
+        while b.is_not_empty() {
+            let sq = b.pop_lsb();
+            enemy_king_dist[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
+        }
+
         // Minor behind pawn; a knight or bishop shielded by a pawn (either color)
         // directly ahead. Shifting all pawns toward us drops a front pawn onto the
         // minor's own square, so the AND counts shielded minors.
@@ -439,18 +544,18 @@ impl SharedFeatures {
         let tempo = if board.stm == Color::White { 1 } else { -1 };
 
         Self {
-            openness,
+            openness: pawn.openness,
             data,
             xray_ortho,
             bishop_pair_diff,
             rook_open_diff,
-            passed_pawn,
+            passed_pawn: pawn.passed_pawn,
             enemy_king_dist,
-            doubled_pawn_diff,
-            isolated_pawn_diff,
-            phalanx,
-            defended_pawn,
-            backward_pawn_diff,
+            doubled_pawn_diff: pawn.doubled_pawn_diff,
+            isolated_pawn_diff: pawn.isolated_pawn_diff,
+            phalanx: pawn.phalanx,
+            defended_pawn: pawn.defended_pawn,
+            backward_pawn_diff: pawn.backward_pawn_diff,
             tempo,
             minor_behind_pawn_diff,
         }
