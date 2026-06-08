@@ -19,7 +19,7 @@ use crate::{
     },
     engine::{
         autograd::EvalMath,
-        combiner::{Accumulators, Combiner, LinearCombiner},
+        combiner::{Accumulators, Combiner, LinearCombiner, taper},
         eval_params::{
             self, ATTACKER_WEIGHTS, BACKWARD_PAWN_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG,
             DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG,
@@ -172,7 +172,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     let buckets = fill_accumulators::<i32>(acc, phase, &features, &params);
     let psqt = buckets.mg_eg;
     let mobility = buckets.mobility;
-    let bonus = buckets.bonus;
+    let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
     let total = LinearCombiner::forward(&buckets, phase);
     let safety = total - psqt - mobility - bonus;
 
@@ -576,7 +576,8 @@ fn fill_accumulators<T: EvalMath<Scalar = T>>(
     let mut buckets = Accumulators::<T> {
         mg_eg: T::tapered(acc, phase),
         mobility: T::zero(),
-        bonus: T::zero(),
+        bonus_mg: T::zero(),
+        bonus_eg: T::zero(),
         safety_us: T::zero(),
         safety_them: T::zero(),
         xray: T::zero(),
@@ -615,11 +616,10 @@ macro_rules! tapered_bonus_term {
             type Upstream = term::TaperPair;
 
             #[inline(always)]
-            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-                let total = T::from_i32(TOTAL_PHASE);
+            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
                 let feature = T::from_i32(features.$feat);
-                let tapered = params.$mg * phase + params.$eg * (total - phase);
-                acc.bonus += (tapered * feature / total).trunc();
+                acc.bonus_mg += params.$mg * feature;
+                acc.bonus_eg += params.$eg * feature;
             }
 
             #[inline]
@@ -637,14 +637,11 @@ macro_rules! tapered_bonus_term {
             type Upstream = term::TaperPair;
 
             #[inline(always)]
-            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-                let total = T::from_i32(TOTAL_PHASE);
-                let eg_phase = total - phase;
-
+            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
                 for i in 0..$n {
                     let feature = T::from_i32(features.$feat[i]);
-                    let tapered = params.$mg[i] * phase + params.$eg[i] * eg_phase;
-                    acc.bonus += (tapered * feature / total).trunc();
+                    acc.bonus_mg += params.$mg[i] * feature;
+                    acc.bonus_eg += params.$eg[i] * feature;
                 }
             }
 
