@@ -732,7 +732,7 @@ impl<'cfg> Searcher<'cfg> {
     fn check_signals(&mut self) -> bool {
         if self.cfg.stop.load(Ordering::Acquire)
             || self.tm.is_hard_limit_reached()
-            || (self.cfg.limits.nodes > 0 && self.cfg.total_nodes.load(Ordering::Relaxed) >= self.cfg.limits.nodes)
+            || (self.cfg.limits.nodes > 0 && self.node_count() >= self.cfg.limits.nodes)
         {
             self.cfg.stop.store(true, Ordering::Release);
             return true;
@@ -753,13 +753,21 @@ impl<'cfg> Searcher<'cfg> {
         self.cfg.stop.load(Ordering::Acquire)
     }
 
+    /// Node count for display and limits.
+    /// Under Lazy SMP uses the shared aggregate; single-threaded uses the
+    /// local counter to avoid atomic overhead on every node.
+    #[inline(always)]
+    fn node_count(&self) -> u64 {
+        if self.cfg.threads == 1 { self.nodes } else { self.cfg.total_nodes.load(Ordering::Relaxed) }
+    }
+
     /// Assemble the display snapshot shared by depth-complete and realtime reporting.
     /// `pv` and `history` are borrowed by the returned struct,
     /// so the caller owns them for the duration of the print.
     #[cold]
     fn search_info_data<'a>(&'a self, depth: i32, score: i32, pv: &'a Line, history: &'a [PvSnapshot]) -> tui::SearchInfoData<'a> {
         let ms = self.tm.elapsed().as_millis().max(1);
-        let total = self.cfg.total_nodes.load(Ordering::Relaxed);
+        let total = self.node_count();
         let nps = (u128::from(total) * 1000) / ms;
 
         tui::SearchInfoData {
@@ -860,7 +868,9 @@ impl Worker<'_> {
         }
 
         searcher.nodes += 1;
-        searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
+        if searcher.cfg.threads > 1 {
+            searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
+        }
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(draw_score(searcher.nodes));
@@ -1612,7 +1622,9 @@ impl Worker<'_> {
         }
 
         searcher.nodes += 1;
-        searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
+        if searcher.cfg.threads > 1 {
+            searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
+        }
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(draw_score(searcher.nodes));
