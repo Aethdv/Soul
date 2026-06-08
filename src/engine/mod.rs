@@ -10,6 +10,7 @@ pub mod history;
 pub mod mobility;
 pub mod movegen;
 pub mod movepicker;
+#[cfg(feature = "mvpstats")] pub mod mvpstats;
 pub mod search;
 pub mod search_params;
 pub mod see;

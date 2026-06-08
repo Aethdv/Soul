@@ -1,6 +1,6 @@
 [package]
 name = "soul"
-version = "0.5.23"
+version = "0.5.24"
 license = "AGPL-3.0"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
@@ -45,6 +45,7 @@ zerocopy = { version = "0.8.48", default-features = false, features = ["derive",
 [features]
 searchtune = []
 corrstats = []
+mvpstats = []
 
 [profile.release]
 lto = "fat"
