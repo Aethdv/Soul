@@ -103,7 +103,7 @@ impl TtEntry {
     /// the cluster scan compares. The payload stays packed until a key matches.
     #[inline(always)]
     fn meta(&self) -> (u16, u8, u8) {
-        let a = self.a.load(Ordering::Relaxed);
+        let a = self.a.load(Ordering::Acquire);
         (a as u16, (a >> 16) as u8, (a >> 24) as u8)
     }
 
@@ -115,7 +115,7 @@ impl TtEntry {
 
     #[inline(always)]
     fn load(&self) -> Decoded {
-        let a = self.a.load(Ordering::Relaxed);
+        let a = self.a.load(Ordering::Acquire);
         let b = self.b.load(Ordering::Relaxed);
         let c = self.c.load(Ordering::Relaxed);
 
@@ -137,9 +137,11 @@ impl TtEntry {
         let b = d.mv as u32 | (d.age as u32) << 16 | (d.pv as u32) << 24;
         let c = d.score as u16 as u32 | (d.eval as u16 as u32) << 16;
 
-        self.a.store(a, Ordering::Relaxed);
-        self.b.store(b, Ordering::Relaxed);
         self.c.store(c, Ordering::Relaxed);
+        self.b.store(b, Ordering::Relaxed);
+        // key published last — an Acquire load on `a` that sees the new key
+        // is guaranteed to see the `b` and `c` stores that precede it.
+        self.a.store(a, Ordering::Release);
     }
 }
 
@@ -222,10 +224,15 @@ impl TranspositionTable {
 
         for i in 0..CLUSTER_SIZE {
             let (key, bound, _) = self.entries[idx + i].meta();
-            // The bound guard keeps an empty slot (key 0) from matching a real
-            // position whose low 16 bits happen to be 0.
             if key == key16 && bound != BOUND_NONE {
                 let entry = self.entries[idx + i].load();
+                // A concurrent store that published a new key after our meta()
+                // but before load() can leave us with a mismatched key — the
+                // Acquire on `a` in load() synchronizes with the store's Release,
+                // and this re-check discards the torn hit.
+                if entry.key != key16 {
+                    continue;
+                }
                 let score = Self::score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
 
