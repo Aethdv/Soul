@@ -200,11 +200,12 @@ pub struct SearchConfig {
     pub overhead: u64,
     pub threads: usize,
     pub thread_id: usize,
-    /// Aggregate node count across all threads, for correct display in
-    /// multi-threaded searches. Each thread `fetch_add`s its increment;
-    /// the `Relaxed` ordering is safe because the counter is only used
-    /// for `info` output, not synchronization.
-    pub total_nodes: Arc<AtomicU64>,
+    /// Per-thread node counters, one slot per thread.
+    /// Each thread writes only its own slot, inside `check_signals`
+    /// (every ~2048 nodes), with a Relaxed store — no lock prefix,
+    /// no cross-core contention. The display and node-limit paths sum
+    /// all slots. Slightly stale, invisible at display intervals.
+    pub node_slots: Arc<Box<[AtomicU64]>>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
@@ -298,7 +299,7 @@ impl SearchConfig {
             search_params,
             threads: 1,
             thread_id: 0,
-            total_nodes: Arc::new(AtomicU64::new(0)),
+            node_slots: Arc::new((0..1).map(|_| AtomicU64::new(0)).collect()),
             mvvlva_v,
             mvvlva_a,
             lmr_table,
@@ -730,6 +731,11 @@ impl<'cfg> Searcher<'cfg> {
     /// Also drives realtime TUI updates — piggybacks on the same interval.
     #[inline]
     fn check_signals(&mut self) -> bool {
+        // Publish the local node count into this thread's slot so the
+        // display and node-limit paths see the aggregate. Relaxed store
+        // (plain mov on x86) — this slot has exactly one writer.
+        self.cfg.node_slots[self.cfg.thread_id].store(self.nodes, Ordering::Relaxed);
+
         if self.cfg.stop.load(Ordering::Acquire)
             || self.tm.is_hard_limit_reached()
             || (self.cfg.limits.nodes > 0 && self.node_count() >= self.cfg.limits.nodes)
@@ -753,12 +759,12 @@ impl<'cfg> Searcher<'cfg> {
         self.cfg.stop.load(Ordering::Acquire)
     }
 
-    /// Node count for display and limits.
-    /// Under Lazy SMP uses the shared aggregate; single-threaded uses the
-    /// local counter to avoid atomic overhead on every node.
+    /// Sums per-thread node counters. Each thread publishes its local count
+    /// into its own slot every ~2048 nodes, so the aggregate may trail by
+    /// up to `NODE_CHECK_INTERVAL · threads` — invisible at display intervals.
     #[inline(always)]
     fn node_count(&self) -> u64 {
-        if self.cfg.threads == 1 { self.nodes } else { self.cfg.total_nodes.load(Ordering::Relaxed) }
+        self.cfg.node_slots.iter().map(|s| s.load(Ordering::Relaxed)).sum()
     }
 
     /// Assemble the display snapshot shared by depth-complete and realtime reporting.
@@ -868,9 +874,6 @@ impl Worker<'_> {
         }
 
         searcher.nodes += 1;
-        if searcher.cfg.threads > 1 {
-            searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
-        }
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(draw_score(searcher.nodes));
@@ -1622,9 +1625,6 @@ impl Worker<'_> {
         }
 
         searcher.nodes += 1;
-        if searcher.cfg.threads > 1 {
-            searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
-        }
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(draw_score(searcher.nodes));

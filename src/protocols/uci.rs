@@ -9,7 +9,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Sender},
     },
     thread,
@@ -294,6 +294,7 @@ pub fn run_cli_go(args: &[String]) {
 
     let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
     cfg.threads = state.threads;
+    cfg.node_slots = Arc::new((0..state.threads).map(|_| AtomicU64::new(0)).collect());
 
     let search_tx = state.search_tx.clone();
 
@@ -626,6 +627,7 @@ where I: Iterator<Item = &'a str> {
     let display = state.search_display();
     let mut cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
     cfg.threads = state.threads;
+    cfg.node_slots = Arc::new((0..state.threads).map(|_| AtomicU64::new(0)).collect());
 
     state.is_searching.store(true, Ordering::Release);
 
