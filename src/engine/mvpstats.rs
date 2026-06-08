@@ -99,7 +99,7 @@ fn report_quiets() {
         human(generated),
         human(consumed)
     );
-    columns(&["consumed", "nodes", "share", "cumul"]);
+    columns(["consumed", "nodes", "share", "cumul"]);
     histogram(&QUIET_HIST, nodes, 0);
 }
 
@@ -115,7 +115,7 @@ fn report_cutoffs() {
 
     header("MovePicker cutoff ordering");
     println!("  fail-high nodes {}   first-move cutoff {rate}", human(nodes));
-    columns(&["move", "nodes", "share", "cumul"]);
+    columns(["move", "nodes", "share", "cumul"]);
     histogram(&CUTOFF_HIST, nodes, 1);
 
     println!("  {}by mechanism{}", header_color().0, header_color().1);
@@ -149,10 +149,9 @@ fn header(title: &str) {
     println!("\n{gold}{BOLD}{title}{reset}");
 }
 
-fn columns(labels: &[&str]) {
+fn columns(labels: [&str; 4]) {
     let (gold, reset) = header_color();
-    let row: Vec<String> = labels.iter().map(|l| format!("{l:>8}")).collect();
-    println!("  {gold}{BOLD}{}{reset}", row.join("  "));
+    println!("  {gold}{BOLD}{:>8}  {:>11}  {:>7}  {:>7}{reset}", labels[0], labels[1], labels[2], labels[3]);
 }
 
 fn header_color() -> (String, &'static str) {
