@@ -1239,6 +1239,21 @@ impl Worker<'_> {
                 self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move, reduction)?;
 
                 if likely(res.alpha >= beta) {
+                    #[cfg(feature = "mvpstats")]
+                    {
+                        use crate::engine::mvpstats::{CutoffKind, record_cutoff};
+                        let kind = if Some(mv) == hash_move {
+                            CutoffKind::Hash
+                        } else if mv.is_capture() {
+                            CutoffKind::Capture
+                        } else if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
+                            CutoffKind::Killer
+                        } else {
+                            CutoffKind::Quiet
+                        };
+                        record_cutoff(res.move_count as u32, kind);
+                    }
+
                     // ── History Gravity Heuristic (~95 Elo) ──
                     // When a move causes a beta-cutoff, its presumably a strong response.
                     // We reward it so it surfaces earlier in future sibling nodes,

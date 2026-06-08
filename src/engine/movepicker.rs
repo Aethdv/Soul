@@ -15,7 +15,7 @@
 //! popping the highest-scored moves from the back in 𝒪(1) time without
 //! index shifting.
 
-use std::mem::MaybeUninit;
+use std::{mem::MaybeUninit, slice};
 
 use crate::{
     core::{
@@ -80,6 +80,21 @@ pub struct MovePicker {
     cont4: ContContext,
     is_qsearch: bool,
     in_check: bool,
+    /// Quiets generated/sorted at this node, for `mvpstats`.
+    #[cfg(feature = "mvpstats")]
+    quiets_gen: u32,
+    /// Quiets yielded before the picker is dropped (cutoff or exhaustion).
+    #[cfg(feature = "mvpstats")]
+    quiets_used: u32,
+}
+
+#[cfg(feature = "mvpstats")]
+impl Drop for MovePicker {
+    fn drop(&mut self) {
+        if self.quiets_gen > 0 {
+            crate::engine::mvpstats::record_quiets(self.quiets_gen, self.quiets_used);
+        }
+    }
 }
 
 impl MovePicker {
@@ -107,6 +122,10 @@ impl MovePicker {
             cont4,
             is_qsearch: false,
             in_check: false,
+            #[cfg(feature = "mvpstats")]
+            quiets_gen: 0,
+            #[cfg(feature = "mvpstats")]
+            quiets_used: 0,
         }
     }
 
@@ -127,6 +146,10 @@ impl MovePicker {
             cont4: ContContext::default(),
             is_qsearch: true,
             in_check,
+            #[cfg(feature = "mvpstats")]
+            quiets_gen: 0,
+            #[cfg(feature = "mvpstats")]
+            quiets_used: 0,
         }
     }
 
@@ -137,6 +160,7 @@ impl MovePicker {
             match self.stage {
                 Stage::Hash => {
                     self.stage = Stage::GenCaptures;
+
                     if let Some(mv) = self.hash_move {
                         return Some(mv);
                     }
@@ -155,7 +179,7 @@ impl MovePicker {
                         unsafe {
                             let ptr = self.candidates.as_mut_ptr() as *mut u32;
                             // Sort natively ascending. Best elements float to the end.
-                            std::slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
+                            slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
                         }
                     }
                     self.stage = Stage::YieldCaptures;
@@ -198,12 +222,17 @@ impl MovePicker {
 
                 Stage::GenQuiets => {
                     self.gen_quiets(board, history);
+
+                    #[cfg(feature = "mvpstats")]
+                    {
+                        self.quiets_gen = self.count as u32;
+                    }
                     // SAFETY: self.count accurately tracks initialized items.
                     // ptr covers valid memory and is sorted in-place.
                     if self.count > 1 {
                         unsafe {
                             let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            std::slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
+                            slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
                         }
                     }
                     self.stage = Stage::YieldQuiets;
@@ -219,10 +248,13 @@ impl MovePicker {
                     let mv = unsafe { self.read_move(self.count) };
 
                     if Some(mv) != self.hash_move {
+                        #[cfg(feature = "mvpstats")]
+                        {
+                            self.quiets_used += 1;
+                        }
                         return Some(mv);
                     }
                 },
-
                 Stage::Done => return None,
             }
         }
@@ -306,6 +338,7 @@ impl MovePicker {
                 let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
                 let chist = history.score_capture(stm, PT, to, victim);
                 let score = self.cap_score(v_val - a_pen, chist);
+
                 self.add_move_packed(Move::new(from, to, Move::CAPTURE), score as MoveScore);
             }
         }
@@ -317,6 +350,7 @@ impl MovePicker {
         let sort_score = (score as i32 + 32768).clamp(0, 65535) as u32;
         let packed = (sort_score << 16) | (mv.inner() as u32);
         crate::debug_index_mut!(self.candidates, self.count).write(packed);
+
         self.count += 1;
     }
 
@@ -328,6 +362,7 @@ impl MovePicker {
         // Victim is always pawn (the captured pawn sits on an adjacent square, not on `mv.to()`).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
+
         self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
     }
 
@@ -379,7 +414,6 @@ impl MovePicker {
             debug_assert!(usize::from(p) < 8);
             s += *crate::debug_index!(self.mvvlva_v, p as usize);
         }
-
         s as MoveScore
     }
 

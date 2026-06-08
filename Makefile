@@ -31,7 +31,7 @@ DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
         evaltune searchtune test oracle seeformat format clippy profile etprofile \
-        releases avx2 avx2-bmi2 avx512 corrstats
+        releases avx2 avx2-bmi2 avx512 corrstats movepicker
 
 all: openbench
 
@@ -102,6 +102,14 @@ corrstats: ## Native build with correction-history stats
 	@cp target/release/$(EXE_NAME) $(EXE)-corrstats
 	@echo "Done: ./$(EXE)-corrstats"
 	@./$(EXE)-corrstats bench $(DEPTH)
+
+movepicker: ## Native build with move-picker quiet stats
+	@echo "Building $(EXE_NAME)-movepicker..."
+	@RUSTFLAGS="-C target-cpu=native" \
+		cargo build --release --features mvpstats --quiet
+	@cp target/release/$(EXE_NAME) $(EXE)-movepicker
+	@echo "Done: ./$(EXE)-movepicker"
+	@./$(EXE)-movepicker bench $(DEPTH)
 
 v4: ## AVX512
 	@echo "Building x86-64-v4..."
@@ -186,7 +194,7 @@ clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
 clean: ## Remove all build artifacts
 	@echo "Cleaning..."
 	@cargo clean
-	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval $(EXE)-corrstats
+	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval $(EXE)-corrstats $(EXE)-movepicker
 	@rm -f $(EXE_NAME)-v*-avx2* $(EXE_NAME)-v*-avx512*
 	@rm -rf target/pgo-profiles
 	@echo "Done"

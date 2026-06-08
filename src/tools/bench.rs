@@ -94,6 +94,9 @@ pub fn run(depth: i32) {
     let nps = (total_nodes as f64 / elapsed) as u64;
     println!("Bench: {total_nodes} nodes {nps} nps · {elapsed:.1}s");
 
+    #[cfg(feature = "mvpstats")]
+    crate::engine::mvpstats::report();
+
     #[cfg(feature = "corrstats")]
     crate::engine::corrstats::report();
 }
