@@ -2,8 +2,8 @@
 //!
 //! # Notes
 //!
-//! Lockless single-threaded design: probe and store take `&self` and
-//! mutate entries through raw pointers. A 16-bit verification key guards
+//! Lockless design: probe and store take `&self` and mutate entries
+//! through per-word atomics. A 16-bit verification key guards
 //! against hash collisions; the rare aliasing that slips through (~1 in 2¹⁶
 //! within a probed cluster) can only return a stale score, never a corrupting
 //! move, because every stored move is re-validated by `is_pseudo_legal` before
@@ -16,7 +16,7 @@
 
 use std::{
     arch, mem, ptr,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 use crate::core::{
@@ -55,23 +55,71 @@ const fn verification_key(hash: u64) -> u16 {
     hash as u16
 }
 
-#[derive(Clone, Copy, Default)]
+/// A cluster slot, packed into three `AtomicU32`s for Lazy SMP.
+/// An `AtomicU64` would force 8-byte alignment and pad the 12-byte slot to 16,
+/// thinning the table. `a` holds key+move, `b` holds score+eval, `c` holds metadata.
+/// A torn read across words mixes metadata onto a matching move;
+/// `is_pseudo_legal` catches stale moves downstream. Worst case is a stale cutoff, never corruption.
 #[repr(C)]
-pub struct TtEntry {
+struct TtEntry {
+    a: AtomicU32,
+    b: AtomicU32,
+    c: AtomicU32,
+}
+
+/// The decoded view of a [`TtEntry`], used by probe and store.
+#[derive(Clone, Copy, Default)]
+struct Decoded {
     /// 16-bit verification key (low bits of the Zobrist hash). Collisions that
     /// survive it are caught downstream by `is_pseudo_legal` on the stored move.
-    pub key: u16,
-    /// Best move found in this position
-    pub mv: u16,
-    pub score: i16,
+    key: u16,
+    mv: u16,
+    score: i16,
     /// Raw static eval at store time (`SCORE_NONE` when stored in check), so a
     /// hit can reuse it instead of recomputing the full evaluation.
-    pub eval: i16,
-    pub depth: u8,
-    pub bound: u8,
+    eval: i16,
+    depth: u8,
+    bound: u8,
     /// Generation at store time — prior-generation entries evict first.
-    pub age: u8,
-    pub pv: u8,
+    age: u8,
+    pv: u8,
+}
+
+impl Default for TtEntry {
+    fn default() -> Self {
+        Self { a: AtomicU32::new(0), b: AtomicU32::new(0), c: AtomicU32::new(0) }
+    }
+}
+
+impl TtEntry {
+    #[inline(always)]
+    fn load(&self) -> Decoded {
+        let a = self.a.load(Ordering::Relaxed);
+        let b = self.b.load(Ordering::Relaxed);
+        let c = self.c.load(Ordering::Relaxed);
+
+        Decoded {
+            key: a as u16,
+            mv: (a >> 16) as u16,
+            score: b as u16 as i16,
+            eval: (b >> 16) as u16 as i16,
+            depth: c as u8,
+            bound: (c >> 8) as u8,
+            age: (c >> 16) as u8,
+            pv: (c >> 24) as u8,
+        }
+    }
+
+    #[inline(always)]
+    fn store(&self, d: Decoded) {
+        let a = d.key as u32 | (d.mv as u32) << 16;
+        let b = d.score as u16 as u32 | (d.eval as u16 as u32) << 16;
+        let c = d.depth as u32 | (d.bound as u32) << 8 | (d.age as u32) << 16 | (d.pv as u32) << 24;
+
+        self.a.store(a, Ordering::Relaxed);
+        self.b.store(b, Ordering::Relaxed);
+        self.c.store(c, Ordering::Relaxed);
+    }
 }
 
 pub struct TranspositionTable {
@@ -80,12 +128,6 @@ pub struct TranspositionTable {
     /// Wraps at 255; `wrapping_sub` handles roll-over correctly.
     pub generation: AtomicU8,
 }
-
-// SAFETY: The TT bypasses Rust's safety borrow rules via raw pointers during probe and store,
-// which mutate fields through a &self shared reference. This is mathematically safe for single
-// threaded execution.
-unsafe impl Send for TranspositionTable {}
-unsafe impl Sync for TranspositionTable {}
 
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
@@ -99,13 +141,14 @@ impl TranspositionTable {
         let bytes = size_mb.max(1) * 1024 * 1024;
         let count = (bytes / mem::size_of::<TtEntry>()).max(CLUSTER_SIZE);
         let clusters = count / CLUSTER_SIZE;
-        self.entries = vec![TtEntry::default(); clusters * CLUSTER_SIZE].into_boxed_slice();
+        let n = clusters * CLUSTER_SIZE;
+        self.entries = (0..n).map(|_| TtEntry::default()).collect::<Vec<_>>().into_boxed_slice();
     }
 
     /// Returns TT occupancy in permille (0–1000).
     pub fn hashfull(&self) -> usize {
         let sample = self.entries.len().min(1000);
-        self.entries[..sample].iter().filter(|e| e.bound != BOUND_NONE).count() * 1000 / sample.max(1)
+        self.entries[..sample].iter().filter(|e| e.load().bound != BOUND_NONE).count() * 1000 / sample.max(1)
     }
 
     /// Zero every entry and reset the generation counter.
@@ -116,6 +159,8 @@ impl TranspositionTable {
 
         let ptr = self.entries.as_ptr() as *mut TtEntry;
 
+        // SAFETY: Only called by `ucinewgame` when the engine is idle.
+        // Bypassing atomics for a bulk memset is safe with no concurrent searchers.
         unsafe {
             ptr::write_bytes(ptr, 0, self.entries.len());
         }
@@ -153,7 +198,7 @@ impl TranspositionTable {
         let key16 = verification_key(hash);
 
         for i in 0..CLUSTER_SIZE {
-            let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
+            let entry = self.entries[idx + i].load();
             // The bound guard keeps an empty slot (key 0) from matching a real
             // position whose low 16 bits happen to be 0.
             if entry.key == key16 && entry.bound != BOUND_NONE {
@@ -179,7 +224,7 @@ impl TranspositionTable {
         let mut worst_quality = i32::MAX;
 
         for i in 0..CLUSTER_SIZE {
-            let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
+            let entry = self.entries[idx + i].load();
 
             if entry.bound == BOUND_NONE || entry.key == key16 {
                 replace_idx = idx + i;
@@ -195,11 +240,8 @@ impl TranspositionTable {
             }
         }
 
-        // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
-        // Standard high-performance lockless TT approach.
-        let entry = unsafe { &mut *(self.entries.as_ptr().add(replace_idx) as *mut TtEntry) };
-        let is_exact_match = entry.key == key16;
-        entry.key = key16;
+        let existing = self.entries[replace_idx].load();
+        let is_exact_match = existing.key == key16;
 
         let mut store_mv = mv.inner();
         let mut store_pv = pv as u8;
@@ -208,17 +250,20 @@ impl TranspositionTable {
         // move it describes — losing it would erase the position's
         // PV-history context.
         if mv.is_null() && is_exact_match {
-            store_mv = entry.mv;
-            store_pv |= entry.pv;
+            store_mv = existing.mv;
+            store_pv |= existing.pv;
         }
 
-        entry.mv = store_mv;
-        entry.score = Self::score_to_tt(score, ply) as i16;
-        entry.eval = eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        entry.depth = depth as u8;
-        entry.bound = bound;
-        entry.age = cur;
-        entry.pv = store_pv;
+        self.entries[replace_idx].store(Decoded {
+            key: key16,
+            mv: store_mv,
+            score: Self::score_to_tt(score, ply) as i16,
+            eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+            depth: depth as u8,
+            bound,
+            age: cur,
+            pv: store_pv,
+        });
     }
 
     /// Stores a qsearch result (depth = 0).
@@ -240,7 +285,7 @@ impl TranspositionTable {
         let mut is_key_match = false;
 
         for i in 0..CLUSTER_SIZE {
-            let entry = unsafe { &*self.entries.as_ptr().add(idx + i) };
+            let entry = self.entries[idx + i].load();
 
             if entry.key == key16 || entry.bound == BOUND_NONE || entry.depth == 0 {
                 best_idx = Some(idx + i);
@@ -258,22 +303,22 @@ impl TranspositionTable {
         }
 
         if let Some(best) = best_idx {
-            // SAFETY: Obtaining mutable reference to a slot via an immutable &self.
-            // Standard high-performance lockless TT approach.
-            let entry = unsafe { &mut *(self.entries.as_ptr().add(best) as *mut TtEntry) };
+            let existing = self.entries[best].load();
             // Preserve any prior PV-history bit when overwriting the same
             // position — qs visits would otherwise erase the propagated flag
             // stamped by a previous negamax store.
-            let store_pv = if is_key_match { (pv as u8) | entry.pv } else { pv as u8 };
+            let store_pv = if is_key_match { (pv as u8) | existing.pv } else { pv as u8 };
 
-            entry.key = key16;
-            entry.mv = mv.inner();
-            entry.score = Self::score_to_tt(score, ply) as i16;
-            entry.eval = eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            entry.depth = 0;
-            entry.bound = bound;
-            entry.age = cur;
-            entry.pv = store_pv;
+            self.entries[best].store(Decoded {
+                key: key16,
+                mv: mv.inner(),
+                score: Self::score_to_tt(score, ply) as i16,
+                eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                depth: 0,
+                bound,
+                age: cur,
+                pv: store_pv,
+            });
         }
     }
 

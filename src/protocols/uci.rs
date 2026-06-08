@@ -71,6 +71,7 @@ pub struct UciState {
     history_tx: mpsc::Sender<History>,
     history_rx: mpsc::Receiver<History>,
     is_searching: Arc<AtomicBool>,
+    threads: usize,
     hash_size: usize,
     overhead: u64,
     show_wdl: bool,
@@ -98,9 +99,41 @@ impl UciState {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx) => {
-                        let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+                        // ── Lazy SMP ──
+                        // Helpers search the same root, sharing only the TT and stop flag.
+                        // Tree diversity deepens the shared table. Main reports and decides.
+                        let mut helpers = Vec::new();
 
+                        for i in 1..cfg.threads {
+                            let mut hcfg = (*cfg).clone();
+                            hcfg.limits.silent = true;
+                            hcfg.thread_id = i;
+
+                            let hboard = board;
+                            let hhistory = history.clone();
+                            let htt = Arc::clone(&tt);
+
+                            helpers.push(thread::spawn(move || {
+                                let mut htable = History::new();
+                                let mut ctx = Searcher::new(&hcfg, &hboard, &hhistory, htt);
+                                ctx.iterative_deepening(&mut htable);
+                            }));
+                        }
+
+                        let mut ctx = Searcher::new(&cfg, &board, &history, tt);
                         ctx.iterative_deepening(&mut history_table);
+
+                        // Main is done. Signal helpers, join, then clear the flag so
+                        // the next search starts clean.
+                        if !helpers.is_empty() {
+                            cfg.stop.store(true, Ordering::Release);
+
+                            for h in helpers {
+                                let _ = h.join();
+                            }
+                            cfg.stop.store(false, Ordering::Release);
+                        }
+
                         is_searching_worker.store(false, Ordering::Release);
 
                         let _ = result_tx.send(history_table);
@@ -121,6 +154,7 @@ impl UciState {
             history_tx: h_tx,
             history_rx: h_rx,
             is_searching,
+            threads: 1,
             hash_size: 16,
             overhead: 10,
             show_wdl: false,
@@ -201,7 +235,8 @@ pub fn run_cli_go(args: &[String]) {
     let limits = parse_go_limits(&board, &mut iter);
     let display = state.search_display();
 
-    let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
+    let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
+    cfg.threads = state.threads;
 
     let search_tx = state.search_tx.clone();
 
@@ -321,14 +356,17 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
 
     thread::spawn(move || {
         let stdin = io::stdin();
+
         loop {
             let mut line = String::new();
+
             match stdin.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {},
             }
 
             let trimmed = line.trim();
+
             if trimmed.is_empty() {
                 continue;
             }
@@ -458,7 +496,7 @@ fn print_id() {
 
 fn print_options() {
     println!("option name Hash type spin default 16 min 1 max 65536");
-    println!("option name Threads type spin default 1 min 1 max 1");
+    println!("option name Threads type spin default 1 min 1 max 1024");
     println!("option name Overhead type spin default 10 min 0 max 1000");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
@@ -528,7 +566,8 @@ where I: Iterator<Item = &'a str> {
 
     let start_time = Instant::now();
     let display = state.search_display();
-    let cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
+    let mut cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
+    cfg.threads = state.threads;
 
     state.is_searching.store(true, Ordering::Release);
 
@@ -611,7 +650,7 @@ where I: Iterator<Item = &'a str> {
         },
 
         "threads" => {
-            // Dummy. not supported yet.
+            state.threads = value.parse::<usize>().unwrap_or(1).clamp(1, 1024);
         },
         _ => {},
     }

@@ -2,8 +2,12 @@
 //!
 //! # Architecture
 //!
-//! The search is single-threaded, but separates state into two entities
-//! to provide a clean seam for future parallelism:
+//! Lazy SMP: threads search the same root in parallel, sharing only the TT and
+//! a stop flag. No explicit work distribution — each thread runs its own
+//! iterative-deepening loop, and the TT is the coordination surface. Diversity
+//! is emergent from threads cross-probing each other's entries at different depths.
+//!
+//! State splits into two entities per thread:
 //! - `Searcher`: Owns global engine state (time management, history table, root moves).
 //! - `Worker`: Owns thread-local mutability (the board, SIMD accumulator, ply stack).
 //!
@@ -18,7 +22,7 @@ use std::{
     io::Write,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -115,12 +119,14 @@ impl NodeType for NonPvNode {
 // ──────── Searcher & Worker ────────
 //
 // Searcher owns the global search state — root moves, node counter,
-// time management, zobrist trail. One per go command.
+// time management, zobrist trail. One per thread.
 //
 // Worker owns the mutable board that changes as we descend the tree:
 // position, accumulator, per-ply stack.
 //
-// This separation is the natural seam for future parallelism:
+// Each thread gets its own Searcher+Worker pair. Threads share only
+// the TT, the stop flag, and the node counter — everything else is
+// thread-private.
 // one Searcher, N Workers, each exploring a different subtree.
 
 pub struct Searcher<'cfg> {
@@ -192,6 +198,13 @@ pub struct SearchConfig {
     pub display: SearchDisplay,
     pub search_params: SearchParams,
     pub overhead: u64,
+    pub threads: usize,
+    pub thread_id: usize,
+    /// Aggregate node count across all threads, for correct display in
+    /// multi-threaded searches. Each thread `fetch_add`s its increment;
+    /// the `Relaxed` ordering is safe because the counter is only used
+    /// for `info` output, not synchronization.
+    pub total_nodes: Arc<AtomicU64>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
@@ -276,7 +289,20 @@ impl SearchConfig {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
         let lmr_table = Self::build_lmr_table();
 
-        Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
+        Self {
+            limits,
+            start_time,
+            stop,
+            overhead,
+            display,
+            search_params,
+            threads: 1,
+            thread_id: 0,
+            total_nodes: Arc::new(AtomicU64::new(0)),
+            mvvlva_v,
+            mvvlva_a,
+            lmr_table,
+        }
     }
 
     /// Composed LMR reduction in `LMR_SCALE` units.
@@ -462,6 +488,19 @@ impl<'cfg> Searcher<'cfg> {
             self.tm.set_bm_stab_factor(tm_single_root() as f64 / 100.0);
         }
 
+        // ── Lazy SMP ──
+        // Every thread searches every depth, sharing nothing but the TT and
+        // the stop flag. Diversity is emergent: thread A writes an entry at
+        // the edge of what it can reach, thread B probes it mid-search and
+        // redirects its tree along a branch A already explored. The TT is
+        // the coordination surface.
+        //
+        // Helpers search the full depth ladder alongside main. The only
+        // asymmetry is time management — only the main thread checks the
+        // clock. Helpers stop only on the global flag or a depth limit;
+        // they don't need to finish "in time," they just need to feed the
+        // TT for as long as the main thread is still running.
+
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
 
@@ -477,7 +516,11 @@ impl<'cfg> Searcher<'cfg> {
             // prev_depth_time * 2 is a rough branching-factor proxy;
             // each additional ply typically costs about twice the previous one,
             // so if we can't afford that estimate we stop before starting it.
-            if depth > 1
+            //
+            // Helpers skip time management — their job is to fill the TT, not
+            // decide when to stop. Main calls the shots.
+            if self.cfg.thread_id == 0
+                && depth > 1
                 && (elapsed >= self.tm.soft_limit().as_millis() as u64
                     || elapsed + (prev_depth_time * tm_iter_scale() as u64 / 100) > self.tm.hard_limit().as_millis() as u64
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
@@ -689,7 +732,7 @@ impl<'cfg> Searcher<'cfg> {
     fn check_signals(&mut self) -> bool {
         if self.cfg.stop.load(Ordering::Acquire)
             || self.tm.is_hard_limit_reached()
-            || (self.cfg.limits.nodes > 0 && self.nodes >= self.cfg.limits.nodes)
+            || (self.cfg.limits.nodes > 0 && self.cfg.total_nodes.load(Ordering::Relaxed) >= self.cfg.limits.nodes)
         {
             self.cfg.stop.store(true, Ordering::Release);
             return true;
@@ -716,14 +759,15 @@ impl<'cfg> Searcher<'cfg> {
     #[cold]
     fn search_info_data<'a>(&'a self, depth: i32, score: i32, pv: &'a Line, history: &'a [PvSnapshot]) -> tui::SearchInfoData<'a> {
         let ms = self.tm.elapsed().as_millis().max(1);
-        let nps = (u128::from(self.nodes) * 1000) / ms;
+        let total = self.cfg.total_nodes.load(Ordering::Relaxed);
+        let nps = (u128::from(total) * 1000) / ms;
 
         tui::SearchInfoData {
             depth,
             score,
             pv,
             sel_depth: self.sel_depth,
-            nodes: self.nodes,
+            nodes: total,
             nps: u64::try_from(nps).unwrap_or(u64::MAX),
             time_ms: ms,
             hashfull: self.tt.hashfull(),
@@ -816,6 +860,7 @@ impl Worker<'_> {
         }
 
         searcher.nodes += 1;
+        searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(draw_score(searcher.nodes));
@@ -1567,6 +1612,7 @@ impl Worker<'_> {
         }
 
         searcher.nodes += 1;
+        searcher.cfg.total_nodes.fetch_add(1, Ordering::Relaxed);
 
         if self.is_draw(ply, &searcher.zobrist_trail) {
             return Ok(draw_score(searcher.nodes));
