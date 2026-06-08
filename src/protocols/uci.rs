@@ -79,14 +79,17 @@ impl LazySmpPool {
         let (tx, rxs) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(n as u32);
         let mut handles = Vec::with_capacity(n);
 
-        for mut rx in rxs {
+        for (i, mut rx) in rxs.into_iter().enumerate() {
+            let helper_id = i + 1;
             let tt = Arc::clone(&tt);
 
             handles.push(thread::spawn(move || {
                 while rx
                     .recv(|(config, board, history)| {
+                        let mut local_cfg = config.clone();
+                        local_cfg.thread_id = helper_id;
                         let mut htable = History::new();
-                        let mut ctx = Searcher::new(config, board, history, tt.clone());
+                        let mut ctx = Searcher::new(&local_cfg, board, history, tt.clone());
                         ctx.iterative_deepening(&mut htable);
                     })
                     .is_some()
@@ -104,7 +107,6 @@ impl LazySmpPool {
         let mut hcfg = (*cfg).clone();
 
         hcfg.limits.silent = true;
-        hcfg.thread_id = 1;
         self.tx.send((hcfg, board, history.to_vec()));
     }
 

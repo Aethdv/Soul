@@ -61,7 +61,7 @@ pub fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
 
     let tx = Sender { shared: Arc::clone(&shared) };
     let rxs = (0..num_receivers)
-        .map(|_| Receiver { shared: Arc::clone(&shared), generation: false })
+        .map(|_| Receiver { shared: Arc::clone(&shared), generation: true })
         .collect();
 
     (tx, rxs)
