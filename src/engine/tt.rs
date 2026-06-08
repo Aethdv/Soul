@@ -244,14 +244,17 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed);
+
         let mut replace_idx = idx;
         let mut worst_quality = i32::MAX;
+        let mut is_exact_match = false;
 
         for i in 0..CLUSTER_SIZE {
             let (key, bound, depth) = self.entries[idx + i].meta();
 
             if bound == BOUND_NONE || key == key16 {
                 replace_idx = idx + i;
+                is_exact_match = key == key16;
                 break;
             }
 
@@ -264,16 +267,14 @@ impl TranspositionTable {
             }
         }
 
-        let existing = self.entries[replace_idx].load();
-        let is_exact_match = existing.key == key16;
-
         let mut store_mv = mv.inner();
         let mut store_pv = pv as u8;
         // Preserve an existing highly-valued move if the new store provides
         // `Move::null()` and the hash matches. The pv flag rides with the
         // move it describes — losing it would erase the position's
-        // PV-history context.
+        // PV-history context. Only this path needs the full slot, so decode it here.
         if mv.is_null() && is_exact_match {
+            let existing = self.entries[replace_idx].load();
             store_mv = existing.mv;
             store_pv |= existing.pv;
         }
@@ -327,11 +328,10 @@ impl TranspositionTable {
         }
 
         if let Some(best) = best_idx {
-            let existing = self.entries[best].load();
             // Preserve any prior PV-history bit when overwriting the same
             // position — qs visits would otherwise erase the propagated flag
-            // stamped by a previous negamax store.
-            let store_pv = if is_key_match { (pv as u8) | existing.pv } else { pv as u8 };
+            // stamped by a previous negamax store. Only a key match reads it back.
+            let store_pv = if is_key_match { (pv as u8) | self.entries[best].load().pv } else { pv as u8 };
 
             self.entries[best].store(Decoded {
                 key: key16,
