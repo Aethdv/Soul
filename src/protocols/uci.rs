@@ -684,6 +684,7 @@ where I: Iterator<Item = &'a str> {
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb));
+                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },
 
