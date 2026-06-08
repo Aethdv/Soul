@@ -57,14 +57,21 @@ const fn verification_key(hash: u64) -> u16 {
 
 /// A cluster slot, packed into three `AtomicU32`s for Lazy SMP.
 /// An `AtomicU64` would force 8-byte alignment and pad the 12-byte slot to 16,
-/// thinning the table. `a` holds key+move, `b` holds score+eval, `c` holds metadata.
+/// thinning the table.
+///
+/// The words are ordered by how often the cluster scan reads them, not by type.
+/// Every scan touches only `a` (key+bound+depth); `b` adds age for replacement
+/// quality; `c` is pure payload, read only after a key match. So a probing miss
+/// costs one atomic load, not three — and atomic loads can't be elided, so the
+/// layout is what keeps the hottest loop cheap.
+///
 /// A torn read across words mixes metadata onto a matching move;
 /// `is_pseudo_legal` catches stale moves downstream. Worst case is a stale cutoff, never corruption.
 #[repr(C)]
 struct TtEntry {
-    a: AtomicU32,
-    b: AtomicU32,
-    c: AtomicU32,
+    a: AtomicU32, // key(16)   | bound(8) | depth(8)
+    b: AtomicU32, // mv(16)    | age(8)   | pv(8)
+    c: AtomicU32, // score(16) | eval(16)
 }
 
 /// The decoded view of a [`TtEntry`], used by probe and store.
@@ -92,6 +99,20 @@ impl Default for TtEntry {
 }
 
 impl TtEntry {
+    /// Cheap scan read; word `a` decoded to (key, bound, depth) — every field
+    /// the cluster scan compares. The payload stays packed until a key matches.
+    #[inline(always)]
+    fn meta(&self) -> (u16, u8, u8) {
+        let a = self.a.load(Ordering::Relaxed);
+        (a as u16, (a >> 16) as u8, (a >> 24) as u8)
+    }
+
+    /// Store generation, for replacement-quality aging.
+    #[inline(always)]
+    fn age(&self) -> u8 {
+        (self.b.load(Ordering::Relaxed) >> 16) as u8
+    }
+
     #[inline(always)]
     fn load(&self) -> Decoded {
         let a = self.a.load(Ordering::Relaxed);
@@ -100,21 +121,21 @@ impl TtEntry {
 
         Decoded {
             key: a as u16,
-            mv: (a >> 16) as u16,
-            score: b as u16 as i16,
-            eval: (b >> 16) as u16 as i16,
-            depth: c as u8,
-            bound: (c >> 8) as u8,
-            age: (c >> 16) as u8,
-            pv: (c >> 24) as u8,
+            bound: (a >> 16) as u8,
+            depth: (a >> 24) as u8,
+            mv: b as u16,
+            age: (b >> 16) as u8,
+            pv: (b >> 24) as u8,
+            score: c as u16 as i16,
+            eval: (c >> 16) as u16 as i16,
         }
     }
 
     #[inline(always)]
     fn store(&self, d: Decoded) {
-        let a = d.key as u32 | (d.mv as u32) << 16;
-        let b = d.score as u16 as u32 | (d.eval as u16 as u32) << 16;
-        let c = d.depth as u32 | (d.bound as u32) << 8 | (d.age as u32) << 16 | (d.pv as u32) << 24;
+        let a = d.key as u32 | (d.bound as u32) << 16 | (d.depth as u32) << 24;
+        let b = d.mv as u32 | (d.age as u32) << 16 | (d.pv as u32) << 24;
+        let c = d.score as u16 as u32 | (d.eval as u16 as u32) << 16;
 
         self.a.store(a, Ordering::Relaxed);
         self.b.store(b, Ordering::Relaxed);
@@ -142,13 +163,15 @@ impl TranspositionTable {
         let count = (bytes / mem::size_of::<TtEntry>()).max(CLUSTER_SIZE);
         let clusters = count / CLUSTER_SIZE;
         let n = clusters * CLUSTER_SIZE;
+
         self.entries = (0..n).map(|_| TtEntry::default()).collect::<Vec<_>>().into_boxed_slice();
     }
 
     /// Returns TT occupancy in permille (0–1000).
     pub fn hashfull(&self) -> usize {
         let sample = self.entries.len().min(1000);
-        self.entries[..sample].iter().filter(|e| e.load().bound != BOUND_NONE).count() * 1000 / sample.max(1)
+
+        self.entries[..sample].iter().filter(|e| e.meta().1 != BOUND_NONE).count() * 1000 / sample.max(1)
     }
 
     /// Zero every entry and reset the generation counter.
@@ -198,10 +221,11 @@ impl TranspositionTable {
         let key16 = verification_key(hash);
 
         for i in 0..CLUSTER_SIZE {
-            let entry = self.entries[idx + i].load();
+            let (key, bound, _) = self.entries[idx + i].meta();
             // The bound guard keeps an empty slot (key 0) from matching a real
             // position whose low 16 bits happen to be 0.
-            if entry.key == key16 && entry.bound != BOUND_NONE {
+            if key == key16 && bound != BOUND_NONE {
+                let entry = self.entries[idx + i].load();
                 let score = Self::score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
 
@@ -224,15 +248,15 @@ impl TranspositionTable {
         let mut worst_quality = i32::MAX;
 
         for i in 0..CLUSTER_SIZE {
-            let entry = self.entries[idx + i].load();
+            let (key, bound, depth) = self.entries[idx + i].meta();
 
-            if entry.bound == BOUND_NONE || entry.key == key16 {
+            if bound == BOUND_NONE || key == key16 {
                 replace_idx = idx + i;
                 break;
             }
 
-            let gen_diff = cur.wrapping_sub(entry.age) as i32;
-            let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+            let gen_diff = cur.wrapping_sub(self.entries[idx + i].age()) as i32;
+            let quality = depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality < worst_quality {
                 worst_quality = quality;
@@ -285,16 +309,16 @@ impl TranspositionTable {
         let mut is_key_match = false;
 
         for i in 0..CLUSTER_SIZE {
-            let entry = self.entries[idx + i].load();
+            let (key, bound, depth) = self.entries[idx + i].meta();
 
-            if entry.key == key16 || entry.bound == BOUND_NONE || entry.depth == 0 {
+            if key == key16 || bound == BOUND_NONE || depth == 0 {
                 best_idx = Some(idx + i);
-                is_key_match = entry.key == key16;
+                is_key_match = key == key16;
                 break;
             }
 
-            let gen_diff = cur.wrapping_sub(entry.age) as i32;
-            let quality = entry.depth as i32 - gen_diff * AGE_FACTOR;
+            let gen_diff = cur.wrapping_sub(self.entries[idx + i].age()) as i32;
+            let quality = depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality <= 0 && quality < best_quality {
                 best_quality = quality;

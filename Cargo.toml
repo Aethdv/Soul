@@ -41,6 +41,7 @@ zstd = { version = "0.13.3", default-features = false }
 fastrand = "2.4.1"
 ctrlc = "3.5.2"
 zerocopy = { version = "0.8.48", default-features = false, features = ["derive", "simd"] }
+atomic-wait = "1.1"
 
 [features]
 searchtune = []

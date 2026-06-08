@@ -54,9 +54,82 @@ static LICENSE_NOTICE: &str = concat!(
     "Source code: <https://github.com/Aethdv/Soul>"
 );
 
+// ── Lazy SMP Thread Pool ──
+// Helpers are persistent, parked on an SPMC broadcast channel between
+// searches. launch sends one payload to all helpers; each receives it
+// inside a handler that runs the search, and the channel auto-signals
+// completion when the handler returns. wait blocks until every helper
+// has finished. wake shuts them down.
+
+use crate::protocols::spmc;
+
+struct LazySmpPool {
+    tx: spmc::Sender<(SearchConfig, Position, Vec<u64>)>,
+    _handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl LazySmpPool {
+    fn new(threads: usize, tt: Arc<TranspositionTable>) -> Arc<Self> {
+        if threads <= 1 {
+            let (tx, _) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(0);
+            return Arc::new(Self { tx, _handles: Vec::new() });
+        }
+
+        let n = threads - 1;
+        let (tx, rxs) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(n as u32);
+        let mut handles = Vec::with_capacity(n);
+
+        for mut rx in rxs {
+            let tt = Arc::clone(&tt);
+
+            handles.push(thread::spawn(move || {
+                while rx
+                    .recv(|(config, board, history)| {
+                        let mut htable = History::new();
+                        let mut ctx = Searcher::new(config, board, history, tt.clone());
+                        ctx.iterative_deepening(&mut htable);
+                    })
+                    .is_some()
+                {}
+            }));
+        }
+        Arc::new(Self { tx, _handles: handles })
+    }
+
+    fn launch(&self, cfg: &SearchConfig, board: Position, history: &[u64]) {
+        if self._handles.is_empty() {
+            return;
+        }
+
+        let mut hcfg = (*cfg).clone();
+
+        hcfg.limits.silent = true;
+        hcfg.thread_id = 1;
+        self.tx.send((hcfg, board, history.to_vec()));
+    }
+
+    fn wait(&self) {
+        if self._handles.is_empty() {
+            return;
+        }
+        self.tx.wait();
+    }
+}
+
+impl Drop for LazySmpPool {
+    fn drop(&mut self) {
+        self.tx.wait();
+        self.tx.wake();
+
+        for h in self._handles.drain(..) {
+            let _ = h.join();
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 enum SearchCommand {
-    Go(Box<SearchConfig>, Position, Vec<u64>, History, Arc<TranspositionTable>, Sender<History>),
+    Go(Box<SearchConfig>, Position, Vec<u64>, History, Arc<TranspositionTable>, Sender<History>, Arc<LazySmpPool>),
     Quit,
 }
 
@@ -71,6 +144,7 @@ pub struct UciState {
     history_tx: mpsc::Sender<History>,
     history_rx: mpsc::Receiver<History>,
     is_searching: Arc<AtomicBool>,
+    smp_pool: Arc<LazySmpPool>,
     threads: usize,
     hash_size: usize,
     overhead: u64,
@@ -89,6 +163,7 @@ impl UciState {
         let history = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
+        let tt = Arc::new(TranspositionTable::new(16));
 
         let (tx, rx) = mpsc::channel::<SearchCommand>();
         let (h_tx, h_rx) = mpsc::channel::<History>();
@@ -98,41 +173,22 @@ impl UciState {
         thread::spawn(move || {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx) => {
+                    SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx, pool) => {
                         // ── Lazy SMP ──
-                        // Helpers search the same root, sharing only the TT and stop flag.
-                        // Tree diversity deepens the shared table. Main reports and decides.
-                        let mut helpers = Vec::new();
-
-                        for i in 1..cfg.threads {
-                            let mut hcfg = (*cfg).clone();
-                            hcfg.limits.silent = true;
-                            hcfg.thread_id = i;
-
-                            let hboard = board;
-                            let hhistory = history.clone();
-                            let htt = Arc::clone(&tt);
-
-                            helpers.push(thread::spawn(move || {
-                                let mut htable = History::new();
-                                let mut ctx = Searcher::new(&hcfg, &hboard, &hhistory, htt);
-                                ctx.iterative_deepening(&mut htable);
-                            }));
-                        }
+                        // Helpers are persistent — parked on a channel, not spawned per
+                        // search. The pool sends each helper a cloned config and root state,
+                        // then they run iterative_deepening alongside main. The TT is the
+                        // only coordination surface.
+                        pool.launch(&cfg, board, &history);
 
                         let mut ctx = Searcher::new(&cfg, &board, &history, tt);
                         ctx.iterative_deepening(&mut history_table);
 
-                        // Main is done. Signal helpers, join, then clear the flag so
-                        // the next search starts clean.
-                        if !helpers.is_empty() {
-                            cfg.stop.store(true, Ordering::Release);
-
-                            for h in helpers {
-                                let _ = h.join();
-                            }
-                            cfg.stop.store(false, Ordering::Release);
-                        }
+                        // Main is done. Signal helpers, wait for them to park,
+                        // then clear the flag so the next search starts clean.
+                        cfg.stop.store(true, Ordering::Release);
+                        pool.wait();
+                        cfg.stop.store(false, Ordering::Release);
 
                         is_searching_worker.store(false, Ordering::Release);
 
@@ -148,12 +204,13 @@ impl UciState {
             board,
             history,
             persistent_history: History::new(),
-            tt: Arc::new(TranspositionTable::new(16)),
+            tt: tt.clone(),
             stop,
             search_tx: tx,
             history_tx: h_tx,
             history_rx: h_rx,
             is_searching,
+            smp_pool: LazySmpPool::new(1, tt),
             threads: 1,
             hash_size: 16,
             overhead: 10,
@@ -249,6 +306,7 @@ pub fn run_cli_go(args: &[String]) {
             state.persistent_history.clone(),
             state.tt.clone(),
             state.history_tx.clone(),
+            state.smp_pool.clone(),
         ))
         .unwrap();
 
@@ -582,6 +640,7 @@ where I: Iterator<Item = &'a str> {
             state.persistent_history.clone(),
             state.tt.clone(),
             state.history_tx.clone(),
+            state.smp_pool.clone(),
         ))
         .unwrap();
 }
@@ -650,7 +709,11 @@ where I: Iterator<Item = &'a str> {
         },
 
         "threads" => {
-            state.threads = value.parse::<usize>().unwrap_or(1).clamp(1, 1024);
+            let n = value.parse::<usize>().unwrap_or(1).clamp(1, 1024);
+            if n != state.threads {
+                state.threads = n;
+                state.smp_pool = LazySmpPool::new(n, state.tt.clone());
+            }
         },
         _ => {},
     }
