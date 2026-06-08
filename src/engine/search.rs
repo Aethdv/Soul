@@ -147,6 +147,8 @@ pub struct Worker<'h> {
     pub history: &'h mut History,
     /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
     pub pawn_cache: PawnCache,
+    /// Search-constant eval weights, built once instead of per leaf.
+    pub eval_params: EvalParams<i32>,
     /// Set while a null-move verification search is on the stack.
     /// Suppresses nested NMP, which would otherwise recurse forever on
     /// the same position at ever-shrinking depth.
@@ -447,6 +449,7 @@ impl<'cfg> Searcher<'cfg> {
                 .unwrap_or_else(|_| unreachable!()),
             history,
             pawn_cache: PawnCache::new(),
+            eval_params: EvalParams::<i32>::from_const(),
             is_nmp_verif: false,
         };
 
@@ -782,11 +785,10 @@ impl Worker<'_> {
     #[inline]
     fn evaluate(&mut self) -> i32 {
         let phase = extract_phase(&self.accumulator);
-        let params = EvalParams::<i32>::from_const();
         let pawn = self.pawn_cache.probe(&self.pos);
         let features = SharedFeatures::with_pawn(&self.pos, &pawn);
 
-        evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &params, Some(&features))
+        evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &self.eval_params, Some(&features))
     }
 
     /// Negamax with alpha-beta pruning. Since chess is zero-sum, we maximize the
