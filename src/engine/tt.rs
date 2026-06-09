@@ -100,10 +100,12 @@ impl Default for TtEntry {
 
 impl TtEntry {
     /// Cheap scan read; word `a` decoded to (key, bound, depth) — every field
-    /// the cluster scan compares. The payload stays packed until a key matches.
+    /// the cluster scan compares. Relaxed: the replacement and `hashfull` scans
+    /// never read payload off this load, so no acquire ordering is owed — the
+    /// payload-preserve paths go through `load()`, which carries its own.
     #[inline(always)]
     fn meta(&self) -> (u16, u8, u8) {
-        let a = self.a.load(Ordering::Acquire);
+        let a = self.a.load(Ordering::Relaxed);
         (a as u16, (a >> 16) as u8, (a >> 24) as u8)
     }
 
