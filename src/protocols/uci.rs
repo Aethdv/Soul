@@ -65,14 +65,14 @@ use crate::protocols::spmc;
 
 struct LazySmpPool {
     tx: spmc::Sender<(SearchConfig, Position, Vec<u64>)>,
-    _handles: Vec<thread::JoinHandle<()>>,
+    handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl LazySmpPool {
     fn new(threads: usize, tt: Arc<TranspositionTable>) -> Arc<Self> {
         if threads <= 1 {
             let (tx, _) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(0);
-            return Arc::new(Self { tx, _handles: Vec::new() });
+            return Arc::new(Self { tx, handles: Vec::new() });
         }
 
         let n = threads - 1;
@@ -96,11 +96,11 @@ impl LazySmpPool {
                 {}
             }));
         }
-        Arc::new(Self { tx, _handles: handles })
+        Arc::new(Self { tx, handles })
     }
 
     fn launch(&self, cfg: &SearchConfig, board: Position, history: &[u64]) {
-        if self._handles.is_empty() {
+        if self.handles.is_empty() {
             return;
         }
 
@@ -111,7 +111,7 @@ impl LazySmpPool {
     }
 
     fn wait(&self) {
-        if self._handles.is_empty() {
+        if self.handles.is_empty() {
             return;
         }
         self.tx.wait();
@@ -123,7 +123,7 @@ impl Drop for LazySmpPool {
         self.tx.wait();
         self.tx.wake();
 
-        for h in self._handles.drain(..) {
+        for h in self.handles.drain(..) {
             let _ = h.join();
         }
     }

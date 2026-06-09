@@ -497,10 +497,11 @@ impl<'cfg> Searcher<'cfg> {
         // the coordination surface.
         //
         // Helpers search the full depth ladder alongside main. The only
-        // asymmetry is time management — only the main thread checks the
-        // clock. Helpers stop only on the global flag or a depth limit;
-        // they don't need to finish "in time," they just need to feed the
-        // TT for as long as the main thread is still running.
+        // asymmetry is soft time management — main alone decides when to stop
+        // starting iterations. Helpers still honor the global flag and the
+        // shared hard cap (same start_time, same limits) via check_signals;
+        // they just don't gate their own iterations on the clock, they feed
+        // the TT for as long as the main thread is still running.
 
         for depth in 1..=depth_limit {
             self.iter_depth = depth;

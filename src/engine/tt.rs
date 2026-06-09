@@ -221,11 +221,12 @@ impl TranspositionTable {
 
         let idx = self.index(hash);
         let key16 = verification_key(hash);
+        let cluster = self.cluster(idx);
 
-        for i in 0..CLUSTER_SIZE {
-            let (key, bound, _) = self.entries[idx + i].meta();
+        for slot in cluster {
+            let (key, bound, _) = slot.meta();
             if key == key16 && bound != BOUND_NONE {
-                let entry = self.entries[idx + i].load();
+                let entry = slot.load();
                 // A concurrent store that published a new key after our meta()
                 // but before load() can leave us with a mismatched key — the
                 // Acquire on `a` in load() synchronizes with the store's Release,
@@ -251,26 +252,27 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed);
+        let cluster = self.cluster(idx);
 
-        let mut replace_idx = idx;
+        let mut replace = 0;
         let mut worst_quality = i32::MAX;
         let mut is_exact_match = false;
 
-        for i in 0..CLUSTER_SIZE {
-            let (key, bound, depth) = self.entries[idx + i].meta();
+        for (i, slot) in cluster.iter().enumerate() {
+            let (key, bound, depth) = slot.meta();
 
             if bound == BOUND_NONE || key == key16 {
-                replace_idx = idx + i;
+                replace = i;
                 is_exact_match = key == key16;
                 break;
             }
 
-            let gen_diff = cur.wrapping_sub(self.entries[idx + i].age()) as i32;
+            let gen_diff = cur.wrapping_sub(slot.age()) as i32;
             let quality = depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality < worst_quality {
                 worst_quality = quality;
-                replace_idx = idx + i;
+                replace = i;
             }
         }
 
@@ -281,12 +283,12 @@ impl TranspositionTable {
         // move it describes — losing it would erase the position's
         // PV-history context. Only this path needs the full slot, so decode it here.
         if mv.is_null() && is_exact_match {
-            let existing = self.entries[replace_idx].load();
+            let existing = cluster[replace].load();
             store_mv = existing.mv;
             store_pv |= existing.pv;
         }
 
-        self.entries[replace_idx].store(Decoded {
+        cluster[replace].store(Decoded {
             key: key16,
             mv: store_mv,
             score: Self::score_to_tt(score, ply) as i16,
@@ -312,25 +314,26 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed);
+        let cluster = self.cluster(idx);
         let mut best_idx: Option<usize> = None;
         let mut best_quality = i32::MAX;
         let mut is_key_match = false;
 
-        for i in 0..CLUSTER_SIZE {
-            let (key, bound, depth) = self.entries[idx + i].meta();
+        for (i, slot) in cluster.iter().enumerate() {
+            let (key, bound, depth) = slot.meta();
 
             if key == key16 || bound == BOUND_NONE || depth == 0 {
-                best_idx = Some(idx + i);
+                best_idx = Some(i);
                 is_key_match = key == key16;
                 break;
             }
 
-            let gen_diff = cur.wrapping_sub(self.entries[idx + i].age()) as i32;
+            let gen_diff = cur.wrapping_sub(slot.age()) as i32;
             let quality = depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality <= 0 && quality < best_quality {
                 best_quality = quality;
-                best_idx = Some(idx + i);
+                best_idx = Some(i);
             }
         }
 
@@ -338,9 +341,9 @@ impl TranspositionTable {
             // Preserve any prior PV-history bit when overwriting the same
             // position — qs visits would otherwise erase the propagated flag
             // stamped by a previous negamax store. Only a key match reads it back.
-            let store_pv = if is_key_match { (pv as u8) | self.entries[best].load().pv } else { pv as u8 };
+            let store_pv = if is_key_match { (pv as u8) | cluster[best].load().pv } else { pv as u8 };
 
-            self.entries[best].store(Decoded {
+            cluster[best].store(Decoded {
                 key: key16,
                 mv: mv.inner(),
                 score: Self::score_to_tt(score, ply) as i16,
@@ -351,6 +354,18 @@ impl TranspositionTable {
                 pv: store_pv,
             });
         }
+    }
+
+    /// The cluster of `CLUSTER_SIZE` slots based at `idx`. Typed as an array
+    /// reference, not a slice, so the scan loop drops the per-slot bounds check:
+    /// LLVM can't prove `idx + CLUSTER_SIZE <= len` on its own — the index drops
+    /// out of a mulhi64 — but it trusts the length of a fixed-size array.
+    #[inline(always)]
+    fn cluster(&self, idx: usize) -> &[TtEntry; CLUSTER_SIZE] {
+        // SAFETY: idx is index()'s cluster-aligned output — k * CLUSTER_SIZE for
+        // some k < len / CLUSTER_SIZE — so all CLUSTER_SIZE slots from idx sit
+        // inside the table. TtEntry aligns to 4, so add(idx) stays aligned.
+        unsafe { &*(self.entries.as_ptr().add(idx) as *const [TtEntry; CLUSTER_SIZE]) }
     }
 
     /// Maps 64-bit hash to the first index of a 3-entry cluster.
