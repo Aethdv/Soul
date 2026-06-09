@@ -205,7 +205,7 @@ pub struct SearchConfig {
     /// (every ~2048 nodes), with a Relaxed store — no lock prefix,
     /// no cross-core contention. The display and node-limit paths sum
     /// all slots. Slightly stale, invisible at display intervals.
-    pub node_slots: Arc<Box<[AtomicU64]>>,
+    pub node_slots: Arc<[AtomicU64]>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
@@ -299,11 +299,16 @@ impl SearchConfig {
             search_params,
             threads: 1,
             thread_id: 0,
-            node_slots: Arc::new((0..1).map(|_| AtomicU64::new(0)).collect()),
+            node_slots: Self::node_slots(1),
             mvvlva_v,
             mvvlva_a,
             lmr_table,
         }
+    }
+
+    /// `threads` zeroed node counters, one slot per thread.
+    pub fn node_slots(threads: usize) -> Arc<[AtomicU64]> {
+        (0..threads).map(|_| AtomicU64::new(0)).collect()
     }
 
     /// Composed LMR reduction in `LMR_SCALE` units.

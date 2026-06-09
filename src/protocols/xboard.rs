@@ -6,7 +6,7 @@ use std::{
     io::{self, StdinLock, Write},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
     time::Instant,
@@ -166,7 +166,7 @@ impl XBoardState {
             let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
             let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             cfg.threads = threads;
-            cfg.node_slots = Arc::new((0..threads).map(|_| AtomicU64::new(0)).collect());
+            cfg.node_slots = SearchConfig::node_slots(threads);
 
             // ── Lazy SMP ──
             // Persistent helpers fan out across the depth ladder alongside main;
