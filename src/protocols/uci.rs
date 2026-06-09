@@ -33,6 +33,7 @@ use crate::{
         search_params::SearchParams,
         tt::TranspositionTable,
     },
+    protocols::smp::LazySmpPool,
     tools,
     weave::Vi16x8,
 };
@@ -53,81 +54,6 @@ static LICENSE_NOTICE: &str = concat!(
     "along with this program. If not, see <https://www.gnu.org/licenses/>.\n\n",
     "Source code: <https://github.com/Aethdv/Soul>"
 );
-
-// ── Lazy SMP Thread Pool ──
-// Helpers are persistent, parked on an SPMC broadcast channel between
-// searches. launch sends one payload to all helpers; each receives it
-// inside a handler that runs the search, and the channel auto-signals
-// completion when the handler returns. wait blocks until every helper
-// has finished. wake shuts them down.
-
-use crate::protocols::spmc;
-
-struct LazySmpPool {
-    tx: spmc::Sender<(SearchConfig, Position, Vec<u64>)>,
-    handles: Vec<thread::JoinHandle<()>>,
-}
-
-impl LazySmpPool {
-    fn new(threads: usize, tt: Arc<TranspositionTable>) -> Arc<Self> {
-        if threads <= 1 {
-            let (tx, _) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(0);
-            return Arc::new(Self { tx, handles: Vec::new() });
-        }
-
-        let n = threads - 1;
-        let (tx, rxs) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(n as u32);
-        let mut handles = Vec::with_capacity(n);
-
-        for (i, mut rx) in rxs.into_iter().enumerate() {
-            let helper_id = i + 1;
-            let tt = Arc::clone(&tt);
-
-            handles.push(thread::spawn(move || {
-                while rx
-                    .recv(|(config, board, history)| {
-                        let mut local_cfg = config.clone();
-                        local_cfg.thread_id = helper_id;
-                        let mut htable = History::new();
-                        let mut ctx = Searcher::new(&local_cfg, board, history, tt.clone());
-                        ctx.iterative_deepening(&mut htable);
-                    })
-                    .is_some()
-                {}
-            }));
-        }
-        Arc::new(Self { tx, handles })
-    }
-
-    fn launch(&self, cfg: &SearchConfig, board: Position, history: &[u64]) {
-        if self.handles.is_empty() {
-            return;
-        }
-
-        let mut hcfg = (*cfg).clone();
-
-        hcfg.limits.silent = true;
-        self.tx.send((hcfg, board, history.to_vec()));
-    }
-
-    fn wait(&self) {
-        if self.handles.is_empty() {
-            return;
-        }
-        self.tx.wait();
-    }
-}
-
-impl Drop for LazySmpPool {
-    fn drop(&mut self) {
-        self.tx.wait();
-        self.tx.wake();
-
-        for h in self.handles.drain(..) {
-            let _ = h.join();
-        }
-    }
-}
 
 #[allow(clippy::large_enum_variant)]
 enum SearchCommand {
