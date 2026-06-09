@@ -107,6 +107,38 @@ impl TtEntry {
         (a as u16, (a >> 16) as u8, (a >> 24) as u8)
     }
 
+    /// The probe's per-slot read: one Acquire load of `a` gates the scan, and
+    /// the payload words are pulled only on a key hit — a miss costs a single
+    /// atomic load. The Acquire on `a` synchronizes with the store's Release,
+    /// so a matching key implies the `b`/`c` writes that preceded it are visible.
+    ///
+    /// `a` is read once, so there's no meta-vs-load key disagreement to guard.
+    /// The only tear left is a concurrent same-key re-store landing fresh `b`/`c`
+    /// over a stale `a` — a stale cutoff at worst, caught by `is_pseudo_legal`.
+    #[inline(always)]
+    fn probe_read(&self, key16: u16) -> Option<Decoded> {
+        let a = self.a.load(Ordering::Acquire);
+        let bound = (a >> 16) as u8;
+
+        if a as u16 != key16 || bound == BOUND_NONE {
+            return None;
+        }
+
+        let b = self.b.load(Ordering::Relaxed);
+        let c = self.c.load(Ordering::Relaxed);
+
+        Some(Decoded {
+            key: key16,
+            bound,
+            depth: (a >> 24) as u8,
+            mv: b as u16,
+            age: (b >> 16) as u8,
+            pv: (b >> 24) as u8,
+            score: c as u16 as i16,
+            eval: (c >> 16) as u16 as i16,
+        })
+    }
+
     /// Store generation, for replacement-quality aging.
     #[inline(always)]
     fn age(&self) -> u8 {
@@ -224,16 +256,7 @@ impl TranspositionTable {
         let cluster = self.cluster(idx);
 
         for slot in cluster {
-            let (key, bound, _) = slot.meta();
-            if key == key16 && bound != BOUND_NONE {
-                let entry = slot.load();
-                // A concurrent store that published a new key after our meta()
-                // but before load() can leave us with a mismatched key — the
-                // Acquire on `a` in load() synchronizes with the store's Release,
-                // and this re-check discards the torn hit.
-                if entry.key != key16 {
-                    continue;
-                }
+            if let Some(entry) = slot.probe_read(key16) {
                 let score = Self::score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
 
