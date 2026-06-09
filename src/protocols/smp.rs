@@ -10,7 +10,11 @@ use std::{sync::Arc, thread};
 
 use crate::{
     core::board::Position,
-    engine::{history::History, search::{SearchConfig, Searcher}, tt::TranspositionTable},
+    engine::{
+        history::History,
+        search::{SearchConfig, Searcher},
+        tt::TranspositionTable,
+    },
     protocols::spmc,
 };
 
