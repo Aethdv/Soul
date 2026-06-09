@@ -33,6 +33,7 @@ use crate::{
         search_params::SearchParams,
         tt::TranspositionTable,
     },
+    protocols::smp::LazySmpPool,
     tools,
     weave::Vi16x8,
 };
@@ -56,7 +57,7 @@ static LICENSE_NOTICE: &str = concat!(
 
 #[allow(clippy::large_enum_variant)]
 enum SearchCommand {
-    Go(Box<SearchConfig>, Position, Vec<u64>, History, Arc<TranspositionTable>, Sender<History>),
+    Go(Box<SearchConfig>, Position, Vec<u64>, History, Arc<TranspositionTable>, Sender<History>, Arc<LazySmpPool>),
     Quit,
 }
 
@@ -71,6 +72,8 @@ pub struct UciState {
     history_tx: mpsc::Sender<History>,
     history_rx: mpsc::Receiver<History>,
     is_searching: Arc<AtomicBool>,
+    smp_pool: Arc<LazySmpPool>,
+    threads: usize,
     hash_size: usize,
     overhead: u64,
     show_wdl: bool,
@@ -88,6 +91,7 @@ impl UciState {
         let history = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
+        let tt = Arc::new(TranspositionTable::new(16));
 
         let (tx, rx) = mpsc::channel::<SearchCommand>();
         let (h_tx, h_rx) = mpsc::channel::<History>();
@@ -97,10 +101,23 @@ impl UciState {
         thread::spawn(move || {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx) => {
-                        let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+                    SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx, pool) => {
+                        // ── Lazy SMP ──
+                        // Helpers are persistent — parked on a channel, not spawned per
+                        // search. The pool sends each helper a cloned config and root state,
+                        // then they run iterative_deepening alongside main. The TT is the
+                        // only coordination surface.
+                        pool.launch(&cfg, board, &history);
 
+                        let mut ctx = Searcher::new(&cfg, &board, &history, tt);
                         ctx.iterative_deepening(&mut history_table);
+
+                        // Main is done. Signal helpers, wait for them to park,
+                        // then clear the flag so the next search starts clean.
+                        cfg.stop.store(true, Ordering::Release);
+                        pool.wait();
+                        cfg.stop.store(false, Ordering::Release);
+
                         is_searching_worker.store(false, Ordering::Release);
 
                         let _ = result_tx.send(history_table);
@@ -115,12 +132,14 @@ impl UciState {
             board,
             history,
             persistent_history: History::new(),
-            tt: Arc::new(TranspositionTable::new(16)),
+            tt: tt.clone(),
             stop,
             search_tx: tx,
             history_tx: h_tx,
             history_rx: h_rx,
             is_searching,
+            smp_pool: LazySmpPool::new(1, tt),
+            threads: 1,
             hash_size: 16,
             overhead: 10,
             show_wdl: false,
@@ -201,7 +220,9 @@ pub fn run_cli_go(args: &[String]) {
     let limits = parse_go_limits(&board, &mut iter);
     let display = state.search_display();
 
-    let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
+    let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
+    cfg.threads = state.threads;
+    cfg.node_slots = SearchConfig::node_slots(state.threads);
 
     let search_tx = state.search_tx.clone();
 
@@ -214,6 +235,7 @@ pub fn run_cli_go(args: &[String]) {
             state.persistent_history.clone(),
             state.tt.clone(),
             state.history_tx.clone(),
+            state.smp_pool.clone(),
         ))
         .unwrap();
 
@@ -321,14 +343,17 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
 
     thread::spawn(move || {
         let stdin = io::stdin();
+
         loop {
             let mut line = String::new();
+
             match stdin.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {},
             }
 
             let trimmed = line.trim();
+
             if trimmed.is_empty() {
                 continue;
             }
@@ -458,7 +483,7 @@ fn print_id() {
 
 fn print_options() {
     println!("option name Hash type spin default 16 min 1 max 65536");
-    println!("option name Threads type spin default 1 min 1 max 1");
+    println!("option name Threads type spin default 1 min 1 max 1024");
     println!("option name Overhead type spin default 10 min 0 max 1000");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
@@ -528,7 +553,9 @@ where I: Iterator<Item = &'a str> {
 
     let start_time = Instant::now();
     let display = state.search_display();
-    let cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
+    let mut cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
+    cfg.threads = state.threads;
+    cfg.node_slots = SearchConfig::node_slots(state.threads);
 
     state.is_searching.store(true, Ordering::Release);
 
@@ -543,6 +570,7 @@ where I: Iterator<Item = &'a str> {
             state.persistent_history.clone(),
             state.tt.clone(),
             state.history_tx.clone(),
+            state.smp_pool.clone(),
         ))
         .unwrap();
 }
@@ -582,6 +610,7 @@ where I: Iterator<Item = &'a str> {
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb));
+                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },
 
@@ -611,7 +640,11 @@ where I: Iterator<Item = &'a str> {
         },
 
         "threads" => {
-            // Dummy. not supported yet.
+            let n = value.parse::<usize>().unwrap_or(1).clamp(1, 1024);
+            if n != state.threads {
+                state.threads = n;
+                state.smp_pool = LazySmpPool::new(n, state.tt.clone());
+            }
         },
         _ => {},
     }

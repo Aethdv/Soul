@@ -1,6 +1,6 @@
 [package]
 name = "soul"
-version = "0.5.25"
+version = "0.5.26"
 license = "AGPL-3.0"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
@@ -41,6 +41,7 @@ zstd = { version = "0.13.3", default-features = false }
 fastrand = "2.4.1"
 ctrlc = "3.5.2"
 zerocopy = { version = "0.8.48", default-features = false, features = ["derive", "simd"] }
+atomic-wait = "1.1"
 
 [features]
 searchtune = []

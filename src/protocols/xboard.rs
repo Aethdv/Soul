@@ -28,6 +28,7 @@ use crate::{
         search_params::SearchParams,
         tt::TranspositionTable,
     },
+    protocols::smp::LazySmpPool,
     weave::Vi16x8,
 };
 
@@ -54,6 +55,8 @@ struct XBoardState {
     engine_side: Option<Color>,
     is_frc: bool,
     nps: Option<u64>,
+    threads: usize,
+    smp_pool: Arc<LazySmpPool>,
 }
 
 pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
@@ -84,13 +87,14 @@ impl XBoardState {
     fn new() -> Self {
         let board = Position::from_fen(STARTPOS);
         let history = vec![board.hash];
+        let tt = Arc::new(TranspositionTable::new(16));
 
         Self {
             accumulator: board.get_initial_accumulator(),
             board,
             history,
             persistent_history: Arc::new(Mutex::new(History::new())),
-            tt: Arc::new(TranspositionTable::new(16)),
+            tt: tt.clone(),
             mode: Mode::Normal,
             stop_signal: Arc::new(AtomicBool::new(false)),
             search_thread: None,
@@ -101,6 +105,8 @@ impl XBoardState {
             engine_side: None,
             is_frc: false,
             nps: None,
+            threads: 1,
+            smp_pool: LazySmpPool::new(1, tt),
         }
     }
 
@@ -153,13 +159,28 @@ impl XBoardState {
         let mut persistent_history = history_arc.lock().clone();
 
         let tt = self.tt.clone();
+        let threads = self.threads;
+        let pool = self.smp_pool.clone();
 
         self.search_thread = Some(thread::spawn(move || {
             let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
-            let cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
-            let mut ctx = Searcher::new(&cfg, &board, &history, tt);
+            let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
+            cfg.threads = threads;
+            cfg.node_slots = SearchConfig::node_slots(threads);
 
+            // ── Lazy SMP ──
+            // Persistent helpers fan out across the depth ladder alongside main;
+            // the TT is the only shared surface. Main finishes, then we signal
+            // the helpers and wait for them to park before clearing the flag.
+            pool.launch(&cfg, board, &history);
+
+            let mut ctx = Searcher::new(&cfg, &board, &history, tt);
             ctx.iterative_deepening(&mut persistent_history);
+
+            cfg.stop.store(true, Ordering::Release);
+            pool.wait();
+            cfg.stop.store(false, Ordering::Release);
+
             *history_arc.lock() = persistent_history;
         }));
     }
@@ -261,13 +282,19 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             {
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb));
+                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },
 
         "cores" => {
-            // "Dummy" impl.
-            if let Some(_arg) = args.next() {
-                // state.threads = arg.parse() ...
+            if let Some(arg) = args.next()
+                && let Ok(n) = arg.parse::<usize>()
+            {
+                let n = n.clamp(1, 1024);
+                if n != state.threads {
+                    state.threads = n;
+                    state.smp_pool = LazySmpPool::new(n, state.tt.clone());
+                }
             }
         },
 
@@ -431,6 +458,7 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb));
+                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },
 

@@ -2,8 +2,12 @@
 //!
 //! # Architecture
 //!
-//! The search is single-threaded, but separates state into two entities
-//! to provide a clean seam for future parallelism:
+//! Lazy SMP: threads search the same root in parallel, sharing only the TT and
+//! a stop flag. No explicit work distribution — each thread runs its own
+//! iterative-deepening loop, and the TT is the coordination surface. Diversity
+//! is emergent from threads cross-probing each other's entries at different depths.
+//!
+//! State splits into two entities per thread:
 //! - `Searcher`: Owns global engine state (time management, history table, root moves).
 //! - `Worker`: Owns thread-local mutability (the board, SIMD accumulator, ply stack).
 //!
@@ -18,7 +22,7 @@ use std::{
     io::Write,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -115,12 +119,14 @@ impl NodeType for NonPvNode {
 // ──────── Searcher & Worker ────────
 //
 // Searcher owns the global search state — root moves, node counter,
-// time management, zobrist trail. One per go command.
+// time management, zobrist trail. One per thread.
 //
 // Worker owns the mutable board that changes as we descend the tree:
 // position, accumulator, per-ply stack.
 //
-// This separation is the natural seam for future parallelism:
+// Each thread gets its own Searcher+Worker pair. Threads share only
+// the TT, the stop flag, and the node counter — everything else is
+// thread-private.
 // one Searcher, N Workers, each exploring a different subtree.
 
 pub struct Searcher<'cfg> {
@@ -192,6 +198,14 @@ pub struct SearchConfig {
     pub display: SearchDisplay,
     pub search_params: SearchParams,
     pub overhead: u64,
+    pub threads: usize,
+    pub thread_id: usize,
+    /// Per-thread node counters, one slot per thread.
+    /// Each thread writes only its own slot, inside `check_signals`
+    /// (every ~2048 nodes), with a Relaxed store — no lock prefix,
+    /// no cross-core contention. The display and node-limit paths sum
+    /// all slots. Slightly stale, invisible at display intervals.
+    pub node_slots: Arc<[AtomicU64]>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
@@ -276,7 +290,25 @@ impl SearchConfig {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
         let lmr_table = Self::build_lmr_table();
 
-        Self { limits, start_time, stop, overhead, display, search_params, mvvlva_v, mvvlva_a, lmr_table }
+        Self {
+            limits,
+            start_time,
+            stop,
+            overhead,
+            display,
+            search_params,
+            threads: 1,
+            thread_id: 0,
+            node_slots: Self::node_slots(1),
+            mvvlva_v,
+            mvvlva_a,
+            lmr_table,
+        }
+    }
+
+    /// `threads` zeroed node counters, one slot per thread.
+    pub fn node_slots(threads: usize) -> Arc<[AtomicU64]> {
+        (0..threads).map(|_| AtomicU64::new(0)).collect()
     }
 
     /// Composed LMR reduction in `LMR_SCALE` units.
@@ -462,6 +494,20 @@ impl<'cfg> Searcher<'cfg> {
             self.tm.set_bm_stab_factor(tm_single_root() as f64 / 100.0);
         }
 
+        // ── Lazy SMP ──
+        // Every thread searches every depth, sharing nothing but the TT and
+        // the stop flag. Diversity is emergent: thread A writes an entry at
+        // the edge of what it can reach, thread B probes it mid-search and
+        // redirects its tree along a branch A already explored. The TT is
+        // the coordination surface.
+        //
+        // Helpers search the full depth ladder alongside main. The only
+        // asymmetry is soft time management — main alone decides when to stop
+        // starting iterations. Helpers still honor the global flag and the
+        // shared hard cap (same start_time, same limits) via check_signals;
+        // they just don't gate their own iterations on the clock, they feed
+        // the TT for as long as the main thread is still running.
+
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
 
@@ -477,7 +523,11 @@ impl<'cfg> Searcher<'cfg> {
             // prev_depth_time * 2 is a rough branching-factor proxy;
             // each additional ply typically costs about twice the previous one,
             // so if we can't afford that estimate we stop before starting it.
-            if depth > 1
+            //
+            // Helpers skip time management — their job is to fill the TT, not
+            // decide when to stop. Main calls the shots.
+            if self.cfg.thread_id == 0
+                && depth > 1
                 && (elapsed >= self.tm.soft_limit().as_millis() as u64
                     || elapsed + (prev_depth_time * tm_iter_scale() as u64 / 100) > self.tm.hard_limit().as_millis() as u64
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
@@ -687,9 +737,14 @@ impl<'cfg> Searcher<'cfg> {
     /// Also drives realtime TUI updates — piggybacks on the same interval.
     #[inline]
     fn check_signals(&mut self) -> bool {
+        // Publish the local node count into this thread's slot so the
+        // display and node-limit paths see the aggregate. Relaxed store
+        // (plain mov on x86) — this slot has exactly one writer.
+        self.cfg.node_slots[self.cfg.thread_id].store(self.nodes, Ordering::Relaxed);
+
         if self.cfg.stop.load(Ordering::Acquire)
             || self.tm.is_hard_limit_reached()
-            || (self.cfg.limits.nodes > 0 && self.nodes >= self.cfg.limits.nodes)
+            || (self.cfg.limits.nodes > 0 && self.node_count() >= self.cfg.limits.nodes)
         {
             self.cfg.stop.store(true, Ordering::Release);
             return true;
@@ -710,20 +765,29 @@ impl<'cfg> Searcher<'cfg> {
         self.cfg.stop.load(Ordering::Acquire)
     }
 
+    /// Sums per-thread node counters. Each thread publishes its local count
+    /// into its own slot every ~2048 nodes, so the aggregate may trail by
+    /// up to `NODE_CHECK_INTERVAL · threads` — invisible at display intervals.
+    #[inline(always)]
+    fn node_count(&self) -> u64 {
+        self.cfg.node_slots.iter().map(|s| s.load(Ordering::Relaxed)).sum()
+    }
+
     /// Assemble the display snapshot shared by depth-complete and realtime reporting.
     /// `pv` and `history` are borrowed by the returned struct,
     /// so the caller owns them for the duration of the print.
     #[cold]
     fn search_info_data<'a>(&'a self, depth: i32, score: i32, pv: &'a Line, history: &'a [PvSnapshot]) -> tui::SearchInfoData<'a> {
         let ms = self.tm.elapsed().as_millis().max(1);
-        let nps = (u128::from(self.nodes) * 1000) / ms;
+        let total = self.node_count();
+        let nps = (u128::from(total) * 1000) / ms;
 
         tui::SearchInfoData {
             depth,
             score,
             pv,
             sel_depth: self.sel_depth,
-            nodes: self.nodes,
+            nodes: total,
             nps: u64::try_from(nps).unwrap_or(u64::MAX),
             time_ms: ms,
             hashfull: self.tt.hashfull(),
