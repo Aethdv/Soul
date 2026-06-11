@@ -1142,6 +1142,7 @@ impl Worker<'_> {
         } else {
             let stm = self.pos.stm;
             let opp = stm.opposite();
+            let threats = self.pos.threats(opp);
             let ksq = self.pos.pieces(PieceType::King, stm).lsb();
             let pinned = self.pos.king_blockers();
 
@@ -1173,7 +1174,7 @@ impl Worker<'_> {
             };
 
             // Interior: staged move generation via MovePicker.
-            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, cont1, cont2, cont4);
+            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, threats, cont1, cont2, cont4);
             while let Some(mv) = picker.next(&self.pos, self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -1247,7 +1248,9 @@ impl Worker<'_> {
                     && depth <= hist_prune_depth()
                 {
                     let pt = self.pos.expect_piece_at(mv.from());
-                    let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+                    let hist = self
+                        .history
+                        .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4);
 
                     if hist < -hist_prune_margin() * depth {
                         continue;
@@ -1285,7 +1288,9 @@ impl Worker<'_> {
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
                     let mut r = searcher.cfg.lmr(depth, res.move_count + 1);
                     let pt = self.pos.expect_piece_at(mv.from());
-                    let hist = self.history.score_quiet(self.pos.stm, pt, mv.from(), mv.to(), cont1, cont2, cont4);
+                    let hist = self
+                        .history
+                        .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                         r -= killer_lmr_bonus();
@@ -1336,7 +1341,7 @@ impl Worker<'_> {
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
 
-                        self.history.update(stm, pt, mv.from(), mv.to(), cont1, cont2, cont4, bonus);
+                        self.history.update(stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4, bonus);
 
                         // ── Killer Moves (~35 Elo) ──
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
@@ -1378,7 +1383,7 @@ impl Worker<'_> {
                         let q_pt = self.pos.expect_piece_at(qm.from());
 
                         // Over time, this "anti-history" pushes bad moves deeper into the list.
-                        self.history.update(stm, q_pt, qm.from(), qm.to(), cont1, cont2, cont4, -bonus);
+                        self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                     }
 
                     // Captures: penalize all preceding captures that were searched

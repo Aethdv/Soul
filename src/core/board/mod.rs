@@ -20,7 +20,7 @@ use crate::{
         moves::Move,
         psqt, zobrist,
     },
-    weave::Vi16x8,
+    weave::{Vi16x8, Vu64x4},
 };
 
 pub mod attacks;
@@ -573,6 +573,23 @@ impl Position {
             Color::White => ((pawns << 9) & !FILE_A) | ((pawns << 7) & !FILE_H),
             Color::Black => ((pawns >> 9) & !FILE_H) | ((pawns >> 7) & !FILE_A),
         }
+    }
+
+    /// Every square `color` attacks — the threat map.
+    #[inline]
+    pub fn threats(&self, color: Color) -> Bitboard {
+        let us = self.side_bb[color];
+        let empty = Vu64x4::splat(!self.occ.0);
+
+        let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
+        let bq = ((self.role_bb[PieceType::Bishop] | self.role_bb[PieceType::Queen]) & us).0;
+        let knights = (self.role_bb[PieceType::Knight] & us).0;
+        let king = (self.role_bb[PieceType::King] & us).0;
+
+        let sliders = spatial::atk_rook(Vu64x4::splat(rq), empty) | spatial::atk_bishop(Vu64x4::splat(bq), empty);
+        let leapers = spatial::atk_knight(Vu64x4::splat(knights)) | spatial::atk_king(Vu64x4::splat(king));
+
+        Bitboard((sliders | leapers).extract::<0>()) | self.pawn_attacks(color)
     }
 
     /// Can any pawn of `color` legally capture en passant on `ep_sq`?

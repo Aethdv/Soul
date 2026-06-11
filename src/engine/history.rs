@@ -6,7 +6,7 @@
 //! High-scoring moves are sorted to the front of the move list, maximizing
 //! the probability of early cutoffs in subsequent searches.
 
-use crate::core::defs::{Color, PieceType, Square};
+use crate::core::defs::{Bitboard, Color, PieceType, Square};
 
 pub const CORRECTION_SIZE: usize = 16384;
 pub const CORRECTION_SCALE: i32 = 256;
@@ -21,8 +21,8 @@ const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
     table: [[[i16; 64]; 6]; 2],
-    /// `[side][from · 64 + to]` — bounds `[-16384, 16384]`
-    butterfly: [[i16; 4096]; 2], // ~20 Elo
+    /// `[side][from_atk][to_atk][from · 64 + to]` — bounds `[-16384, 16384]`
+    butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~35 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
     cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
@@ -208,7 +208,7 @@ impl History {
     pub fn new() -> Self {
         Self {
             table: [[[0; 64]; 6]; 2],
-            butterfly: [[0; 4096]; 2],
+            butterfly: [[[[0; 4096]; 2]; 2]; 2],
             cont: [ContinuationHistory::new(), ContinuationHistory::new()],
             correction: CorrectionHistory::new(),
             minor_correction: CorrectionHistory::new(),
@@ -220,7 +220,7 @@ impl History {
     /// Clear all history scores.
     pub fn clear(&mut self) {
         self.table = [[[0; 64]; 6]; 2];
-        self.butterfly = [[0; 4096]; 2];
+        self.butterfly = [[[[0; 4096]; 2]; 2]; 2];
         self.cont[0].clear();
         self.cont[1].clear();
         self.correction.clear();
@@ -236,12 +236,15 @@ impl History {
         pt: PieceType,
         from: Square,
         to: Square,
+        threats: Bitboard,
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
     ) -> i32 {
-        let mut score =
-            i32::from(self.table[stm][pt][to]) + i32::from(self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)]);
+        let from_atk = threats.check_bit(from) as usize;
+        let to_atk = threats.check_bit(to) as usize;
+        let mut score = i32::from(self.table[stm][pt][to])
+            + i32::from(self.butterfly[stm][from_atk][to_atk][(from.0 as usize) * 64 + (to.0 as usize)]);
 
         if cont1.pt != PieceType::None {
             score += i32::from(self.cont[0].get(stm, cont1.pt, cont1.to, pt, to));
@@ -275,13 +278,16 @@ impl History {
         pt: PieceType,
         from: Square,
         to: Square,
+        threats: Bitboard,
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
         bonus: i32,
     ) {
+        let from_atk = threats.check_bit(from) as usize;
+        let to_atk = threats.check_bit(to) as usize;
         Self::update_entry(&mut self.table[stm][pt][to], bonus);
-        Self::update_entry(&mut self.butterfly[stm][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
+        Self::update_entry(&mut self.butterfly[stm][from_atk][to_atk][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
 
         if cont1.pt != PieceType::None {
             Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
@@ -388,7 +394,7 @@ impl Default for History {
     fn default() -> Self {
         Self {
             table: [[[0; 64]; 6]; 2],
-            butterfly: [[0; 4096]; 2],
+            butterfly: [[[[0; 4096]; 2]; 2]; 2],
             cont: [ContinuationHistory { data: Box::new([]) }, ContinuationHistory { data: Box::new([]) }],
             correction: CorrectionHistory { data: Box::new([]) },
             minor_correction: CorrectionHistory { data: Box::new([]) },
