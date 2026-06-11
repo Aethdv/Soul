@@ -22,7 +22,7 @@ pub struct History {
     /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
     table: [[[i16; 64]; 6]; 2],
     /// `[side][from_atk][to_atk][from · 64 + to]` — bounds `[-16384, 16384]`
-    butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~20 Elo
+    butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~35 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
     cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
