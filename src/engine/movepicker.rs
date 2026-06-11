@@ -75,6 +75,7 @@ pub struct MovePicker {
     mvvlva_ep: i32,
     capt_hist_divisor: i32,
     killers: [Move; 2],
+    threats: Bitboard,
     cont1: ContContext,
     cont2: ContContext,
     cont4: ContContext,
@@ -103,6 +104,7 @@ impl MovePicker {
         hash_move: Option<Move>,
         cfg: &SearchConfig,
         killers: [Move; 2],
+        threats: Bitboard,
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
@@ -117,6 +119,7 @@ impl MovePicker {
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             killers,
+            threats,
             cont1,
             cont2,
             cont4,
@@ -141,6 +144,7 @@ impl MovePicker {
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             killers: [Move::null(); 2],
+            threats: Bitboard(0),
             cont1: ContContext::default(),
             cont2: ContContext::default(),
             cont4: ContContext::default(),
@@ -465,7 +469,7 @@ impl MovePicker {
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
-        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.cont1, self.cont2, self.cont4);
+        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.cont1, self.cont2, self.cont4);
 
         // Combined history values stay well inside `[-32768, 32768]` in practice.
         // Soft-gravity attractors prevent any single table from sitting near its
