@@ -329,10 +329,17 @@ impl History {
         *entry = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384) as i16;
     }
 
-    /// Blended correction: pawn structure + minor and major piece placement.
+    /// Blended correction. Pawn structure anchors; minor and major placement refine.
     ///
-    /// Pawn correction is at full weight; minor and major are each scaled by
-    /// their own `weight / 256` so the tuner can dial them independently.
+    /// The tables are estimates of one number: the gap between static eval and
+    /// what search found, each keyed on a different read of the position. They
+    /// correlate hard. A position that fools one usually fools the rest the same
+    /// way, so summing counts that shared error once per table and the correction
+    /// balloons the instant another joins. Average instead.
+    ///
+    /// Pawn stays whole; the placement tables fold into a weight-normalized pool,
+    /// so the pool's size holds no matter how many feed it. The weights are ratios,
+    /// not magnitudes: normalization cancels their scale and only the split survives.
     #[inline(always)]
     pub fn correction(
         &self,
@@ -355,7 +362,8 @@ impl History {
             record_read(Table::Major, major);
         }
 
-        pawn + minor * minor_weight / CORRECTION_WEIGHT_SCALE + major * major_weight / CORRECTION_WEIGHT_SCALE
+        let refine = (minor * minor_weight + major * major_weight) / (minor_weight + major_weight);
+        pawn + refine
     }
 
     #[inline(always)]
