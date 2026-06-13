@@ -592,6 +592,30 @@ impl Position {
         Bitboard((sliders | leapers).extract::<0>()) | self.pawn_attacks(color)
     }
 
+    /// Enemy pieces this quiet move newly threatens: the moved piece on `to`
+    /// attacking an enemy worth strictly more than itself: a knight or bishop
+    /// onto a rook or queen, a rook onto a queen, a pawn onto anything but a pawn.
+    /// Sliders subtract the from-square attacks, so sliding along a line already
+    /// raked isn't a fresh threat; a leaper lands on all-new squares and needs no
+    /// guard. Queen and king out-rank nothing worth the bonus.
+    #[inline]
+    pub fn new_threats(&self, pt: PieceType, from: Square, to: Square) -> Bitboard {
+        let them = self.side_bb[self.stm.opposite()];
+        let rq = (self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & them;
+        let q = self.role_bb[PieceType::Queen] & them;
+
+        match pt {
+            PieceType::Pawn => {
+                let bigger = ((self.role_bb[PieceType::Knight] | self.role_bb[PieceType::Bishop]) & them) | rq;
+                bitboard::atk_pawn(to, self.stm) & bigger
+            },
+            PieceType::Knight => bitboard::atk_knight(to) & rq,
+            PieceType::Bishop => Bitboard(bitboard::atk_bishop(to, self.occ).0 & !bitboard::atk_bishop(from, self.occ).0) & rq,
+            PieceType::Rook => Bitboard(bitboard::atk_rook(to, self.occ).0 & !bitboard::atk_rook(from, self.occ).0) & q,
+            _ => Bitboard(0),
+        }
+    }
+
     /// Can any pawn of `color` legally capture en passant on `ep_sq`?
     #[inline]
     pub fn can_capture_ep(&self, ep_sq: Square, color: Color) -> bool {
