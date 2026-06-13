@@ -1296,6 +1296,10 @@ impl Worker<'_> {
                         r -= killer_lmr_bonus();
                     }
 
+                    // A quiet that newly attacks a bigger piece is tactically live,
+                    // like a check; reduce it less so the threat gets a real search.
+                    r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * threat_lmr_bonus();
+
                     let max_r = (depth - lmr_retained()) * LMR_SCALE;
 
                     (r - hist / lmr_hist_div()).clamp(0, max_r) / LMR_SCALE
