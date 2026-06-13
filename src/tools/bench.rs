@@ -42,6 +42,7 @@ struct AnimationGuard {
 impl Drop for AnimationGuard {
     fn drop(&mut self) {
         self.running.store(false, Relaxed);
+
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -59,6 +60,7 @@ pub fn run(depth: i32) {
     let running = Arc::new(AtomicBool::new(true));
 
     let tty = io::stdout().is_terminal();
+
     if tty {
         println!("{}{BOLD}✦ Soul v{}{RESET}", color::ansi_fg(PURPLE), env!("CARGO_PKG_VERSION"));
     }
@@ -70,15 +72,25 @@ pub fn run(depth: i32) {
 
     let limits = Limits { depth, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
+    // Clear between positions, never reallocate: a fresh 16MB TT per FEN means a
+    // page-fault storm that, under many parallel bench processes, swamps the clock.
+    let tt = Arc::new(TranspositionTable::new(16));
+
+    let mut search_time = Duration::ZERO;
+
     for fen in &fens {
         let board = Position::from_fen(fen);
         let history = vec![board.hash];
+        tt.clear();
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
         let mut history_table = History::new();
-        let mut searcher = Searcher::new(&cfg, &board, &history, Arc::new(TranspositionTable::new(16)));
+        let mut searcher = Searcher::new(&cfg, &board, &history, tt.clone());
 
+        let t0 = Instant::now();
         searcher.iterative_deepening(&mut history_table);
+        search_time += t0.elapsed();
+
         nodes.fetch_add(searcher.nodes, Relaxed);
         done.fetch_add(1, Relaxed);
     }
@@ -90,7 +102,7 @@ pub fn run(depth: i32) {
     }
 
     let total_nodes = nodes.load(Relaxed);
-    let elapsed = start.elapsed().as_secs_f64().max(0.000_001);
+    let elapsed = search_time.as_secs_f64().max(0.000_001);
     let nps = (total_nodes as f64 / elapsed) as u64;
     println!("Bench: {total_nodes} nodes {nps} nps · {elapsed:.1}s");
 
