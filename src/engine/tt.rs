@@ -1,22 +1,24 @@
-//! Transposition table — size-bounded hash table for position memoization.
+//! Transposition table — the search's memory of positions it has already seen.
 //!
-//! # Notes
+//! Every node iterative deepening revisits, it hopes to find here: the score, the
+//! best move, the depth that score was proven to. A hit can cut a whole subtree,
+//! and that is what makes deepening cheap, since each iteration seeds the next.
 //!
-//! Lockless design: probe and store take `&self` and mutate entries
-//! through per-word atomics. A 16-bit verification key guards
-//! against hash collisions; the rare aliasing that slips through (~1 in 2¹⁶
-//! within a probed cluster) can only return a stale score, never a corrupting
-//! move, because every stored move is re-validated by `is_pseudo_legal` before
-//! use. Replacement is depth-preferred with exact-position upgrades; qsearch
-//! stores are conservative to avoid evicting deeper negamax entries.
+//! The table is lockless because Lazy SMP has every thread reading and writing it
+//! at once. Probe and store take `&self` and touch entries through atomics, so no
+//! thread waits on another. A 16-bit verification key catches most hash
+//! collisions; the ~1-in-2¹⁶ that slips through can only hand back a wrong score,
+//! never a wrong move, because every stored move is re-checked by `is_pseudo_legal`
+//! before the search trusts it.
 //!
-//! Three-entry clusters (36 bytes per cluster): each hash index maps to
-//! a 3-slot bucket, giving the replacement formula three candidates to
-//! select from instead of one.
+//! Entries sit in three-slot clusters of 32 bytes, two to a 64-byte cache line,
+//! so a probe is one line fetch that never straddles two. The three slots give
+//! replacement a choice of victim: it favors deeper entries, and qsearch stores
+//! tread lightly so a shallow result never evicts a deep one.
 
 use std::{
     arch, mem, ptr,
-    sync::atomic::{AtomicU8, AtomicU32, Ordering},
+    sync::atomic::{AtomicU8, AtomicU16, Ordering},
 };
 
 use crate::core::{
@@ -32,46 +34,63 @@ pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
 
 pub const SCORE_NONE: i32 = 32000;
 
-const _: () = assert!(mem::size_of::<TtEntry>() == 12);
+const _: () = assert!(mem::size_of::<TtEntry>() == 10);
+const _: () = assert!(mem::size_of::<Cluster>() == 32);
+const _: () = assert!(mem::align_of::<Cluster>() == 32);
 
 /// `quality = depth - gen_diff · AGE_FACTOR`.
 /// Higher values evict stale entries faster.
-/// Sirius: 2, Obsidian: 8
 const AGE_FACTOR: i32 = 4;
+/// `age` is 5 bits; generation distance is read modulo 32.
+const AGE_MASK: u8 = 0x1F;
 
 const CLUSTER_SIZE: usize = 3;
 
-/// Can we use this TT score as a cutoff given the current window?
+/// Whether a stored score is a usable cutoff in the current window.
+///
+/// An exact score always is. A lower bound (the position failed high when stored)
+/// only proves the truth is at least this high, so it cuts only once it clears
+/// beta; an upper bound is the mirror, usable only at or below alpha.
 #[inline(always)]
 pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
     bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
 }
 
-/// The slot's verification key: the low 16 bits of the Zobrist hash. The
-/// cluster index already consumes the high bits, so these are the discriminating
-/// bits left over within a bucket.
+/// The slot's verification key: the low 16 bits of the Zobrist hash.
+/// The cluster index is drawn from the high bits, so the low bits
+/// are what's left to tell entries in the same bucket apart.
 #[inline(always)]
 const fn verification_key(hash: u64) -> u16 {
     hash as u16
 }
 
-/// A cluster slot, packed into three `AtomicU32`s for Lazy SMP.
-/// An `AtomicU64` would force 8-byte alignment and pad the 12-byte slot to 16,
-/// thinning the table.
+/// One slot, five `AtomicU16` words. The atomics are what let Lazy SMP threads
+/// share the table without locks; 16-bit words keep the entry at 10 bytes and
+/// align 2, where a single `AtomicU32` would force align 4 and pad it back out,
+/// thinning the table for nothing.
 ///
-/// The words are ordered by how often the cluster scan reads them, not by type.
-/// Every scan touches only `a` (key+bound+depth); `b` adds age for replacement
-/// quality; `c` is pure payload, read only after a key match. So a probing miss
-/// costs one atomic load, not three — and atomic loads can't be elided, so the
-/// layout is what keeps the hottest loop cheap.
+/// `key` is the commit point. A store writes the other four words first and
+/// publishes `key` last, so any reader that sees a matching key is guaranteed the
+/// payload that came with it. A probe that misses on `key` has touched one word,
+/// which is the common case and the one worth keeping cheap.
 ///
-/// A torn read across words mixes metadata onto a matching move;
-/// `is_pseudo_legal` catches stale moves downstream. Worst case is a stale cutoff, never corruption.
+/// Concurrency's price is the occasional torn read: a re-store landing fresh words
+/// under a key you already matched. The cost is bounded. A stale move is caught by
+/// `is_pseudo_legal`, and a stale score is only a bad cutoff, never corruption.
 #[repr(C)]
 struct TtEntry {
-    a: AtomicU32, // key(16)   | bound(8) | depth(8)
-    b: AtomicU32, // mv(16)    | age(8)   | pv(8)
-    c: AtomicU32, // score(16) | eval(16)
+    key: AtomicU16,
+    mv: AtomicU16,
+    score: AtomicU16,
+    eval: AtomicU16,
+    /// depth(8) | bound(2) | pv(1) | age(5).
+    packed: AtomicU16,
+}
+
+/// Sized and aligned to fit inside one 64-byte cache line.
+#[repr(C, align(32))]
+struct Cluster {
+    slots: [TtEntry; CLUSTER_SIZE],
 }
 
 /// The decoded view of a [`TtEntry`], used by probe and store.
@@ -82,166 +101,190 @@ struct Decoded {
     key: u16,
     mv: u16,
     score: i16,
-    /// Raw static eval at store time (`SCORE_NONE` when stored in check), so a
-    /// hit can reuse it instead of recomputing the full evaluation.
+    /// Raw static eval at store time (`SCORE_NONE` when stored in check),
+    /// so a hit can reuse it instead of recomputing the full evaluation.
     eval: i16,
     depth: u8,
     bound: u8,
-    /// Generation at store time — prior-generation entries evict first.
+    /// Generation at store time; older generations evict first.
     age: u8,
     pv: u8,
 }
 
 impl Default for TtEntry {
     fn default() -> Self {
-        Self { a: AtomicU32::new(0), b: AtomicU32::new(0), c: AtomicU32::new(0) }
+        Self {
+            key: AtomicU16::new(0),
+            mv: AtomicU16::new(0),
+            score: AtomicU16::new(0),
+            eval: AtomicU16::new(0),
+            packed: AtomicU16::new(0),
+        }
+    }
+}
+
+impl Default for Cluster {
+    fn default() -> Self {
+        Self { slots: std::array::from_fn(|_| TtEntry::default()) }
     }
 }
 
 impl TtEntry {
-    /// Cheap scan read; word `a` decoded to (key, bound, depth) — every field
-    /// the cluster scan compares. Relaxed: the replacement and `hashfull` scans
-    /// never read payload off this load, so no acquire ordering is owed — the
-    /// payload-preserve paths go through `load()`, which carries its own.
+    /// The cheap scan read: just the key and the (bound, depth) replacement
+    /// weighs. Relaxed is enough, since these scans never read payload off this
+    /// load; the paths that do go through `load()`, which carries its own ordering.
     #[inline(always)]
     fn meta(&self) -> (u16, u8, u8) {
-        let a = self.a.load(Ordering::Relaxed);
-        (a as u16, (a >> 16) as u8, (a >> 24) as u8)
+        let key = self.key.load(Ordering::Relaxed);
+        let packed = self.packed.load(Ordering::Relaxed);
+        (key, ((packed >> 8) & 0x3) as u8, (packed & 0xFF) as u8)
     }
 
-    /// The probe's per-slot read: one Acquire load of `a` gates the scan, and
-    /// the payload words are pulled only on a key hit — a miss costs a single
-    /// atomic load. The Acquire on `a` synchronizes with the store's Release,
-    /// so a matching key implies the `b`/`c` writes that preceded it are visible.
-    ///
-    /// `a` is read once, so there's no meta-vs-load key disagreement to guard.
-    /// The only tear left is a concurrent same-key re-store landing fresh `b`/`c`
-    /// over a stale `a` — a stale cutoff at worst, caught by `is_pseudo_legal`.
+    /// The probe's per-slot read. One Acquire load of `key` gates it; the rest is
+    /// pulled only on a match, so a miss costs a single atomic load. The Acquire
+    /// pairs with the store's Release on `key`, the handshake that makes a matched
+    /// key imply visible payload.
     #[inline(always)]
     fn probe_read(&self, key16: u16) -> Option<Decoded> {
-        let a = self.a.load(Ordering::Acquire);
-        let bound = (a >> 16) as u8;
-
-        if a as u16 != key16 || bound == BOUND_NONE {
+        if self.key.load(Ordering::Acquire) != key16 {
             return None;
         }
 
-        let b = self.b.load(Ordering::Relaxed);
-        let c = self.c.load(Ordering::Relaxed);
+        let packed = self.packed.load(Ordering::Relaxed);
+        let bound = ((packed >> 8) & 0x3) as u8;
+
+        if bound == BOUND_NONE {
+            return None;
+        }
 
         Some(Decoded {
             key: key16,
+            mv: self.mv.load(Ordering::Relaxed),
+            score: self.score.load(Ordering::Relaxed) as i16,
+            eval: self.eval.load(Ordering::Relaxed) as i16,
+            depth: (packed & 0xFF) as u8,
             bound,
-            depth: (a >> 24) as u8,
-            mv: b as u16,
-            age: (b >> 16) as u8,
-            pv: (b >> 24) as u8,
-            score: c as u16 as i16,
-            eval: (c >> 16) as u16 as i16,
+            age: ((packed >> 11) & 0x1F) as u8,
+            pv: ((packed >> 10) & 0x1) as u8,
         })
     }
 
     /// Store generation, for replacement-quality aging.
     #[inline(always)]
     fn age(&self) -> u8 {
-        (self.b.load(Ordering::Relaxed) >> 16) as u8
+        ((self.packed.load(Ordering::Relaxed) >> 11) & 0x1F) as u8
     }
 
-    #[inline(always)]
     fn load(&self) -> Decoded {
-        let a = self.a.load(Ordering::Acquire);
-        let b = self.b.load(Ordering::Relaxed);
-        let c = self.c.load(Ordering::Relaxed);
+        let key = self.key.load(Ordering::Acquire);
+        let mv = self.mv.load(Ordering::Relaxed);
+        let score = self.score.load(Ordering::Relaxed) as i16;
+        let eval = self.eval.load(Ordering::Relaxed) as i16;
+        let packed = self.packed.load(Ordering::Relaxed);
 
         Decoded {
-            key: a as u16,
-            bound: (a >> 16) as u8,
-            depth: (a >> 24) as u8,
-            mv: b as u16,
-            age: (b >> 16) as u8,
-            pv: (b >> 24) as u8,
-            score: c as u16 as i16,
-            eval: (c >> 16) as u16 as i16,
+            key,
+            mv,
+            score,
+            eval,
+            depth: (packed & 0xFF) as u8,
+            bound: ((packed >> 8) & 0x3) as u8,
+            age: ((packed >> 11) & 0x1F) as u8,
+            pv: ((packed >> 10) & 0x1) as u8,
         }
     }
 
     #[inline(always)]
     fn store(&self, d: Decoded) {
-        let a = d.key as u32 | (d.bound as u32) << 16 | (d.depth as u32) << 24;
-        let b = d.mv as u32 | (d.age as u32) << 16 | (d.pv as u32) << 24;
-        let c = d.score as u16 as u32 | (d.eval as u16 as u32) << 16;
+        let packed =
+            (d.depth as u16 & 0xFF) | ((d.bound as u16 & 0x3) << 8) | ((d.pv as u16 & 0x1) << 10) | ((d.age as u16 & 0x1F) << 11);
 
-        self.c.store(c, Ordering::Relaxed);
-        self.b.store(b, Ordering::Relaxed);
-        // key published last — an Acquire load on `a` that sees the new key
-        // is guaranteed to see the `b` and `c` stores that precede it.
-        self.a.store(a, Ordering::Release);
+        self.mv.store(d.mv, Ordering::Relaxed);
+        self.score.store(d.score as u16, Ordering::Relaxed);
+        self.eval.store(d.eval as u16, Ordering::Relaxed);
+        self.packed.store(packed, Ordering::Relaxed);
+        // key goes last. A reader that Acquire-loads this new key is then
+        // guaranteed the four payload writes above, released before it.
+        self.key.store(d.key, Ordering::Release);
     }
 }
 
 pub struct TranspositionTable {
-    entries: Box<[TtEntry]>,
-    /// Monotonically increments on every new search (position change).
-    /// Wraps at 255; `wrapping_sub` handles roll-over correctly.
+    clusters: Box<[Cluster]>,
+    /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
+    /// so `wrapping_sub` measures generation distance modulo 32.
     pub generation: AtomicU8,
 }
 
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
     pub fn new(size_mb: usize) -> Self {
-        let mut tt = Self { entries: Box::new([]), generation: AtomicU8::new(0) };
+        let mut tt = Self { clusters: Box::new([]), generation: AtomicU8::new(0) };
         tt.resize(size_mb);
         tt
     }
 
     pub fn resize(&mut self, size_mb: usize) {
         let bytes = size_mb.max(1) * 1024 * 1024;
-        let count = (bytes / mem::size_of::<TtEntry>()).max(CLUSTER_SIZE);
-        let clusters = count / CLUSTER_SIZE;
-        let n = clusters * CLUSTER_SIZE;
+        let count = (bytes / mem::size_of::<Cluster>()).max(1);
 
-        self.entries = (0..n).map(|_| TtEntry::default()).collect::<Vec<_>>().into_boxed_slice();
+        self.clusters = (0..count).map(|_| Cluster::default()).collect::<Vec<_>>().into_boxed_slice();
     }
 
     /// Returns TT occupancy in permille (0–1000).
     pub fn hashfull(&self) -> usize {
-        let sample = self.entries.len().min(1000);
+        let total = self.clusters.len() * CLUSTER_SIZE;
+        let sample = total.min(1000);
 
-        self.entries[..sample].iter().filter(|e| e.meta().1 != BOUND_NONE).count() * 1000 / sample.max(1)
+        if sample == 0 {
+            return 0;
+        }
+
+        self.clusters
+            .iter()
+            .flat_map(|c| c.slots.iter())
+            .take(sample)
+            .filter(|s| s.meta().1 != BOUND_NONE)
+            .count()
+            * 1000
+            / sample
     }
 
     /// Zero every entry and reset the generation counter.
     pub fn clear(&self) {
-        if self.entries.is_empty() {
+        if self.clusters.is_empty() {
             return;
         }
 
-        let ptr = self.entries.as_ptr() as *mut TtEntry;
+        let ptr = self.clusters.as_ptr() as *mut Cluster;
 
-        // SAFETY: Only called by `ucinewgame` when the engine is idle.
+        // SAFETY: Only called by ucinewgame when the engine is idle.
         // Bypassing atomics for a bulk memset is safe with no concurrent searchers.
         unsafe {
-            ptr::write_bytes(ptr, 0, self.entries.len());
+            ptr::write_bytes(ptr, 0, self.clusters.len());
         }
         self.generation.store(0, Ordering::Relaxed);
     }
 
-    /// Advance generation counter. Call on each new position —
-    /// stale entries become easier to evict without being destroyed.
+    /// Advance the generation counter, once per new position. Entries from earlier
+    /// generations don't vanish; they just age, growing easier to evict.
     pub fn new_search(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Pull a cluster's cache line toward the core ahead of the probe. A TT lookup
+    /// is a near-random memory access, the kind that stalls the negamax loop on a
+    /// miss; issued early, the fetch overlaps the work between here and the read.
     #[inline(always)]
     pub fn prefetch(&self, hash: u64) {
-        if self.entries.is_empty() {
+        if self.clusters.is_empty() {
             return;
         }
 
         let idx = self.index(hash);
 
         unsafe {
-            let ptr = self.entries.as_ptr().add(idx) as *const i8;
+            let ptr = self.clusters.as_ptr().add(idx) as *const i8;
             #[cfg(target_arch = "x86_64")]
             arch::x86_64::_mm_prefetch::<{ arch::x86_64::_MM_HINT_T0 }>(ptr);
         }
@@ -249,7 +292,7 @@ impl TranspositionTable {
 
     #[inline(always)]
     pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8, bool, i32)> {
-        if self.entries.is_empty() {
+        if self.clusters.is_empty() {
             return None;
         }
 
@@ -257,7 +300,7 @@ impl TranspositionTable {
         let key16 = verification_key(hash);
         let cluster = self.cluster(idx);
 
-        for slot in cluster {
+        for slot in &cluster.slots {
             if let Some(entry) = slot.probe_read(key16) {
                 let score = Self::score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
@@ -268,22 +311,25 @@ impl TranspositionTable {
         None
     }
 
+    /// Insert or update this position. The cluster scan takes an empty slot, or the
+    /// same position if it's already here, and otherwise evicts the lowest-quality
+    /// entry, where quality weighs depth against generation age.
     #[inline(always)]
     pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
-        if self.entries.is_empty() {
+        if self.clusters.is_empty() {
             return;
         }
 
         let idx = self.index(hash);
         let key16 = verification_key(hash);
-        let cur = self.generation.load(Ordering::Relaxed);
+        let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
         let cluster = self.cluster(idx);
 
         let mut replace = 0;
         let mut worst_quality = i32::MAX;
         let mut is_exact_match = false;
 
-        for (i, slot) in cluster.iter().enumerate() {
+        for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, bound, depth) = slot.meta();
 
             if bound == BOUND_NONE || key == key16 {
@@ -292,7 +338,7 @@ impl TranspositionTable {
                 break;
             }
 
-            let gen_diff = cur.wrapping_sub(slot.age()) as i32;
+            let gen_diff = (cur.wrapping_sub(slot.age()) & AGE_MASK) as i32;
             let quality = depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality < worst_quality {
@@ -303,48 +349,51 @@ impl TranspositionTable {
 
         let mut store_mv = mv.inner();
         let mut store_pv = pv as u8;
-        // Preserve an existing highly-valued move if the new store provides
-        // `Move::null()` and the hash matches. The pv flag rides with the
-        // move it describes — losing it would erase the position's
-        // PV-history context. Only this path needs the full slot, so decode it here.
+
+        // Keep the existing move when the new store is a null move on the same
+        // position. The pv flag travels with the move it describes; dropping it
+        // would erase the position's PV history. Only this path needs the whole
+        // slot, so it decodes here.
         if mv.is_null() && is_exact_match {
-            let existing = cluster[replace].load();
+            let existing = cluster.slots[replace].load();
             store_mv = existing.mv;
             store_pv |= existing.pv;
         }
 
-        cluster[replace].store(Decoded {
+        cluster.slots[replace].store(Decoded {
             key: key16,
             mv: store_mv,
             score: Self::score_to_tt(score, ply) as i16,
             eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-            depth: depth as u8,
+            // 8-bit field covers MAX_DEPTH (246); clamp just guards the cast.
+            depth: depth.clamp(0, u8::MAX as i32) as u8,
             bound,
             age: cur,
             pv: store_pv,
         });
     }
 
-    /// Stores a qsearch result (depth = 0).
+    /// Stores a qsearch result (depth 0).
     ///
-    /// Conservative replacement:
-    /// only overwrites empty slots, existing depth-0 entries, or stale entries
-    /// whose aged quality has dropped to zero — never evicts a fresh deep entry.
+    /// Qsearch floods the table with shallow entries, so its replacement is timid;
+    /// it takes only an empty slot, another depth-0 entry, or one whose quality has
+    /// aged to nothing. A fresh deep negamax result is never evicted to make room.
     #[inline(always)]
     pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
-        if self.entries.is_empty() {
+        if self.clusters.is_empty() {
             return;
         }
 
         let idx = self.index(hash);
         let key16 = verification_key(hash);
-        let cur = self.generation.load(Ordering::Relaxed);
+        let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
         let cluster = self.cluster(idx);
+
         let mut best_idx: Option<usize> = None;
         let mut best_quality = i32::MAX;
         let mut is_key_match = false;
 
-        for (i, slot) in cluster.iter().enumerate() {
+        for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, bound, depth) = slot.meta();
 
             if key == key16 || bound == BOUND_NONE || depth == 0 {
@@ -353,7 +402,7 @@ impl TranspositionTable {
                 break;
             }
 
-            let gen_diff = cur.wrapping_sub(slot.age()) as i32;
+            let gen_diff = (cur.wrapping_sub(slot.age()) & AGE_MASK) as i32;
             let quality = depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality <= 0 && quality < best_quality {
@@ -363,12 +412,12 @@ impl TranspositionTable {
         }
 
         if let Some(best) = best_idx {
-            // Preserve any prior PV-history bit when overwriting the same
-            // position — qs visits would otherwise erase the propagated flag
-            // stamped by a previous negamax store. Only a key match reads it back.
-            let store_pv = if is_key_match { (pv as u8) | cluster[best].load().pv } else { pv as u8 };
+            // Preserve a prior PV bit when overwriting the same position;
+            // a qsearch visit would otherwise wipe the flag a previous
+            // negamax store left here. Only a key match reads it back.
+            let store_pv = if is_key_match { (pv as u8) | cluster.slots[best].load().pv } else { pv as u8 };
 
-            cluster[best].store(Decoded {
+            cluster.slots[best].store(Decoded {
                 key: key16,
                 mv: mv.inner(),
                 score: Self::score_to_tt(score, ply) as i16,
@@ -381,29 +430,28 @@ impl TranspositionTable {
         }
     }
 
-    /// The cluster of `CLUSTER_SIZE` slots based at `idx`. Typed as an array
-    /// reference, not a slice, so the scan loop drops the per-slot bounds check:
-    /// LLVM can't prove `idx + CLUSTER_SIZE <= len` on its own — the index drops
-    /// out of a mulhi64 — but it trusts the length of a fixed-size array.
+    /// The cache-line bucket for `idx`.
     #[inline(always)]
-    fn cluster(&self, idx: usize) -> &[TtEntry; CLUSTER_SIZE] {
-        // SAFETY: idx is index()'s cluster-aligned output — k * CLUSTER_SIZE for
-        // some k < len / CLUSTER_SIZE — so all CLUSTER_SIZE slots from idx sit
-        // inside the table. TtEntry aligns to 4, so add(idx) stays aligned.
-        unsafe { &*(self.entries.as_ptr().add(idx) as *const [TtEntry; CLUSTER_SIZE]) }
+    fn cluster(&self, idx: usize) -> &Cluster {
+        // SAFETY: idx is index()'s output, a mulhi64 in [0, clusters.len()).
+        unsafe { self.clusters.get_unchecked(idx) }
     }
 
-    /// Maps 64-bit hash to the first index of a 3-entry cluster.
+    /// Maps a 64-bit hash to a cluster index.
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
-        // High 64 bits of a 128-bit multiplication (mulhi64).
-        // Uniformly maps a 64-bit hash into the range [0, clusters).
-        let clusters = self.entries.len() / CLUSTER_SIZE;
-        (((hash as u128) * (clusters as u128)) >> 64) as usize * CLUSTER_SIZE
+        // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly in
+        // [0, len), the way `hash % len` would, but with a multiply.
+        let clusters = self.clusters.len();
+        (((hash as u128) * (clusters as u128)) >> 64) as usize
     }
 
-    /// Adjusts mate scores when storing into the TT.
-    /// "Mate in 5 found at ply 10" is absolute (mate in 15 from root).
+    /// Fold the current ply into a mate score before storing it.
+    ///
+    /// A mate score is distance-to-mate from this node ("mate in 5 at ply 10").
+    /// The table is shared across the tree, so it must hold something node-independent:
+    /// distance from the root ("mate in 15"). Store folds the ply in, `score_from_tt`
+    /// takes it back out. Ordinary scores pass through untouched.
     #[inline(always)]
     fn score_to_tt(score: i32, ply: usize) -> i32 {
         if score >= MATE - MAX_PLY as i32 {
@@ -415,8 +463,8 @@ impl TranspositionTable {
         }
     }
 
-    /// Adjusts mate scores when retrieving from the TT.
-    /// Absolute mates (mate in 15 from root) are converted back to relative (mate in 5 at ply 10).
+    /// Unfold a stored mate score back to a node-relative distance:
+    /// the inverse of `score_to_tt`, subtracting the ply that store folded in.
     #[inline(always)]
     fn score_from_tt(score: i32, ply: usize) -> i32 {
         if score >= MATE - MAX_PLY as i32 {
