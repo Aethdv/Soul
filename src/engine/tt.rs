@@ -124,6 +124,7 @@ impl TtEntry {
     fn meta(&self) -> (u16, u8, u8) {
         let key = self.key.load(Ordering::Relaxed);
         let packed = self.packed.load(Ordering::Relaxed);
+
         (key, ((packed >> 8) & 0x3) as u8, (packed & 0xFF) as u8)
     }
 
@@ -281,6 +282,16 @@ impl TranspositionTable {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Pin the calling search thread to its NUMA-assigned L3 domain, when binding
+    /// is worthwhile. Keeps the thread's compute on its cores and the per-thread
+    /// state it allocates next in a warm L3. A no-op on one domain or one thread,
+    /// so a single-threaded run never binds.
+    pub fn bind_search_thread(&self, thread_id: usize, threads: usize) {
+        if self.numa.should_bind(threads) {
+            self.numa.bind_to_domain(self.numa.distribute(threads)[thread_id]);
+        }
+    }
+
     /// Pull a cluster's cache line toward the core ahead of the probe. A TT lookup
     /// is a near-random memory access, the kind that stalls the negamax loop on a
     /// miss; issued early, the fetch overlaps the work between here and the read.
@@ -436,6 +447,7 @@ impl TranspositionTable {
         // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly
         // in [0, len), the way `hash % len` would, but with a multiply.
         let clusters = self.clusters.len();
+
         (((hash as u128) * (clusters as u128)) >> 64) as usize
     }
 

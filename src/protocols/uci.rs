@@ -110,6 +110,7 @@ impl UciState {
                         // only coordination surface.
                         pool.launch(&cfg, board, &history);
 
+                        tt.bind_search_thread(0, cfg.threads);
                         let mut ctx = Searcher::new(&cfg, &board, &history, tt);
                         ctx.iterative_deepening(&mut history_table);
 
