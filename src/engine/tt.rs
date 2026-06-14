@@ -17,13 +17,16 @@
 //! tread lightly so a shallow result never evicts a deep one.
 
 use std::{
-    arch, mem, ptr,
+    arch, mem,
     sync::atomic::{AtomicU8, AtomicU16, Ordering},
 };
 
-use crate::core::{
-    defs::{MATE, MAX_PLY},
-    moves::Move,
+use crate::{
+    core::{
+        defs::{MATE, MAX_PLY},
+        moves::Move,
+    },
+    hugepages::{HugePages, PageKind},
 };
 
 /// TT entry bound flags.
@@ -111,24 +114,6 @@ struct Decoded {
     pv: u8,
 }
 
-impl Default for TtEntry {
-    fn default() -> Self {
-        Self {
-            key: AtomicU16::new(0),
-            mv: AtomicU16::new(0),
-            score: AtomicU16::new(0),
-            eval: AtomicU16::new(0),
-            packed: AtomicU16::new(0),
-        }
-    }
-}
-
-impl Default for Cluster {
-    fn default() -> Self {
-        Self { slots: std::array::from_fn(|_| TtEntry::default()) }
-    }
-}
-
 impl TtEntry {
     /// The cheap scan read: just the key and the (bound, depth) replacement
     /// weighs. Relaxed is enough, since these scans never read payload off this
@@ -210,7 +195,7 @@ impl TtEntry {
 }
 
 pub struct TranspositionTable {
-    clusters: Box<[Cluster]>,
+    clusters: HugePages<Cluster>,
     /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
     /// so `wrapping_sub` measures generation distance modulo 32.
     pub generation: AtomicU8,
@@ -219,16 +204,24 @@ pub struct TranspositionTable {
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
     pub fn new(size_mb: usize) -> Self {
-        let mut tt = Self { clusters: Box::new([]), generation: AtomicU8::new(0) };
-        tt.resize(size_mb);
-        tt
+        Self { clusters: Self::alloc(size_mb), generation: AtomicU8::new(0) }
     }
 
     pub fn resize(&mut self, size_mb: usize) {
-        let bytes = size_mb.max(1) * 1024 * 1024;
-        let count = (bytes / mem::size_of::<Cluster>()).max(1);
+        self.clusters = Self::alloc(size_mb);
+    }
 
-        self.clusters = (0..count).map(|_| Cluster::default()).collect::<Vec<_>>().into_boxed_slice();
+    /// The page size backing the table, for the startup `info string`.
+    pub fn page_kind(&self) -> PageKind {
+        self.clusters.kind()
+    }
+
+    /// The cluster count follows from the page-rounded byte size, so a 1GB-page
+    /// table holds a few more slots than a 4KB one of the same request.
+    fn alloc(size_mb: usize) -> HugePages<Cluster> {
+        let bytes = size_mb.max(1) * 1024 * 1024;
+        // SAFETY: a zeroed Cluster is the empty state — every field is an AtomicU16(0).
+        unsafe { HugePages::zeroed(bytes) }
     }
 
     /// Returns TT occupancy in permille (0–1000).
@@ -250,19 +243,9 @@ impl TranspositionTable {
             / sample
     }
 
-    /// Zero every entry and reset the generation counter.
+    /// Reset to an empty table and reset the generation counter.
     pub fn clear(&self) {
-        if self.clusters.is_empty() {
-            return;
-        }
-
-        let ptr = self.clusters.as_ptr() as *mut Cluster;
-
-        // SAFETY: Only called by ucinewgame when the engine is idle.
-        // Bypassing atomics for a bulk memset is safe with no concurrent searchers.
-        unsafe {
-            ptr::write_bytes(ptr, 0, self.clusters.len());
-        }
+        self.clusters.clear();
         self.generation.store(0, Ordering::Relaxed);
     }
 
@@ -277,10 +260,6 @@ impl TranspositionTable {
     /// miss; issued early, the fetch overlaps the work between here and the read.
     #[inline(always)]
     pub fn prefetch(&self, hash: u64) {
-        if self.clusters.is_empty() {
-            return;
-        }
-
         let idx = self.index(hash);
 
         unsafe {
@@ -292,10 +271,6 @@ impl TranspositionTable {
 
     #[inline(always)]
     pub fn probe(&self, hash: u64, ply: usize) -> Option<(Move, i32, i32, u8, bool, i32)> {
-        if self.clusters.is_empty() {
-            return None;
-        }
-
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cluster = self.cluster(idx);
@@ -316,10 +291,6 @@ impl TranspositionTable {
     /// entry, where quality weighs depth against generation age.
     #[inline(always)]
     pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
-        if self.clusters.is_empty() {
-            return;
-        }
-
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
@@ -380,10 +351,6 @@ impl TranspositionTable {
     /// aged to nothing. A fresh deep negamax result is never evicted to make room.
     #[inline(always)]
     pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
-        if self.clusters.is_empty() {
-            return;
-        }
-
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;

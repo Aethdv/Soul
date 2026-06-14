@@ -447,7 +447,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             println!("Total:    {:>5}", res.total);
         },
 
-        "bench" => tools::bench::run(parse_val(&mut tokens)),
+        "bench" => tools::bench::run(parse_val(&mut tokens), 16),
         "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
         "speedtest" => tools::speedtest::run(0),
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>(), &state.stop),

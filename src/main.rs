@@ -43,7 +43,8 @@ fn main() {
             },
             "bench" => {
                 let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(12);
-                tools::bench::run(depth);
+                let hash_mb = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(16);
+                tools::bench::run(depth, hash_mb);
             },
             "perft" => {
                 let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
