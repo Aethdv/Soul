@@ -17,14 +17,7 @@
 //! That path issues `mmap`/`madvise`/`munmap` as raw syscalls, so the build needs
 //! no `libc` at all.
 
-use std::{
-    fmt,
-    marker::PhantomData,
-    mem,
-    ops::Deref,
-    ptr::NonNull,
-    slice,
-};
+use std::{fmt, marker::PhantomData, mem, ops::Deref, ptr::NonNull, slice};
 
 /// The page size the OS actually backed an allocation with.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,8 +126,10 @@ impl<T> Drop for HugePages<T> {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))] use linux::{map, unmap};
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))] use portable::{map, unmap};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use linux::{map, unmap};
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+use portable::{map, unmap};
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux {
