@@ -23,6 +23,10 @@
 //! (SF's `BundledL3Policy`), worth adding only when a machine splinters into so many
 //! tiny domains that binding to each stops helping. Detecting either ahead of a
 //! consumer is structure nothing reads, so each waits for the placement that needs it.
+//!
+//! Further out, the L3 domains are also the natural unit for a per-domain copy of a
+//! shared correction history, the moment corrhist becomes shared at all, which is an
+//! experiment in its own right. The domains are detected and ready when it lands.
 
 use std::{fmt, fs, thread};
 
