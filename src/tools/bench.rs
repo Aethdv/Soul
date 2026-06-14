@@ -74,14 +74,14 @@ pub fn run(depth: i32, hash_mb: usize) {
 
     // Clear between positions, never reallocate: a fresh TT per FEN means a
     // page-fault storm that, under many parallel bench processes, swamps the clock.
-    let tt = Arc::new(TranspositionTable::new(hash_mb));
+    let tt = Arc::new(TranspositionTable::new(hash_mb, 1));
 
     let mut search_time = Duration::ZERO;
 
     for fen in &fens {
         let board = Position::from_fen(fen);
         let history = vec![board.hash];
-        tt.clear();
+        tt.clear(1);
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
         let mut history_table = History::new();

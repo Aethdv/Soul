@@ -65,7 +65,7 @@ pub fn run(limit: usize) {
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
         let mut history_table = History::new();
-        let mut searcher = Searcher::new(&cfg, &board, &history, Arc::new(TranspositionTable::new(16)));
+        let mut searcher = Searcher::new(&cfg, &board, &history, Arc::new(TranspositionTable::new(16, 1)));
 
         searcher.iterative_deepening(&mut history_table);
         total_nodes += searcher.nodes;

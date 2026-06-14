@@ -163,6 +163,7 @@ impl TtEntry {
         ((self.packed.load(Ordering::Relaxed) >> 11) & 0x1F) as u8
     }
 
+    #[inline(always)]
     fn load(&self) -> Decoded {
         let key = self.key.load(Ordering::Acquire);
         let mv = self.mv.load(Ordering::Relaxed);
@@ -199,25 +200,31 @@ impl TtEntry {
 
 pub struct TranspositionTable {
     clusters: HugePages<Cluster>,
-    /// The machine's locality, detected once. Drives the first-touch placement
-    /// so a multi-node box spreads the table across its memory controllers.
-    numa: NumaTopology,
     /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
     /// so `wrapping_sub` measures generation distance modulo 32.
     pub generation: AtomicU8,
+    /// The machine's locality, detected once. Drives the first-touch placement
+    /// so a multi-node box spreads the table across its memory controllers.
+    numa: NumaTopology,
 }
 
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
-    pub fn new(size_mb: usize) -> Self {
+    pub fn new(size_mb: usize, threads: usize) -> Self {
         let numa = NumaTopology::detect();
-        let clusters = Self::alloc(size_mb, &numa);
+        let clusters = Self::alloc(size_mb, &numa, threads);
 
         Self { clusters, numa, generation: AtomicU8::new(0) }
     }
 
-    pub fn resize(&mut self, size_mb: usize) {
-        self.clusters = Self::alloc(size_mb, &self.numa);
+    pub fn resize(&mut self, size_mb: usize, threads: usize) {
+        self.clusters = Self::alloc(size_mb, &self.numa, threads);
+    }
+
+    /// Whether this box spreads the TT across nodes at all, so a thread-count
+    /// change can re-place it. False on a single-node box, where it never does.
+    pub fn distributes(&self) -> bool {
+        self.numa.num_nodes() > 1
     }
 
     /// The page size backing the table, for the startup `info string`.
@@ -229,14 +236,15 @@ impl TranspositionTable {
     /// table holds a few more slots than a 4KB one of the same request.
     ///
     /// One memory domain takes the simple inline pre-fault. Two or more map the
-    /// pages without faulting, then first-touch each slice on its own node so
-    /// the table spreads across the controllers instead of pinning to one.
-    fn alloc(size_mb: usize, numa: &NumaTopology) -> HugePages<Cluster> {
+    /// pages without faulting, then first-touch each slice on its own node so the
+    /// table spreads across the controllers instead of pinning to one. A lone thread
+    /// wants it pinned local, so that spread waits for the threads to share it.
+    fn alloc(size_mb: usize, numa: &NumaTopology, threads: usize) -> HugePages<Cluster> {
         let bytes = size_mb.max(1) * 1024 * 1024;
 
-        // SAFETY (both paths): a zeroed Cluster is the empty state, every field
-        // an AtomicU16(0); first_touch does the zeroing on the multi-node path.
-        if numa.num_nodes() > 1 {
+        // SAFETY (both paths): a zeroed Cluster is the empty state, every field an
+        // AtomicU16(0); first_touch does the zeroing on the multi-node path.
+        if numa.should_distribute(threads) {
             let clusters = unsafe { HugePages::mapped(bytes) };
             first_touch(&clusters, numa);
             clusters
@@ -264,10 +272,13 @@ impl TranspositionTable {
             / sample
     }
 
-    /// Reset to an empty table and reset the generation counter. Multi-node re-runs
-    /// the distributed first-touch so the cleared pages stay spread across nodes.
-    pub fn clear(&self) {
-        if self.numa.num_nodes() > 1 {
+    /// Reset to an empty table and the generation counter, for the thread count the
+    /// next search will use. Spreads the cleared pages across nodes only when it pays,
+    /// more than one node and more than one thread; a lone thread keeps the table
+    /// local. On a multi-node box this is also its first fault, since `alloc` left
+    /// the mapping untouched.
+    pub fn clear(&self, threads: usize) {
+        if self.numa.should_distribute(threads) {
             first_touch(&self.clusters, &self.numa);
         } else {
             self.clusters.clear();

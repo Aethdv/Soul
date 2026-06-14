@@ -92,7 +92,7 @@ impl UciState {
         let history = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
-        let tt = Arc::new(TranspositionTable::new(16));
+        let tt = Arc::new(TranspositionTable::new(16, 1));
 
         let (tx, rx) = mpsc::channel::<SearchCommand>();
         let (h_tx, h_rx) = mpsc::channel::<History>();
@@ -422,7 +422,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
             state.persistent_history.clear();
-            state.tt.clear();
+            state.tt.clear(state.threads);
             state.load_position(Position::from_fen(STARTPOS));
         },
 
@@ -612,7 +612,7 @@ where I: Iterator<Item = &'a str> {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb));
+                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },
@@ -646,6 +646,10 @@ where I: Iterator<Item = &'a str> {
             let n = value.parse::<usize>().unwrap_or(1).clamp(1, 1024);
             if n != state.threads {
                 state.threads = n;
+                // Re-place the table for the new thread count (multi-node only).
+                if state.tt.distributes() {
+                    state.tt = Arc::new(TranspositionTable::new(state.hash_size, n));
+                }
                 state.smp_pool = LazySmpPool::new(n, state.tt.clone());
             }
         },

@@ -132,6 +132,7 @@ unsafe fn zero_region(base: *mut u8, bytes: usize) {
 impl<T> Deref for HugePages<T> {
     type Target = [T];
 
+    #[inline(always)]
     fn deref(&self) -> &[T] {
         // SAFETY: ptr maps len elements, zeroed then valid as T (zeroed() contract).
         unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }

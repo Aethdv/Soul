@@ -38,6 +38,7 @@ impl Checkpoint {
     pub fn save(&self) -> Result<(), CheckpointError> {
         let tmp_file = format!("{CHECKPOINT_FILE}.tmp");
         let mut writer = BufWriter::new(File::create(&tmp_file)?);
+
         serde_json::to_writer(&mut writer, self)?;
         Write::flush(&mut writer)?;
         rename(&tmp_file, CHECKPOINT_FILE)?;
@@ -50,6 +51,7 @@ impl Checkpoint {
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
+
         let reader = BufReader::new(file);
         let cp: Self = serde_json::from_reader(reader)?;
 

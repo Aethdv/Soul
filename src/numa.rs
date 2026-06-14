@@ -72,6 +72,13 @@ impl NumaTopology {
         self.domains.len() > 1 && threads > 1
     }
 
+    /// Whether spreading the TT across nodes pays: more than one memory domain to
+    /// spread over, and more than one thread to share the bandwidth. A lone thread
+    /// wants its table local, not striped across remote controllers.
+    pub fn should_distribute(&self, threads: usize) -> bool {
+        self.nodes.len() > 1 && threads > 1
+    }
+
     /// Assign `threads` workers to L3 domains, one index per worker, balanced by
     /// fill so a domain with more CPUs takes proportionally more threads and no
     /// node is favored (which would fight other instances sharing the box).

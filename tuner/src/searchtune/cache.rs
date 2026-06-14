@@ -30,8 +30,6 @@ pub struct MatchRequest<'a> {
     pub min_pairs: usize,
 }
 
-// ──────── Private types ────────
-
 #[derive(Clone)]
 struct CachedEntry {
     penta: Pentanomial,
@@ -109,6 +107,7 @@ impl MatchCache {
     pub fn stats(&self) -> (usize, usize, usize, usize) {
         let inner = self.inner.lock();
         let total_pairs = inner.entries.values().map(|e| e.pairs).sum();
+
         (inner.entries.len(), total_pairs, inner.hits, inner.misses)
     }
 }
