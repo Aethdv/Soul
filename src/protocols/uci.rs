@@ -33,6 +33,7 @@ use crate::{
         search_params::SearchParams,
         tt::TranspositionTable,
     },
+    numa::NumaTopology,
     protocols::smp::LazySmpPool,
     tools,
     weave::Vi16x8,
@@ -410,6 +411,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.pretty_print = false;
             print_id();
             print_options();
+            println!("info string numa: {}", NumaTopology::detect());
             println!("uciok");
         },
 
