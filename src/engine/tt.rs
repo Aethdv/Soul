@@ -1,4 +1,4 @@
-//! Transposition table — the search's memory of positions it has already seen.
+//! Transposition table - the search's memory of positions it has already seen.
 //!
 //! Every node iterative deepening revisits, it hopes to find here: the score, the
 //! best move, the depth that score was proven to. A hit can cut a whole subtree,
