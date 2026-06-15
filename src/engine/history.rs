@@ -1,10 +1,20 @@
-//! History heuristic for quiet move ordering.
+//! History heuristics for move ordering, and eval correction alongside them.
 //!
-//! # Design
+//! A move that caused a beta cutoff once tends to again, so the search records the
+//! success and orders by it next time. This module holds the family of tables that
+//! do it, each keyed on a different slice of context:
 //!
-//! Tracks which moves historically caused beta cutoffs in the search tree.
-//! High-scoring moves are sorted to the front of the move list, maximizing
-//! the probability of early cutoffs in subsequent searches.
+//! - the main `[side][piece][to]` table, plus a `butterfly` table split by whether
+//!   the from- and to-squares are under threat,
+//! - continuation history, keyed on a recent move and the current reply (n-1, n-2,
+//!   n-4 plies back),
+//! - capture history for noisy moves, keyed on attacker, target, and victim.
+//!
+//! Correction history is the odd one out: it doesn't order moves at all. It nudges
+//! the static eval toward what search actually found, keyed on pawn, minor, and
+//! major structure. It learns the same way the others do, a table fed by search
+//! outcomes, so it sits here despite the different job, and it's the heaviest
+//! single Elo contributor in the file.
 
 use crate::core::defs::{Bitboard, Color, PieceType, Square};
 
@@ -23,7 +33,8 @@ pub struct History {
     table: [[[i16; 64]; 6]; 2],
     /// `[side][from_atk][to_atk][from · 64 + to]`: bounds `[-16384, 16384]`
     butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~35 Elo
-    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
+    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`. Two slots, three distances:
+    /// n-1 owns slot 0, while n-2 and n-4 deliberately share slot 1, pooling into one table.
     cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo

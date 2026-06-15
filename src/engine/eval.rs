@@ -1,15 +1,13 @@
 //! Hand-Crafted Evaluation.
 //!
-//! # Architecture
-//!
 //! Computes the heuristic value of a leaf node. The evaluation relies on an
 //! incrementally updated SIMD accumulator for piece-square material (PSQT),
 //! combined with dynamically computed spatial features (mobility, king safety, threats).
 //!
-//! The function is generic over `EvalMath` (either `i32` or `AutogradNode`).
-//! During search, `i32` is monomorphized into direct compiler-optimized arithmetic.
-//! During tuning, `AutogradNode` constructs a computational graph
-//! to track parameter gradients via forward-mode auto-differentiation.
+//! The function is generic over `EvalMath` (either `i32` or `DualNode`).
+//! During search, `i32` monomorphizes into direct compiler-optimized arithmetic.
+//! During tuning, `DualNode` carries each value's partials alongside it: one
+//! evaluation pass yields the exact gradient for every parameter, no backward pass.
 
 use crate::{
     core::{
@@ -37,8 +35,8 @@ use crate::{
 ///
 /// - For the search hot path: `EvalParams::<i32>::from_const()`
 ///   inlines to direct constant loads.
-/// - For the tuner: constructed with `AutogradNode::parameter()`
-///   so gradient flows to the values array.
+/// - For the tuner: `EvalParams::<DualNode>::load_tunable()` seeds each weight as a
+///   dual variable (`grad[slot] = 1`), so a gradient flows back to its slot.
 macro_rules! impl_eval_params {
     ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
         pub struct EvalParams<T: EvalMath> {
@@ -104,7 +102,7 @@ pub struct DoubledPawnTerm;
 pub struct IsolatedPawnTerm;
 /// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
 pub struct PhalanxTerm;
-/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative (~10 Elo).
+/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative rank (~10 Elo).
 pub struct DefendedPawnTerm;
 /// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
 pub struct BackwardPawnTerm;
@@ -208,7 +206,7 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
     params.lazy_eval_margin + scaled
 }
 
-/// Generic evaluation: monomorphized to `i32` for search, `AutogradNode` for tuning.
+/// Generic evaluation: monomorphized to `i32` for search, `DualNode` for tuning.
 ///
 /// WARNING: Autograd Linearity Booby Trap
 /// If you introduce any non-linear math (e.g. `feature · feature · weight` or `max(feature, 0)`)

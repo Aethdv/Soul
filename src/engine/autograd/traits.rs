@@ -8,14 +8,18 @@ use std::{
 
 use crate::weave::{Vi16x8, Vi32x4};
 
-/// The unified mathematical interface for evaluation and tuning.
+/// The unified math interface behind evaluation and tuning. `evaluate` is written
+/// once, generic over `T`, and monomorphized two ways so search and the tuner run
+/// the exact same code path.
 ///
-/// During normal play, `T` resolves to standard types like `i32`
-/// or `Vi16x8` for zero-cost, heavily vectorized execution.
+/// For search, `T` is `i32`: plain integer arithmetic, with the associated SIMD
+/// vector types (`Vi16x8`, `Vi32x4`) carrying the PSQT accumulator. Zero overhead
+/// over hand-written eval.
 ///
-/// During parameter tuning, `T` resolves to `AutogradNode`, dynamically
-/// constructing a computational graph of all mathematical operations applied
-/// during the `evaluate()` function to compute perfect gradients via backprop.
+/// For tuning, `T` is `DualNode`: forward-mode automatic differentiation by dual
+/// numbers. Each value carries its partials alongside it, so one forward pass of
+/// `evaluate` yields the exact gradient with respect to every parameter. No tape,
+/// no backward pass.
 pub trait EvalMath:
     Sized
     + Copy
@@ -77,7 +81,7 @@ pub trait EvalMath:
     /// Clamp the value between min and max.
     fn math_clamp(self, min: Self, max: Self) -> Self;
 
-    /// Tapered material calculation: (MG · phase + EG · (24 - phase)) / 24.
+    /// Tapered interpolation: (MG · phase + EG · (24 - phase)) / 24.
     /// Specialized per-type to allow SIMD `madd` in the engine hot path.
     fn tapered(acc: &Self::Vec8, phase: Self) -> Self;
 }
@@ -207,13 +211,14 @@ impl EvalMath for i32 {
     #[inline(always)]
     fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
         let eg_p = 24 - phase;
-        // phase ∈ [0, 24] (clamped by extract_phase), so eg_p ∈ [0, 24].
-        // Neither value exceeds 16 bits, so the pack is lossless and packed as i32 won't sign-extend.
+        // phase ∈ [0, 24] (clamped by extract_phase), so eg_p ∈ [0, 24]. Both fit in
+        // 16 bits and stay non-negative, so the two halves pack into one i32 losslessly,
+        // no sign bit bleeding from the low lane into the high.
         let packed = (phase as u32) | ((eg_p as u32) << 16);
-        // SIMD Trick: _mm_cvtsi32_si128 loads the 32-bit packed phase [MG, EG] into
-        // the bottom of an XMM register. _mm_madd_epi16 then performs a horizontal
-        // pairwise dot product: (acc.mg · phase) + (acc.eg · eg_phase),
-        // collapsing the tapered evaluation into a single instruction.
+        // _mm_cvtsi32_si128 drops the 32-bit packed phase [MG, EG] into the low lane
+        // of an XMM register; _mm_madd_epi16 then takes the pairwise dot product
+        // (acc.mg · phase) + (acc.eg · eg_phase), folding both products and their sum
+        // into one multiply-add.
         let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed as i32) });
         acc.madd(weights).extract::<0>() / 24
     }
@@ -319,6 +324,7 @@ impl EvalMath for f64 {
         let mg = acc.0[0];
         let eg = acc.0[1];
         let p = phase;
+
         ((mg * p + eg * (24.0 - p)) / 24.0).trunc()
     }
 }
@@ -374,9 +380,8 @@ impl EnvVec4 for F64Vec4 {
 
     #[inline(always)]
     fn srai<const SHIFT: i32>(self) -> Self {
-        // We use .floor() here to perfectly match the semantics of
-        // signed arithmetic right shift (SRAI) on integers, which truncates
-        // toward negative infinity, rather than truncation toward zero.
+        // floor, not trunc: a signed arithmetic right shift rounds toward negative
+        // infinity, where truncation toward zero would diverge on negative values.
         let div = f64::from(1 << SHIFT);
         F64Vec4([(self.0[0] / div).floor(), (self.0[1] / div).floor(), (self.0[2] / div).floor(), (self.0[3] / div).floor()])
     }
