@@ -391,7 +391,7 @@ impl MovePicker {
         self.add_move_packed(Move::new(from, to, Move::PROM_N_CAPTURE), n as MoveScore);
     }
 
-    /// Most Valuable Victim – Least Valuable Attacker.
+    /// Most Valuable Victim - Least Valuable Attacker.
     ///
     ///   `score = V(victim) - V(attacker) [+ V(promo)]`
     ///
