@@ -7,8 +7,6 @@
 //! Used in qsearch to prune losing captures; available to main search for
 //! the good/bad-capture split, SEE pruning, and ProbCut.
 //!
-//! # Notes
-//!
 //! One `balance` integer, perspective-flipped per recapture: no scratch
 //! array, no post-loop minimax pass. Move type is dispatched once at
 //! entry; captures, en passant, promotions, and castling each set their

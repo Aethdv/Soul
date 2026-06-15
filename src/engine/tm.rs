@@ -5,8 +5,6 @@
 //! search. The soft limit is what we *aim* to spend on this move; the
 //! hard limit is what we *refuse* to exceed.
 //!
-//! # Decision order
-//!
 //! Budgets are decided by the first matching rule, in this order:
 //!
 //! 1. `infinite`   - search until commanded to stop.

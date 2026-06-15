@@ -1,7 +1,5 @@
 //! Staged move generation and heuristic ordering.
 //!
-//! # Architecture
-//!
 //! Most nodes cut off on the hash move or the first good capture, so generating
 //! and scoring every quiet up front is work thrown away. The picker yields moves
 //! in stages, best guesses first, and generates a stage only once the cheaper
