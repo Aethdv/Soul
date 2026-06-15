@@ -117,9 +117,9 @@ impl BoundsTracker {
                 means[i] += params[i].denormalize(v.clamp(0.0, 1.0)) / n_elite;
             }
         }
-      
+
         let mut vars = vec![0.0; self.n];
-        
+
         for &idx in elite_indices {
             for (i, &v) in population_normalized[idx].iter().enumerate() {
                 let raw = params[i].denormalize(v.clamp(0.0, 1.0));
