@@ -472,7 +472,6 @@ impl EnvVec4 for DualVec4 {
             self.0[1].math_clamp(min, max),
             self.0[2].math_clamp(min, max),
             self.0[3].math_clamp(min, max),
-
             hi.0[0].math_clamp(min, max),
             hi.0[1].math_clamp(min, max),
             hi.0[2].math_clamp(min, max),

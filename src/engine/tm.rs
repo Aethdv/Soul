@@ -159,7 +159,7 @@ impl Clock {
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
-    fn hard_ms(&self, mtg: f64, _soft_ms: u64) -> u64 {
+    fn hard_ms(&self, mtg: f64) -> u64 {
         let hard = if self.movestogo > 0 {
             (self.time as f64 / mtg * 5.0).min(self.time as f64 * 0.95) as u64
         } else {
@@ -208,7 +208,7 @@ fn compute_budget(
 
     let mtg = clock.moves_to_go(phase, params);
     let soft_ms = clock.soft_ms(mtg);
-    let hard_ms = clock.hard_ms(mtg, soft_ms);
+    let hard_ms = clock.hard_ms(mtg);
 
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }
