@@ -2,8 +2,9 @@
 //!
 //! # Architecture
 //!
-//! Computes spatial characteristics in a single pass, sharing attack bitboards
-//! across multiple evaluation features.
+//! Attack maps are the expensive part, so they're built once per position and
+//! shared: mobility, king safety, threats, and x-ray batteries all read the same
+//! bitboards instead of recomputing the slider attacks they each need.
 
 use crate::{
     core::{
@@ -27,7 +28,7 @@ use crate::{
 
 // Pawn rams (locked head-to-head) and total pawn count yield an openness scalar.
 // In scoring, this blends between "closed" and "open" weight vectors.
-// To avoid `f32` in the hot eval loop, we use 10-bit fixed-point precision.
+// To avoid f32 in the hot eval loop, we use 10-bit fixed-point precision.
 //
 //   openness = clamp(1 − 0.08 · rams − 0.02 · pawns, 0, 1)
 //
@@ -103,7 +104,7 @@ struct EvalCtx {
     occ: Bitboard,
 
     // Piece + pawn attacks, excluding king.
-    // Used for danger assessment — your own king's reach
+    // Used for danger assessment: your own king's reach
     // doesn't help assault the opponent's king zone.
     atk_us: Bitboard,
     atk_them: Bitboard,
@@ -132,14 +133,14 @@ struct EvalCtx {
 
 impl SafetyMetrics {
     /// Collapses raw features into a single weighted score.
-    /// Positive → well-sheltered king, negative ⇒ under fire.
+    /// Positive → well-sheltered king, negative → under fire.
     #[inline]
     pub fn score<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T, w_atk: T) -> T {
         let shelter = T::from_i32(self.shield) * w_shield;
         let exposure = T::from_i32(self.ortho_exposure) * w_ortho + T::from_i32(self.diag_exposure) * w_diag;
 
-        // Attackers scale non-linearly — a second attacker is more than twice as
-        // dangerous. w_atk is indexed by attacker count; `weak / 10` keeps resolution
+        // Attackers scale non-linearly: a second attacker is more than twice as
+        // dangerous. w_atk is indexed by attacker count; weak / 10 keeps resolution
         // high for the tuner (0.1 cp increments) while staying integer in eval.
         // DualNode passes gradient through .trunc() unmodified (straight-through).
         let pressure = ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc();
@@ -153,7 +154,7 @@ impl SafetyMetrics {
     fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
         let zone = atk_king(ksq);
         Self {
-            // Clamp to weight-table bounds — five-plus attackers all map to the maximum danger entry.
+            // Clamp to weight-table bounds: five-plus attackers all map to the maximum danger entry.
             attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER_WEIGHTS.len() - 1),
             weak: (zone & atk_them & !atk_us).popcount() as i32,
             shield: (zone & our_pawns).popcount() as i32,
@@ -174,7 +175,7 @@ impl Mobility {
     ) -> MobilityData {
         let ctx = EvalCtx::build(pos, color, tensor, pinned_w, pinned_b);
 
-        // King safety — computed once per side, then both the raw features
+        // King safety: computed once per side, then both the raw features
         // and the derived score feed into the final metrics.
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
@@ -228,8 +229,8 @@ impl Mobility {
 
     /// Position openness in fixed-point [0, 1024].
     ///
-    /// Note: always passes White as `us_pawns`. The result is position-symmetric —
-    /// white-into-black rams count identically to black-into-white rams — so the
+    /// Always passes White as `us_pawns`. The result is position-symmetric:
+    /// white-into-black rams count identically to black-into-white rams, so the
     /// direction is irrelevant. The function signature is kept general for the tuner.
     #[inline]
     pub fn compute_openness(pos: &Position) -> i32 {
@@ -285,7 +286,7 @@ impl LinearTerm for MobilityTerm {
 
         // SAFETY: LAYOUT offsets place all four 4-wide mobility blocks (lo, lo+4,
         // lc, lc+4) contiguously within the tunable region. Caller guarantees
-        // `grads.len() >= LAYOUT.xray_offset + 1` (asserted in the tape), which
+        // grads.len() >= LAYOUT.xray_offset + 1 (asserted in the tape), which
         // covers this range.
         unsafe {
             let p_lo_m = grads.as_mut_ptr().add(lo);
@@ -328,7 +329,7 @@ impl LinearTerm for KingSafetyTerm {
     ///   `∂score/∂w_ortho   = −upstream · (ortho_us  − ortho_them)`
     ///   `∂score/∂w_diag    = −upstream · (diag_us   − diag_them)`
     ///
-    /// Attacker weights;
+    /// Attacker weights:
     /// Only the two active indices (per-side attacker counts) receive contribution,
     /// each proportional to that side's `weak / 10`. Pressure is subtracted from "us"'s score,
     /// so that `∂score/∂atk_weights[idx_us] = −upstream · (weak_us / 10)`
@@ -405,9 +406,9 @@ impl EvalCtx {
 
         // Sliders: Use SpatialTensor for direct attacks (pinned pieces are natively excluded).
         //
-        // NOTE: Pinned pieces are deliberately excluded from `xray_us` and `xray_them` as well.
+        // Pinned pieces are deliberately excluded from xray_us and xray_them as well.
         // While a pinned piece could theoretically provide x-ray battery support along its pin ray,
-        // this is a CPU-cycle tradeoff — sacrificing a rare edge case for pure engine speed.
+        // this is a CPU-cycle tradeoff, sacrificing a rare edge case for raw speed.
         let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = if color == Color::White {
             (
                 Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
