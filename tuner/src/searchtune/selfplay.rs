@@ -131,6 +131,7 @@ fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64
     let mut penta = Pentanomial::default();
     let mut total_candidate_nodes = 0u64;
     let mut total_baseline_nodes = 0u64;
+
     for (p, c_nodes, b_nodes) in results {
         penta.merge(&p);
         total_candidate_nodes += c_nodes;
@@ -150,10 +151,12 @@ thread_local! {
 fn acquire_tts() -> (Arc<TranspositionTable>, Arc<TranspositionTable>) {
     TT_POOL.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let pair = slot
-            .get_or_insert_with(|| (Arc::new(TranspositionTable::new(TT_POOL_MB)), Arc::new(TranspositionTable::new(TT_POOL_MB))));
-        pair.0.clear();
-        pair.1.clear();
+        let pair = slot.get_or_insert_with(|| {
+            (Arc::new(TranspositionTable::new(TT_POOL_MB, 1)), Arc::new(TranspositionTable::new(TT_POOL_MB, 1)))
+        });
+
+        pair.0.clear(1);
+        pair.1.clear(1);
         (Arc::clone(&pair.0), Arc::clone(&pair.1))
     })
 }
@@ -258,6 +261,7 @@ fn play_game<'a>(
 
     let mut white_time_ms = cfg_white.limits.wtime;
     let mut black_time_ms = cfg_black.limits.btime;
+
     let white_inc = cfg_white.limits.winc;
     let black_inc = cfg_black.limits.binc;
 
@@ -282,6 +286,7 @@ fn play_game<'a>(
         // reset already generated root_moves; empty => mate or stalemate.
         if searcher.best_move().is_none() {
             let in_check = board.checkers().is_not_empty();
+
             if in_check {
                 return (if board.stm == Color::White { GameResult::Loss } else { GameResult::Win }, white_nodes, black_nodes);
             }
@@ -301,6 +306,7 @@ fn play_game<'a>(
 
         let score = searcher.best_score().unwrap_or(0);
         let ply = (board.fullmove_number as usize - 1) * 2 + (board.stm as usize);
+
         if let Some(res) = check_adjudication(score, last_score, &mut win_adj_counter, &mut draw_adj_counter, board.stm, ply) {
             let result = match res {
                 GameOutcome::WhiteWins => GameResult::Win,
@@ -312,6 +318,7 @@ fn play_game<'a>(
         last_score = score;
 
         let nodes = searcher.nodes;
+
         if board.stm == Color::White {
             white_nodes += nodes;
         } else {
@@ -320,6 +327,7 @@ fn play_game<'a>(
 
         if uses_clock {
             let elapsed_ms = move_start.elapsed().as_millis() as u64;
+
             if board.stm == Color::White && elapsed_ms > white_time_ms {
                 return (GameResult::Loss, white_nodes, black_nodes);
             } else if board.stm == Color::Black && elapsed_ms > black_time_ms {
@@ -366,6 +374,7 @@ fn parse_tc(tc: &str) -> Limits {
         limits.nodes = val.parse().unwrap_or(10000);
     } else if tc.contains('+') {
         let parts: Vec<&str> = tc.split('+').collect();
+
         if parts.len() == 2 {
             let base_secs: f64 = parts[0].parse().unwrap_or(4.0);
             let inc_secs: f64 = parts[1].parse().unwrap_or(0.04);

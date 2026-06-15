@@ -17,8 +17,9 @@
 //! tread lightly so a shallow result never evicts a deep one.
 
 use std::{
-    arch, mem,
+    arch, mem, slice,
     sync::atomic::{AtomicU8, AtomicU16, Ordering},
+    thread,
 };
 
 use crate::{
@@ -27,6 +28,7 @@ use crate::{
         moves::Move,
     },
     hugepages::{HugePages, PageKind},
+    numa::NumaTopology,
 };
 
 /// TT entry bound flags.
@@ -122,6 +124,7 @@ impl TtEntry {
     fn meta(&self) -> (u16, u8, u8) {
         let key = self.key.load(Ordering::Relaxed);
         let packed = self.packed.load(Ordering::Relaxed);
+
         (key, ((packed >> 8) & 0x3) as u8, (packed & 0xFF) as u8)
     }
 
@@ -160,6 +163,7 @@ impl TtEntry {
         ((self.packed.load(Ordering::Relaxed) >> 11) & 0x1F) as u8
     }
 
+    #[inline(always)]
     fn load(&self) -> Decoded {
         let key = self.key.load(Ordering::Acquire);
         let mv = self.mv.load(Ordering::Relaxed);
@@ -199,16 +203,28 @@ pub struct TranspositionTable {
     /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
     /// so `wrapping_sub` measures generation distance modulo 32.
     pub generation: AtomicU8,
+    /// The machine's locality, detected once. Drives the first-touch placement
+    /// so a multi-node box spreads the table across its memory controllers.
+    numa: NumaTopology,
 }
 
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
-    pub fn new(size_mb: usize) -> Self {
-        Self { clusters: Self::alloc(size_mb), generation: AtomicU8::new(0) }
+    pub fn new(size_mb: usize, threads: usize) -> Self {
+        let numa = NumaTopology::detect();
+        let clusters = Self::alloc(size_mb, &numa, threads);
+
+        Self { clusters, numa, generation: AtomicU8::new(0) }
     }
 
-    pub fn resize(&mut self, size_mb: usize) {
-        self.clusters = Self::alloc(size_mb);
+    pub fn resize(&mut self, size_mb: usize, threads: usize) {
+        self.clusters = Self::alloc(size_mb, &self.numa, threads);
+    }
+
+    /// Whether this box spreads the TT across nodes at all, so a thread-count
+    /// change can re-place it. False on a single-node box, where it never does.
+    pub fn distributes(&self) -> bool {
+        self.numa.num_nodes() > 1
     }
 
     /// The page size backing the table, for the startup `info string`.
@@ -218,10 +234,23 @@ impl TranspositionTable {
 
     /// The cluster count follows from the page-rounded byte size, so a 1GB-page
     /// table holds a few more slots than a 4KB one of the same request.
-    fn alloc(size_mb: usize) -> HugePages<Cluster> {
+    ///
+    /// One memory domain takes the simple inline pre-fault. Two or more map the
+    /// pages without faulting, then first-touch each slice on its own node so the
+    /// table spreads across the controllers instead of pinning to one. A lone thread
+    /// wants it pinned local, so that spread waits for the threads to share it.
+    fn alloc(size_mb: usize, numa: &NumaTopology, threads: usize) -> HugePages<Cluster> {
         let bytes = size_mb.max(1) * 1024 * 1024;
-        // SAFETY: a zeroed Cluster is the empty state — every field is an AtomicU16(0).
-        unsafe { HugePages::zeroed(bytes) }
+
+        // SAFETY (both paths): a zeroed Cluster is the empty state, every field an
+        // AtomicU16(0); first_touch does the zeroing on the multi-node path.
+        if numa.should_distribute(threads) {
+            let clusters = unsafe { HugePages::mapped(bytes) };
+            first_touch(&clusters, numa);
+            clusters
+        } else {
+            unsafe { HugePages::zeroed(bytes) }
+        }
     }
 
     /// Returns TT occupancy in permille (0–1000).
@@ -243,9 +272,18 @@ impl TranspositionTable {
             / sample
     }
 
-    /// Reset to an empty table and reset the generation counter.
-    pub fn clear(&self) {
-        self.clusters.clear();
+    /// Reset to an empty table and the generation counter, for the thread count the
+    /// next search will use. Spreads the cleared pages across nodes only when it pays,
+    /// more than one node and more than one thread; a lone thread keeps the table
+    /// local. On a multi-node box this is also its first fault, since `alloc` left
+    /// the mapping untouched.
+    pub fn clear(&self, threads: usize) {
+        if self.numa.should_distribute(threads) {
+            first_touch(&self.clusters, &self.numa);
+        } else {
+            self.clusters.clear();
+        }
+
         self.generation.store(0, Ordering::Relaxed);
     }
 
@@ -253,6 +291,16 @@ impl TranspositionTable {
     /// generations don't vanish; they just age, growing easier to evict.
     pub fn new_search(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Pin the calling search thread to its NUMA-assigned L3 domain, when binding
+    /// is worthwhile. Keeps the thread's compute on its cores and the per-thread
+    /// state it allocates next in a warm L3. A no-op on one domain or one thread,
+    /// so a single-threaded run never binds.
+    pub fn bind_search_thread(&self, thread_id: usize, threads: usize) {
+        if self.numa.should_bind(threads) {
+            self.numa.bind_to_domain(self.numa.distribute(threads)[thread_id]);
+        }
     }
 
     /// Pull a cluster's cache line toward the core ahead of the probe. A TT lookup
@@ -407,9 +455,10 @@ impl TranspositionTable {
     /// Maps a 64-bit hash to a cluster index.
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
-        // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly in
-        // [0, len), the way `hash % len` would, but with a multiply.
+        // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly
+        // in [0, len), the way `hash % len` would, but with a multiply.
         let clusters = self.clusters.len();
+
         (((hash as u128) * (clusters as u128)) >> 64) as usize
     }
 
@@ -442,4 +491,30 @@ impl TranspositionTable {
             score
         }
     }
+}
+
+/// First-touch the cluster region in parallel, each NUMA node's thread zeroing the
+/// slice bound to it. First-touch decides a page's home node, so this is what spreads
+/// the table across the memory controllers instead of leaving it all on one.
+///
+/// Only ever runs with the engine idle (allocation, or `ucinewgame`), so building
+/// an exclusive `&mut` over the shared region is sound: no searcher is reading it,
+/// and the chunks the threads take are disjoint.
+fn first_touch(clusters: &HugePages<Cluster>, numa: &NumaTopology) {
+    let nodes = numa.num_nodes();
+    let len = clusters.len();
+
+    // SAFETY: idle precondition (above); the region maps len clusters.
+    let region = unsafe { slice::from_raw_parts_mut(clusters.as_ptr() as *mut Cluster, len) };
+
+    thread::scope(|scope| {
+        for (node, chunk) in region.chunks_mut(len.div_ceil(nodes)).enumerate() {
+            scope.spawn(move || {
+                numa.bind_to_node(node);
+                // SAFETY: chunk is this thread's disjoint slice; a zeroed Cluster is
+                // the empty state, so writing zeros first-touches it into a valid one.
+                unsafe { chunk.as_mut_ptr().write_bytes(0, chunk.len()) };
+            });
+        }
+    });
 }

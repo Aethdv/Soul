@@ -39,6 +39,10 @@ impl LazySmpPool {
             let tt = Arc::clone(&tt);
 
             handles.push(thread::spawn(move || {
+                // Pin before the recv loop so the per-search History allocated below
+                // lands on this thread's own node by first-touch, local not remote.
+                tt.bind_search_thread(helper_id, threads);
+
                 while rx
                     .recv(|(config, board, history)| {
                         let mut local_cfg = config.clone();

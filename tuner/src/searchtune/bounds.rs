@@ -86,12 +86,14 @@ impl BoundsTracker {
         for sample in population_normalized {
             for (i, &v) in sample.iter().enumerate() {
                 cur[i].n_samples += 1;
+
                 if v < 0.0 {
                     cur[i].lo_hits += 1;
                 }
                 if v > 1.0 {
                     cur[i].hi_hits += 1;
                 }
+
                 if v < self.observed_lo[i] {
                     self.observed_lo[i] = v;
                 }
@@ -109,15 +111,19 @@ impl BoundsTracker {
         // Elite denormalized mean + variance (population stats over the elite subset)
         let n_elite = elite_indices.len().max(1) as f64;
         let mut means = vec![0.0; self.n];
+
         for &idx in elite_indices {
             for (i, &v) in population_normalized[idx].iter().enumerate() {
                 means[i] += params[i].denormalize(v.clamp(0.0, 1.0)) / n_elite;
             }
         }
+
         let mut vars = vec![0.0; self.n];
+
         for &idx in elite_indices {
             for (i, &v) in population_normalized[idx].iter().enumerate() {
                 let raw = params[i].denormalize(v.clamp(0.0, 1.0));
+
                 vars[i] += (raw - means[i]).powi(2) / n_elite;
             }
         }
@@ -128,6 +134,7 @@ impl BoundsTracker {
             self.have_elite_init = true;
         } else {
             let b = self.config.elite_beta;
+
             for i in 0..self.n {
                 self.elite_mean_ema[i] = (1.0 - b).mul_add(self.elite_mean_ema[i], b * means[i]);
                 self.elite_var_ema[i] = (1.0 - b).mul_add(self.elite_var_ema[i], b * vars[i]);
@@ -163,6 +170,7 @@ impl BoundsTracker {
             let (window_lo, window_hi, window_n) = self.window.iter().fold((0u64, 0u64, 0u64), |(lo, hi, n), g| {
                 (lo + u64::from(g[i].lo_hits), hi + u64::from(g[i].hi_hits), n + u64::from(g[i].n_samples))
             });
+
             let lo_rate = if window_n > 0 { window_lo as f64 / window_n as f64 } else { 0.0 };
             let hi_rate = if window_n > 0 { window_hi as f64 / window_n as f64 } else { 0.0 };
 
@@ -217,22 +225,29 @@ impl BoundsTracker {
             let suggest = (p.min - step * (lo_rate / 0.05).ceil()).max(0.0);
             return format!("LOWER MIN -> ~{suggest:.0}");
         }
+
         if hi_rate > alarm.mul_add(expected_hi, floor) {
             let suggest = step.mul_add((hi_rate / 0.05).ceil(), p.max);
             return format!("RAISE MAX -> ~{suggest:.0}");
         }
+
         if !self.have_elite_init {
             return "warmup".to_string();
         }
+
         let near_default = (self.elite_mean_ema[i] - p.default).abs() < 0.05 * range;
+
         if elite_std < 0.02 * range && near_default {
             return "LOW SIGNAL".to_string();
         }
+
         if elite_std < 0.02 * range {
             return format!("CONVERGED -> {:.1}", self.elite_mean_ema[i]);
         }
+
         let interior_lo = obs_lo_raw > 0.10f64.mul_add(range, p.min);
         let interior_hi = obs_hi_raw < p.max - 0.10 * range;
+
         if interior_lo && interior_hi {
             return format!("TIGHTEN -> [{:.0}, {:.0}]", obs_lo_raw - 0.05 * range, 0.05f64.mul_add(range, obs_hi_raw));
         }

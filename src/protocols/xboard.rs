@@ -87,7 +87,7 @@ impl XBoardState {
     fn new() -> Self {
         let board = Position::from_fen(STARTPOS);
         let history = vec![board.hash];
-        let tt = Arc::new(TranspositionTable::new(16));
+        let tt = Arc::new(TranspositionTable::new(16, 1));
 
         Self {
             accumulator: board.get_initial_accumulator(),
@@ -200,7 +200,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         "new" => {
             state.stop_search();
             state.load_position(Position::from_fen(STARTPOS));
-            state.tt.clear();
+            state.tt.clear(state.threads);
             state.mode = Mode::Normal;
             state.engine_side = Some(Color::Black);
             state.limits = Limits { protocol: Protocol::XBoard, ..Default::default() };
@@ -281,7 +281,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 && let Ok(mb) = arg.parse::<usize>()
             {
                 state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb));
+                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },
@@ -293,6 +293,9 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 let n = n.clamp(1, 1024);
                 if n != state.threads {
                     state.threads = n;
+                    if state.tt.distributes() {
+                        state.tt = Arc::new(TranspositionTable::new(state.hash_size, n));
+                    }
                     state.smp_pool = LazySmpPool::new(n, state.tt.clone());
                 }
             }
@@ -457,7 +460,7 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
                 state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb));
+                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
             }
         },

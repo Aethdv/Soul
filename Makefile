@@ -155,11 +155,16 @@ openbench:
 ifdef HAS_PGO
 	@$(call pgo_build,OpenBench)
 else
-	@echo "Building for OpenBench (cargo-pgo not found — native build)..."
-	@CC=cc RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release --quiet
-	@cp target/release/$(EXE_NAME) $(EXE)
-	@echo "Done: ./$(EXE)"
+	@echo "cargo-pgo not found — installing it so the graded build is PGO, not native..."
+	@cargo install cargo-pgo --quiet 2>/dev/null || true
+	@if command -v cargo-pgo >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory openbench; \
+	else \
+		echo "cargo-pgo unavailable — native build."; \
+		CC=cc RUSTFLAGS="-C target-cpu=native" cargo build --release --quiet; \
+		cp target/release/$(EXE_NAME) $(EXE); \
+		echo "Done: ./$(EXE)"; \
+	fi
 endif
 
 evaltune:

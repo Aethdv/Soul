@@ -63,22 +63,41 @@ unsafe impl<T: Send> Send for HugePages<T> {}
 unsafe impl<T: Sync> Sync for HugePages<T> {}
 
 impl<T> HugePages<T> {
-    /// Allocate at least `min_bytes` of zeroed memory, viewed as `[T]`.
+    /// Allocate at least `min_bytes`, viewed as `[T]`, mapped but not pre-faulted.
+    ///
+    /// The pages come lazily, so the first write to each one faults it in.
+    /// The TT uses this to drive first-touch from its own NUMA-bound threads,
+    /// which places each page on the node that touched it. `zeroed` is this
+    /// same map with the pre-fault folded in, for the single-domain path.
+    ///
+    /// # Safety
+    /// As [`zeroed`]: `T` must be valid when zero-initialized.
+    /// The OS zeroes each page at fault time and no constructor runs.
+    pub unsafe fn mapped(min_bytes: usize) -> Self {
+        let (ptr, bytes, kind) = map(min_bytes.max(mem::size_of::<T>()));
+
+        Self { ptr: ptr.cast(), len: bytes / mem::size_of::<T>(), bytes, kind, _marker: PhantomData }
+    }
+
+    /// Allocate at least `min_bytes` of zeroed memory, viewed as `[T]`, every page
+    /// pre-faulted so the search runs hot from its first node.
     ///
     /// # Safety
     /// `T` must be valid when zero-initialized: the mapping comes back zeroed and
     /// is reinterpreted as `T` without running any constructor.
     pub unsafe fn zeroed(min_bytes: usize) -> Self {
-        let (ptr, bytes, kind) = map(min_bytes.max(mem::size_of::<T>()));
+        // SAFETY: caller's contract on T.
+        let pages = unsafe { Self::mapped(min_bytes) };
 
         // Pre-fault the whole table now so the search runs hot from its first node.
         // mmap hands the pages out lazily, and faulting them mid-search would stall
-        // on the clock with no `ucinewgame` to absorb it. That is the regression we
+        // on the clock with no ucinewgame to absorb it. That is the regression we
         // refuse.
-        // SAFETY: a fresh exclusive mapping of `bytes`, nothing aliases it.
-        unsafe { zero_region(ptr.as_ptr(), bytes) };
+        //
+        // SAFETY: a fresh exclusive mapping of bytes, nothing aliases it.
+        unsafe { zero_region(pages.ptr.cast::<u8>().as_ptr(), pages.bytes) };
 
-        Self { ptr: ptr.cast(), len: bytes / mem::size_of::<T>(), bytes, kind, _marker: PhantomData }
+        pages
     }
 
     /// The page size the OS actually gave us.
@@ -113,15 +132,16 @@ unsafe fn zero_region(base: *mut u8, bytes: usize) {
 impl<T> Deref for HugePages<T> {
     type Target = [T];
 
+    #[inline(always)]
     fn deref(&self) -> &[T] {
-        // SAFETY: ptr maps `len` elements, zeroed then valid as T (zeroed() contract).
+        // SAFETY: ptr maps len elements, zeroed then valid as T (zeroed() contract).
         unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
 impl<T> Drop for HugePages<T> {
     fn drop(&mut self) {
-        // SAFETY: ptr/bytes name the mapping `map` handed back.
+        // SAFETY: ptr/bytes name the mapping map handed back.
         unsafe { unmap(self.ptr.cast(), self.bytes) }
     }
 }
@@ -174,7 +194,7 @@ mod linux {
 
         // Round to 2MB, and align the base to 2MB. THP only fills a 2MB-aligned
         // span; a mapping that starts mid-page loses both ends back to 4KB, and
-        // under `madvise` policy the kernel can't pre-align, since the hint lands
+        // under madvise policy the kernel can't pre-align, since the hint lands
         // after it has already picked the address.
         let len = round_up(min_bytes, MB2);
         let p = mmap_aligned(len, MB2);
@@ -209,7 +229,7 @@ mod linux {
         let base = over.as_ptr() as usize;
         let head = round_up(base, align) - base;
 
-        // SAFETY: `over` maps len + align bytes. head and head + len stay inside it,
+        // SAFETY: over maps len + align bytes. head and head + len stay inside it,
         // both are page multiples, so each partial munmap splits the VMA on a page
         // boundary and frees only the slack; the [aligned, aligned + len) span stays.
         unsafe {
@@ -290,7 +310,7 @@ mod portable {
     /// `ptr`/`bytes` must name an allocation returned by [`map`].
     pub unsafe fn unmap(ptr: NonNull<u8>, bytes: usize) {
         let layout = Layout::from_size_align(bytes, PAGE).unwrap();
-        // SAFETY: layout matches the one `map` allocated with.
+        // SAFETY: layout matches the one map allocated with.
         unsafe { alloc::dealloc(ptr.as_ptr(), layout) };
     }
 
