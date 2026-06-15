@@ -19,21 +19,24 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
     let occ = if VIRTUAL { pos.occ & !mask_out } else { pos.occ };
     let them = pos.side_bb[attacker];
 
-    // Leapers first — cheapest to test, no occupancy dependency.
+    // Leapers first: cheapest to test, no occupancy dependency.
     if (atk_pawn(sq, attacker.opposite()) & pos.role_bb[PieceType::Pawn] & them).is_not_empty() {
         return true;
     }
+
     if (atk_knight(sq) & pos.role_bb[PieceType::Knight] & them).is_not_empty() {
         return true;
     }
+
     if (atk_king(sq) & pos.role_bb[PieceType::King] & them).is_not_empty() {
         return true;
     }
 
-    // Sliders — rook-movers (R+Q), then bishop-movers (B+Q).
+    // Sliders: rook-movers (R+Q), then bishop-movers (B+Q).
     // Pre-masking with the attacker's bitboard saves an AND in the hot intersection
     // by restricting the occupancy-generated attack set to only relevant targets early.
     let rq = (pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen]) & them;
+
     if (atk_rook(sq, occ) & rq).is_not_empty() {
         return true;
     }
@@ -47,6 +50,7 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
 #[inline(always)]
 pub fn checkers(pos: &Position) -> Bitboard {
     let king_bb = pos.pieces(PieceType::King, pos.stm);
+
     if king_bb.is_empty() {
         return Bitboard(0);
     }
@@ -56,7 +60,7 @@ pub fn checkers(pos: &Position) -> Bitboard {
 /// Collects all pieces of `attacker`'s army that attack `sq`.
 ///
 /// Unlike `is_attacked` (which short-circuits on the first hit),
-/// this builds the full attacker set — needed for check evasion, SEE, and similar.
+/// this builds the full attacker set: needed for check evasion, SEE, and similar.
 #[inline(always)]
 pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
     let occ = pos.occ;
@@ -74,7 +78,7 @@ pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
 ///
 /// Unlike `attackers_of` (which takes `pos.occ` implicitly and filters by
 /// one color), this accepts an arbitrary `occ` so the caller can simulate
-/// mid-exchange board states — the primary use case is SEE, where the set
+/// mid-exchange board states; the primary use case is SEE, where the set
 /// of revealed attackers changes as each capture removes a blocker.
 ///
 /// Pawn attacks are symmetric: `atk_pawn(sq, color.opposite())` returns the
@@ -101,7 +105,7 @@ pub fn all_attackers_to(pos: &Position, sq: Square, occ: Bitboard) -> Bitboard {
 /// If any such pawn exists, en passant is pseudo-legal.
 ///
 /// Takes `color` explicitly rather than reading `pos.stm` to avoid
-/// temporal coupling — callers always know which side is capturing.
+/// temporal coupling: callers always know which side is capturing.
 #[inline]
 pub fn can_capture_ep(pos: &Position, ep_sq: Square, color: Color) -> bool {
     let us = pos.side_bb[color];
@@ -114,17 +118,16 @@ pub fn can_capture_ep(pos: &Position, ep_sq: Square, color: Color) -> bool {
 /// our king and an enemy slider aligned with that ray.
 /// Moving it off the line would expose the king to check.
 ///
-/// # Algorithm
 /// 1. Cast rays from the king on an empty board to spot
-///    enemy "snipers" — sliders that sit on a potential attack line.
+///    enemy "snipers", sliders that sit on a potential attack line.
 /// 2. For each sniper, inspect the segment between it and the king.
-/// 3. If exactly one piece occupies that segment and its ours → pinned.
+/// 3. If exactly one piece occupies that segment and it's ours → pinned.
 #[inline]
 pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     let opp = color.opposite();
     let us = pos.side_bb[color];
-
     let king_bb = pos.pieces(PieceType::King, color);
+
     if king_bb.is_empty() {
         return Bitboard(0);
     }
@@ -140,7 +143,7 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     for sniper_sq in snipers {
         let between = between_bb(king_sq, sniper_sq) & pos.occ;
 
-        // One occupant on the ray, and it's ours — that piece is pinned.
+        // One occupant on the ray, and it's ours: that piece is pinned.
         if between.popcount() == 1 && (between & us).is_not_empty() {
             pinned |= between;
         }

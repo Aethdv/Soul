@@ -367,6 +367,7 @@ macro_rules! soul_index {
     ($type:ty, $size:expr) => {
         impl<T> Index<$type> for [T; $size] {
             type Output = T;
+
             #[inline(always)]
             fn index(&self, idx: $type) -> &Self::Output {
                 let i = usize::from(idx);

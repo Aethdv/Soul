@@ -48,6 +48,7 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
         pos.remove_piece(to, captured, opp);
     } else if mv.is_en_passant() {
         let victim_sq = to ^ 8;
+
         pos.hash ^= zobrist::key_piece(PieceType::Pawn, opp, victim_sq);
         toggle_corr_key(pos, PieceType::Pawn, opp, victim_sq);
         pos.remove_piece(victim_sq, PieceType::Pawn, opp);
@@ -81,7 +82,7 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
 /// Reverses a move, perfectly restoring the prior position.
 ///
 /// The accumulator must be bulk-restored from the snapshot
-/// by the caller — no incremental undo needed.
+/// by the caller, no incremental undo needed.
 /// This keeps unmake fast and avoids tricky sign-flip bugs.
 #[inline(always)]
 pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
@@ -124,7 +125,7 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
 
 /// Incrementally updates the accumulator with PSQT vector deltas.
 ///
-/// This is pure arithmetic over the position's read-only board state — nothing is mutated.
+/// This is pure arithmetic over the position's read-only board state; nothing is mutated.
 /// Castling is handled as a clean four-delta update rather than
 /// the add-then-undo pattern, since we know the exact geometry up front.
 #[inline]
@@ -162,7 +163,7 @@ pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceT
 }
 
 /// Compile-time add/remove of a piece on the board.
-/// The const generic eliminates the branch entirely — zero-cost abstraction.
+/// The const generic eliminates the branch entirely: zero-cost abstraction.
 #[inline(always)]
 pub fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceType, color: Color) {
     if ADD {
@@ -180,9 +181,9 @@ pub fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceTy
 
 /// Routes one piece's Zobrist key into the correction key its type owns;
 /// pawns to `pawn_key`, knight/bishop to `minor_key`, rook/queen to `major_key`,
-/// king to neither. Mirrors the inline `hash` toggles in `make_move`; XOR is
-/// self-inverse, so the same call serves a piece leaving its origin and arriving
-/// on its destination.
+/// king to neither. Mirrors the inline `hash` toggles in `make_move`;
+/// XOR is self-inverse, so the same call serves a piece leaving its origin
+/// and arriving on its destination.
 #[inline(always)]
 fn toggle_corr_key(pos: &mut Position, pt: PieceType, color: Color, sq: Square) {
     let key = zobrist::key_piece(pt, color, sq);
@@ -196,8 +197,8 @@ fn toggle_corr_key(pos: &mut Position, pt: PieceType, color: Color, sq: Square) 
 }
 
 /// Undoes a castling move on the board.
-/// Hash and accumulator are bulk-restored from the snapshot — only bitboards
-/// and the mailbox need rewinding.
+/// Hash and accumulator are bulk-restored from the snapshot;
+/// only bitboards and the mailbox need rewinding.
 #[inline]
 pub fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square) {
     let (king_to, rook_to) = castling_targets(king_from, rook_from);
@@ -211,7 +212,7 @@ pub fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square)
 
 /// Resolves the final landing squares for a castling move.
 ///
-/// Our move encoding stores the rook's home square in `mv.to()` — this is FRC-safe
+/// Our move encoding stores the rook's home square in `mv.to()`; this is FRC-safe
 /// since the rook can live on any file. From the relative positions of king and rook
 /// we derive:
 ///   O-O-O → king lands on c-file, rook on d-file
@@ -228,7 +229,7 @@ fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Square) {
 
 /// Executes castling on the board and patches the Zobrist hash.
 ///
-/// Both pieces are lifted before either is placed — this is critical for
+/// Both pieces are lifted before either is placed; this is critical for
 /// DFRC where a destination square can coincide with the other piece's origin.
 /// The king's hash removal is deliberately handled here because `make_move` skips it.
 #[inline]
@@ -252,9 +253,9 @@ fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm:
 
 /// Revokes castling rights touched by the move's origin and destination.
 ///
-/// A single combined AND handles king/rook departures (from-square) and
-/// rook captures (to-square). If anything changed, we XOR the old and new
-/// rights into the hash in one shot.
+/// A single combined AND handles king/rook departures (from-square)
+/// and rook captures (to-square). If anything changed, we XOR the old
+/// and new rights into the hash in one shot.
 #[inline]
 fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: Square, to: Square, old: u8) {
     if old == 0 {
@@ -290,7 +291,7 @@ fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: 
 /// Maintains the en passant square in the position and hash.
 ///
 /// Only recorded after a double pawn push and only when an enemy pawn can
-/// actually capture — this avoids polluting the transposition table with
+/// actually capture; this avoids polluting the transposition table with
 /// positions that differ solely by a phantom EP square no one can use.
 #[inline]
 fn refresh_en_passant(pos: &mut Position, mv: Move, from: Square, to: Square, old_ep: Option<Square>) {

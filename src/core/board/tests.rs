@@ -51,6 +51,7 @@ fn zobrist_make_unmake_identity() {
     for fen in positions {
         let mut pos = Position::from_fen(fen);
         let mut acc = pos.get_initial_accumulator();
+
         let original_hash = pos.hash;
         let original_fen = pos.as_fen();
 
@@ -59,6 +60,7 @@ fn zobrist_make_unmake_identity() {
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);
+
             pos.unmake_move(*mv, &undo);
             acc = saved_acc;
 
@@ -89,7 +91,7 @@ fn zobrist_long_sequence() {
     let mut pos = Position::from_fen(STARTPOS);
     let mut acc = pos.get_initial_accumulator();
 
-    // Ruy Lopez: Exchange Variation line (UCI syntax)
+    // Ruy Lopez: Exchange Variation line
     let game = [
         "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6", "e1g1", "f7f6", "d2d4", "e5d4", "f3d4", "c6c5", "d4b3",
         "d8d1", "f1d1",
@@ -409,11 +411,12 @@ fn history_gravity_bounds() {
     use crate::engine::history::{ContContext, History};
 
     let mut hist = History::new();
+
     let stm = Color::White;
     let pt = PieceType::Knight;
     let to = Square(28);
 
-    // Slam it with huge bonuses — should converge toward +16384 without overflow.
+    // Slam it with huge bonuses; should converge toward +16384 without overflow.
     for _ in 0..10_000 {
         hist.update(
             stm,
@@ -437,10 +440,11 @@ fn history_gravity_bounds() {
         ContContext::default(),
         ContContext::default(),
     );
+
     assert!(score > 0, "After massive positive bonus, score should be positive: {score}");
     assert!(score <= 32768, "Score should not exceed combined gravity bound (16384 * 2): {score}");
 
-    // Now slam it negative — should converge toward -16384.
+    // Now slam it negative; should converge toward -16384.
     for _ in 0..20_000 {
         hist.update(
             stm,
@@ -473,6 +477,7 @@ fn history_clear() {
     use crate::engine::history::{ContContext, History};
 
     let mut hist = History::new();
+
     hist.update(
         Color::White,
         PieceType::Knight,
@@ -546,9 +551,11 @@ fn wdl_monotonicity() {
     // As score increases, win prob should increase, loss prob should decrease.
     for score in (-1500..=2000).step_by(500) {
         let (w, d, l) = wdl_model(score, material);
+
         assert!(w >= last_w, "Win prob decreased at score {score}");
         assert!(l <= last_l, "Loss prob increased at score {score}");
         assert!((w + d + l - 1.0).abs() < 1e-6, "Probabilities should sum to 1.0");
+
         last_w = w;
         last_l = l;
     }
@@ -714,14 +721,19 @@ fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x
     if depth == 0 {
         return 1;
     }
+
     let moves = gen_legal_moves(pos);
+
     if depth == 1 {
         return moves.len() as u64;
     }
+
     let mut total = 0u64;
+
     for &mv in &moves {
         let saved_acc = *acc;
         let undo = pos.make_move(mv, acc);
+
         total += perft_recursive(pos, depth - 1, acc);
         pos.unmake_move(mv, &undo);
         *acc = saved_acc;
@@ -733,8 +745,8 @@ fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x
 fn king_move_removes_castling_rights() {
     let mut pos = Position::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
     let mut acc = pos.get_initial_accumulator();
-    let original_rights = pos.castling_rights;
 
+    let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "e1d1");
     let undo = pos.make_move(mv, &mut acc);
 
@@ -749,8 +761,8 @@ fn king_move_removes_castling_rights() {
 fn rook_capture_removes_castling_rights() {
     let mut pos = Position::from_fen("r3k2r/6B1/8/8/8/8/8/R3K2R w KQkq - 0 1");
     let mut acc = pos.get_initial_accumulator();
-    let original_rights = pos.castling_rights;
 
+    let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "g7h8");
     let undo = pos.make_move(mv, &mut acc);
 
@@ -782,6 +794,7 @@ fn castling_legality_checks() {
 
 fn find_uci_move(pos: &Position, uci: &str) -> Move {
     let moves = gen_legal_moves(pos);
+
     for mv in &moves {
         if mv.to_uci(pos.is_frc) == uci {
             return *mv;

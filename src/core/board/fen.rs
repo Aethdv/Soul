@@ -24,10 +24,10 @@ const CASTLING_FEN: [(u8, usize, char, u8); 4] =
 /// Standard rook home squares.
 /// Indexed by the same slot order as [`CASTLING_FEN`].
 const STANDARD_ROOK_HOMES: [Square; 4] = [
-    Square(7),  // h1 — white O-O
-    Square(0),  // a1 — white O-O-O
-    Square(63), // h8 — black O-O
-    Square(56), // a8 — black O-O-O
+    Square(7),  // h1: white O-O
+    Square(0),  // a1: white O-O-O
+    Square(63), // h8: black O-O
+    Square(56), // a8: black O-O-O
 ];
 
 /// Constructs a [`Position`] from an iterator over whitespace-split FEN tokens.
@@ -62,19 +62,22 @@ where I: Iterator<Item = &'a str> {
         parse_en_passant(&mut pos, ep)?;
     }
 
-    // 4. Clocks (lenient — malformed values silently default)
+    // 4. Clocks (lenient: malformed values silently default)
     if let Some(&h) = tokens.peek() {
         if h == "moves" {
             return finish_position(pos);
         }
+
         if let Some(token) = tokens.next() {
             pos.halfmove_clock = token.parse().unwrap_or(0);
         }
     }
+
     if let Some(&f) = tokens.peek() {
         if f == "moves" {
             return finish_position(pos);
         }
+
         if let Some(token) = tokens.next() {
             pos.fullmove_number = token.parse().unwrap_or(1);
         }
@@ -95,6 +98,7 @@ impl Display for Fen<'_> {
             if rank < 7 {
                 f.write_char('/')?;
             }
+
             let mut empty = 0u8;
 
             for file in 0..8u8 {
@@ -157,7 +161,7 @@ impl Display for Fen<'_> {
 /// Produces the FEN string for the current position.
 ///
 /// In FRC mode, switches to Shredder-FEN castling notation when the rooks
-/// don't sit on their standard home files — otherwise `KQkq` would be ambiguous
+/// don't sit on their standard home files; otherwise `KQkq` would be ambiguous
 /// and couldn't round-trip faithfully.
 pub fn as_fen(pos: &Position) -> String {
     Fen(pos).to_string()
@@ -233,6 +237,7 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     if illegal_pawns.is_not_empty() {
         let sq = illegal_pawns.lsb();
         let color = if pos.side_bb[Color::White].check_bit(sq) { Color::White } else { Color::Black };
+
         return Err(FenError::InvalidPiece { ch: PieceType::Pawn.to_char(color), rank: sq.rank(), file: sq.file() });
     }
 
@@ -339,8 +344,8 @@ fn parse_placement(pos: &mut Position, field: &str) -> Result<(), FenError> {
 /// Parses the en passant field and records the square only
 /// if a friendly pawn can actually capture there.
 ///
-/// Phantom EP squares — legal in the FEN spec but unreachable in the current
-/// position — are silently discarded to prevent polluting the Zobrist Hash and
+/// Phantom EP squares, legal in the FEN spec but unreachable in the current
+/// position, are silently discarded to prevent polluting the Zobrist Hash and
 /// Transposition Table with distinctions that can never affect play.
 fn parse_en_passant(pos: &mut Position, token: &str) -> Result<(), FenError> {
     let b = token.as_bytes();
@@ -373,13 +378,13 @@ fn parse_castling_rights(pos: &mut Position, token: &str) {
 
     for ch in token.chars() {
         match ch {
-            // Standard — discover the rook by scanning from the board edge.
+            // Standard: discover the rook by scanning from the board edge.
             'K' => assign_rook(pos, Color::White, WHITE_OO, 0, KINGSIDE_FILE, SEARCH_LEFT),
             'Q' => assign_rook(pos, Color::White, WHITE_OOO, 1, QUEENSIDE_FILE, SEARCH_RIGHT),
             'k' => assign_rook(pos, Color::Black, BLACK_OO, 2, KINGSIDE_FILE, SEARCH_LEFT),
             'q' => assign_rook(pos, Color::Black, BLACK_OOO, 3, QUEENSIDE_FILE, SEARCH_RIGHT),
 
-            // Shredder — file letter directly identifies the rook.
+            // Shredder: file letter directly identifies the rook.
             'A'..='H' => {
                 let file = ch as u8 - b'A';
                 let (bit, slot) = if file < wk_file { (WHITE_OOO, 1) } else { (WHITE_OO, 0) };
@@ -416,7 +421,7 @@ fn king_file(pos: &Position, color: Color) -> u8 {
 /// Scans `color`'s back rank starting at `start_file`, stepping by `step`,
 /// returning the first rook encountered.
 ///
-/// Used to resolve `KQkq` notation in both standard and FRC positions — the
+/// Used to resolve `KQkq` notation in both standard and FRC positions; the
 /// edge-inward scan guarantees we find the outermost rook on the correct side.
 fn find_rook(pos: &Position, color: Color, start_file: u8, step: i8) -> Option<Square> {
     let rank = color.back_rank();

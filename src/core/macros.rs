@@ -10,6 +10,7 @@ macro_rules! debug_index {
         {
             &$collection[$index]
         }
+
         #[cfg(not(debug_assertions))]
         {
             #[allow(unused_unsafe)]
@@ -38,6 +39,7 @@ macro_rules! debug_index_mut {
         {
             &mut $collection[$index]
         }
+
         #[cfg(not(debug_assertions))]
         {
             #[allow(unused_unsafe)]
@@ -59,6 +61,7 @@ macro_rules! debug_swap {
         {
             $collection.swap($i, $j)
         }
+
         #[cfg(not(debug_assertions))]
         {
             #[allow(unused_unsafe)]

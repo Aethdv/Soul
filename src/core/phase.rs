@@ -26,12 +26,15 @@ pub fn compute_phase_weights_f64(piece_counts: &[f64; 6], values: &[f64]) -> (f6
 #[inline]
 fn compute_phase_weights_inner<T: Into<f64> + Copy>(piece_counts: &[T; 6], values: &[f64]) -> (f64, f64) {
     let mut phase_raw = 0.0;
+
     for (pt, &count) in piece_counts.iter().enumerate().take(6) {
         let phase_idx = psqt::LAYOUT.weight_offset + pt;
+
         if phase_idx < values.len() {
             phase_raw += count.into() * values[phase_idx];
         }
     }
+
     let t_phase = TOTAL_PHASE as f64;
     let phase = phase_raw.clamp(0.0, t_phase).trunc();
     let mg_w = phase / t_phase;

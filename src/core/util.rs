@@ -32,6 +32,7 @@ impl<'a> BatchedAtomicCounter<'a> {
     #[inline]
     pub fn increment(&mut self) {
         self.pending += 1;
+
         if self.pending >= Self::GRANULARITY {
             self.global.fetch_add(self.pending, Ordering::Relaxed);
             self.contributed += self.pending;
@@ -113,7 +114,9 @@ pub fn format_comma(n: u64) -> String {
     let raw = n.to_string();
     let len = raw.len();
     let comma_count = len.saturating_sub(1) / 3;
+
     let mut buf = String::with_capacity(len + comma_count);
+
     for (i, b) in raw.bytes().enumerate() {
         if i > 0 && (len - i).is_multiple_of(3) {
             buf.push(',');

@@ -209,6 +209,7 @@ const fn init_knight_attacks() -> [Bitboard; 64] {
 
     while sq < 64 {
         let bb = 1u64 << sq;
+
         table[sq as usize] = Bitboard(
             ((bb << 17) & !FILE_A.0)  //  ↑↑→
           | ((bb << 15) & !FILE_H.0)  //  ↑↑←
@@ -238,6 +239,7 @@ const fn init_king_attacks() -> [Bitboard; 64] {
 
     while sq < 64 {
         let bb = 1u64 << sq;
+
         table[sq as usize] = Bitboard(
             (bb << 8)                // N
           | (bb >> 8)                // S
@@ -284,6 +286,7 @@ const fn init_pseudo_bishop_attacks() -> [Bitboard; 64] {
     while sq < 64 {
         let rank = (sq / 8) as i8;
         let file = (sq % 8) as i8;
+
         let mut attacks = 0u64;
 
         // Walk each diagonal until we fall off the board.
