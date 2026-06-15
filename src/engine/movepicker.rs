@@ -2,7 +2,10 @@
 //!
 //! # Architecture
 //!
-//! Generates and scores moves lazily to maximize alpha-beta cutoffs.
+//! Most nodes cut off on the hash move or the first good capture, so generating
+//! and scoring every quiet up front is work thrown away. The picker yields moves
+//! in stages, best guesses first, and generates a stage only once the cheaper
+//! ones run dry.
 //!
 //! | Stage          | Content                      | Sorting             |
 //! |----------------|------------------------------|---------------------|
@@ -39,8 +42,6 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
 // ── Staged Move Picker ──
 //
-// Generates moves lazily to maximize alpha-beta cutoffs.
-//
 // Pipeline:
 //   [ Hash Move ] ──> [ Captures ] ──> [ Quiets ]
 //       (𝒪(1))       (MVV-LVA Sort)   (History Sort)
@@ -50,7 +51,7 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 // Because Big-O is a lie when it hits modern hardware.
 // An ipnsort beats a branch-heavy selection sort loop, even when K is small.
 //
-// Moves and their scores are cleanly bitpacked into u32's. Native sorting
+// Moves and their scores are cleanly bitpacked into u32s. Native sorting
 // places the highest-scored moves at the end of the array, allowing us
 // to pop them off the back (count -= 1) with zero index-shifting overhead.
 #[repr(u8)]
@@ -309,7 +310,7 @@ impl MovePicker {
             }
         }
 
-        // Victim is always a pawn — captured pawn is on the adjacent square, not on `to`.
+        // Victim is always a pawn: the captured pawn sits on an adjacent square, not the destination.
         if let Some(ep_sq) = board.en_passant {
             for from in atk_pawn(ep_sq, stm.opposite()) & pawns {
                 self.add_cap(board, Move::new(from, ep_sq, Move::EP_CAPTURE), PieceType::Pawn, history);
@@ -363,7 +364,7 @@ impl MovePicker {
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
         let mvv = self.mvv_lva(board, mv, attacker);
-        // Victim is always pawn (the captured pawn sits on an adjacent square, not on `mv.to()`).
+        // Victim is always pawn (the captured pawn sits on an adjacent square, not the destination).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
 
@@ -412,8 +413,8 @@ impl MovePicker {
         let mut s = v - a;
 
         // ── Promotion bonus ──
-        // Queen promotion capture is worth more than
-        // a plain capture of the same victim.
+        // A promotion-capture wins the victim and a new piece at once,
+        // so it outranks a plain capture of the same target.
         if let Some(p) = mv.promo() {
             debug_assert!(usize::from(p) < 8);
             s += *crate::debug_index!(self.mvvlva_v, p as usize);
@@ -471,7 +472,7 @@ impl MovePicker {
 
         let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.cont1, self.cont2, self.cont4);
 
-        // Combined history values stay well inside `[-32768, 32768]` in practice.
+        // Combined history values stay well inside [-32768, 32768] in practice.
         // Soft-gravity attractors prevent any single table from sitting near its
         // ±16384 cap, so even with four tables the summed range never approaches
         // the sort band edges. Measured on bench: zero saturation in ~11M quiets.
