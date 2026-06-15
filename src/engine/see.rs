@@ -63,9 +63,9 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     let to = mv.to();
 
     // Resolve the initial exchange into two scalars:
-    //   gain      — material that moves into our column this ply
+    //   gain      - material that moves into our column this ply
     //               (captured piece + promotion upgrade, if any)
-    //   attacker  — piece sitting on to after our move, whose value
+    //   attacker  - piece sitting on to after our move, whose value
     //               will be lost if the opponent recaptures
     let (gain, attacker) = if mv.is_en_passant() {
         (val(PieceType::Pawn), PieceType::Pawn)
@@ -152,11 +152,11 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         occ ^= lva_sq.bitboard();
 
         // Reveal x-rays through the newly vacated square:
-        //   Pawn   — diagonal sliders behind the capturing pawn
-        //   Bishop — diagonal sliders collinear with the bishop
-        //   Rook   — orthogonal sliders collinear with the rook
-        //   Queen  — both
-        //   Knight — nothing (leaper, no ray behind it)
+        //   Pawn   - diagonal sliders behind the capturing pawn
+        //   Bishop - diagonal sliders collinear with the bishop
+        //   Rook   - orthogonal sliders collinear with the rook
+        //   Queen  - both
+        //   Knight - nothing (leaper, no ray behind it)
         match lva {
             PieceType::Pawn | PieceType::Bishop => {
                 attackers |= atk_bishop(to, occ) & diag;

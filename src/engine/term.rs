@@ -1,7 +1,5 @@
 //! Per-term forward/backward trait and registration macro.
 //!
-//! # Architecture
-//!
 //! Every eval term implements [`LinearTerm`]:
 //!
 //! - `apply` reads [`SharedFeatures`] and writes the term's bucket(s) on
@@ -20,10 +18,8 @@
 //! Adding a term is one macro line plus the impl, no plumbing edits
 //! across `eval.rs` / `tape.rs`.
 //!
-//! # Scope
-//!
-//! `LinearTerm` assumes `∂bucket/∂param` is a pure feature coefficient.
-//! i.e. the term is linear in its parameters. All non-linearities
+//! `LinearTerm` assumes `∂bucket/∂param` is a pure feature coefficient:
+//! the term is linear in its parameters. All non-linearities
 //! (sigmoid gates, quadratic pressure curves, winnable scale factors)
 //! belong in the [`crate::engine::combiner::Combiner`] layer, which
 //! composes bucket values into the final score. Exotic per-term shapes

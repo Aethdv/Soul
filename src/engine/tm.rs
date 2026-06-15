@@ -9,10 +9,10 @@
 //!
 //! Budgets are decided by the first matching rule, in this order:
 //!
-//! 1. `infinite`   — search until commanded to stop.
-//! 2. `movetime`   — fixed wall clock per move; soft equals hard.
-//! 3. unclocked    — no time and no increment; treat as infinite.
-//! 4. clocked play — phase-blended budget for sudden death, or explicit
+//! 1. `infinite`   - search until commanded to stop.
+//! 2. `movetime`   - fixed wall clock per move; soft equals hard.
+//! 3. unclocked    - no time and no increment; treat as infinite.
+//! 4. clocked play - phase-blended budget for sudden death, or explicit
 //!    remaining moves budget for classical time controls.
 
 use std::time::{Duration, Instant};
