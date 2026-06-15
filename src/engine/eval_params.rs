@@ -313,7 +313,7 @@ macro_rules! define_tunables {
 
 /// One ordered row per parameter block: name and slot width.
 /// Generates the `Layout` struct (`<name>_offset` / `<name>_len`) and the `LAYOUT` prefix-sum.
-/// The order *is* the slot map — it must match `collect_parameters`'s collection
+/// The order is the slot map; it must match `collect_parameters`'s collection
 /// order, or every gradient indexes the wrong slot.
 macro_rules! define_layout {
     ($( $name:ident = $len:expr ),* $(,)?) => {
@@ -389,7 +389,7 @@ pub fn collect_parameters() -> Vec<Tunable> {
     let weights = collect_weight_params();
     for mut p in weights {
         if p.name.starts_with("PHASE_WEIGHTS") {
-            assert!(p.is_fixed, "PHASE_WEIGHTS must be constant (CV) — tuning phase is not supported.");
+            assert!(p.is_fixed, "PHASE_WEIGHTS must be constant (CV); tuning phase is not supported.");
         }
         p.idx = all.len();
         all.push(p);
@@ -506,6 +506,6 @@ define_weight_params! {
     DEFENDED_PAWN_MG          = [CV(0), V(30), V(20), V(17), V(27), V(210)], // by relative rank 2-7 (rank 2 unreachable)
     DEFENDED_PAWN_EG          = [CV(0), V(16), V(13), V(27), V(62), V(6)], // by relative rank 2-7 (rank 2 unreachable)
     BACKWARD_PAWN_WEIGHTS     = [V(-7), V(-17)], // [MG, EG]
-    TEMPO_WEIGHTS             = [V(30), V(37)], // [MG, EG] — side-to-move initiative
+    TEMPO_WEIGHTS             = [V(30), V(37)], // [MG, EG], side-to-move initiative
     MINOR_BEHIND_PAWN_WEIGHTS = [V(13), V(32)], // [MG, EG]
 }

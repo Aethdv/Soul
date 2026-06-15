@@ -198,7 +198,7 @@ fn lsb_of(bb: Bitboard) -> Option<Square> {
 mod tests {
     //! Static test suite for SEE.
     //!
-    //! Each case asserts a *boundary*: SEE-ge passes for `expected` and
+    //! Each case asserts a boundary: SEE-ge passes for `expected` and
     //! fails for `expected + 1`. Together they pin down the exact SEE
     //! value, so any algorithmic regression (wrong piece value, missed
     //! x-ray, mishandled EP square, broken negamax flip) collapses one

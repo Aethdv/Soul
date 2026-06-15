@@ -1,7 +1,7 @@
 //! Search-specific tunable parameters.
 //!
 //! Each entry generates a struct field, a `pub fn` accessor, and a
-//! `PARAM_DEFS` slice entry in declaration order — the tuner shows and
+//! `PARAM_DEFS` slice entry in declaration order; the tuner shows and
 //! iterates params in the order they appear in this file.
 //!
 //! Entry forms:
@@ -82,7 +82,7 @@ macro_rules! search_params {
         search_params!(@emit $name [$($entries)*]);
     };
 
-    // T(name, default) — auto bounds + step
+    // T(name, default): auto bounds + step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, 0, $crate::engine::search_params::auto_max($def),
@@ -90,7 +90,7 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // T(name, default, min) — auto max + step
+    // T(name, default, min): auto max + step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $crate::engine::search_params::auto_max($def),
@@ -98,7 +98,7 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // NT(name, default, min) — auto max + step
+    // NT(name, default, min): auto max + step
     (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal, $min:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $crate::engine::search_params::auto_max($def),
@@ -106,21 +106,21 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // T(name, default, min, max) — auto step
+    // T(name, default, min, max): auto step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $max, $crate::engine::search_params::auto_step($max - $min), false)
         ] $($rest)*);
     };
 
-    // T(name, default, min, max, step) — fully explicit
+    // T(name, default, min, max, step): fully explicit
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal, $step:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $max, $step, false)
         ] $($rest)*);
     };
 
-    // NT(name, default) — frozen, auto bounds
+    // NT(name, default): frozen, auto bounds
     (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, 0, $crate::engine::search_params::auto_max($def),

@@ -6,8 +6,6 @@
 //! the rest, and the leaves fall through to quiescence so the horizon never
 //! lands mid-capture.
 //!
-//! # Architecture
-//!
 //! Lazy SMP: threads search the same root in parallel, sharing only the TT and
 //! a stop flag. No explicit work distribution: each thread runs its own
 //! iterative-deepening loop, and the TT is the coordination surface. Diversity
@@ -328,7 +326,7 @@ impl SearchConfig {
 
     /// MVV-LVA lookup table from tunable parameters.
     ///
-    /// Most Valuable Victim – Least Valuable Attacker:
+    /// Most Valuable Victim - Least Valuable Attacker:
     /// The simplest capture ordering that works.
     /// Prefer taking queens with pawns over taking pawns with queens.
     fn build_mvvlva(sp: &SearchParams) -> ([i32; 8], [i32; 8]) {
@@ -1273,11 +1271,11 @@ impl Worker<'_> {
                 // Captures scale linearly: SEE is an accurate verdict on
                 // a capture (the value is realized right there at the
                 // destination square) so the tolerance grows modestly
-                // with depth — we just give deeper searches some slack
+                // with depth; we just give deeper searches some slack
                 // in case the tree refutes an apparent loss.
                 //
                 // Quiets scale quadratically: for a quiet move, SEE is a
-                // crude proxy — the move's real value usually lives
+                // crude proxy; the move's real value usually lives
                 // elsewhere in the tree (threats, structure, follow-ups
                 // several plies out). Deeper searches will find it
                 // themselves, so we loosen aggressively with depth and

@@ -1,7 +1,5 @@
 //! Static evaluation of piece mobility, king safety, and spatial control.
 //!
-//! # Architecture
-//!
 //! Attack maps are the expensive part, so they're built once per position and
 //! shared: mobility, king safety, threats, and x-ray batteries all read the same
 //! bitboards instead of recomputing the slider attacks they each need.
@@ -251,8 +249,6 @@ impl LinearTerm for MobilityTerm {
         );
     }
 
-    /// # Derivation
-    ///
     /// `evaluate_score_diff` interpolates open/closed weight vectors by
     /// `openness`, then tapers MG→EG. For lane `j`:
     ///
@@ -319,8 +315,6 @@ impl LinearTerm for KingSafetyTerm {
             .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
     }
 
-    /// # Derivation
-    ///
     /// `SafetyMetrics::score` is `shelter − exposure − pressure`.
     /// The combiner tapers the whole `us − them + xray` differential by `phase / 24`,
     /// and that taper is pre-multiplied into `upstream`.

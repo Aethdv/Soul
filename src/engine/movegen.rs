@@ -183,11 +183,11 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
 /// Legality: does this move leave our king safe?
 ///
 /// Most moves pass trivially. The interesting cases:
-///   • King moves    — destination must not be attacked.
-///   • Double check  — only the king himself can escape.
-///   • En passant    — removing two pawns from one rank can unmask a rook.
-///   • Pinned pieces — may only slide along the pin ray.
-///   • Single check  — must capture the checker or interpose.
+///   • King moves    - destination must not be attacked.
+///   • Double check  - only the king himself can escape.
+///   • En passant    - removing two pawns from one rank can unmask a rook.
+///   • Pinned pieces - may only slide along the pin ray.
+///   • Single check  - must capture the checker or interpose.
 #[inline(always)]
 pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checkers: Bitboard, opp: Color) -> bool {
     let from = mv.from();

@@ -2,8 +2,8 @@
 //!
 //! Resolves a soft / hard millisecond budget from the protocol-supplied
 //! time control, then watches the wall clock against those bounds during
-//! search. The soft limit is what we *aim* to spend on this move; the
-//! hard limit is what we *refuse* to exceed.
+//! search. The soft limit is what we aim to spend on this move; the
+//! hard limit is what we refuse to exceed.
 //!
 //! Budgets are decided by the first matching rule, in this order:
 //!
