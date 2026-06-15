@@ -72,7 +72,7 @@ impl fmt::Debug for DualNode {
     }
 }
 
-// Each operator checks `!active` (constant) to skip gradient work.
+// Each operator checks !active (constant) to skip gradient work.
 // Ideally for the ~50% of eval operations involving a constant,
 // this eliminates the gradient computation entirely.
 //

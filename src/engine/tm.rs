@@ -31,7 +31,7 @@ use crate::{
 /// Soft is composable: each dynamic signal owns one multiplicative factor.
 /// `soft = base_soft · ∏ factors`, clamped to `hard`. Every setter
 /// recomputes from `base_soft`, so factors never compound across
-/// iterations — adding a new signal is one field plus one setter.
+/// iterations; adding a new signal is one field plus one setter.
 pub struct TimeManager {
     start: Instant,
     hard: Duration,
@@ -43,7 +43,7 @@ pub struct TimeManager {
 
 impl TimeManager {
     /// `phase` feeds the moves-to-go interpolation; `overhead` is shaved off both
-    /// budgets to leave room for I/O and GUI lag — never enough to drop below 1 ms.
+    /// budgets to leave room for I/O and GUI lag, never enough to drop below 1 ms.
     pub fn new(
         limits: &Limits,
         start: Instant,
@@ -96,7 +96,7 @@ impl TimeManager {
     /// Update the score-swing factor and refresh `soft`.
     ///
     /// Caller picks the factor from this iteration's score change relative
-    /// to the previous one. A factor of 1.0 means no response — pass it to
+    /// to the previous one. A factor of 1.0 means no response; pass it to
     /// clear a stretch from the previous iteration.
     #[inline]
     pub fn set_score_factor(&mut self, factor: f64) {
@@ -133,7 +133,7 @@ impl Clock {
         Self { time, inc, movestogo: limits.movestogo, ply: game_ply }
     }
 
-    /// True when the CLI/GUI sent neither time nor increment for this side —
+    /// True when the CLI/GUI sent neither time nor increment for this side:
     /// e.g. `go depth N` or analysis mode without a clock attached.
     #[inline]
     fn is_unclocked(&self) -> bool {

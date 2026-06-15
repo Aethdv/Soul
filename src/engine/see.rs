@@ -9,12 +9,12 @@
 //!
 //! # Notes
 //!
-//! One `balance` integer, perspective-flipped per recapture — no scratch
+//! One `balance` integer, perspective-flipped per recapture: no scratch
 //! array, no post-loop minimax pass. Move type is dispatched once at
 //! entry; captures, en passant, promotions, and castling each set their
 //! own initial balance before sharing the exchange loop. The king carries
 //! zero material: if it would capture while an opponent attacker remains,
-//! the chain stops short — illegal recapture, not a trade. A `us` bool
+//! the chain stops short: illegal recapture, not a trade. A `us` bool
 //! tracks who owns the trade; when flipped, break-even isn't good enough.
 
 use crate::{
@@ -79,7 +79,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         (val(pos.piece_at(to)), pos.piece_at(from))
     };
 
-    // `balance` is the amount the side to move still needs to gain to
+    // balance is the amount the side to move still needs to gain to
     // beat the previous player's outcome. After the first assignment
     // it represents our caller's deficit relative to threshold; after
     // every loop iteration the sign flips via balance = val(lva) - balance,
@@ -93,13 +93,13 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     balance = val(attacker) - balance;
     if balance <= 0 {
         // Even after an optimal recapture, the move still meets
-        // threshold — no deeper search needed.
+        // threshold, no deeper search needed.
         return true;
     }
 
     // Rebuild occupancy with our attacker removed from from
     // (and for en passant also the victim pawn on to ^ 8),
-    // then recompute the full attacker set from scratch — this picks
+    // then recompute the full attacker set from scratch, picking
     // up any slider that was previously blocked by our attacker.
     let mut occ = pos.occ ^ from.bitboard();
     if mv.is_en_passant() {
@@ -119,7 +119,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         let mine = attackers & pos.side_bb[stm];
 
         if mine.is_empty() {
-            // The side to move has no attacker left — the trade ends
+            // The side to move has no attacker left, so the trade ends
             // with the previous mover keeping their net. That side is
             // the caller if us has been flipped an even number of
             // times, i.e. if us == false.
@@ -127,7 +127,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         }
 
         // Pick the least-valuable attacker. A match cascade is the
-        // cleanest shape — each arm does exactly the work its piece
+        // cleanest shape: each arm does exactly the work its piece
         // type requires, and the compiler turns the chain into a tight
         // priority-decoder on the bitboards.
         let (lva, lva_sq) = if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Pawn]) {
@@ -143,7 +143,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         } else {
             // Only the king is left to capture. If the opposing side
             // still has any attacker on to, the king capture would
-            // move the king into check — illegal, so the chain stops
+            // move the king into check, illegal, so the chain stops
             // here and the previous side's net stands.
             let opp = attackers & pos.side_bb[stm.opposite()];
             return if opp.is_not_empty() { !us } else { us };
@@ -175,7 +175,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
         // attacker's value minus the previous player's deficit.
         balance = val(lva) - balance;
 
-        // Asymmetric break encoding the tie-break rule — see module docs.
+        // Asymmetric break encoding the tie-break rule. See module docs.
         if balance < i32::from(us) {
             return us;
         }
@@ -202,8 +202,8 @@ mod tests {
     //!
     //! Each case asserts a *boundary*: SEE-ge passes for `expected` and
     //! fails for `expected + 1`. Together they pin down the exact SEE
-    //! value, so any algorithmic regression — wrong piece value, missed
-    //! x-ray, mishandled EP square, broken negamax flip — collapses one
+    //! value, so any algorithmic regression (wrong piece value, missed
+    //! x-ray, mishandled EP square, broken negamax flip) collapses one
     //! of these cases with a one-line failure.
 
     use super::*;

@@ -456,7 +456,7 @@ impl TranspositionTable {
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
         // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly
-        // in [0, len), the way `hash % len` would, but with a multiply.
+        // in [0, len), the way hash % len would, but with a multiply.
         let clusters = self.clusters.len();
 
         (((hash as u128) * (clusters as u128)) >> 64) as usize

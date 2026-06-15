@@ -208,7 +208,7 @@ impl EvalMath for i32 {
     fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
         let eg_p = 24 - phase;
         // phase ∈ [0, 24] (clamped by extract_phase), so eg_p ∈ [0, 24].
-        // Neither value exceeds 16 bits, so the pack is lossless and `packed as i32` won't sign-extend.
+        // Neither value exceeds 16 bits, so the pack is lossless and packed as i32 won't sign-extend.
         let packed = (phase as u32) | ((eg_p as u32) << 16);
         // SIMD Trick: _mm_cvtsi32_si128 loads the 32-bit packed phase [MG, EG] into
         // the bottom of an XMM register. _mm_madd_epi16 then performs a horizontal

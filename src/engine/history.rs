@@ -11,7 +11,7 @@ use crate::core::defs::{Bitboard, Color, PieceType, Square};
 pub const CORRECTION_SIZE: usize = 16384;
 pub const CORRECTION_SCALE: i32 = 256;
 pub const CORRECTION_LIMIT: i32 = 256 * 32;
-/// Denominator for the per-table blend weights — `weight / this` is a table's share.
+/// Denominator for the per-table blend weights: `weight / this` is a table's share.
 pub const CORRECTION_WEIGHT_SCALE: i32 = 256;
 
 const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
@@ -19,17 +19,17 @@ const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 /// Combined history tables for move ordering.
 #[derive(Clone)]
 pub struct History {
-    /// `[side][piece][to_square]` — bounds `[-16384, 16384]`
+    /// `[side][piece][to_square]`: bounds `[-16384, 16384]`
     table: [[[i16; 64]; 6]; 2],
-    /// `[side][from_atk][to_atk][from · 64 + to]` — bounds `[-16384, 16384]`
+    /// `[side][from_atk][to_atk][from · 64 + to]`: bounds `[-16384, 16384]`
     butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~35 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`
     cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
-    /// `[side][minor_hash & 0x3FFF]` — knights + bishops, both colors
+    /// `[side][minor_hash & 0x3FFF]`: knights + bishops, both colors
     minor_correction: CorrectionHistory, // minor + major split from lumped non-pawn (~18 Elo): net ~5 Elo
-    /// `[side][major_hash & 0x3FFF]` — rooks + queens, both colors
+    /// `[side][major_hash & 0x3FFF]`: rooks + queens, both colors
     major_correction: CorrectionHistory,
     /// `[side][attacker][to][victim]`
     capt: CaptureHistory, // ~8 Elo
@@ -66,7 +66,7 @@ pub struct CaptureHistory {
 /// key are nudged toward the truth. Especially valuable for HCE,
 /// where the evaluator has no mechanism to learn its own systematic errors.
 ///
-/// The key is caller-supplied — any Zobrist slice that isolates a bias
+/// The key is caller-supplied: any Zobrist slice that isolates a bias
 /// worth tracking (pawn structure, non-pawn material, etc.).
 /// A single table instance is tied to one key schema; `History` composes several
 /// and blends their corrections at lookup time.
@@ -144,7 +144,7 @@ impl CaptureHistory {
 
     #[inline(always)]
     fn idx(stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> usize {
-        // Victim must be a real piece (Pawn..Queen, optionally King) — never None.
+        // Victim must be a real piece (Pawn..Queen, optionally King), never None.
         // Captures only target opponent non-king squares; en passant hardcodes Pawn.
         debug_assert!((attacker as usize) < 6, "attacker out of range");
         debug_assert!((victim as usize) < 6, "victim out of range");
@@ -265,7 +265,7 @@ impl History {
     ///
     /// Unlike a plain accumulator, this naturally decays stale information:
     /// a move that caused a cutoff at depth 10 won't permanently dominate over
-    /// the same move that failed at depth 8 — large bonuses accelerate convergence
+    /// the same move that failed at depth 8; large bonuses accelerate convergence
     /// both toward and away from extreme values.
     ///
     /// This mechanism, sometimes called "history aging" or "soft clamping",
@@ -397,7 +397,7 @@ impl Default for History {
     ///
     /// # Panics
     /// Indexing into `cont[-]`, `correction[-]`, or `capt` on a default
-    /// `History` panics — the internal tables are empty boxes.
+    /// `History` panics; the internal tables are empty boxes.
     /// Only use `Default::default()` as a placeholder for `mem::take`.
     fn default() -> Self {
         Self {

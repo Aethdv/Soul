@@ -5,8 +5,8 @@
 //! held roughly equal for `ADJ_DRAW_PLIES` plies after `ADJ_DRAW_START_PLY`,
 //! triggers a result rather than playing to checkmate or 50-move timeout.
 //!
-//! NOTE: scores are always STM-relative. If White is winning with score +3000
-//! at White's turn, Black will see −3000 on their turn — same result, opposite sign.
+//! Scores are always STM-relative. If White is winning with score +3000
+//! at White's turn, Black will see −3000 on their turn, same result, opposite sign.
 //! The sign-flip detection logic in [`check_adjudication`] accounts for this.
 
 use crate::core::defs::{
