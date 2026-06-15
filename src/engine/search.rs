@@ -1,5 +1,11 @@
 //! Negamax alpha-beta search
 //!
+//! Iterative deepening is the outer loop: depth 1, then 2, then 3, each pass
+//! seeding the next's move ordering. Every interior node runs negamax alpha-beta
+//! with PVS on top, a full window for the first move and zero-width scouts for
+//! the rest, and the leaves fall through to quiescence so the horizon never
+//! lands mid-capture.
+//!
 //! # Architecture
 //!
 //! Lazy SMP: threads search the same root in parallel, sharing only the TT and
@@ -11,8 +17,9 @@
 //! - `Searcher`: Owns global engine state (time management, history table, root moves).
 //! - `Worker`: Owns thread-local mutability (the board, SIMD accumulator, ply stack).
 //!
-//! NodeType Specialization: Uses zero-cost traits (`RootNode`, `PvNode`, `NonPvNode`)
-//! to eliminate runtime branches in the hot path.
+//! NodeType specialization: `RootNode`, `PvNode`, and `NonPvNode` are zero-cost
+//! marker types, so negamax monomorphizes into three variants with the dead
+//! branches compiled out of the hot path.
 
 use std::{
     cmp::Reverse,
