@@ -1,14 +1,12 @@
-//! Board representation — the `Position` type and incremental game state.
-//!
-//! # Design
+//! Board representation: the `Position` type and incremental game state.
 //!
 //! Hybrid bitboard + mailbox representation:
-//! - `side_bb[2]` + `role_bb[6]` — bitboard planes for bulk set operations
-//! - `pieces[64]` — mailbox for 𝒪(1) "what piece is on this square?" queries
+//! - `side_bb[2]` + `role_bb[6]`: bitboard planes for bulk set operations
+//! - `pieces[64]`: mailbox for 𝒪(1) "what piece is on this square?" queries
 //!
 //! Both views stay perfectly synchronized through `add_piece` / `remove_piece`.
 //!
-//! Zobrist hash and SIMD accumulator are maintained incrementally — updated
+//! Zobrist hash and SIMD accumulator are maintained incrementally, updated
 //! diff-style in `make_move`, restored from snapshots in `unmake_move`.
 
 use std::{fmt, iter};
@@ -80,7 +78,7 @@ pub const CASTLE_B_KS_CHECK: [u8; 3] = [60, 61, 62];
 /// e8, d8, c8
 pub const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58];
 
-// Compile-time layout verification — catches silent ABI breakage.
+// Compile-time layout verification: catches silent ABI breakage.
 const _: () = {
     use std::mem::{align_of, offset_of, size_of};
 
@@ -102,7 +100,7 @@ const _: () = {
 
 pub use fen::Fen;
 
-//  192 bytes — spans three cache lines.
+//  192 bytes, spans three cache lines.
 //
 //  ┌──────────────────┬────────┬───────┐
 //  │ Field            │ Offset │ Bytes │
@@ -131,7 +129,7 @@ pub struct Position {
     pub side_bb: [Bitboard; 2],
     /// Per-role occupancy: `role_bb[Pawn]` has all pawns regardless of color.
     pub role_bb: [Bitboard; 6],
-    /// Union of all occupied squares — always `side_bb[0] | side_bb[1]`.
+    /// Union of all occupied squares: always `side_bb[0] | side_bb[1]`.
     pub occ: Bitboard,
     /// Incrementally maintained Zobrist hash.
     pub hash: u64,
@@ -145,7 +143,7 @@ pub struct Position {
     pub pieces: [PieceType; 64],
     /// Rook home squares for castling, indexed by rights bit position.
     pub castling_rooks: [Square; 4],
-    /// Packed castling rights — bits 0–3: WK, WQ, BK, BQ.
+    /// Packed castling rights, bits 0–3: WK, WQ, BK, BQ.
     pub castling_rights: u8,
     /// Side to move.
     pub stm: Color,
@@ -168,9 +166,9 @@ impl fmt::Display for Position {
 // Moves that destroy information:
 // castling rights, the fifty-move counter, en passant availability, captured pieces.
 // We snapshot these irreversible fields before each move so unmake_move
-// can restore them perfectly — no costly recalculation, just a memcpy.
+// can restore them perfectly: no costly recalculation, just a memcpy.
 
-/// The irreversible state needed to undo a move — stack-allocated, snapshotted per move.
+/// The irreversible state needed to undo a move: stack-allocated, snapshotted per move.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StateInfo {
@@ -200,7 +198,7 @@ impl Default for StateInfo {
 }
 
 impl Position {
-    /// An empty board — no pieces, White to move, Zobrist initialized.
+    /// An empty board: no pieces, White to move, Zobrist initialized.
     pub fn new() -> Self {
         let mut pos = Self {
             side_bb: [Bitboard(0); 2],
@@ -256,7 +254,7 @@ impl Position {
 
     /// Pass the turn without moving.
     /// Returns the undo packet.
-    /// Used by null move pruning — the opponent gets a free move.
+    /// Used by null move pruning: the opponent gets a free move.
     #[inline]
     pub fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
@@ -306,7 +304,7 @@ impl Position {
 
     /// Incrementally update the SIMD accumulator for `mv`.
     ///
-    /// Must be called before the move is applied to the board — it
+    /// Must be called before the move is applied to the board: it
     /// reads the current piece layout to determine what changed.
     #[inline(always)]
     pub fn update_accumulator(&self, acc: &mut Vi16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
@@ -328,7 +326,7 @@ impl Position {
 
     /// Detects threefold repetition within the reversible move horizon.
     ///
-    /// Only the last `halfmove_clock + 1` positions matter — anything before
+    /// Only the last `halfmove_clock + 1` positions matter: anything before
     /// a capture or pawn push can never be the same position again.
     ///
     /// NOTE: This uses a `step_by(2)` optimization for adjudication (where we
@@ -495,7 +493,7 @@ impl Position {
     }
 
     /// Which color owns the piece on `sq`?
-    /// Branchless — tests one bit in Black's occupancy.
+    /// Branchless: tests one bit in Black's occupancy.
     /// Only meaningful when the square is actually occupied.
     #[inline(always)]
     pub const fn color_at(&self, sq: Square) -> Color {
@@ -560,7 +558,7 @@ impl Position {
         attacks::attackers_of(self, sq, attacker)
     }
 
-    /// Bulk pawn attack mask — all squares attacked by any pawn of `color`.
+    /// Bulk pawn attack mask: all squares attacked by any pawn of `color`.
     ///
     /// Parallel shift-and-mask:
     /// One operation covers all pawns simultaneously, versus per-pawn lookup.
@@ -575,7 +573,7 @@ impl Position {
         }
     }
 
-    /// Every square `color` attacks — the threat map.
+    /// Every square `color` attacks: the threat map.
     #[inline]
     pub fn threats(&self, color: Color) -> Bitboard {
         let us = self.side_bb[color];
@@ -651,7 +649,7 @@ impl Position {
         make::update_piece::<false>(self, sq, pt, color);
     }
 
-    /// Full Zobrist re-computation from scratch — for initialization and
+    /// Full Zobrist re-computation from scratch, for initialization and
     /// debug verification against the incrementally maintained `self.hash`.
     pub fn calc_zobrist(&self) -> u64 {
         let mut key = 0u64;
@@ -675,7 +673,7 @@ impl Position {
         key
     }
 
-    /// Zobrist hash of all pawns (both colors). Recomputed from scratch — for
+    /// Zobrist hash of all pawns (both colors). Recomputed from scratch, for
     /// initialization and debug verification against the incremental [`Self::pawn_key`].
     pub fn calc_pawn_hash(&self) -> u64 {
         let mut key = 0u64;
@@ -688,7 +686,7 @@ impl Position {
     }
 
     /// Zobrist hash of all minor pieces (knights + bishops, both colors).
-    /// Keys minor correction history. Global like `calc_pawn_hash` — the
+    /// Keys minor correction history. Global like `calc_pawn_hash`: the
     /// stm dimension in the table carries perspective.
     pub fn calc_minor_hash(&self) -> u64 {
         let mut key = 0u64;

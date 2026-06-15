@@ -10,12 +10,12 @@ use std::{
 
 use crate::core::defs::{MAX_MOVES, PieceType, Square};
 
-/// # Layout
+/// Compact 16-bit move encoding: from square, to square, and a 4-bit flag.
+///
 /// - Bits 00..05: From square (0-63)
 /// - Bits 06..11: To square   (0-63)
 /// - Bits 12..15: Flag        (0-15)
 ///
-/// # Flags
 /// | Binary | Dec |        Type         |             Notes              |
 /// |--------|-----|---------------------|--------------------------------|
 /// | 0000   | 0   | Quiet               | Nothing special                |
@@ -171,7 +171,7 @@ impl Move {
         !self.is_capture()
     }
 
-    /// Non-capturing, non-castling — eligible for history heuristic.
+    /// Non-capturing, non-castling: eligible for history heuristic.
     #[inline(always)]
     pub const fn is_history_quiet(self) -> bool {
         self.is_quiet() && !self.is_castling()

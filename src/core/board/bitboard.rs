@@ -1,6 +1,4 @@
-//! Bitboard attack generation — the computational heart of the move generator.
-//!
-//! # Architecture
+//! Bitboard attack generation: the computational heart of the move generator.
 //!
 //! Leapers (pawn, knight, king) use direct lookup tables,
 //! fully computed at compile time via `const fn`.
@@ -13,7 +11,7 @@
 //! | BMI2          | `PEXT` instruction    | 1 cycle   |
 //! | Fallback      | magic multiplication  | 3 cycles  |
 //!
-//! Both paths share a single `ATTACK_TABLE` — only the hash function differs.
+//! Both paths share a single `ATTACK_TABLE`: only the hash function differs.
 
 use crate::core::defs::{Bitboard, Color, FILE_A, FILE_H, FILE_MASKS, NOT_AB, NOT_GH, RANK_MASKS, Square};
 
@@ -88,7 +86,7 @@ pub fn passed_span(sq: Square, color: Color) -> Bitboard {
     PASSED_PAWN_MASKS[color][sq]
 }
 
-/// Knight attack mask — the eight possible L-shaped destinations.
+/// Knight attack mask: the eight possible L-shaped destinations.
 #[inline(always)]
 pub fn atk_knight(square: Square) -> Bitboard {
     KNIGHT_ATTACKS[square]
@@ -108,7 +106,7 @@ pub fn atk_rook(square: Square, occupancy: Bitboard) -> Bitboard {
     Bitboard(ATTACK_TABLE[idx])
 }
 
-/// King attack mask — one step in each compass direction.
+/// King attack mask: one step in each compass direction.
 #[inline(always)]
 pub fn atk_king(square: Square) -> Bitboard {
     KING_ATTACKS[square]

@@ -28,7 +28,7 @@ macro_rules! debug_index {
 /// (an immutable borrow of the field to obtain a raw pointer) followed by pointer arithmetic
 /// and dereference. LLVM sees the `&mut T` as originating from a local pointer,
 /// not directly from a field borrow, which can avoid forcing reloads of sibling fields on
-/// every call — though whether this optimization fires depends on LLVM's aliasing analysis.
+/// every call, though whether this optimization fires depends on LLVM's aliasing analysis.
 ///
 /// Usage: `debug_index_mut!(collection, index)`
 #[macro_export]
