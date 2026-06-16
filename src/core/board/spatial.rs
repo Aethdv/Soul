@@ -18,6 +18,7 @@ pub fn atk_rook(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
     let s = fill_south(generator, empty).shift_south();
     let e = fill_east(generator, empty).shift_east();
     let w = fill_west(generator, empty).shift_west();
+
     (n | s | e | w) & !generator
 }
 
@@ -28,6 +29,7 @@ pub fn atk_bishop(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
     let nw = fill_northwest(generator, empty).shift_nw();
     let se = fill_southeast(generator, empty).shift_se();
     let sw = fill_southwest(generator, empty).shift_sw();
+
     (ne | nw | se | sw) & !generator
 }
 
@@ -77,13 +79,13 @@ pub fn atk_pawn_b(pawns: Vu64x4) -> Vu64x4 {
 
 /// All eight spatial influence surfaces, computed in two vectorized passes.
 ///
-/// Orthogonal lanes (field `ortho`):
-/// - Lane 0: White (R+Q) direct orthogonal attack set
-/// - Lane 1: Black (R+Q) direct orthogonal attack set
+/// Orthogonal fields (`ortho_direct`, `ortho_xray`):
+/// - Lane 0: White (R+Q) orthogonal attack set
+/// - Lane 1: Black (R+Q) orthogonal attack set
 /// - Lane 2: Reserved (unused, currently 0)
 /// - Lane 3: Reserved (unused, currently 0)
 ///
-/// Diagonal lanes (field `diag`):
+/// Diagonal fields (`diag_direct`, `diag_xray`):
 /// - Same structure with (B+Q) generators.
 ///
 /// All four lanes per field are computed simultaneously by a single set of
@@ -107,6 +109,7 @@ impl SpatialTensor {
             | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::White as usize])
             .0
             & !pinned_w;
+
         let b_rq = (pos.role_bb[PieceType::Rook as usize] & pos.side_bb[Color::Black as usize]
             | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::Black as usize])
             .0
@@ -116,6 +119,7 @@ impl SpatialTensor {
             | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::White as usize])
             .0
             & !pinned_w;
+
         let b_bq = (pos.role_bb[PieceType::Bishop as usize] & pos.side_bb[Color::Black as usize]
             | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::Black as usize])
             .0
@@ -148,6 +152,7 @@ impl SpatialTensor {
                 fill_east(gen_e & us_pcs_ortho, empty).shift_east(),
                 fill_west(gen_w & us_pcs_ortho, empty).shift_west(),
             );
+
             (n | s | e | w) & !ortho_direct
         };
 
@@ -170,6 +175,7 @@ impl SpatialTensor {
                 fill_southeast(gen_se & us_pcs_diag, empty).shift_se(),
                 fill_southwest(gen_sw & us_pcs_diag, empty).shift_sw(),
             );
+
             (ne | nw | se | sw) & !diag_direct
         };
 

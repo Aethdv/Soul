@@ -125,7 +125,7 @@ impl EloCache {
     /// Unlike the Gaussian kernel used for optimization gradients, this simply
     /// draws a hard circle and computes the unweighted mean of everything inside.
     /// Useful for diagnostics to confidently say "Yes, this neighborhood is actually +15 Elo".
-    /// Uses raw Euclidean distance (not Mahalanobis-normalized) — suitable only for diagnostics where
+    /// Uses raw Euclidean distance (not Mahalanobis-normalized): suitable only for diagnostics where
     /// the covariance scale doesn't matter.
     /// NOTE: This is an O(N) scan over the entire history.
     pub fn denoised_elo(&self, params: &[f64], radius: f64) -> Option<(f64, usize)> {

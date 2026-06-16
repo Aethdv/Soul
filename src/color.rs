@@ -1,4 +1,4 @@
-//! Perceptual color — sRGB → OkLab/OkLCH for gradients that never muddy.
+//! Perceptual color: sRGB → OkLab/OkLCH for gradients that never muddy.
 //!
 //! Two interpolation paths, both perceptual so no ramp dips through gray at its
 //! midpoint; `advantage` sweeps authored OkLCH waypoints (hue-aware) for the
@@ -8,7 +8,7 @@
 
 pub type Rgb = (u8, u8, u8);
 
-/// Dead-level neutral — the color of exactly zero advantage → `+0.00`.
+/// Dead-level neutral: the color of exactly zero advantage → `+0.00`.
 /// Engine eval and tuner Elo both paint their zero state with it.
 pub const LEVEL: Rgb = (120, 170, 220);
 
@@ -56,7 +56,7 @@ fn oklch(l: f64, c: f64, h: f64) -> Rgb {
     oklab_to_srgb(l, c * hr.cos(), c * hr.sin())
 }
 
-/// Interpolate two OkLCH waypoints and convert. Hue lerps linearly — the
+/// Interpolate two OkLCH waypoints and convert. Hue lerps linearly: the
 /// gradient's waypoints are monotonic in hue, so there's no wrap to handle.
 fn oklch_lerp(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> Rgb {
     let t = t.clamp(0.0, 1.0);

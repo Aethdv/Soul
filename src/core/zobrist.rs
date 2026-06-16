@@ -1,17 +1,19 @@
-//! Zobrist hashing for incremental position signatures.
+//! Zobrist hashing: incremental 64-bit position signatures, invented by
+//! Albert Zobrist in 1970.
 //!
-//! Generates and stores the 64-bit pseudo-random keys used to uniquely identify
-//! board states for transposition tables and repetition detection.
+//! Every feature a position can carry, a white pawn on e4, black's kingside
+//! castling right, an en passant target on e6, gets its own random 64-bit key,
+//! drawn once at startup. A position's hash is the XOR of the keys for every
+//! feature it currently has.
+//!
+//! XOR being its own inverse is the whole trick: one key toggles a feature on or
+//! off with the identical operation. Moving a piece XORs out the key on its
+//! origin square and XORs in the key on its destination, so the hash tracks the
+//! move in 𝒪(1) without rescanning the board.
+//!
+//! These signatures key the transposition table and drive repetition detection.
 
 use crate::core::defs::{Color, PieceType, Square};
-
-// A high-speed, incremental hashing technique invented by Albert Zobrist in 1970.
-// We generate a unique 64-bit random number for every possible feature of a chess board
-// (e.g. "White Pawn on e4", "Black can castle Kingside", "e6 is an en passant target").
-//
-// The hash of a full position is simply the XOR sum of all its features.
-// To move a piece, we XOR out the feature at its origin, and XOR in the feature
-// at its destination. This updates the hash in 𝒪(1) time without re-scanning the board.
 
 pub const PIECE_KEYS_LEN: usize = 64 * 14; // 64 squares · 7 types (including None) · 2 colors
 pub const EP_KEYS_LEN: usize = 8; // files
@@ -86,7 +88,7 @@ pub fn key_side() -> u64 {
 
 #[inline]
 const fn init_keys() -> ZobristKeys {
-    // Seed = Tord Romstad's birthday (October 7, 1972: 10071972 → 1070372)
+    // Seed: a nod to Tord Romstad's birthday (7 Oct 1972).
     let mut rng = ConstRng::new(1_070_372);
 
     let mut pieces = [0; PIECE_KEYS_LEN];
@@ -94,6 +96,7 @@ const fn init_keys() -> ZobristKeys {
 
     while pt < 6 {
         let mut sq = 0;
+
         while sq < 64 {
             pieces[(pt + Color::White as usize * 7) * 64 + sq] = rng.next();
             pieces[(pt + Color::Black as usize * 7) * 64 + sq] = rng.next();

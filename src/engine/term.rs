@@ -1,29 +1,25 @@
 //! Per-term forward/backward trait and registration macro.
 //!
-//! # Architecture
-//!
 //! Every eval term implements [`LinearTerm`]:
 //!
 //! - `apply` reads [`SharedFeatures`] and writes the term's bucket(s) on
-//!   [`Accumulators`] — the forward contribution.
+//!   [`Accumulators`], the forward contribution.
 //! - `scatter` consumes the combiner-derived upstream for those bucket(s)
-//!   and writes parameter gradients — the backward pass.
+//!   and writes parameter gradients, the backward pass.
 //!
 //! The [`register_terms!`] macro stitches impls into two unrolled
 //! dispatch functions:
 //!
-//! - `apply_all_terms` — forward pass, called by
+//! - `apply_all_terms`: forward pass, called by
 //!   [`crate::engine::eval::fill_accumulators`].
-//! - `scatter_all_terms` — backward pass, called by the tuner's linear-
+//! - `scatter_all_terms`: backward pass, called by the tuner's linear-
 //!   grad tape.
 //!
-//! Adding a term is one macro line plus the impl — no plumbing edits
+//! Adding a term is one macro line plus the impl, no plumbing edits
 //! across `eval.rs` / `tape.rs`.
 //!
-//! # Scope
-//!
-//! `LinearTerm` assumes `∂bucket/∂param` is a pure feature coefficient.
-//! i.e. the term is linear in its parameters. All non-linearities
+//! `LinearTerm` assumes `∂bucket/∂param` is a pure feature coefficient:
+//! the term is linear in its parameters. All non-linearities
 //! (sigmoid gates, quadratic pressure curves, winnable scale factors)
 //! belong in the [`crate::engine::combiner::Combiner`] layer, which
 //! composes bucket values into the final score. Exotic per-term shapes
@@ -72,8 +68,8 @@ pub struct BucketUpstreams {
 pub trait LinearTerm {
     /// Upstream derivative this term's scatter consumes. Typical shapes:
     ///
-    /// - [`TaperPair`] — bucket is pre-tapered inside the term (e.g. mobility).
-    /// - `f64` — bucket runs through one scalar combiner multiplier (e.g.
+    /// - [`TaperPair`]: bucket is pre-tapered inside the term (e.g. mobility).
+    /// - `f64`: bucket runs through one scalar combiner multiplier (e.g.
     ///   king-safety's single MG taper).
     type Upstream: Copy;
 
@@ -92,7 +88,7 @@ pub trait LinearTerm {
 /// covering every registered term.
 ///
 /// Each entry pairs a term type with the [`BucketUpstreams`] field whose
-/// value is handed to that term's `scatter` — the compiler type-checks
+/// value is handed to that term's `scatter`; the compiler type-checks
 /// the pairing against the term's associated `Upstream` type.
 #[macro_export]
 macro_rules! register_terms {

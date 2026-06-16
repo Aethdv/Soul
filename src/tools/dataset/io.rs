@@ -1,8 +1,8 @@
 //! Serialization layer for `SoulEntry` training data.
 //!
 //! Two formats are supported:
-//!   * `SoulEntry` — 32-byte nibble-array frames, zstd-compressed.
-//!   * EPD text — one position per line, with game-result annotations.
+//!   * `SoulEntry` - 32-byte nibble-array frames, zstd-compressed.
+//!   * EPD text - one position per line, with game-result annotations.
 
 use std::{
     fs,
@@ -25,7 +25,7 @@ const V5_SIZE: usize = 96;
 //
 /// Loads every [`SoulEntry`] from a zstd-compressed dataset.
 ///
-/// V5 files are transparently upgraded on load — the legacy 96-byte entries
+/// V5 files are transparently upgraded on load: the legacy 96-byte entries
 /// are converted to the 32-byte V6 nibble format. V6 files are read directly.
 ///
 /// The binary layout for each frame is:
@@ -99,9 +99,9 @@ pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
 ///
 /// Two notation families are recognized:
 ///
-///   * Pipe-delimited — `fen | eval | wdl`. The third field is the
+///   * Pipe-delimited - `fen | eval | wdl`. The third field is the
 ///     WDL outcome as a float (1.0 = white wins, 0.0 = black wins).
-///   * Classic EPD — a FEN followed by a result token: `1-0`, `0-1`,
+///   * Classic EPD - a FEN followed by a result token: `1-0`, `0-1`,
 ///     `1/2-1/2`, numeric suffixes (`1.0`/`0.5`/`0.0`), or the terse
 ///     `;w`/`;b`/`;d` convention some tools emit.
 ///
@@ -157,7 +157,7 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 
 /// Converts an EPD line directly into a [`SoulEntry`].
 ///
-/// Flips the WDL result to the side-to-move perspective — the convention
+/// Flips the WDL result to the side-to-move perspective: the convention
 /// the training pipeline expects.
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;

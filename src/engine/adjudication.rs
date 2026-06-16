@@ -1,23 +1,24 @@
 //! Score-based game adjudication for self-play and automated testing.
 //!
-//! Decides when a game should be terminated early by score stability:
-//! a position held decisively for `ADJ_WIN_PLIES` consecutive plies, or
-//! held roughly equal for `ADJ_DRAW_PLIES` plies after `ADJ_DRAW_START_PLY`,
-//! triggers a result rather than playing to checkmate or 50-move timeout.
+//! A game ends early when its score has settled: held decisively for
+//! `ADJ_WIN_PLIES` straight plies calls a win, held near-equal for
+//! `ADJ_DRAW_PLIES` plies past `ADJ_DRAW_START_PLY` calls a draw.
+//! Either beats playing on to checkmate or the 50-move timeout once
+//! the outcome is already certain.
 //!
-//! NOTE: scores are always STM-relative. If White is winning with score +3000
-//! at White's turn, Black will see −3000 on their turn — same result, opposite sign.
-//! The sign-flip detection logic in [`check_adjudication`] accounts for this.
+//! Scores are STM-relative, so a persistent advantage shows up as alternating
+//! signs: White sees +3000 on its turn, Black sees −3000 on the reply, one
+//! result wearing two signs. [`check_adjudication`] reads that flip to tell a
+//! real lead from a blunder that handed it back.
 
 use crate::core::defs::{
     ADJ_DRAW_PLIES, ADJ_DRAW_SCORE, ADJ_DRAW_START_PLY, ADJ_RESIGN_SCORE, ADJ_WIN_PLIES, ADJ_WIN_SCORE, Color, GameOutcome,
 };
 
-/// Universal adjudication engine.
-///
-/// Decides if a game should end early based on score stability or extreme values.
-/// Tracking the sign of the score ensures that a sudden blunder flip correctly
-/// resets the adjudication progress. :p
+/// Returns the outcome once the score has held stable long enough to call the
+/// game, `None` while it's still settling. The counters carry that progress
+/// between calls; a sign flip in the lead zeroes the win counter, so an advantage
+/// blundered away never adjudicates as a win a few plies later.
 pub fn check_adjudication(
     score: i32,
     last_score: i32,
@@ -28,21 +29,17 @@ pub fn check_adjudication(
 ) -> Option<GameOutcome> {
     let abs_score = score.abs();
 
-    // 1. Hard resignation (instant)
+    // Resignation: a margin this extreme ends it on the spot.
     if abs_score >= ADJ_RESIGN_SCORE {
         return Some(GameOutcome::from_stm_score(score, stm));
     }
 
-    // 2. Decisive adjudication
+    // Decisive: a winning margin sustained across plies.
     if abs_score >= ADJ_WIN_SCORE {
-        // Reset counter if the winning side flips.
-        //
-        // In an STM-relative search, scores are from the perspective of the side whose turn it is.
-        // A persistent objective advantage means alternating signs across plies
-        // (e.g. White sees +3000, next turn Black sees -3000).
-        //
-        // Therefore, if the signs are EQUAL across consecutive plies, it means the
-        // side with the lead flipped (or the advantage blundered into a disadvantage).
+        // A persistent lead alternates sign every ply (STM-relative); equal signs
+        // on consecutive plies mean the lead changed hands, so zero the count.
+        // The `> 0` guard skips that check on the entry ply, where last_score is
+        // a quiet eval whose sign carries no real lead to compare.
         if (score > 0) == (last_score > 0) && *win_adj_counter > 0 {
             *win_adj_counter = 0;
         } else {
@@ -54,12 +51,14 @@ pub fn check_adjudication(
         }
         *draw_adj_counter = 0;
     } else if abs_score < ADJ_DRAW_SCORE && ply >= ADJ_DRAW_START_PLY {
+        // Draw: a quiet margin sustained past the opening.
         *draw_adj_counter += 1;
         if *draw_adj_counter >= ADJ_DRAW_PLIES {
             return Some(GameOutcome::Draw);
         }
         *win_adj_counter = 0;
     } else {
+        // No clear verdict: score between the thresholds, or too early to draw. Reset both.
         *win_adj_counter = 0;
         *draw_adj_counter = 0;
     }

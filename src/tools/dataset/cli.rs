@@ -1,4 +1,4 @@
-//! Dataset CLI — inspect, analyze, and encode chess training data.
+//! Dataset CLI - inspect, analyze, and encode chess training data.
 //!
 //! The `.soul` binary format packs board states, scores, and WDL labels
 //! into a compact layout optimized for NNUE training pipelines.
@@ -20,7 +20,7 @@ const SEP_THICK: &str = unsafe { std::str::from_utf8_unchecked(&[b'='; 80]) };
 const SEP_THIN: &str = unsafe { std::str::from_utf8_unchecked(&[b'-'; 80]) };
 
 /// Loads a dataset (Soul binary or viriformat) or prints the error and returns.
-/// Must be a macro — a function's `return` can't unwind a foreign scope.
+/// Must be a macro: a function's `return` can't unwind a foreign scope.
 macro_rules! load_or_bail {
     ($path:expr) => {
         match load_any_dataset($path) {
@@ -34,7 +34,7 @@ macro_rules! load_or_bail {
 }
 
 /// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
-/// The `encode` arm is split into two patterns — the match itself proves
+/// The `encode` arm is split into two patterns: the match itself proves
 /// the argument count, replacing the original's `if args.len() < 3` guard.
 pub fn run(args: &[&str]) {
     match args {
@@ -95,7 +95,7 @@ fn help() {
 }
 
 /// Dumps the first `count` positions as FENs alongside their
-/// training labels. Run this first after generating a dataset — visual
+/// training labels. Run this first after generating a dataset: visual
 /// inspection catches encoding bugs and label corruption before they
 /// silently poison a multi-hour training run.
 fn inspect(path: &str, count: usize) {
@@ -140,7 +140,7 @@ fn info(path: &str) {
 
     // Widen accumulators to prevent precision loss on 100M+ entry datasets.
     // Scores use i64 to prevent overflow: WDL uses f64 because f32 loses
-    // precision past 2²⁴ (~16.8M) — adding 1.0 to 16_777_216.0f32 is a no-op.
+    // precision past 2²⁴ (~16.8M): adding 1.0 to 16_777_216.0f32 is a no-op.
     let mut total_search = 0i64;
     let mut white_wins = 0u64;
     let mut draw_count = 0u64;
@@ -199,7 +199,7 @@ fn dump_scores(path: &str) {
 /// Handles raw and zstd-compressed inputs transparently.
 ///
 /// Performance on large-scale conversion (100M+ positions):
-/// - Line buffer is reused across iterations — zero per-line allocation.
+/// - Line buffer is reused across iterations: zero per-line allocation.
 /// - UTF-8 validation is skipped: EPD is pure 7-bit ASCII by definition.
 /// - Entry vector is pre-sized from file metadata to minimize growth.
 fn encode(input: &str, output: &str) {
@@ -245,7 +245,7 @@ fn encode(input: &str, output: &str) {
         match reader.read_until(b'\n', &mut buf) {
             Ok(0) => break,
             Err(_) => {
-                // I/O error — skip, matching lines() semantics.
+                // I/O error: skip, matching lines() semantics.
                 line_idx += 1;
                 continue;
             },
@@ -258,7 +258,7 @@ fn encode(input: &str, output: &str) {
             buf.pop();
         }
 
-        // SAFETY: EPD/FEN is strictly 7-bit ASCII — piece chars (KQRBNPkqrbnp),
+        // SAFETY: EPD/FEN is strictly 7-bit ASCII: piece chars (KQRBNPkqrbnp),
         // coordinates (a-h, 1-8), digits, slashes, spaces, and annotation tokens.
         // Multi-byte UTF-8 codepoints are structurally impossible.
         let buf = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);

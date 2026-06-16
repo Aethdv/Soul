@@ -104,7 +104,7 @@ impl UciState {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx, pool) => {
                         // ── Lazy SMP ──
-                        // Helpers are persistent — parked on a channel, not spawned per
+                        // Helpers are persistent, parked on a channel, not spawned per
                         // search. The pool sends each helper a cloned config and root state,
                         // then they run iterative_deepening alongside main. The TT is the
                         // only coordination surface.

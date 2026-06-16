@@ -2,17 +2,15 @@
 //!
 //! Resolves a soft / hard millisecond budget from the protocol-supplied
 //! time control, then watches the wall clock against those bounds during
-//! search. The soft limit is what we *aim* to spend on this move; the
-//! hard limit is what we *refuse* to exceed.
-//!
-//! # Decision order
+//! search. The soft limit is what we aim to spend on this move; the
+//! hard limit is what we refuse to exceed.
 //!
 //! Budgets are decided by the first matching rule, in this order:
 //!
-//! 1. `infinite`   — search until commanded to stop.
-//! 2. `movetime`   — fixed wall clock per move; soft equals hard.
-//! 3. unclocked    — no time and no increment; treat as infinite.
-//! 4. clocked play — phase-blended budget for sudden death, or explicit
+//! 1. `infinite`   - search until commanded to stop.
+//! 2. `movetime`   - fixed wall clock per move; soft equals hard.
+//! 3. unclocked    - no time and no increment; treat as infinite.
+//! 4. clocked play - phase-blended budget for sudden death, or explicit
 //!    remaining moves budget for classical time controls.
 
 use std::time::{Duration, Instant};
@@ -31,7 +29,7 @@ use crate::{
 /// Soft is composable: each dynamic signal owns one multiplicative factor.
 /// `soft = base_soft · ∏ factors`, clamped to `hard`. Every setter
 /// recomputes from `base_soft`, so factors never compound across
-/// iterations — adding a new signal is one field plus one setter.
+/// iterations; adding a new signal is one field plus one setter.
 pub struct TimeManager {
     start: Instant,
     hard: Duration,
@@ -43,7 +41,7 @@ pub struct TimeManager {
 
 impl TimeManager {
     /// `phase` feeds the moves-to-go interpolation; `overhead` is shaved off both
-    /// budgets to leave room for I/O and GUI lag — never enough to drop below 1 ms.
+    /// budgets to leave room for I/O and GUI lag, never enough to drop below 1 ms.
     pub fn new(
         limits: &Limits,
         start: Instant,
@@ -96,7 +94,7 @@ impl TimeManager {
     /// Update the score-swing factor and refresh `soft`.
     ///
     /// Caller picks the factor from this iteration's score change relative
-    /// to the previous one. A factor of 1.0 means no response — pass it to
+    /// to the previous one. A factor of 1.0 means no response; pass it to
     /// clear a stretch from the previous iteration.
     #[inline]
     pub fn set_score_factor(&mut self, factor: f64) {
@@ -133,7 +131,7 @@ impl Clock {
         Self { time, inc, movestogo: limits.movestogo, ply: game_ply }
     }
 
-    /// True when the CLI/GUI sent neither time nor increment for this side —
+    /// True when the CLI/GUI sent neither time nor increment for this side:
     /// e.g. `go depth N` or analysis mode without a clock attached.
     #[inline]
     fn is_unclocked(&self) -> bool {
@@ -159,7 +157,7 @@ impl Clock {
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
-    fn hard_ms(&self, mtg: f64, _soft_ms: u64) -> u64 {
+    fn hard_ms(&self, mtg: f64) -> u64 {
         let hard = if self.movestogo > 0 {
             (self.time as f64 / mtg * 5.0).min(self.time as f64 * 0.95) as u64
         } else {
@@ -208,7 +206,7 @@ fn compute_budget(
 
     let mtg = clock.moves_to_go(phase, params);
     let soft_ms = clock.soft_ms(mtg);
-    let hard_ms = clock.hard_ms(mtg, soft_ms);
+    let hard_ms = clock.hard_ms(mtg);
 
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }

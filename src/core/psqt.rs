@@ -45,6 +45,7 @@ pub fn get_vec(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
 #[inline]
 pub const fn mirror_sq(sq: usize) -> usize {
     const MIRROR_FILE: [usize; 8] = [0, 1, 2, 3, 3, 2, 1, 0];
+
     let file = sq & 7;
     let rank = sq >> 3;
 

@@ -1,15 +1,13 @@
 //! Hand-Crafted Evaluation.
 //!
-//! # Architecture
-//!
 //! Computes the heuristic value of a leaf node. The evaluation relies on an
 //! incrementally updated SIMD accumulator for piece-square material (PSQT),
 //! combined with dynamically computed spatial features (mobility, king safety, threats).
 //!
-//! The function is generic over `EvalMath` (either `i32` or `AutogradNode`).
-//! During search, `i32` is monomorphized into direct compiler-optimized arithmetic.
-//! During tuning, `AutogradNode` constructs a computational graph
-//! to track parameter gradients via forward-mode auto-differentiation.
+//! The function is generic over `EvalMath` (either `i32` or `DualNode`).
+//! During search, `i32` monomorphizes into direct compiler-optimized arithmetic.
+//! During tuning, `DualNode` carries each value's partials alongside it: one
+//! evaluation pass yields the exact gradient for every parameter, no backward pass.
 
 use crate::{
     core::{
@@ -37,8 +35,8 @@ use crate::{
 ///
 /// - For the search hot path: `EvalParams::<i32>::from_const()`
 ///   inlines to direct constant loads.
-/// - For the tuner: constructed with `AutogradNode::parameter()`
-///   so gradient flows to the values array.
+/// - For the tuner: `EvalParams::<DualNode>::load_tunable()` seeds each weight as a
+///   dual variable (`grad[slot] = 1`), so a gradient flows back to its slot.
 macro_rules! impl_eval_params {
     ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
         pub struct EvalParams<T: EvalMath> {
@@ -104,11 +102,11 @@ pub struct DoubledPawnTerm;
 pub struct IsolatedPawnTerm;
 /// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
 pub struct PhalanxTerm;
-/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative (~10 Elo).
+/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative rank (~10 Elo).
 pub struct DefendedPawnTerm;
 /// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
 pub struct BackwardPawnTerm;
-/// Tapered bonus for the side to move — the half-move of initiative every position carries (~9 Elo).
+/// Tapered bonus for the side to move, the half-move of initiative every position carries (~9 Elo).
 pub struct TempoTerm;
 /// Tapered bonus for a minor behind a pawn; a knight or bishop with a pawn (either color) directly ahead shielding it (~3 Elo).
 pub struct MinorBehindPawnTerm;
@@ -121,7 +119,7 @@ pub struct DetailedEval {
     pub total: i32,
 }
 
-/// Macroscopic features extracted once per position — consumed by both the
+/// Macroscopic features extracted once per position, consumed by both the
 /// engine's score pass and every registered `LinearTerm::scatter` in the tuner.
 /// New eval terms that depend on fresh board state should extend this struct,
 /// not duplicate extraction.
@@ -185,7 +183,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     DetailedEval { psqt: p, mobility: m, bonus: b, safety: s, total: t }
 }
 
-/// Stripped-down eval for volatility filtering — accumulator-only, no spatial features.
+/// Stripped-down eval for volatility filtering: accumulator-only, no spatial features.
 #[inline(always)]
 pub fn evaluate_fast(board: &Position, acc: &Vi16x8, phase: i32) -> i32 {
     let score = i32::tapered(acc, phase);
@@ -208,7 +206,7 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
     params.lazy_eval_margin + scaled
 }
 
-/// Generic evaluation — monomorphized to `i32` for search, `AutogradNode` for tuning.
+/// Generic evaluation: monomorphized to `i32` for search, `DualNode` for tuning.
 ///
 /// WARNING: Autograd Linearity Booby Trap
 /// If you introduce any non-linear math (e.g. `feature · feature · weight` or `max(feature, 0)`)
@@ -219,7 +217,7 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 /// or soon a future `NonlinearTerm`.
 ///
 /// If you aren't sure, just run the `test_linear_oracle_verification` test in
-/// `tuner/src/evaltune/tape.rs` — it compares against the dual-number forward
+/// `tuner/src/evaltune/tape.rs`, which compares against the dual-number forward
 /// pass and fails on any drift.
 #[inline(always)]
 pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
@@ -301,7 +299,7 @@ impl EvalParams<i32> {
 /// Everything a position's pawns alone determine, so it caches on the
 /// incremental `pawn_key`. The `passed_span` scan that detects passers is the
 /// hot part of `SharedFeatures::compute`; caching it is the point. Passer
-/// squares ride along so `enemy_king_dist` — the lone king-dependent bucket;
+/// squares ride along so `enemy_king_dist`, the lone king-dependent bucket,
 /// rebuilds without re-running the scan.
 #[derive(Clone, Copy, Default)]
 pub struct PawnFeatures {
@@ -418,7 +416,7 @@ impl PawnFeatures {
         }
 
         // Backward pawns; behind all neighbors (no friendly pawn at or behind on an
-        // adjacent file) with a stop square the enemy controls — it can neither
+        // adjacent file) with a stop square the enemy controls, so it can neither
         // advance nor be supported. Isolated pawns are excluded by the adjacency mask;
         // they score as isolated, not backward. Smearing each pawn forward (north for
         // white, south for black) then to adjacent files marks every square with a
@@ -587,7 +585,7 @@ fn fill_accumulators<T: EvalMath<Scalar = T>>(
 }
 
 impl term::LinearTerm for XrayTerm {
-    /// Scalar upstream — x-ray is tapered MG-only inside the combiner's
+    /// Scalar upstream; x-ray is tapered MG-only inside the combiner's
     /// king-safety block, same cadence as king safety.
     type Upstream = f64;
 
@@ -602,7 +600,7 @@ impl term::LinearTerm for XrayTerm {
     }
 }
 
-/// Generates the `LinearTerm` impl for a taper bonus — a feature dotted with its
+/// Generates the `LinearTerm` impl for a taper bonus: a feature dotted with its
 /// (MG, EG) weight pair, summed into the bonus bucket. `scalar` is one feature on a
 /// contiguous `(mg, eg)` slot pair; `array` is an N-bucket vector with separate MG
 /// and EG slot blocks. Same forward/backward shape, so neither is hand-copied.

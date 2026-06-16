@@ -17,11 +17,11 @@ use crate::{
 };
 
 /// All tuner-side features for one position, packed into a single contiguous
-/// 132-byte record — about two cache lines — so the hot training loop reads one
+/// 132-byte record (about two cache lines) so the hot training loop reads one
 /// record instead of streaming a dozen independent arrays.
 ///
-/// Everything here is *static* across epochs — only `values` changes during
-/// training — so it is computed once at startup ([`FeatureRecord::from_entry`])
+/// Everything here is static across epochs, only `values` changes during
+/// training, so it is computed once at startup ([`FeatureRecord::from_entry`])
 /// and read straight through on every epoch. The PSQT gather index is
 /// pre-resolved and the board decode is folded in, so the loop never re-walks
 /// the nibble array nor reconstructs a `Position`.
@@ -69,7 +69,7 @@ impl FeatureRecord {
     /// Decode a nibble-encoded entry into the packed training record.
     ///
     /// The FEN round-trip (`to_fen` → `from_fen`) plus `SharedFeatures::compute`
-    /// is a one-time startup cost per entry — none of it runs inside the
+    /// is a one-time startup cost per entry; none of it runs inside the
     /// training loop. A direct nibble→`Position` decoder would drop the
     /// intermediate string, but the cost is negligible next to the feature
     /// computation itself.
@@ -145,7 +145,7 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
     let (mg_w, eg_w) = compute_phase_weights_f64(&phase_counts, values);
     let mut score = 0.0;
 
-    // PSQT — a data-dependent gather over the 384-entry table, the one loop whose
+    // PSQT: a data-dependent gather over the 384-entry table, the one loop whose
     // index can't be proven in bounds and whose body runs up to 32× per position.
     for i in 0..record.piece_count as usize {
         let (mg_idx, eg_idx, sign) = decode_piece(record.piece_idx[i]);
@@ -288,7 +288,7 @@ pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: 
     grads[l.king_safety_offset + 2] -= gradient * diag_diff * mg_w;
     grads[l.xray_offset] += gradient * f64::from(record.xray_ortho) * mg_w;
 
-    // Tapered terms — the scatter mirror of the eval side.
+    // Tapered terms: the scatter mirror of the eval side.
     taper_grad(record.bishop_pair, gradient, mg_w, eg_w, grads, l.bishop_pair_offset, l.bishop_pair_offset + 1);
     taper_grad(record.rook_open, gradient, mg_w, eg_w, grads, l.rook_open_offset, l.rook_open_offset + 1);
 
@@ -366,7 +366,7 @@ fn decode_piece(packed: u16) -> (usize, usize, f64) {
 }
 
 /// Walk the entry's pieces once, producing the PSQT gather indices, material
-/// differentials, phase counts, and raw openness — STM-normalized.
+/// differentials, phase counts, and raw openness, STM-normalized.
 ///
 /// Mirrors the encoder's nibble layout: bits 0-2 = type, bit 3 = color. An
 /// unmoved-rook code (6) folds back to a rook (3).

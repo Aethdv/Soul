@@ -96,7 +96,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
                 let changed =
                     initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
-                // Pad between columns, not after the last — trailing pad would
+                // Pad between columns, not after the last: trailing pad would
                 // ride along on copy-paste.
                 let cell = if col < 3 { format!("{s: <16}") } else { s };
                 write!(w, "{}", highlight(&cell, changed, initial)).ok();
@@ -185,7 +185,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             ("DEFENDED_PAWN_MG",          l.defended_pawn_mg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
             ("DEFENDED_PAWN_EG",          l.defended_pawn_eg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
             ("BACKWARD_PAWN_WEIGHTS",     l.backward_pawn_offset,      2, " // [MG, EG]"),
-            ("TEMPO_WEIGHTS",             l.tempo_offset,              2, " // [MG, EG] — side-to-move initiative"),
+            ("TEMPO_WEIGHTS",             l.tempo_offset,              2, " // [MG, EG], side-to-move initiative"),
             ("MINOR_BEHIND_PAWN_WEIGHTS", l.minor_behind_pawn_offset,  2, " // [MG, EG]"),
         ];
 

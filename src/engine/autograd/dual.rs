@@ -4,14 +4,14 @@
 //! Each dual number carries one partial per input in `[f32; DUAL_N]`, where
 //! `DUAL_N` is derived from the param count, so adding a term grows it for free.
 //!
-//! Because the current eval is linear in its parameters, the production training
-//! loop uses `eval_linear_grad` — direct feature extraction that's "~30× cheaper".
-//! This dual path serves as a correctness oracle:
-//! run both, compare, and any disagreement means the hand-derived gradient has a bug.
+//! Because the eval is linear in its parameters, the production training loop uses
+//! `eval_linear_grad`: direct feature extraction, ~30× cheaper. This dual path is
+//! the correctness oracle: run both, compare, any disagreement means the
+//! hand-derived gradient has a bug.
 //!
-//! An `active` flag marks whether a node carries any gradient. Constants have
-//! `active = false`, enabling a short-circuit that skips gradient computation
-//! entirely when one operand is constant.
+//! An `active` flag marks whether a node carries any gradient. A constant has
+//! `active = false`, so an operator with a constant operand skips the gradient
+//! chunk loop entirely.
 
 use std::{
     fmt,
@@ -40,12 +40,13 @@ pub struct DualNode {
 impl DualNode {
     #[inline(always)]
     pub fn floor(self) -> Self {
-        // Straight-Through Estimator; passes gradient through unmodified
-        // to traverse quantization operations during training.
+        // Straight-Through Estimator: floor is a staircase, flat between integers,
+        // gradient zero almost everywhere, so pass the upstream gradient through
+        // untouched and let training see past the quantization.
         Self { val: self.val.floor(), grad: self.grad, active: self.active }
     }
 
-    /// Constant — zero gradient, no active slots.
+    /// Constant: zero gradient, no active slots.
     #[inline(always)]
     pub fn constant(val: f64) -> Self {
         Self { grad: [0.0; DUAL_N], val, active: false }
@@ -72,12 +73,12 @@ impl fmt::Debug for DualNode {
     }
 }
 
-// Each operator checks `!active` (constant) to skip gradient work.
-// Ideally for the ~50% of eval operations involving a constant,
-// this eliminates the gradient computation entirely.
+// Every operator short-circuits on !active: a constant operand carries no gradient,
+// so its chunk loop is skipped outright. Roughly half the eval's operations have a
+// constant operand, so this is the common path, not a rare one.
 //
-// The gradient loop lives in grad_map1/grad_map2 — DUAL_N / 8 AVX2 chunks of
-// 8 f32 behind one audited unsafe surface; each operator supplies only its
+// The gradient loop itself lives in grad_map1/grad_map2: DUAL_N / 8 AVX2 chunks of
+// 8 f32 behind one audited unsafe surface, each operator supplying just its
 // chain-rule formula as a closure.
 
 /// Map `f` lane-wise across two gradient vectors into `out`, in `DUAL_N / 8`
@@ -86,7 +87,7 @@ impl fmt::Debug for DualNode {
 fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(Vf32x8, Vf32x8) -> Vf32x8) {
     // SAFETY: a, b, out are each exactly DUAL_N f32s, and DUAL_N is a multiple
     // of 8. Each iteration's stride-8 load/store touches offsets [off, off+8),
-    // and the last is [DUAL_N-8, DUAL_N) — never out of bounds.
+    // and the last is [DUAL_N-8, DUAL_N), never out of bounds.
     unsafe {
         let (pa, pb, po) = (a.as_ptr(), b.as_ptr(), out.as_mut_ptr());
 
@@ -196,6 +197,7 @@ impl Mul for DualNode {
 
         let a = self.val as f32;
         let b = rhs.val as f32;
+
         let mut grad = [0.0f32; DUAL_N];
 
         if self.active && rhs.active {
@@ -230,6 +232,7 @@ impl Div for DualNode {
         let b = rhs.val as f32;
         let b2 = b * b;
         let a = self.val as f32;
+
         let mut grad = [0.0f32; DUAL_N];
 
         if self.active && rhs.active {
@@ -360,6 +363,8 @@ impl EvalMath for DualNode {
 
     #[inline(always)]
     fn math_clamp(self, min: Self, max: Self) -> Self {
+        // Pinned to a bound, the output is flat in every input: gradient zero, node
+        // constant. Only the pass-through interior carries gradient.
         if self.val <= min.val {
             return Self { val: min.val, grad: [0.0; DUAL_N], active: false };
         }

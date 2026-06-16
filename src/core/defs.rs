@@ -120,7 +120,7 @@ impl Color {
 const impl From<u8> for Color {
     #[inline(always)]
     fn from(val: u8) -> Self {
-        // SAFETY: val & 1 is always 0 or 1 — both valid Color variants.
+        // SAFETY: val & 1 is always 0 or 1, both valid Color variants.
         unsafe { std::mem::transmute(val & 1) }
     }
 }
@@ -202,7 +202,7 @@ impl PieceType {
         }
     }
 
-    /// FEN / SAN character — uppercase for White, lowercase for Black.
+    /// FEN / SAN character: uppercase for White, lowercase for Black.
     #[inline(always)]
     pub const fn to_char(self, color: Color) -> char {
         const CHARS: [[char; 7]; 2] = [['P', 'N', 'B', 'R', 'Q', 'K', '?'], ['p', 'n', 'b', 'r', 'q', 'k', '?']];
@@ -325,7 +325,7 @@ impl GameOutcome {
         }
     }
 
-    /// Converts a side-to-move–relative score into a game outcome.
+    /// Converts a side-to-move-relative score into a game outcome.
     /// Positive score → STM is winning.
     #[inline(always)]
     pub const fn from_stm_score(score: i32, stm: Color) -> Self {
@@ -348,7 +348,7 @@ impl GameOutcome {
 /// Deterministic ±8 cp jitter for draw scores, keyed by the node counter.
 ///
 /// Returning exactly 0 for every draw makes the search indifferent between
-/// drawing lines — it picks whichever comes first in move order and sticks.
+/// drawing lines: it picks whichever comes first in move order and sticks.
 /// In positions with multiple drawish paths, that can mean repeating the
 /// same sequence when a slightly-less-drawn alternative exists. A small
 /// node-keyed jitter breaks the tie without perturbing non-draw scores,
@@ -367,6 +367,7 @@ macro_rules! soul_index {
     ($type:ty, $size:expr) => {
         impl<T> Index<$type> for [T; $size] {
             type Output = T;
+
             #[inline(always)]
             fn index(&self, idx: $type) -> &Self::Output {
                 let i = usize::from(idx);

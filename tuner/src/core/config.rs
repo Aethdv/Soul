@@ -35,7 +35,7 @@ impl LossFn {
         }
     }
 
-    /// Outer derivative ∂L/∂score — the upstream gradient handed to the parameter
+    /// Outer derivative ∂L/∂score: the upstream gradient handed to the parameter
     /// scatter. `k` is the sigmoid scaling constant.
     pub fn grad_scale(self, sig: f64, target: f64, k: f64) -> f64 {
         let err = sig - target;
@@ -216,7 +216,7 @@ pub struct EvalTuneConfig {
     /// Cap on the per-sample phase-balancing weight (clamped to `[1/cap, cap]`).
     #[serde(default = "default_phase_balance_cap")]
     pub phase_balance_cap: f64,
-    /// Target phase distribution to reweight toward — one density per phase
+    /// Target phase distribution to reweight toward: one density per phase
     /// (`0..=TOTAL_PHASE`, 25 values; need not sum to 1). The per-sample weight
     /// becomes `target[phase] / observed[phase]`. None = uniform (inverse
     /// frequency, the default). Applies only when `phase_balance` is on.

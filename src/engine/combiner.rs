@@ -1,21 +1,15 @@
-//! Evaluation score combination — collapses per-bucket term outputs
+//! Evaluation score combination, collapsing per-bucket term outputs
 //! into the final scalar eval.
-//!
-//! # Architecture
 //!
 //! Two stages:
 //! 1) Terms fill [`Accumulators`] buckets.
-//!
 //! 2) A [`Combiner`] collapses them. Separating these lets the tuner propagate one
-//!    upstream derivative per bucket through each term's scatter,
-//!    rather than baking the combiner shape into every term.
+//!    upstream derivative per bucket through each term's scatter, rather than
+//!    baking the combiner shape into every term.
 //!
-//! # Notes
-//!
-//! The current combiner ([`LinearCombiner`]) sums pre-tapered buckets
-//! and applies a phase taper only to the king-safety block. Future
-//! combiners (sigmoid danger, winnable eg-scale) implement [`Combiner`]
-//! without touching any term.
+//! The current combiner ([`LinearCombiner`]) sums pre-tapered buckets and applies
+//! a phase taper only to the king-safety block. Future combiners (sigmoid danger,
+//! winnable eg-scale) implement [`Combiner`] without touching any term.
 
 use crate::{
     core::defs::TOTAL_PHASE,
@@ -27,10 +21,11 @@ use crate::{
 
 /// Per-bucket score accumulators filled by the term layer before combination.
 ///
-/// Fields are either **pre-tapered** (`mg_eg`, `mobility`) — the mg/eg blend happened
-/// inside the SIMD lanes to keep them vectorized — or **raw** (`bonus_mg`/`bonus_eg`,
-/// `safety_us`, `safety_them`, `xray`), which the combiner tapers. Tapering raw keeps
-/// the divide-and-truncate at one site, so per-term rounding never accumulates.
+/// Fields are either pre-tapered (`mg_eg`, `mobility`), where the mg/eg blend
+/// happened inside the SIMD lanes to keep them vectorized, or raw
+/// (`bonus_mg`/`bonus_eg`, `safety_us`, `safety_them`, `xray`), which the combiner
+/// tapers. Tapering raw keeps the divide-and-truncate at one site, so per-term
+/// rounding never accumulates.
 pub struct Accumulators<T: EvalMath> {
     /// Material + PSQT, read from the SIMD accumulator.
     pub mg_eg: T,
@@ -49,8 +44,8 @@ pub struct Accumulators<T: EvalMath> {
 }
 
 /// The tapered mg/eg blend: weight by phase, divide back to centipawns, truncate.
-/// The one rounding site in the combiner — `eg = zero` degenerates to the
-/// mg-only taper the king-safety block wants.
+/// The one rounding site in the combiner; `eg = zero` degenerates to the mg-only
+/// taper the king-safety block wants.
 #[inline(always)]
 pub fn taper<T: EvalMath<Scalar = T>>(mg: T, eg: T, phase: T) -> T {
     let total = T::from_i32(TOTAL_PHASE);

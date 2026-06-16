@@ -17,7 +17,7 @@ pub use gradient::{FeatureRecord, accumulate_record_grad, eval_record};
 pub use io::{MAGIC_V5, MAGIC_V6, append_encoded, load_encoded, parse_epd_entry, parse_epd_str, save_encoded};
 pub use viri_format::parse_viri_file;
 
-/// 32-byte entry — minimal ground truth: board state + labels.
+/// 32-byte entry, minimal ground truth: board state + labels.
 ///
 /// Occupancy + nibble array: the i-th nibble (LSB-to-MSB) in `pieces` encodes
 /// the piece on the i-th set bit of `occupancy`.
@@ -29,13 +29,13 @@ pub use viri_format::parse_viri_file;
 #[derive(Clone, Copy, Immutable, IntoBytes, FromBytes)]
 #[repr(C)]
 pub struct SoulEntry {
-    pub occupancy: u64,   //  8 B — bitboard of occupied squares
-    pub pieces: [u8; 16], // 16 B — 32 × 4-bit piece nibbles
-    pub score: i16,       //  2 B — search eval label (centipawns, STM relative)
-    pub result: u8,       //  1 B — 0=loss, 1=draw, 2=win (from us perspective)
-    pub stm_and_ep: u8,   //  1 B — 7=STM (0=W,1=B), bits0-6=ep sq (64=none)
-    pub castling: u8,     //  1 B — standard FEN castling byte (KQkq)
-    pub _pad: [u8; 3],    //  3 B — to 32
+    pub occupancy: u64,   //  8B - bitboard of occupied squares
+    pub pieces: [u8; 16], // 16B - 32 × 4-bit piece nibbles
+    pub score: i16,       //  2B - search eval label (centipawns, STM relative)
+    pub result: u8,       //  1B - 0=loss, 1=draw, 2=win (from us perspective)
+    pub stm_and_ep: u8,   //  1B - 7=STM (0=W,1=B), bits0-6=ep sq (64=none)
+    pub castling: u8,     //  1B - standard FEN castling byte (KQkq)
+    pub _pad: [u8; 3],    //  3B - to 32
 }
 
 const _: () = assert!(size_of::<SoulEntry>() == 32);

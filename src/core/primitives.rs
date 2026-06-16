@@ -57,7 +57,6 @@ const _: () = assert!(std::mem::size_of::<Bitboard>() == 8);
 impl Bitboard {
     /// Empty bitboard with no bits set.
     pub const EMPTY: Self = Self(0);
-
     /// Full bitboard with all 64 bits set.
     pub const FULL: Self = Self(!0);
 
@@ -253,6 +252,7 @@ impl Square {
     pub const fn chebyshev_distance(self, other: Self) -> u8 {
         let file_d = self.file().abs_diff(other.file());
         let rank_d = self.rank().abs_diff(other.rank());
+
         if file_d > rank_d { file_d } else { rank_d }
     }
 
@@ -442,11 +442,14 @@ impl std::str::FromStr for Square {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = s.as_bytes();
+
         if bytes.len() != 2 {
             return Err(ParseSquareError);
         }
+
         let file = bytes[0].wrapping_sub(b'a');
         let rank = bytes[1].wrapping_sub(b'1');
+
         if file >= 8 || rank >= 8 {
             return Err(ParseSquareError);
         }
@@ -513,11 +516,13 @@ macro_rules! impl_bb_op {
     ($trait:ident, $func:ident, $assign_trait:ident, $assign_func:ident) => {
         const impl $trait for Bitboard {
             type Output = Self;
+
             #[inline(always)]
             fn $func(self, rhs: Self) -> Self {
                 Self(self.0.$func(rhs.0))
             }
         }
+
         const impl $trait<u64> for Bitboard {
             type Output = Self;
             #[inline(always)]
@@ -525,12 +530,14 @@ macro_rules! impl_bb_op {
                 Self(self.0.$func(rhs))
             }
         }
+
         impl $assign_trait for Bitboard {
             #[inline(always)]
             fn $assign_func(&mut self, rhs: Self) {
                 self.0.$assign_func(rhs.0);
             }
         }
+
         impl $assign_trait<u64> for Bitboard {
             #[inline(always)]
             fn $assign_func(&mut self, rhs: u64) {
@@ -547,6 +554,7 @@ impl_bb_op!(Sub, sub, SubAssign, sub_assign);
 
 const impl Not for Bitboard {
     type Output = Self;
+
     #[inline(always)]
     fn not(self) -> Self {
         Self(!self.0)
@@ -555,6 +563,7 @@ const impl Not for Bitboard {
 
 const impl Shl<u8> for Bitboard {
     type Output = Self;
+
     #[inline(always)]
     fn shl(self, rhs: u8) -> Self {
         Self(self.0 << rhs)
@@ -563,6 +572,7 @@ const impl Shl<u8> for Bitboard {
 
 const impl Shr<u8> for Bitboard {
     type Output = Self;
+
     #[inline(always)]
     fn shr(self, rhs: u8) -> Self {
         Self(self.0 >> rhs)
@@ -571,6 +581,7 @@ const impl Shr<u8> for Bitboard {
 
 const impl Shl<Square> for Bitboard {
     type Output = Self;
+
     #[inline(always)]
     fn shl(self, rhs: Square) -> Self {
         Self(self.0 << rhs.0)
@@ -579,6 +590,7 @@ const impl Shl<Square> for Bitboard {
 
 const impl Shr<Square> for Bitboard {
     type Output = Self;
+
     #[inline(always)]
     fn shr(self, rhs: Square) -> Self {
         Self(self.0 >> rhs.0)
@@ -599,9 +611,11 @@ impl fmt::Display for Bitboard {
                 if file > 0 {
                     f.write_str(" ")?;
                 }
+
                 let sq = Square::from_coords(file, rank);
                 f.write_str(if self.check_bit(sq) { "X" } else { "." })?;
             }
+
             if rank > 0 {
                 writeln!(f)?;
             }

@@ -2,8 +2,8 @@
 //!
 //! Same language as the rest of Soul's tooling; warm-neutral chrome, mint-teal
 //! for configuration telemetry. Loss carries no absolute scale, so its color is
-//! always relative — per-epoch trend on the live line, within-window rank on the
-//! sparkline — both off the shared advantage gradient.
+//! always relative: per-epoch trend on the live line, within-window rank on the
+//! sparkline, both off the shared advantage gradient.
 
 use soul::color::Rgb;
 

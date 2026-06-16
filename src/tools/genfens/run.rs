@@ -4,7 +4,7 @@
 //! from book openings, filtering positions by search verification
 //! and quiet-move heuristics, then flushing results to disk in .soul.zst format.
 //!
-//! The hot path lives in `WorkerState::play_game()` — this module is just
+//! The hot path lives in `WorkerState::play_game()`; this module is just
 //! the conductor: load books, dispatch work, flush to disk, print stats.
 
 use std::{
@@ -78,7 +78,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let output_path = config.output_path.clone();
     let save_interval = config.save_interval;
 
-    // Use half the available cores by default — datagen is I/O-light and
+    // Use half the available cores by default: datagen is I/O-light and
     // compute-heavy, but leaving cores free keeps the system responsive
     // during multi-hour runs.
     let all_cores = available_parallelism().map_or(1, NonZero::get);
@@ -174,7 +174,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         handle.join().unwrap();
     }
 
-    // Final flush — don't lose the tail end of a long run.
+    // Final flush: don't lose the tail end of a long run.
     flush_to_disk(&output_path, &mut pending, &config);
     finished.store(true, Ordering::Relaxed);
 
@@ -246,7 +246,7 @@ struct Snapshot {
 
 impl Snapshot {
     /// Reads every atomic counter with `Relaxed` ordering.
-    /// Relaxed is fine here — we're displaying approximate progress,
+    /// Relaxed is fine here: we're displaying approximate progress,
     /// not synchronizing memory. Counters only ever increase.
     fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64, random_restart: bool) -> Self {
         Self {
@@ -291,7 +291,7 @@ impl Snapshot {
         pct(self.passed_filters, self.attempted)
     }
 
-    /// Average game length in plies — a useful sanity check.
+    /// Average game length in plies, a useful sanity check.
     /// Typical selfplay games run 60-200 plies depending on resign threshold.
     fn avg_ply(&self) -> f64 {
         safe_div(self.plies as f64, self.games as f64)
@@ -373,7 +373,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     let _ = stdout().flush();
 }
 
-/// Prints the final generation report — the definitive summary of a run.
+/// Prints the final generation report: the definitive summary of a run.
 fn print_final_report(snap: &Snapshot, output_path: &str) {
     let total_filt = snap.total_filtered();
     let total_term = snap.total_terminations();
@@ -466,7 +466,7 @@ fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
     parsed
 }
 
-/// Prints the launch banner — what we're about to do and how.
+/// Prints the launch banner: what we're about to do and how.
 fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, start_count: usize) {
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
@@ -700,7 +700,7 @@ fn parse_suffix(s: &str) -> Option<u64> {
         }
     }
 
-    // No suffix — strip commas and parse directly.
+    // No suffix: strip commas and parse directly.
     s.replace(',', "").parse().ok()
 }
 
@@ -715,7 +715,7 @@ fn load_epd_fens(path: &str) -> Result<Vec<String>> {
         let line = line?;
 
         if let Some((board, _)) = parse_epd_str(&line) {
-            // EPD parsed successfully — re-export as FEN to normalize formatting.
+            // EPD parsed successfully: re-export as FEN to normalize formatting.
             fens.push(board.as_fen());
         } else if Position::try_from_fen(&line).is_ok() {
             // Fallback: raw FEN line (no EPD operations field).

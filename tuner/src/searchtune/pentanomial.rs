@@ -88,7 +88,7 @@ impl Pentanomial {
             delta = 0.0;
         }
 
-        // nu models the draw tendency. Small samples are unreliable - we anchor to empirical.
+        // nu models the draw tendency. Small samples are unreliable: we anchor to empirical.
         let draw_rate = self.draw_rate();
         let nu = (2.0 * draw_rate / (1.0 - draw_rate)).clamp(0.1, 10.0);
 

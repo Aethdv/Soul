@@ -1,22 +1,22 @@
-//! Move-picker instrumentation — does the ordering earn its keep?
+//! Move-picker instrumentation: does the ordering earn its keep?
 //!
 //! Two questions, two metric blocks. Adding a third is a static block, a
 //! `record_*` hook, and one line in [`report`].
 //!
-//! - **Quiet sort utilization.** A node at the quiet stage sorts every quiet,
+//! - Quiet sort utilization. A node at the quiet stage sorts every quiet,
 //!   then yields best-first until a cutoff. Generated-vs-consumed and the
 //!   consumption histogram say whether that full sort is load-bearing or thrown
-//!   away — back-loaded means justified, front-loaded (mass at 0–1) means a
+//!   away: back-loaded means justified, front-loaded (mass at 0–1) means a
 //!   lazy max-scan would win. The catch is selection bias: cut-nodes usually
 //!   cut before quiets are even generated, so the nodes that pay the sort are
 //!   the ones that consume it.
 //!
-//! - **Beta-cutoff ordering.** At a fail-high node, which move number caused the
+//! - Beta-cutoff ordering. At a fail-high node, which move number caused the
 //!   cutoff and which heuristic surfaced it. The first-move cutoff rate is the
-//!   single number that says the staging is good — the whole point of ordering
+//!   single number that says the staging is good: the whole point of ordering
 //!   is to make the cutoff happen on move one.
 //!
-//! Compiled only under the `mvpstats` feature — zero cost in release builds.
+//! Compiled only under the `mvpstats` feature; zero cost in release builds.
 
 use std::{
     io,

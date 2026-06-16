@@ -1,4 +1,4 @@
-//! Transposition table — the search's memory of positions it has already seen.
+//! Transposition table - the search's memory of positions it has already seen.
 //!
 //! Every node iterative deepening revisits, it hopes to find here: the score, the
 //! best move, the depth that score was proven to. A hit can cut a whole subtree,
@@ -456,7 +456,7 @@ impl TranspositionTable {
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
         // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly
-        // in [0, len), the way `hash % len` would, but with a multiply.
+        // in [0, len), the way hash % len would, but with a multiply.
         let clusters = self.clusters.len();
 
         (((hash as u128) * (clusters as u128)) >> 64) as usize

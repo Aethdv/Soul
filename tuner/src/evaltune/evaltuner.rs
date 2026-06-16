@@ -106,8 +106,8 @@ unsafe fn enable_ftz_daz() {
 ///
 /// `range` tracks the current interval width. The probe offset from each boundary is
 /// `C · range` (not `range`) because after shrinking, the reused probe already sits
-/// at `C²` of the *old* width from the surviving boundary — placing the fresh probe
-/// at `C` of the *new* width mirrors it correctly.
+/// at `C²` of the old width from the surviving boundary, placing the fresh probe
+/// at `C` of the new width mirrors it correctly.
 pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
     const C: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
 
@@ -148,7 +148,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     // Decode every nibble-encoded entry into a packed FeatureRecord at startup:
     // reconstruct the Position, compute mobility / king safety / x-ray / pawn
     // structure, pre-resolve the PSQT gather indices, and pack it all into one
-    // contiguous record. This is the one-time cost — training reads the records
+    // contiguous record. This is the one-time cost: training reads the records
     // straight through. Parallel because the entries are independent.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
@@ -168,8 +168,8 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     let records_ref = &records;
 
     // Phase-stratified balancing: weight each sample by the inverse frequency of
-    // its phase bucket, so sparse endgame phases pull a fair share of the gradient
-    // — and of the loss — instead of drowning under the midgame crowd. Weighting
+    // its phase bucket, so sparse endgame phases pull a fair share of the gradient,
+    // and of the loss, instead of drowning under the midgame crowd. Weighting
     // the loss too keeps optimization, validation, and model selection on one
     // objective; weighting only the gradient leaves selection fighting training.
     let phase_weights = if config.phase_balance {
@@ -266,7 +266,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 /// Per-sample phase-balancing weights for `records`, normalized to mean 1.
 ///
 /// Reweights each position toward a `target` phase distribution, clamped to
-/// `[1/cap, cap]`. `None` is uniform — inverse bucket frequency, lifting sparse
+/// `[1/cap, cap]`. `None` is uniform: inverse bucket frequency, lifting sparse
 /// phases toward even representation. `Some(t)` is an importance weight,
 /// `target[phase] / observed[phase]`, toward the density `t`. Mean-1
 /// normalization keeps the overall gradient scale equal to an unweighted run.
@@ -687,7 +687,7 @@ fn train_loop<G, V>(
             if is_constant_schedule && plateau_count >= config.patience {
                 lr_scale *= 0.5;
                 plateau_count = 0;
-                println!("  Plateau detected — LR scale → {lr_scale:.3}");
+                println!("  Plateau detected, LR scale → {lr_scale:.3}");
             }
         }
 
@@ -796,7 +796,7 @@ fn train_loop<G, V>(
     print_results(&snapshots, &all_params, &initial_values, &ema_values, config.epochs);
 }
 
-/// Sensitivity Analysis — writes `sensitivity-report.txt`.
+/// Sensitivity Analysis: writes `sensitivity-report.txt`.
 fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
     let Ok(mut f) = fs::File::create("sensitivity-report.txt") else { return };
     let mut w = io::BufWriter::new(&mut f);
@@ -894,7 +894,7 @@ enum ParamGroup {
     Other,
 }
 
-/// Classify a parameter index into its layout group — the single source of the
+/// Classify a parameter index into its layout group: the single source of the
 /// group boundaries the masks below share.
 fn param_group(i: usize) -> ParamGroup {
     if i < psqt::LAYOUT.material_offset {
@@ -911,7 +911,7 @@ fn param_group(i: usize) -> ParamGroup {
 /// Weight decay mask: not all parameters deserve equal punishment.
 ///
 /// - PSQT center squares decay at 0.5× (central values are more structurally
-///   significant — aggressive decay risks flattening critical gradients).
+///   significant; aggressive decay risks flattening critical gradients).
 /// - Mobility weights decay at 1.5× (these can drift without bound since their
 ///   features are unbounded integer counts).
 /// - Everything else decays at 1.0×.
@@ -934,7 +934,7 @@ fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
 ///
 /// Different parameter groups have different natural gradient timescales.
 /// - PSQT (0.995): squares only see updates when a piece of that type lands
-///   there — longer momentum smooths sparse signal across positions.
+///   there: longer momentum smooths sparse signal across positions.
 /// - Mobility (0.95): features are computed every position; shorter momentum
 ///   lets weights track the faster dynamics without lag.
 /// - Everything else (0.99): the existing default from the config.

@@ -201,7 +201,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let _ = io::stdout().flush();
 }
 
-/// Eval trajectory as a colored block sparkline — one cell per retained
+/// Eval trajectory as a colored block sparkline: one cell per retained
 /// iteration, height by win probability, hue by the advantage gradient.
 fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];

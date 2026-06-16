@@ -78,10 +78,10 @@ macro_rules! impl_scatter {
 
 soul::define_tunables!(impl_scatter);
 
-/// Gradient snapshot from the dual forward pass — the raw partial derivatives,
+/// Gradient snapshot from the dual forward pass: the raw partial derivatives,
 /// consumed by `scatter_dynamic` once the outer loss derivative is known.
 pub struct DualEvalResult {
-    /// Raw partial derivatives from the dual pass — one slot per dual-tracked
+    /// Raw partial derivatives from the dual pass: one slot per dual-tracked
     /// input (`DUAL_SLOTS`), zero-padded to `DUAL_N`.
     pub grad: [f32; DUAL_N],
 }
@@ -89,7 +89,7 @@ pub struct DualEvalResult {
 /// Fully fused eval + gradient scatter via forward-mode AD.
 ///
 /// Single-pass: computes eval with dual numbers, sigmoid, loss derivative,
-/// and scatters all gradients — no intermediate storage. PSQT gradients
+/// and scatters all gradients: no intermediate storage. PSQT gradients
 /// are recovered by re-iterating piece bitboards (still hot in L1).
 ///
 /// In the production training loop, `eval_linear_grad` handles gradients directly.
@@ -142,7 +142,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let dummy = DualEvalResult { grad: result.grad };
     dummy.scatter_dynamic(outer_deriv, param_grads);
 
-    // PSQT gradients — re-iterate board pieces (still hot in L1)
+    // PSQT gradients: re-iterate board pieces (still hot in L1)
     let d_mg = outer_deriv * f64::from(result.grad[0]);
     let d_eg = outer_deriv * f64::from(result.grad[1]);
 
@@ -292,7 +292,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
 /// Score-only evaluation using `evaluate_generic::<f64>`.
 ///
-/// No gradient tracking — used for K-factor line search, validation loss,
+/// No gradient tracking: used for K-factor line search, validation loss,
 /// and as the score source in `eval_linear_grad`.
 /// Mirrors the engine's integer eval exactly, substituting f64 for i32.
 #[inline(always)]
@@ -312,7 +312,7 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     let phase_raw = compute_phase(&piece_counts, values);
     let phase = phase_raw.math_clamp(0.0, 24.0).trunc();
 
-    // Same generator the DualNode path uses — no per-term hand literal to drift.
+    // Same generator the DualNode path uses: no per-term hand literal to drift.
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
 
@@ -508,7 +508,7 @@ mod tests {
     }
 
     /// Populate only a contiguous slice of `values`; everything else stays zero.
-    /// Used to isolate a single `LinearTerm` — only its param range drives the
+    /// Used to isolate a single `LinearTerm`: only its param range drives the
     /// score, so `eval_linear_grad`'s scatter on that range is the only thing
     /// being verified against the `DualNode` oracle.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {

@@ -114,7 +114,7 @@ impl<T> HugePages<T> {
     /// The caller guarantees no searcher is concurrently probing (this runs on
     /// `ucinewgame`, when the engine is idle).
     pub fn clear(&self) {
-        // SAFETY: idle precondition — no searcher reads the region during the clear.
+        // SAFETY: idle precondition: no searcher reads the region during the clear.
         unsafe { zero_region(self.ptr.cast::<u8>().as_ptr(), self.bytes) };
     }
 }

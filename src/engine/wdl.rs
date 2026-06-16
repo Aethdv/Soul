@@ -8,7 +8,7 @@ const B_COEFFS: [f64; 4] = [83.86794042, -136.06112997, 69.98820887, 47.62901433
 
 /// Win, draw, and loss probabilities from the side-to-move's
 /// centipawn score. The material count scales the logistic
-/// function — a given score is more decisive with fewer pieces
+/// function: a given score is more decisive with fewer pieces
 /// on the board.
 pub fn wdl_model(score: i32, material: u32) -> (f64, f64, f64) {
     let m = f64::from(material.clamp(17, 78)) / 58.0;

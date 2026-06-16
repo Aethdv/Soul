@@ -10,12 +10,12 @@ use std::{
 
 use crate::core::defs::{MAX_MOVES, PieceType, Square};
 
-/// # Layout
+/// Compact 16-bit move encoding: from square, to square, and a 4-bit flag.
+///
 /// - Bits 00..05: From square (0-63)
 /// - Bits 06..11: To square   (0-63)
 /// - Bits 12..15: Flag        (0-15)
 ///
-/// # Flags
 /// | Binary | Dec |        Type         |             Notes              |
 /// |--------|-----|---------------------|--------------------------------|
 /// | 0000   | 0   | Quiet               | Nothing special                |
@@ -23,7 +23,7 @@ use crate::core::defs::{MAX_MOVES, PieceType, Square};
 /// | 0010   | 2   | Promo Knight        | Bit 1 = promotion flag         |
 /// | 0011   | 3   | Promo Knight + Cap  | Bit 0 + Bit 1                  |
 /// | 0100   | 4   | Double Pawn Push    | Sets En Passant square         |
-/// | 0101   | 5   | En Passant          | Pawn goes brr sideways         |
+/// | 0101   | 5   | En Passant          | Victim not on the to-square    |
 /// | 0110   | 6   | Promo Bishop        |                                |
 /// | 0111   | 7   | Promo Bishop + Cap  |                                |
 /// | 1000   | 8   | (reserved)          |                                |
@@ -94,6 +94,7 @@ impl Move {
         let f = u16::from(from) & Self::MASK_SQ;
         let t = (u16::from(to) & Self::MASK_SQ) << Self::SHIFT_TO;
         let fl = (flag & Self::MASK_FLAG) << Self::SHIFT_FLAG;
+
         Self(f | t | fl)
     }
 
@@ -171,7 +172,7 @@ impl Move {
         !self.is_capture()
     }
 
-    /// Non-capturing, non-castling — eligible for history heuristic.
+    /// Non-capturing, non-castling: eligible for history heuristic.
     #[inline(always)]
     pub const fn is_history_quiet(self) -> bool {
         self.is_quiet() && !self.is_castling()

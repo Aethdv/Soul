@@ -224,7 +224,7 @@ impl LrScheduler for WarmupStableDecay {
 
 /// Stable-Decay: LR stays flat, then decays linearly to min.
 /// Lion's sign-step benefits from a prolonged exploration window at full
-/// step size before settling — warmup is unnecessary for non-adaptive optimizers.
+/// step size before settling: warmup is unnecessary for non-adaptive optimizers.
 #[derive(Clone, Copy, Debug)]
 pub struct StableDecay {
     pub base: f64,
@@ -258,7 +258,7 @@ impl LrScheduler for StableDecay {
 
 /// Linear warmup wrapper: scales inner scheduler from 0 to 1 over first N epochs.
 ///
-/// This is a code-level combinator — use `.with_warmup()` on any [`LrScheduler`].
+/// This is a code-level combinator: use `.with_warmup()` on any [`LrScheduler`].
 /// It is not directly selectable from the TOML config (use the `warmup_ratio` field
 /// on `Cosine` or `WarmupStableDecay` instead).
 #[derive(Clone, Debug)]
@@ -281,7 +281,7 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
 
 /// Sequence two schedulers: use `first` until `switch_epoch`, then `second`.
 ///
-/// This is a code-level combinator — use `.then()` on any [`LrScheduler`].
+/// This is a code-level combinator: use `.then()` on any [`LrScheduler`].
 /// It is not directly selectable from the TOML config.
 #[derive(Clone, Debug)]
 pub struct Sequence<A, B> {

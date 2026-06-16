@@ -21,8 +21,6 @@ impl JsonLogger {
         Ok(Self { writer: Mutex::new(BufWriter::new(file)) })
     }
 
-    /// # Panics
-    /// if system time is before UNIX EPOCH (should be impossible).
     pub fn log<T: Serialize>(&self, event: &str, data: &T) {
         #[derive(Serialize)]
         struct LogEntry<'a, T> {
