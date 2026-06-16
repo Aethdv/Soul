@@ -1,6 +1,5 @@
 //! Soul chess engine.
 //!
-//! # Architecture
 //! - `core`: Board representation, move generation, and static rules.
 //! - `engine`: Search, evaluation, and time management.
 //! - `protocols`: UCI and XBoard communication.
