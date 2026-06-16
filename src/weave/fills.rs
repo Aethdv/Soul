@@ -1,7 +1,5 @@
 //! Kogge-Stone Parallel Prefix Fills (SIMD).
 //!
-//! # Note
-//!
 //! This module is intentionally kept out of `MovePicker` and `movegen.rs`.
 //! Move generation requires discrete `(from, to)` square pairs to encode `Move`
 //! structs. Parallel prefix fills aggregate influence, destroying the `from`
@@ -187,7 +185,7 @@ mod tests {
         // H1 = bit 7
         let bb = Vu64x4::splat(1u64 << 7);
         let shifted = bb.shift_east();
-        // Should be zero — H file cannot shift east
+        // Should be zero: H file cannot shift east
         assert_eq!(shifted.extract::<0>(), 0);
     }
 
