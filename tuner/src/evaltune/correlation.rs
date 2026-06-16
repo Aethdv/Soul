@@ -47,9 +47,9 @@ pub fn run_correlation() {
 
     let total_outliers: usize = slices.iter().map(|s| s.outliers.len()).sum();
     if total_outliers > 0 {
-        println!("correlation-report.txt written — {total_outliers} outlier pairs found.");
+        println!("correlation-report.txt written: {total_outliers} outlier pairs found.");
     } else {
-        println!("correlation-report.txt written — PSQT surface is smooth.");
+        println!("correlation-report.txt written: PSQT surface is smooth.");
     }
 }
 
@@ -123,7 +123,7 @@ fn write_report(slices: &[SliceStats]) -> io::Result<()> {
 
     writeln!(w)?;
     if all_outlier_lines.is_empty() {
-        writeln!(w, "No significant outliers — PSQT surface appears smooth.")?;
+        writeln!(w, "No significant outliers: PSQT surface appears smooth.")?;
     } else {
         writeln!(w, "Outlier summary (|diff| > {OUTLIER_MULT}× piece mean):")?;
         for line in &all_outlier_lines {

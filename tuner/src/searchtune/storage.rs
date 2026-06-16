@@ -29,7 +29,7 @@ pub struct Checkpoint {
     pub p_sigma: Vec<f64>,
     pub p_c: Vec<f64>,
     /// Denormalized integer values.
-    /// Intentionally redundant with `best_params` — derivable via `param.denormalize()`,
+    /// Intentionally redundant with `best_params`: derivable via `param.denormalize()`,
     /// but included for `jq`-friendliness without needing to rerun the engine.
     pub best_values: BTreeMap<String, i32>,
 }

@@ -160,7 +160,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                 eprintln!("\n\x1b[91m>> Second Ctrl-C, hard exit.\x1b[0m");
                 std::process::exit(130);
             }
-            eprintln!("\n\x1b[93m>> Ctrl-C received — finishing current epoch, writing bounds report, then exiting.\x1b[0m");
+            eprintln!("\n\x1b[93m>> Ctrl-C received, finishing current epoch, writing bounds report, then exiting.\x1b[0m");
         });
     }
 
@@ -366,12 +366,12 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
         for (idx, elo, err, c_nodes, b_nodes) in played_results {
             fitness_results[idx] = (elo, err, c_nodes, b_nodes);
-            // Update cache with fresh measurement — remember who we played against!
+            // Update cache with fresh measurement: remember who we played against!
             let weight = 1.0 / (err.powi(2) + 1.0);
             elo_cache.add(population[idx].clone(), opponent_norm.clone(), elo, weight);
         }
 
-        // Pass mean(SE²), not mean(SE)² — Law of Total Variance wants the average
+        // Pass mean(SE²), not mean(SE)²: Law of Total Variance wants the average
         // variance contribution from noise. Jensen's inequality: mean(SE)² ≤ mean(SE²),
         // so squaring the mean would systematically under-state noise variance.
         let avg_var_noise: f64 = fitness_results.iter().map(|&(_, err, ..)| err * err).sum::<f64>() / lambda as f64;
@@ -381,7 +381,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             .iter()
             .zip(&fitness_results)
             .map(|(candidate, (raw_elo, std_err, c_nodes, b_nodes))| {
-                // — Efficiency Penalty —
+                // ── Efficiency Penalty ──
                 // We penalize slow nodes, but we DO NOT reward fast nodes to prevent the
                 // optimizer from converging on instant-fail parameters.
                 let tc = config.tc.as_deref().unwrap_or("4+0.04");
@@ -619,7 +619,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             verified_elite_state = cmaes.clone();
         }
 
-        // — Periodic Elite Cross-Examination —
+        // ── Periodic Elite Cross-Examination ──
         // Re-verify elite against baseline to catch flukes.
         if epoch % config.reeval_interval == 0 && epoch > 1 {
             print!("\x1b[94m        └─ Re-evaluating elite...\x1b[0m");

@@ -90,11 +90,11 @@ impl Lion {
             // 2. Parameter update with sign gate and weight decay.
             //
             // When |c| is negligible the sign step is skipped, but weight decay
-            // still fires — a converged parameter without gradient signal should
+            // still fires: a converged parameter without gradient signal should
             // not lose its regularisation pressure.
             //
             // Per-parameter disagreement gate (m.signum() ≠ g.signum()) catches
-            // local oscillation — if momentum and gradient disagree, the sign
+            // local oscillation: if momentum and gradient disagree, the sign
             // update is skipped for this parameter.
             //
             //
@@ -109,7 +109,7 @@ impl Lion {
             // Probably revisit at NNUE scale.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
             // Skip the Lion sign step when the correlation gate is open (c≈0) or the
-            // momentum and gradient signs disagree — either way, decay only.
+            // momentum and gradient signs disagree: either way, decay only.
             let updated = if c.abs() < 1e-9 || (m.signum() != g.signum() && m.abs() > 1e-6) {
                 decayed
             } else {
@@ -125,7 +125,7 @@ impl Lion {
             // 4. Momentum: m = β₂ · m + (1 - β₂) · g
             // Hard-zero momentum when both gradient and current momentum are essentially zero.
             // Without this, floating-point residuals in m can accumulate and trigger sign updates
-            // on perfectly converged parameters — a kind of ghost-gradient effect.
+            // on perfectly converged parameters: a kind of ghost-gradient effect.
             momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { beta2[i].mul_add(m, (1.0 - beta2[i]) * g) };
         }
     }
@@ -174,7 +174,7 @@ mod tests {
         let beta2 = vec![0.99];
         opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask);
 
-        // c = β₁ · m + (1 - β₁) · g = 0.9 · 0.0 + 0.1 · 0.0 = 0 :p
+        // c = β₁ · m + (1 - β₁) · g = 0.9 · 0.0 + 0.1 · 0.0 = 0
         assert!((params[0] - 100.0).abs() < 0.01, "No clipping: {}", params[0]);
     }
 

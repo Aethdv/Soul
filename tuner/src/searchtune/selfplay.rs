@@ -142,7 +142,7 @@ fn aggregate_results(results: Vec<(Pentanomial, u64, u64)>) -> (Pentanomial, u64
 
 thread_local! {
     /// One pair of TTs per rayon worker, alive for the worker's lifetime.
-    /// Cleared (not reallocated) between pairs so we pay 32 MB of malloc *once*
+    /// Cleared (not reallocated) between pairs so we pay 32 MB of malloc once
     /// per worker instead of per opening pair.
     static TT_POOL: RefCell<Option<(Arc<TranspositionTable>, Arc<TranspositionTable>)>> = const { RefCell::new(None) };
 }
@@ -192,7 +192,7 @@ fn play_match_pair<F: Fn()>(
     let dummy_hist = vec![dummy_board.hash];
     let (tt_a, tt_b) = acquire_tts();
     let (mut hist_a, mut hist_b) = acquire_histories();
-    // Pooled histories may carry state from a prior pair — start each pair clean.
+    // Pooled histories may carry state from a prior pair: start each pair clean.
     hist_a.clear();
     hist_b.clear();
 

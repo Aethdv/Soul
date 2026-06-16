@@ -1,9 +1,9 @@
 //! Per-parameter bounds reporter.
 //!
 //! Each generation we record raw (pre-clamp) normalized samples to detect when the
-//! tuner repeatedly proposes values outside `[min, max]` — that's the signal that a
+//! tuner repeatedly proposes values outside `[min, max]`: that's the signal that a
 //! declared bound is too tight. We also track elite mean/variance and compare the
-//! observed clamping rate against the *expected* clamp rate under the current CMA-ES
+//! observed clamping rate against the expected clamp rate under the current CMA-ES
 //! proposal (Gaussian with σ = sigma · √variance_i, mean = mean_i). Observed
 //! substantially > expected → the tuner is genuinely fighting the bound, not just
 //! Gaussian tail noise → recommend widening.
@@ -152,7 +152,7 @@ impl BoundsTracker {
 
         writeln!(file)?;
         writeln!(file, "{}", "=".repeat(150))?;
-        writeln!(file, "TUNER BOUNDS REPORT — {label} — epoch {epoch} — unix={ts}")?;
+        writeln!(file, "TUNER BOUNDS REPORT | {label} | epoch {epoch} | unix={ts}")?;
         writeln!(file, "{}", "=".repeat(150))?;
         writeln!(file)?;
         writeln!(

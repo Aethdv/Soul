@@ -41,7 +41,7 @@ impl GradientStats {
 
     /// Returns the estimated 95th percentile of recent gradient norms.
     ///
-    /// Falls back to `default` until 10 observations are collected —
+    /// Falls back to `default` until 10 observations are collected:
     /// estimating a distribution from fewer points is noise, not signal.
     #[must_use]
     pub fn clip_threshold(&self, default: f64) -> f64 {
@@ -77,12 +77,12 @@ pub trait TunableData: Sync + Send {
 ///
 /// Near-zero search scores (low engine confidence) fall back to the game result;
 /// high-magnitude scores trust the eval fully. `wdl_blend >= 1.0` bypasses the
-/// instance scaling — the target is pure `sigmoid(score)`, for random-restart
+/// instance scaling: the target is pure `sigmoid(score)`, for random-restart
 /// data with no game outcome. 400 cp is the empirical confidence saturation point.
 pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
     const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
-    // i16::MAX sentinel = EPD data with no search score — pure outcome.
+    // i16::MAX sentinel = EPD data with no search score: pure outcome.
     if entry.score == i16::MAX {
         return f64::from(entry.result) / 2.0;
     }
@@ -96,7 +96,7 @@ pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
 }
 
 impl TunableData for loader::SoulEntry {
-    /// Evaluation via FEN round-trip — valid but slow.
+    /// Evaluation via FEN round-trip: valid but slow.
     /// Production code uses `eval_record` with a packed `FeatureRecord`.
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {

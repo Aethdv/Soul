@@ -1,4 +1,4 @@
-/// Feedback type from evaluation -- determines what the optimizer receives.
+/// Feedback type from evaluation: determines what the optimizer receives.
 #[derive(Clone, Debug)]
 pub enum Feedback {
     /// For population-based methods.

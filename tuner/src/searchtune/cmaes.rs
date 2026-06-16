@@ -4,8 +4,6 @@
 //! stochastic noise of chess engine self-play: Separable, Soft Active CMA-ES with
 //! Orthogonal Mirrored Sampling, SNR-Adaptive Learning Rates, and Dynamic Budgeting.
 //!
-//! # Algorithmic Architecture
-//!
 //! 1. Separable CMA-ES (Sep-CMA-ES)
 //!    Standard CMA-ES maintains a full `O(N²)` covariance matrix to model parameter
 //!    interactions. In highly stochastic environments, off-diagonal correlations tend
@@ -43,16 +41,16 @@
 //!    <https://scholarlypublications.universiteitleiden.nl/access/item%3A3243901/view>
 //!
 //! 4. SNR-Gated Covariance Adaptation (Domain-Specific Heuristic)
-//!    Active CMA-ES is vulnerable to structural match noise — a candidate may lose a
+//!    Active CMA-ES is vulnerable to structural match noise: a candidate may lose a
 //!    short match due to opening book draw-rates rather than genuine parameter
 //!    inferiority. If the covariance shrinks in response to such noise, the search
 //!    space can collapse prematurely around noise.
 //!    We apply the Law of Total Variance (`Var(Obs) = Var(True) + Var(Noise)`) using
-//!    the average per-candidate match variance (mean of `SE²`, not `mean(SE)²` —
+//!    the average per-candidate match variance (mean of `SE²`, not `mean(SE)²`;
 //!    Jensen's inequality would systematically under-state noise the other way).
-//!    The Reliability Coefficient `R = Var(True) / Var(Obs)` — the classical
-//!    psychometric measure of signal fraction — is smoothed across generations, and
-//!    a cubic smoothstep of the EMA gates the *negative* covariance updates only.
+//!    The Reliability Coefficient `R = Var(True) / Var(Obs)`, the classical
+//!    psychometric measure of signal fraction, is smoothed across generations, and
+//!    a cubic smoothstep of the EMA gates the negative covariance updates only.
 //!    Positive updates pass through at full strength so noisy gens still move toward
 //!    observed winners; only the destructive (search-space contracting) updates are
 //!    throttled, since their failure mode (premature collapse) is unrecoverable.
@@ -90,7 +88,7 @@
 /// contracts search volume around failed candidates, and gates updates based on
 /// empirical match variance to prevent premature convergence.
 ///
-/// **Note on Learning Rate Adaptation (LRA):**
+/// Note on Learning Rate Adaptation (LRA):
 /// This implementation provides the metrics needed for LRA (via `update_snr()`), but
 /// does not automatically adjust its internal learning rate (`eta`). The caller
 /// must call `update_snr()` after each generation and pass the result to `set_lr()`
@@ -334,7 +332,7 @@ impl CmaEs {
         // Raw match variance combines true engine strength (signal) and match luck (noise).
         // Gating on raw variance alone punishes candidates for unlucky pairings, so we
         // decompose: Var(Observed) = Var(True) + Var(Noise). The noise term is the
-        // average per-candidate match variance (mean of SE², not SE-of-mean squared —
+        // average per-candidate match variance (mean of SE², not SE-of-mean squared;
         // Jensen would systematically under-state noise the other way).
         // R = Var(True) / Var(Observed) is the reliability coefficient (Spearman, 1904).
         let mean_raw = raw_elo.iter().sum::<f64>() / self.lambda as f64;
@@ -596,7 +594,7 @@ impl CmaEs {
     }
 
     /// Resets to a fresh optimizer centered at `start`, with `new_lambda` candidates and
-    /// step size `new_sigma`. Fully decoupled from `SearchParams` — only the statistical
+    /// step size `new_sigma`. Fully decoupled from `SearchParams`: only the statistical
     /// state is reset, not the parameter definitions.
     ///
     /// If σ collapses into a local minimum, an IPOP restart (doubling λ and resetting σ)
@@ -690,7 +688,7 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
                 matrix.push(z);
             }
         } else {
-            // Past n vectors, no independent directions remain in n-space —
+            // Past n vectors, no independent directions remain in n-space:
             // Gram-Schmidt would annihilate the sample entirely.
             // Just normalize to the original chi-distribution radius.
             if radius > 1e-10 {

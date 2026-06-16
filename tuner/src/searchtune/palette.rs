@@ -2,7 +2,7 @@
 //!
 //! Warm neutrals carry most of the line's surface so the whole readout reads
 //! warm; one cool accent (mint-teal) marks optimizer telemetry for contrast;
-//! and the Elo values own the advantage gradient — the only place red/green
+//! and the Elo values own the advantage gradient: the only place red/green
 //! appears, so color there always means something. All gradient work defers to
 //! [`soul::color`] so engine and tuner never drift.
 

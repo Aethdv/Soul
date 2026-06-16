@@ -26,7 +26,7 @@ fn test_lion_quadratic_convergence() {
     let final_norm: f64 = params.iter().map(|x| x * x).sum::<f64>().sqrt();
     // Starting norm ≈ 31.6 (10 params at 10.0). After 200 iterations with
     // cosine-decayed LR from 0.1 to 0.005, Lion reliably reaches < 0.5.
-    // The threshold is empirical — tighten if the optimizer is strengthened.
+    // The threshold is empirical: tighten if the optimizer is strengthened.
     assert!(final_norm < 0.5, "Lion failed to converge: final_norm={}", final_norm);
 }
 
