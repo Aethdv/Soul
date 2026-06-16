@@ -209,6 +209,7 @@ impl Bitboard {
         }
     }
 }
+
 impl Square {
     /// Creates a [`Square`] from a raw index.
     ///

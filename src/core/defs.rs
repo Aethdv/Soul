@@ -359,6 +359,12 @@ pub fn draw_score(nodes: u64) -> i32 {
     (nodes & 0x7) as i32 - 3
 }
 
+/// Whether `score` is a forced mate rather than a normal evaluation.
+#[inline]
+pub fn is_mate(score: i32) -> bool {
+    score.abs() > MATE_BOUND
+}
+
 /// Let chess types serve as array indices directly:
 /// `table[Color::White]`, `scores[PieceType::Knight]`, `board[Square::E4]`.
 /// Bounds-checked in debug builds: compiles to bare pointer math in release.

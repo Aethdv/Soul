@@ -277,9 +277,11 @@ search_params! {
         NT(razoring_depth,    3),
         T (razoring_margin, 300,  50),
 
-        //         default  min  max  step
-        NT(rfp_depth,    8),
-        T (rfp_margin,  45,  15),
+        //              default  min  max  step
+        NT(rfp_depth,        12),
+        T (rfp_margin,       40,  15),
+        T (rfp_base_margin,  35),
+        T (rfp_quad_margin,   3),
 
         //                  default min   max  step
         T (nmp_base_r,            3,  1,    6),
