@@ -53,7 +53,7 @@ pub struct WorkerState {
     pub rng: fastrand::Rng,
     pub global: Arc<GlobalStats>,
     pub tt: Arc<TranspositionTable>,
-    /// Persistent history table — reused across positions within a game,
+    /// Persistent history table: reused across positions within a game,
     /// cleared between games. Avoids per-position heap allocation.
     pub history_table: History,
     /// Track if the last move made was a capture or promotion to filter out
@@ -71,7 +71,7 @@ pub struct WorkerState {
 
 /// Each clone gets a fresh, independently seeded RNG and zeroed adjudication
 /// counters. Correlated randomness between parallel workers would reduce
-/// opening diversity — the opposite of what datagen needs.
+/// opening diversity, the opposite of what datagen needs.
 impl Clone for WorkerState {
     fn clone(&self) -> Self {
         Self {
@@ -146,7 +146,7 @@ impl WorkerState {
         self.last_move_was_tactical = false;
     }
 
-    /// Plays one game — either a full self-play game
+    /// Plays one game: either a full self-play game
     /// or a single random-restart position, depending on config.
     pub fn play_game(&mut self) -> Vec<SoulEntry> {
         if self.config.random_restart { self.play_random_position() } else { self.play_full_game() }
@@ -180,7 +180,7 @@ impl WorkerState {
 
         let Some(best_move) = search_move else {
             self.global.search_fail.fetch_add(1, Relaxed);
-            eprintln!("Warning: random-restart search returned no best move — skipping position");
+            eprintln!("Warning: random-restart search returned no best move, skipping position");
             return Vec::new();
         };
 
@@ -201,7 +201,7 @@ impl WorkerState {
         self.global.passed_filters.fetch_add(1, Relaxed);
 
         // The qsearch filter catches positions where the search sees something
-        // the static eval doesn't — unresolved tactics the HCE can't learn.
+        // the static eval doesn't: unresolved tactics the HCE can't learn.
         // `eval_contradiction_limit` is not applied here because random-restart
         // has no game outcome to contradict against; the filter only applies in
         // full-game mode where a back-propagated outcome exists.
@@ -211,7 +211,7 @@ impl WorkerState {
             return Vec::new();
         }
 
-        // No game outcome — set result to the draw prior (0.5).
+        // No game outcome: set result to the draw prior (0.5).
         // At training time, the tuner's instance-confidence WDL blending
         // (training.rs:107-121) treats this as a weak anchor: near-zero
         // search scores keep the 0.5 prior, high-magnitude scores converge
@@ -373,7 +373,7 @@ impl WorkerState {
             if should_save && sampled {
                 let entry = SoulEntry::from_board(
                     &self.board,
-                    0.0, // placeholder WDL — back-filled once the game ends
+                    0.0, // placeholder WDL, back-filled once the game ends
                     Some(static_eval),
                     Some(search_eval),
                 );

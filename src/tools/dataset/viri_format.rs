@@ -2,12 +2,12 @@
 //!
 //! Each file consists of concatenated games. A game is:
 //! - 32-byte PackedBoard header (position + result)
-//! - Zero or more (Move, Score) pairs — 4 bytes each (2+2)
+//! - Zero or more (Move, Score) pairs - 4 bytes each (2+2)
 //! - Four-byte zero sentinel
 //!
 //! Scores in the (Move, Score) pairs are white-relative, converted to
 //! STM-relative on the way into SoulEntry. The header's score field is a
-//! stale placeholder — real evals live in the move pairs.
+//! stale placeholder: real evals live in the move pairs.
 
 use std::{
     fs,
@@ -164,7 +164,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
         }
 
         if viri_type == 6 {
-            // Unmoved rook — record for castling-rights detection.
+            // Unmoved rook: record for castling-rights detection.
             unmoved_rooks[color as usize].push(sq_idx as u8);
         }
     }
