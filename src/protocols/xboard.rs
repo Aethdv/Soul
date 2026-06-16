@@ -307,7 +307,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             }
         },
 
-        "accepted" | "rejected" => { /* Feature negotiation — no-op */ },
+        "accepted" | "rejected" => { /* Feature negotiation, no-op */ },
         _ => {
             cmd_move(state, cmd);
         },
@@ -315,6 +315,9 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
     io::stdout().flush().ok();
 }
 
+// XBoard protocol version 2. The stone age.
+// We chisel our feature list into the GUI's cave wall.
+// (Please put the pitchfork down, Lofty).
 fn print_features() {
     let version = env!("CARGO_PKG_VERSION");
     println!("feature myname=\"Soul {version}\"");

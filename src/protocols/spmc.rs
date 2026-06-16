@@ -8,7 +8,7 @@
 //!
 //! A generation bit toggles each `send` so receivers don't pick up stale
 //! messages between `wait` and the next `send`. An `exit` flag shuts down
-//! receivers cleanly — `wake()` sets the flag and unparks every receiver,
+//! receivers cleanly: `wake()` sets the flag and unparks every receiver,
 //! at which point `recv` returns `None`.
 
 use std::{
