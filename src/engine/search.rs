@@ -1037,7 +1037,7 @@ impl Worker<'_> {
                 + rfp_quad_margin() * depth * depth;
 
             if static_eval - margin >= beta {
-                return Ok(static_eval);
+                return Ok((static_eval + beta) / 2);
             }
         }
 
