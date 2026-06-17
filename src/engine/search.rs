@@ -36,7 +36,7 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::Position,
-        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score},
+        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate},
         moves::Move,
     },
     engine::{
@@ -1030,9 +1030,15 @@ impl Worker<'_> {
         if !in_check
             && !N::PV
             && depth <= rfp_depth()
-            && static_eval - rfp_margin() * depth >= beta
+            && !is_mate(beta)
         {
-            return Ok(static_eval);
+            let margin = rfp_base_margin()
+                + rfp_margin() * depth
+                + rfp_quad_margin() * depth * depth;
+
+            if static_eval - margin >= beta {
+                return Ok(static_eval);
+            }
         }
 
         // ── Razoring (~17 Elo) ──
