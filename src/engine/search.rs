@@ -152,7 +152,7 @@ pub struct Searcher<'cfg> {
 pub struct Worker<'h> {
     pub pos: Position,
     pub accumulator: Vi16x8,
-    pub stack: Box<[Stack; MAX_PLY + 1]>,
+    pub stack: Box<[Stack; MAX_PLY + 2]>,
     pub history: &'h mut History,
     /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
     pub pawn_cache: PawnCache,
@@ -263,6 +263,8 @@ pub struct Stack {
     pub moved_to: Square,
     pub static_eval: i32,
     pub is_null: bool,
+    /// Beta cutoffs among this node's children.
+    pub cutoff_count: i32,
 }
 
 /// Search was cut short: time, node limit, or external stop signal.
@@ -415,6 +417,7 @@ impl Default for Stack {
             moved_to: Square(0),
             static_eval: tt::SCORE_NONE,
             is_null: false,
+            cutoff_count: 0,
         }
     }
 }
@@ -477,7 +480,7 @@ impl<'cfg> Searcher<'cfg> {
         let mut worker = Worker {
             pos: self.root_pos,
             accumulator: root_acc,
-            stack: vec![Stack::default(); MAX_PLY + 1]
+            stack: vec![Stack::default(); MAX_PLY + 2]
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
@@ -905,6 +908,10 @@ impl Worker<'_> {
             return Ok(self.evaluate());
         }
 
+        // Clear the grandchild fail-high counter; our own [ply + 1], read in LMR,
+        // was cleared by the parent's reset two plies up.
+        self.stack[ply + 2].cutoff_count = 0;
+
         // ── Mate Distance Pruning ──
         // Scores are bounded; no line from here can find mate faster than
         // MATE - ply plies, and we can't be mated before -MATE + ply.
@@ -1313,6 +1320,10 @@ impl Worker<'_> {
                     // like a check; reduce it less so the threat gets a real search.
                     r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * threat_lmr_bonus();
 
+                    // Fail-highs are piling up at this depth; the late quiets here are
+                    // unlikely to be the move, so reduce them harder.
+                    r += fhc_lmr_malus() * (self.stack[ply + 1].cutoff_count > 2) as i32;
+
                     let max_r = (depth - lmr_retained()) * LMR_SCALE;
 
                     (r - hist / lmr_hist_div()).clamp(0, max_r) / LMR_SCALE
@@ -1327,6 +1338,8 @@ impl Worker<'_> {
                 self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move, reduction)?;
 
                 if likely(res.alpha >= beta) {
+                    self.stack[ply].cutoff_count += 1;
+
                     #[cfg(feature = "mvpstats")]
                     {
                         use crate::engine::mvpstats::{CutoffKind, record_cutoff};
