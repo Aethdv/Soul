@@ -314,6 +314,7 @@ search_params! {
         T (killer_lmr_bonus, 1024,  64),
         T (check_lmr_bonus,     1,   1,    3),
         T (threat_lmr_bonus, 1024,   0),
+        T (fhc_lmr_malus,     512,   0),
         NT(lmr_retained,        1),
 
         //                default   min  max  step
