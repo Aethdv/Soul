@@ -1148,9 +1148,9 @@ impl Worker<'_> {
                     continue;
                 }
 
-                // Only a winning capture can fail high here, so skip
-                // the losers before paying for a search.
-                if !see_ge(&self.pos, mv, 0) {
+                // The capture must win enough material to plausibly reach the
+                // raised beta from here; a smaller swing can't clear it.
+                if !see_ge(&self.pos, mv, probcut_beta - static_eval) {
                     continue;
                 }
 
