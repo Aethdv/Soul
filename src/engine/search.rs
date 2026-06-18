@@ -1123,6 +1123,65 @@ impl Worker<'_> {
             }
         }
 
+        // ── ProbCut ──
+        // A capture that clears a raised beta (beta + margin) under a shallow search
+        // would almost surely clear plain beta at full depth, so the node is a
+        // near-certain cutoff. Prove it cheaply instead of searching every move:
+        // qsearch as the filter, a reduced search only to confirm a pass.
+        if !N::PV
+            && !in_check
+            && depth >= probcut_depth_min()
+            && !is_mate(beta)
+        {
+            let probcut_beta = beta + probcut_margin();
+            let probcut_depth = (depth - 4).clamp(1, depth - 1);
+
+            let stm = self.pos.stm;
+            let opp = stm.opposite();
+            let ksq = self.pos.pieces(PieceType::King, stm).lsb();
+            let pinned = self.pos.king_blockers();
+
+            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, false);
+
+            while let Some(mv) = picker.next(&self.pos, self.history) {
+                if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                    continue;
+                }
+
+                // Only a winning capture can fail high here, so skip
+                // the losers before paying for a search.
+                if !see_ge(&self.pos, mv, 0) {
+                    continue;
+                }
+
+                let saved_acc = self.accumulator;
+                let undo = self.pos.make_move(mv, &mut self.accumulator);
+
+                searcher.tt.prefetch(self.pos.hash);
+                searcher.zobrist_trail.push(self.pos.hash);
+
+                let qscore = self.qsearch::<NonPvNode>(searcher, -probcut_beta, -probcut_beta + 1, ply + 1, Some(mv.to()), 0);
+                let value = match qscore {
+                    Ok(v) if -v >= probcut_beta => self
+                        .negamax::<NonPvNode>(searcher, probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1, None)
+                        .map(|x| -x),
+                    Ok(v) => Ok(-v),
+                    Err(e) => Err(e),
+                };
+
+                searcher.zobrist_trail.pop();
+                self.pos.unmake_move(mv, &undo);
+                self.accumulator = saved_acc;
+
+                let value = value?;
+
+                if value >= probcut_beta {
+                    searcher.tt.store(self.pos.hash, ply, probcut_depth, value, mv, tt::BOUND_LOWER, tt_pv, raw_static_eval);
+                    return Ok(value);
+                }
+            }
+        }
+
         // ── Internal Iterative Reduction (~14 Elo) ──
         // No TT move means we're searching blind: our first guesses are just
         // that, guesses. Reduce by one ply to acknowledge the uncertainty
