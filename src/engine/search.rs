@@ -1123,7 +1123,7 @@ impl Worker<'_> {
             }
         }
 
-        // ── ProbCut ──
+        // ── ProbCut (~4 Elo) ──
         // A capture that clears a raised beta (beta + margin) under a shallow search
         // would almost surely clear plain beta at full depth, so the node is a
         // near-certain cutoff. Prove it cheaply instead of searching every move:
