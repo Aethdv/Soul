@@ -1128,11 +1128,7 @@ impl Worker<'_> {
         // would almost surely clear plain beta at full depth, so the node is a
         // near-certain cutoff. Prove it cheaply instead of searching every move:
         // qsearch as the filter, a reduced search only to confirm a pass.
-        if !N::PV
-            && !in_check
-            && depth >= probcut_depth_min()
-            && !is_mate(beta)
-        {
+        if !N::PV && !in_check && depth >= probcut_depth_min() && !is_mate(beta) {
             let probcut_beta = beta + probcut_margin();
             let probcut_depth = (depth - 4).clamp(1, depth - 1);
 
@@ -1176,7 +1172,9 @@ impl Worker<'_> {
                 let value = value?;
 
                 if value >= probcut_beta {
-                    searcher.tt.store(self.pos.hash, ply, probcut_depth, value, mv, tt::BOUND_LOWER, tt_pv, raw_static_eval);
+                    searcher
+                        .tt
+                        .store(self.pos.hash, ply, probcut_depth, value, mv, tt::BOUND_LOWER, tt_pv, raw_static_eval);
                     return Ok(value);
                 }
             }
