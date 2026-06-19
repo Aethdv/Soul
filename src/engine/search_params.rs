@@ -283,6 +283,10 @@ search_params! {
         T (rfp_base_margin,  35),
         T (rfp_quad_margin,   3),
 
+        //                default  min  max  step
+        NT(probcut_depth_min,   5),
+        T (probcut_margin,    200,  50),
+
         //                  default min   max  step
         T (nmp_base_r,            3,  1,    6),
         T (nmp_depth_divisor,     3,  1,   14),
