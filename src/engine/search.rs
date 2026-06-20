@@ -1085,10 +1085,10 @@ impl Worker<'_> {
             && !N::PV
             && !self.stack[ply].is_null
             && !self.is_nmp_verif
-            && static_eval >= beta
+            && tt_adjusted_eval >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
-            let eval_r = ((static_eval - beta) / nmp_eval_divisor()).min(nmp_eval_max());
+            let eval_r = ((tt_adjusted_eval - beta) / nmp_eval_divisor()).min(nmp_eval_max());
             let r = nmp_base_r() + depth / nmp_depth_divisor() + eval_r;
 
             self.stack[ply].moved_pt = PieceType::None;
