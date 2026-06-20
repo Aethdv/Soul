@@ -940,7 +940,7 @@ impl Worker<'_> {
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
         // This is what makes iterative deepening fast: earlier iterations populate the table for later ones.
-        let (tt_move, tt_pv, tt_eval) =
+        let (tt_move, tt_pv, tt_eval, tt_score, tt_bound) =
             if let Some((mv, score, depth_stored, bound, pv, eval)) = searcher.tt.probe(self.pos.hash, ply) {
                 // Hash collisions can inject moves from unrelated positions.
                 // Full pseudo-legality check rejects garbage before it reaches
@@ -957,9 +957,9 @@ impl Worker<'_> {
                 }
 
                 let tt_move = if valid && !mv.is_null() { Some(mv) } else { None };
-                (tt_move, pv, Some(eval))
+                (tt_move, pv, Some(eval), score, bound)
             } else {
-                (None, false, None)
+                (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE)
             };
 
         // ── TT Move Ordering (~56 Elo) ──
@@ -1029,6 +1029,19 @@ impl Worker<'_> {
             false
         };
 
+        // ── TT-Adjusted Eval ──
+        // A bounded TT score sharpens static eval when its bound backs the side
+        // it sits on: a lower bound above us means the truth is higher still,
+        // an upper bound below means lower still.
+        let tt_adjusted_eval = if tt_bound != tt::BOUND_NONE
+            && !is_mate(tt_score)
+            && tt_bound != (if tt_score > static_eval { tt::BOUND_UPPER } else { tt::BOUND_LOWER })
+        {
+            tt_score
+        } else {
+            static_eval
+        };
+
         // ── Reverse Futility Pruning (~52 Elo) ──
         // Position is already so good that even after subtracting a generous
         // margin, we're still above beta. The opponent wouldn't have let us
@@ -1043,8 +1056,8 @@ impl Worker<'_> {
                 + rfp_margin() * depth
                 + rfp_quad_margin() * depth * depth;
 
-            if static_eval - margin >= beta {
-                return Ok((static_eval + beta) / 2);
+            if tt_adjusted_eval - margin >= beta {
+                return Ok((tt_adjusted_eval + beta) / 2);
             }
         }
 
