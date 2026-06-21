@@ -44,7 +44,7 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 //
 // Pipeline:
 //   [ Hash ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
-//                  (MVV-LVA Sort)      (History Sort)   (SEE-losing, deferred)
+//                  (MVV-LVA Sort)    (History Sort)  (SEE-losing, deferred)
 //
 // We fully sort the generated stages using Rust's sort_unstable.
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
@@ -231,18 +231,29 @@ impl MovePicker {
                     // drain it last in YieldBadCaptures. Promotions stay up front regardless,
                     // they win a piece outright. Qsearch opts out, its own SEE prune already
                     // culls losing captures, so a second SEE here would be wasted.
-                    if !self.is_qsearch && !mv.is_promotion() && !see_ge(board, mv, -self.good_capture_margin) {
-                        // SAFETY: count + bad_count <= total moves <= MAX_MOVES, so the park
-                        // slot MAX_MOVES-1-bad_count is always >= count, never aliasing the
-                        // active region [0, count) nor the quiets that later fill it.
-                        unsafe {
-                            self.candidates
-                                .as_mut_ptr()
-                                .add(MAX_MOVES - 1 - self.bad_count)
-                                .write(MaybeUninit::new(packed));
+                    if !self.is_qsearch && !mv.is_promotion() {
+                        let attacker = board.piece_at(mv.from());
+                        let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
+                        let v_val = *debug_index!(self.mvvlva_v, victim as usize);
+                        let a_val = *debug_index!(self.mvvlva_v, attacker as usize);
+
+                        // A capture winning material (victim worth at least the attacker) has
+                        // SEE >= 0, so it's good without the exchange walk; only material-losing
+                        // captures are ambiguous enough to need SEE. The common cutoff-causing
+                        // captures sort to the front and skip it entirely.
+                        if v_val < a_val && !see_ge(board, mv, -self.good_capture_margin) {
+                            // SAFETY: count + bad_count <= total moves <= MAX_MOVES, so the park
+                            // slot MAX_MOVES-1-bad_count is always >= count, never aliasing the
+                            // active region [0, count) nor the quiets that later fill it.
+                            unsafe {
+                                self.candidates
+                                    .as_mut_ptr()
+                                    .add(MAX_MOVES - 1 - self.bad_count)
+                                    .write(MaybeUninit::new(packed));
+                            }
+                            self.bad_count += 1;
+                            continue;
                         }
-                        self.bad_count += 1;
-                        continue;
                     }
 
                     return Some(mv);
