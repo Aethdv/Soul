@@ -43,8 +43,8 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 // ── Staged Move Picker ──
 //
 // Pipeline:
-//   [ Hash ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
-//                  (MVV-LVA Sort)    (History Sort)  (SEE-losing, deferred)
+//   [ Hash Move ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
+//      (𝒪(1))          (MVV-LVA Sort)     (History Sort)  (SEE-losing, deferred)
 //
 // We fully sort the generated stages using Rust's sort_unstable.
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
