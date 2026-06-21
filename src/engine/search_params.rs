@@ -263,6 +263,9 @@ search_params! {
         NT(mvvlva_a_queen,     90,  70,  150),
         NT(mvvlva_a_king,       0),
 
+        //                 default  min  max  step
+        T (good_capture_margin,  0,   0,  200),
+
         //             default  min  max  step
         T (qs_recapture_ply, 4,   2),
 

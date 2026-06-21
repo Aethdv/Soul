@@ -5,11 +5,12 @@
 //! in stages, best guesses first, and generates a stage only once the cheaper
 //! ones run dry.
 //!
-//! | Stage          | Content                      | Sorting             |
-//! |----------------|------------------------------|---------------------|
-//! | `Hash`         | PV move from prior iteration | Exact match         |
-//! | `Captures`     | Captures & promotions        | MVV-LVA             |
-//! | `Quiets`       | Non-captures                 | History heuristic   |
+//! | Stage         | Content                       | Sorting           |
+//! |---------------|-------------------------------|-------------------|
+//! | `Hash`        | PV move from prior iteration  | Exact match       |
+//! | `Captures`    | SEE-winning captures & promos | MVV-LVA           |
+//! | `Quiets`      | Non-captures                  | History heuristic |
+//! | `BadCaptures` | SEE-losing captures, deferred | MVV-LVA           |
 //!
 //! Moves are bitpacked with their heuristic scores into `u32`s and sorted
 //! ascending using Rust's native `sort_unstable` (ipnsort). This allows
@@ -32,6 +33,7 @@ use crate::{
     engine::{
         history::{ContContext, History},
         search::SearchConfig,
+        see::see_ge,
     },
 };
 
@@ -41,8 +43,8 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 // ── Staged Move Picker ──
 //
 // Pipeline:
-//   [ Hash Move ] ──> [ Captures ] ──> [ Quiets ]
-//       (𝒪(1))       (MVV-LVA Sort)   (History Sort)
+//   [ Hash ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
+//                  (MVV-LVA Sort)      (History Sort)   (SEE-losing, deferred)
 //
 // We fully sort the generated stages using Rust's sort_unstable.
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
@@ -61,6 +63,7 @@ enum Stage {
     GenQSearchQuiets,
     GenQuiets,
     YieldQuiets,
+    YieldBadCaptures,
     Done,
 }
 
@@ -69,6 +72,11 @@ pub struct MovePicker {
     hash_move: Option<Move>,
     candidates: [MaybeUninit<u32>; MAX_MOVES],
     count: usize,
+    /// SEE-losing captures parked at the array top, drained in `YieldBadCaptures`.
+    bad_count: usize,
+    /// A capture orders before quiets when its SEE is at least `-good_capture_margin`;
+    /// losing more than that defers it to the bad-capture stage.
+    good_capture_margin: i32,
     mvvlva_v: [i32; 8],
     mvvlva_a: [i32; 8],
     mvvlva_ep: i32,
@@ -113,6 +121,8 @@ impl MovePicker {
             hash_move,
             candidates: [MaybeUninit::uninit(); MAX_MOVES],
             count: 0,
+            bad_count: 0,
+            good_capture_margin: cfg.search_params.good_capture_margin,
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
@@ -138,6 +148,8 @@ impl MovePicker {
             hash_move,
             candidates: [MaybeUninit::uninit(); MAX_MOVES],
             count: 0,
+            bad_count: 0,
+            good_capture_margin: cfg.search_params.good_capture_margin,
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
@@ -189,9 +201,10 @@ impl MovePicker {
                 },
                 Stage::YieldCaptures => {
                     if self.count == 0 {
-                        // INVARIANT: When YieldCaptures is exhausted, count is exactly 0.
-                        // This allows GenQuiets to reuse the candidates array from the beginning
-                        // without needing an explicit clear() or reallocation.
+                        // INVARIANT: when YieldCaptures is exhausted, count is exactly 0,
+                        // so GenQuiets reuses the array from index 0 without a clear. The
+                        // deferred bad captures sit at the array top, a region the quiets
+                        // never reach (their combined count can't exceed MAX_MOVES).
                         if self.is_qsearch && !self.in_check {
                             self.stage = Stage::GenQSearchQuiets;
                         } else {
@@ -203,12 +216,36 @@ impl MovePicker {
                     // the highest-scored moves sit at the end. Popping via count -= 1
                     // is 𝒪(1) and avoids the expensive index-shifting of remove(0).
                     self.count -= 1;
-                    // SAFETY: self.count was strictly checked > 0 above, proving this index holds a valid move.
-                    let mv = unsafe { self.read_move(self.count) };
+                    // SAFETY: count was strictly > 0 above, so this index holds a valid packed move.
+                    let packed = unsafe { debug_index!(self.candidates, self.count).assume_init() };
+                    let mv = Move::from_u16((packed & 0xFFFF) as u16);
 
-                    if Some(mv) != self.hash_move {
-                        return Some(mv);
+                    if Some(mv) == self.hash_move {
+                        continue;
                     }
+
+                    // ── Good / Bad Capture Split ──
+                    // A SEE-losing capture rarely deserves to jump ahead of every quiet; a
+                    // killer or a high-history move usually refutes the node first. Defer it:
+                    // park the packed entry at the array top, which the quiets never fill, and
+                    // drain it last in YieldBadCaptures. Promotions stay up front regardless,
+                    // they win a piece outright. Qsearch opts out, its own SEE prune already
+                    // culls losing captures, so a second SEE here would be wasted.
+                    if !self.is_qsearch && !mv.is_promotion() && !see_ge(board, mv, -self.good_capture_margin) {
+                        // SAFETY: count + bad_count <= total moves <= MAX_MOVES, so the park
+                        // slot MAX_MOVES-1-bad_count is always >= count, never aliasing the
+                        // active region [0, count) nor the quiets that later fill it.
+                        unsafe {
+                            self.candidates
+                                .as_mut_ptr()
+                                .add(MAX_MOVES - 1 - self.bad_count)
+                                .write(MaybeUninit::new(packed));
+                        }
+                        self.bad_count += 1;
+                        continue;
+                    }
+
+                    return Some(mv);
                 },
 
                 Stage::GenQSearchQuiets => {
@@ -242,7 +279,11 @@ impl MovePicker {
                 },
                 Stage::YieldQuiets => {
                     if self.count == 0 {
-                        self.stage = Stage::Done;
+                        // Quiets done; reuse count as a top-down cursor over the parked bad
+                        // captures. It halts at MAX_MOVES - bad_count, draining none when the
+                        // split deferred nothing (or in qsearch, where bad_count stays 0).
+                        self.count = MAX_MOVES;
+                        self.stage = Stage::YieldBadCaptures;
                         continue;
                     }
                     // Pop from the back: exploits the ascending sort to yield the strongest moves first.
@@ -255,6 +296,23 @@ impl MovePicker {
                         {
                             self.quiets_used += 1;
                         }
+                        return Some(mv);
+                    }
+                },
+                Stage::YieldBadCaptures => {
+                    // The deferred losing captures occupy [MAX_MOVES - bad_count, MAX_MOVES),
+                    // best at the top since YieldCaptures parked them in descending score.
+                    // count walks down from MAX_MOVES, yielding best-first, until drained.
+                    if self.count == MAX_MOVES - self.bad_count {
+                        self.stage = Stage::Done;
+                        continue;
+                    }
+                    self.count -= 1;
+                    // SAFETY: count is in (MAX_MOVES - bad_count, MAX_MOVES], every slot
+                    // written by the park step in YieldCaptures.
+                    let mv = unsafe { self.read_move(self.count) };
+
+                    if Some(mv) != self.hash_move {
                         return Some(mv);
                     }
                 },
