@@ -265,8 +265,8 @@ pub struct Stack {
     pub is_null: bool,
     /// Beta cutoffs among this node's children.
     pub cutoff_count: i32,
-    /// The move a singular verification skips. Null in a normal search; set to
-    /// the TT move while we test whether it stands alone.
+    /// The move a singular verification skips. Null in a normal search;
+    /// set to the TT move while we test whether it stands alone.
     pub excluded: Move,
 }
 
@@ -1421,9 +1421,9 @@ impl Worker<'_> {
 
                 let mut extension = 0i32;
 
-                // ── Singular Extensions ──
-                // The TT move already came back strong from a deep search. The
-                // sharper question is whether it stands alone: re-search every other
+                // ── Singular Extensions (~7 Elo) ──
+                // The TT move already came back strong from a deep search.
+                // The sharper question is whether it stands alone: re-search every other
                 // move in a window pinned just under its score, and if they all fall
                 // short, nothing here rivals it. A position resting on a single move
                 // is a knife-edge, exactly where a fixed horizon misreads the line,
@@ -1598,8 +1598,8 @@ impl Worker<'_> {
         };
 
         // ── TT store ──
-        // The verification searched this position with a move missing, so its result
-        // is a lie about the real node. Keep it out of the table.
+        // The verification searched this position with a move missing, so its
+        // result is a lie about the real node. Keep it out of the table.
         if excluded.is_null() {
             searcher
                 .tt
