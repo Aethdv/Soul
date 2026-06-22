@@ -298,6 +298,11 @@ search_params! {
         NT(nmp_ply_offset,        1),
         NT(nmp_verif_min_depth,  14),
 
+        //                 default  min   max  step
+        NT(singext_min_depth,    9),
+        T (singext_margin,       2,   1),
+        NT(singext_tt_depth,     3),
+
         //           default min  max  step
         NT(iir_depth,      4),
         T (iir_reduction,  1,  1,  3),

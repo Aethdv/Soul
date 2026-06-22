@@ -265,6 +265,9 @@ pub struct Stack {
     pub is_null: bool,
     /// Beta cutoffs among this node's children.
     pub cutoff_count: i32,
+    /// The move a singular verification skips. Null in a normal search;
+    /// set to the TT move while we test whether it stands alone.
+    pub excluded: Move,
 }
 
 /// Search was cut short: time, node limit, or external stop signal.
@@ -418,6 +421,7 @@ impl Default for Stack {
             static_eval: tt::SCORE_NONE,
             is_null: false,
             cutoff_count: 0,
+            excluded: Move::null(),
         }
     }
 }
@@ -934,14 +938,20 @@ impl Worker<'_> {
         };
 
         let alpha_orig = alpha;
+        let excluded = self.stack[ply].excluded;
 
         // ── TT Probe (~128 Elo) ──
         // Have we seen this position before?
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
         // This is what makes iterative deepening fast: earlier iterations populate the table for later ones.
-        let (tt_move, tt_pv, tt_eval, tt_score, tt_bound) =
-            if let Some((mv, score, depth_stored, bound, pv, eval)) = searcher.tt.probe(self.pos.hash, ply) {
+        //
+        // During verification the entry here is the excluded move itself, and its
+        // score would hand back the very cutoff we are trying to search without.
+        // Don't probe.
+        let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { None };
+        let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) =
+            if let Some((mv, score, depth_stored, bound, pv, eval)) = tt_probe {
                 // Hash collisions can inject moves from unrelated positions.
                 // Full pseudo-legality check rejects garbage before it reaches
                 // the move picker or triggers a cutoff with a bogus score.
@@ -957,9 +967,9 @@ impl Worker<'_> {
                 }
 
                 let tt_move = if valid && !mv.is_null() { Some(mv) } else { None };
-                (tt_move, pv, Some(eval), score, bound)
+                (tt_move, pv, Some(eval), score, bound, depth_stored)
             } else {
-                (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE)
+                (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
             };
 
         // ── TT Move Ordering (~56 Elo) ──
@@ -1049,6 +1059,7 @@ impl Worker<'_> {
         #[rustfmt::skip]
         if !in_check
             && !N::PV
+            && excluded.is_null()
             && depth <= rfp_depth()
             && !is_mate(beta)
         {
@@ -1067,6 +1078,7 @@ impl Worker<'_> {
         #[rustfmt::skip]
         if !in_check
             && !N::PV
+            && excluded.is_null()
             && depth <= razoring_depth()
             && static_eval + razoring_margin() * depth < alpha
         {
@@ -1083,6 +1095,7 @@ impl Worker<'_> {
         // never allow this line. Skip it. The "null move" is the pass.
         if !in_check
             && !N::PV
+            && excluded.is_null()
             && !self.stack[ply].is_null
             && !self.is_nmp_verif
             && tt_adjusted_eval >= beta
@@ -1141,7 +1154,7 @@ impl Worker<'_> {
         // would almost surely clear plain beta at full depth, so the node is a
         // near-certain cutoff. Prove it cheaply instead of searching every move:
         // qsearch as the filter, a reduced search only to confirm a pass.
-        if !N::PV && !in_check && depth >= probcut_depth_min() && !is_mate(beta) {
+        if !N::PV && !in_check && excluded.is_null() && depth >= probcut_depth_min() && !is_mate(beta) {
             let probcut_beta = beta + probcut_margin();
             let probcut_depth = (depth - 4).clamp(1, depth - 1);
 
@@ -1223,7 +1236,7 @@ impl Worker<'_> {
                 // Aspiration re-searches accumulate into the same slot;
                 // all that work belongs to this move.
                 let nodes_before = searcher.nodes;
-                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction)?;
+                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction, 0)?;
                 searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
 
                 if res.alpha >= beta {
@@ -1267,6 +1280,11 @@ impl Worker<'_> {
             let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, threats, cont1, cont2, cont4);
             while let Some(mv) = picker.next(&self.pos, self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
+                    continue;
+                }
+
+                // The verification weighs every move but the one it set aside.
+                if mv == excluded {
                     continue;
                 }
 
@@ -1401,11 +1419,59 @@ impl Worker<'_> {
                     0
                 };
 
+                let mut extension = 0i32;
+
+                // ── Singular Extensions (~7 Elo) ──
+                // The TT move already came back strong from a deep search.
+                // The sharper question is whether it stands alone: re-search every other
+                // move in a window pinned just under its score, and if they all fall
+                // short, nothing here rivals it. A position resting on a single move
+                // is a knife-edge, exactly where a fixed horizon misreads the line,
+                // so the singular move earns one more ply.
+                if !N::ROOT
+                    && !N::PV
+                    && excluded.is_null()
+                    && Some(mv) == tt_move
+                    && depth >= singext_min_depth()
+                    && tt_depth >= depth - singext_tt_depth()
+                    && tt_bound != tt::BOUND_UPPER
+                    && !is_mate(tt_score)
+                {
+                    let sing_beta = (tt_score - depth * singext_margin()).max(-MATE_BOUND);
+                    let sing_depth = (depth - 1) / 2;
+
+                    // The verification recurses at this same ply and stomps the quiet
+                    // and capture lists this node is still building for its own history
+                    // update, so snapshot them and restore once it returns.
+                    let saved_quiet_count = self.stack[ply].quiet_count;
+                    let mut saved_quiets = [Move::null(); MAX_TRACKED_QUIETS];
+
+                    saved_quiets[..saved_quiet_count].copy_from_slice(&self.stack[ply].quiet_moves[..saved_quiet_count]);
+
+                    let saved_capture_count = self.stack[ply].capture_count;
+                    let mut saved_captures = [Move::null(); MAX_TRACKED_CAPTURES];
+
+                    saved_captures[..saved_capture_count].copy_from_slice(&self.stack[ply].capture_moves[..saved_capture_count]);
+
+                    self.stack[ply].excluded = mv;
+                    let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply, None);
+                    self.stack[ply].excluded = Move::null();
+
+                    self.stack[ply].quiet_count = saved_quiet_count;
+                    self.stack[ply].quiet_moves[..saved_quiet_count].copy_from_slice(&saved_quiets[..saved_quiet_count]);
+                    self.stack[ply].capture_count = saved_capture_count;
+                    self.stack[ply].capture_moves[..saved_capture_count].copy_from_slice(&saved_captures[..saved_capture_count]);
+
+                    if sing_score? < sing_beta {
+                        extension = 1;
+                    }
+                }
+
                 // Context for child node's cont-hist lookup
                 self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
                 self.stack[ply].moved_to = mv.to();
 
-                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move, reduction)?;
+                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move, reduction, extension)?;
 
                 if likely(res.alpha >= beta) {
                     self.stack[ply].cutoff_count += 1;
@@ -1510,8 +1576,17 @@ impl Worker<'_> {
         }
 
         // No legal moves: checkmate (in check) or stalemate (not).
+        // Excluding the only legal move empties the list too, and that is not mate:
+        // fail low so the verification reads the TT move as singular, not the board
+        // as lost.
         if unlikely(res.move_count == 0) {
-            return if in_check { Ok(-MATE + ply as i32) } else { Ok(0) };
+            return if !excluded.is_null() {
+                Ok(alpha)
+            } else if in_check {
+                Ok(-MATE + ply as i32)
+            } else {
+                Ok(0)
+            };
         }
 
         let bound = if res.best_eval >= beta {
@@ -1523,9 +1598,13 @@ impl Worker<'_> {
         };
 
         // ── TT store ──
-        searcher
-            .tt
-            .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv, raw_static_eval);
+        // The verification searched this position with a move missing, so its
+        // result is a lie about the real node. Keep it out of the table.
+        if excluded.is_null() {
+            searcher
+                .tt
+                .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv, raw_static_eval);
+        }
 
         // ── Correction History Update ──
         // Only learn from positions resolved by quiet moves: tactical
@@ -1534,6 +1613,7 @@ impl Worker<'_> {
         // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
         // carries no useful structural signal.
         if !in_check
+            && excluded.is_null()
             && !res.best_move.is_null()
             && !res.best_move.is_tactical()
             && res.best_eval.abs() < MATE_BOUND
@@ -1566,6 +1646,7 @@ impl Worker<'_> {
         root_idx: Option<usize>,
         is_pv_move: bool,
         mut reduction: i32,
+        extension: i32,
     ) -> Result<(), SearchAborted> {
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
@@ -1587,15 +1668,16 @@ impl Worker<'_> {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval = match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, mv) {
-            Ok(v) => v,
-            Err(e) => {
-                searcher.zobrist_trail.pop();
-                self.pos.unmake_move(mv, &undo);
-                self.accumulator = saved_acc;
-                return Err(e);
-            },
-        };
+        let eval =
+            match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv) {
+                Ok(v) => v,
+                Err(e) => {
+                    searcher.zobrist_trail.pop();
+                    self.pos.unmake_move(mv, &undo);
+                    self.accumulator = saved_acc;
+                    return Err(e);
+                },
+            };
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
@@ -1654,26 +1736,30 @@ impl Worker<'_> {
         is_first: bool,
         is_pv_move: bool,
         reduction: i32,
+        extension: i32,
         mv: Move,
     ) -> Result<i32, SearchAborted> {
         // Retrieve the expected PV move for the next ply (ply + 1 is the child node's level).
         // If we are on the PV line and we just played the PV move, we expect the child to also have a PV move.
         let next_pv = if (N::ROOT || N::PV) && is_pv_move { searcher.prev_pv.get(ply + 1) } else { None };
 
+        // Only the singular move arrives with an extension; the rest pass 0.
+        let search_depth = depth - 1 + extension;
+
         if is_first {
             // No bound yet; search wide open.
-            return Ok(-self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?);
+            return Ok(-self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?);
         }
 
         // ── LMR Scout ──
         // Late quiet moves get a shallower scout. If the reduced search
         // still beats alpha, the move earned a full-depth re-search.
-        let reduced_depth = depth - 1 - reduction;
+        let reduced_depth = search_depth - reduction;
         let mut score = -self.negamax::<NonPvNode>(searcher, reduced_depth, -alpha - 1, -alpha, ply + 1, None)?;
 
         // Re-search at full depth if the reduced scout found something.
         if score > alpha && reduction > 0 {
-            score = -self.negamax::<NonPvNode>(searcher, depth - 1, -alpha - 1, -alpha, ply + 1, None)?;
+            score = -self.negamax::<NonPvNode>(searcher, search_depth, -alpha - 1, -alpha, ply + 1, None)?;
 
             // ── Post-LMR Continuation History (~8 Elo) ──
             // The reduced scout beat alpha; the full-depth re-search settles it.
