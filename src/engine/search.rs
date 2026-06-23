@@ -1467,7 +1467,7 @@ impl Worker<'_> {
                     if sing_score < sing_beta {
                         extension = 1;
                     } else if sing_score >= beta && !is_mate(sing_score) {
-                        // ── Multicut ──
+                        // ── Multicut (~15 Elo) ──
                         // The TT bound already reads the TT move as a fail-high,
                         // and with it excluded the verification still cleared beta:
                         // A second move beats it too. Two moves over beta isn't a singular
