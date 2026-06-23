@@ -1462,8 +1462,18 @@ impl Worker<'_> {
                     self.stack[ply].capture_count = saved_capture_count;
                     self.stack[ply].capture_moves[..saved_capture_count].copy_from_slice(&saved_captures[..saved_capture_count]);
 
-                    if sing_score? < sing_beta {
+                    let sing_score = sing_score?;
+
+                    if sing_score < sing_beta {
                         extension = 1;
+                    } else if sing_score >= beta && !is_mate(sing_score) {
+                        // ── Multicut ──
+                        // The TT bound already reads the TT move as a fail-high,
+                        // and with it excluded the verification still cleared beta:
+                        // A second move beats it too. Two moves over beta isn't a singular
+                        // node, it's a cut node, so return the bound. The mate fence stops
+                        // a reduced excluded search from handing back a fabricated mate.
+                        return Ok(sing_score);
                     }
                 }
 
