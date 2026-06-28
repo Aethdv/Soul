@@ -13,6 +13,7 @@
 
 use std::{
     collections::VecDeque,
+    f64::consts::SQRT_2,
     fs::OpenOptions,
     io::{self, Write},
     path::Path,
@@ -21,7 +22,7 @@ use std::{
 
 use soul::engine::search_params::ParamDef;
 
-use super::{cmaes::CmaEs, optimizer::normal_cdf};
+use super::cmaes::CmaEs;
 
 /// Per-generation per-parameter raw observations (pre-clamp).
 #[derive(Clone, Default)]
@@ -253,4 +254,31 @@ impl BoundsTracker {
         }
         "ok".to_string()
     }
+}
+
+/// Gaussian Cumulative Distribution Function,
+/// using Abramowitz & Stegun 7.1.26 approximation
+#[must_use]
+fn normal_cdf(x: f64) -> f64 {
+    0.5 * (1.0 + approx_erf(x / SQRT_2))
+}
+
+/// Abramowitz & Stegun 7.1.26 polynomial approximation to erf.
+/// Max error < 1.5e-7.
+fn approx_erf(x: f64) -> f64 {
+    const A1: f64 = 0.254_829_592;
+    const A2: f64 = -0.284_496_736;
+    const A3: f64 = 1.421_413_741;
+    const A4: f64 = -1.453_152_027;
+    const A5: f64 = 1.061_405_429;
+    const P: f64 = 0.327_591_1;
+
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+
+    let t = P.mul_add(x, 1.0).recip();
+    let poly = A5.mul_add(t, A4).mul_add(t, A3).mul_add(t, A2).mul_add(t, A1);
+    let val = (poly * t).mul_add(-(-x * x).exp(), 1.0);
+
+    sign * val
 }
