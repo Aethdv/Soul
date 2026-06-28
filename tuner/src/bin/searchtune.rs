@@ -116,22 +116,23 @@ fn main() {
 /// Manual help text. MUST be kept in sync with `Args` struct above.
 /// If you add/remove a flag there, mirror it here or nobody will ever find it.
 fn print_help() {
-    let h = Help::new(34);
+    let h = Help::new(30);
 
     h.header("Search Parameter Tuning via Soft Active CMA-ES");
     h.separator();
 
     h.header("Options");
     h.option_default("-o, --openings", "<path>", "Openings EPD file", "UHO_Lichess_4852_v1.epd");
-    h.option_default("-e, --epochs", "<N>", "CMA-ES generations", "50");
-    h.option_default("-p, --pairs", "<N>", "Game pairs per candidate", "16");
+    h.option_default("-c, --config", "<path>", "Config file; supplies every unset option below", "tuner/tuner_config.toml");
+    h.option("-e, --epochs", "<N>", "CMA-ES generations");
+    h.option("-p, --pairs", "<N>", "Game pairs per candidate");
     h.option("-t, --tc", "<time>", "Time control (nodes=N / 4+0.04 / depth=N)");
-    h.option_default("--h2h-tc", "<time>", "H2H validation time control", "1.0+0.01");
-    h.option_default("--val-tc", "<time>", "Ensemble validation time control", "1.0+0.01");
-    h.option_default("--h2h-pairs", "<N>", "Pairs for H2H validation", "300");
-    h.option_default("--val-pairs", "<N>", "Pairs for ensemble validation", "1000");
+    h.option("--h2h-tc", "<time>", "H2H validation time control");
+    h.option("--val-tc", "<time>", "Ensemble validation time control");
+    h.option("--h2h-pairs", "<N>", "Pairs for H2H validation");
+    h.option("--val-pairs", "<N>", "Pairs for ensemble validation");
     h.option("-r, --resume", "", "Resume from checkpoint");
-    h.option_default("--centering-penalty", "<val>", "Centering penalty", "100.0");
-    h.option_default("--speed-penalty", "<val>", "Speed penalty", "115.0");
-    h.option_default("--active-softness", "<val>", "Active CMA-ES softness", "0.5");
+    h.option("--centering-penalty", "<val>", "Centering penalty");
+    h.option("--speed-penalty", "<val>", "Speed penalty");
+    h.option("--active-softness", "<val>", "Active CMA-ES softness");
 }
