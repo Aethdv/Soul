@@ -43,6 +43,11 @@ const H2H_ELO_THRESHOLD: f64 = 4.0;
 /// # Panics
 /// if opening file cannot be read or if internal logic fails.
 pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
+    // Self-play search recurses to MAX_PLY, and nested rayon (candidates over
+    // pairs) can stack a whole search on top of the outer-loop frames on one
+    // worker, so the default ~2 MB worker stack overflows. 16 MB is ample.
+    rayon::ThreadPoolBuilder::new().stack_size(16 * 1024 * 1024).build_global().ok();
+
     let params = search_params::tunable_param_defs();
     let n = params.len();
 
