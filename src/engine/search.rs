@@ -1822,7 +1822,7 @@ impl Worker<'_> {
 
         if score > alpha && score < beta {
             // Genuine improvement; search with full window on the PV.
-            score = -self.negamax::<N::Next>(searcher, depth - 1, -beta, -alpha, ply + 1, next_pv)?;
+            score = -self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?;
         }
 
         Ok(score)
