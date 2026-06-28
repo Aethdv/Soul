@@ -509,7 +509,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                 // ── Dampened Grounding ──
                 // Blend the H2H gain with the absolute grounding match.
                 // This prevents a single noisy match from causing a massive absolute jump.
-                best_elo = (best_elo + h2h_elo + grounded_elo) / 3.0;
+                best_elo = ((best_elo + h2h_elo) + grounded_elo) / 2.0;
                 verified_elo = best_elo;
                 epochs_without_improvement = 0;
 
@@ -541,7 +541,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
         println!(
             "{epoch_c}Epoch {epoch:>3}{r} {sep} \
-             {lab}Best:{r} {best_val_color}{epoch_start_best_elo:>+5.1}{r} {sep} \
+             {lab}Elite:{r} {best_val_color}{epoch_start_best_elo:>+5.1}{r} {sep} \
              {lab}Avg:{r} {avg_val_color}{avg_raw_elo:>+5.1}{r} {sep} \
              {lab}Budget:{r} {budget_c}{effective_pairs:>3}{r} {sep} \
              {lab}σ:{r} {tel}{:.3}{r} {sep} \
@@ -556,7 +556,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             // Marker shows the outcome; the gradient grades the margin.
             let c = elo_color(h2h_elo);
             let (mark, msg) = if won {
-                ("✓", format!("H2H: Challenger wins ({h2h_elo:+.1} Elo) → New elite!"))
+                ("✓", format!("H2H: Challenger wins ({h2h_elo:+.1} Elo) → New elite at {best_elo:+.1}"))
             } else {
                 ("✗", format!("H2H: Defender holds ({h2h_elo:+.1} Elo) → Keeping elite."))
             };
