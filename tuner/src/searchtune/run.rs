@@ -509,7 +509,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                 // ── Dampened Grounding ──
                 // Blend the H2H gain with the absolute grounding match.
                 // This prevents a single noisy match from causing a massive absolute jump.
-                best_elo = (best_elo + h2h_elo + grounded_elo) / 3.0;
+                best_elo = ((best_elo + h2h_elo) + grounded_elo) / 2.0;
                 verified_elo = best_elo;
                 epochs_without_improvement = 0;
 
