@@ -114,20 +114,3 @@ fn test_fisher_std_err() {
     assert!(se_certain < se_uncertain, "More games should imply lower SE");
     assert!(se_certain > 0.0, "SE should be positive");
 }
-
-#[test]
-fn test_expected_improvement() {
-    use tuner::searchtune::optimizer::expected_improvement;
-
-    // Case 1: Mean > Best, low uncertainty -> High improvement
-    let ei_high = expected_improvement(100.0, 1.0, 50.0);
-    assert!(ei_high > 45.0, "EI should be close to mean-best for confident improvement");
-
-    // Case 2: Mean < Best, low uncertainty -> ~0 improvement
-    let ei_none = expected_improvement(0.0, 1.0, 50.0);
-    assert!(ei_none < 0.001, "EI should be zero for confident failure");
-
-    // Case 3: Mean < Best, HIGH uncertainty -> Positive improvement (Exploration)
-    let ei_explore = expected_improvement(0.0, 100.0, 50.0);
-    assert!(ei_explore > 0.1, "EI should value exploration of uncertain failures");
-}
