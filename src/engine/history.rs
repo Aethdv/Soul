@@ -202,9 +202,11 @@ impl CorrectionHistory {
     pub fn update(&mut self, stm: Color, pawn_hash: u64, raw_diff: i32, depth: i32) {
         let entry = &mut self.data[Self::idx(stm, pawn_hash)];
         let weight = ((1 + depth) * (1 + depth) / 4).min(32);
-        let scaled = raw_diff * CORRECTION_SCALE;
+        let scaled = i64::from(raw_diff) * i64::from(CORRECTION_SCALE);
 
-        *entry = ((*entry * (256 - weight) + scaled * weight) / 256).clamp(-CORRECTION_LIMIT, CORRECTION_LIMIT);
+        // Re-clamped to ±CORRECTION_LIMIT, so the cast back can't truncate.
+        let blended = (i64::from(*entry) * i64::from(256 - weight) + scaled * i64::from(weight)) / 256;
+        *entry = blended.clamp(-i64::from(CORRECTION_LIMIT), i64::from(CORRECTION_LIMIT)) as i32;
     }
 }
 
