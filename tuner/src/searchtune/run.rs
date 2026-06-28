@@ -541,7 +541,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
         println!(
             "{epoch_c}Epoch {epoch:>3}{r} {sep} \
-             {lab}Best:{r} {best_val_color}{epoch_start_best_elo:>+5.1}{r} {sep} \
+             {lab}Elite:{r} {best_val_color}{epoch_start_best_elo:>+5.1}{r} {sep} \
              {lab}Avg:{r} {avg_val_color}{avg_raw_elo:>+5.1}{r} {sep} \
              {lab}Budget:{r} {budget_c}{effective_pairs:>3}{r} {sep} \
              {lab}σ:{r} {tel}{:.3}{r} {sep} \
