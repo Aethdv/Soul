@@ -556,7 +556,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             // Marker shows the outcome; the gradient grades the margin.
             let c = elo_color(h2h_elo);
             let (mark, msg) = if won {
-                ("✓", format!("H2H: Challenger wins ({h2h_elo:+.1} Elo) → New elite!"))
+                ("✓", format!("H2H: Challenger wins ({h2h_elo:+.1} Elo) → New elite at {best_elo:+.1}"))
             } else {
                 ("✗", format!("H2H: Defender holds ({h2h_elo:+.1} Elo) → Keeping elite."))
             };
