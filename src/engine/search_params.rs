@@ -1,8 +1,8 @@
 //! Search-specific tunable parameters.
 //!
-//! Each entry generates a struct field, a `pub fn` accessor, and a
-//! `PARAM_DEFS` slice entry in declaration order; the tuner shows and
-//! iterates params in the order they appear in this file.
+//! Each entry generates a struct field and a `PARAM_DEFS` slice entry in
+//! declaration order; the tuner shows and iterates params in the order they
+//! appear in this file.
 //!
 //! Entry forms:
 //!
@@ -14,15 +14,14 @@
 //!
 //! Auto-derive: `min = 0`, `max = default + default/2 + 10`, `step = max/20` (≥ 1).
 //!
-//! Callers `use crate::engine::search_params::*;` for zero-prefix accessors like `rfp_margin()`.
+//! Search reads each value from its own [`SearchParams`]; the tuner reads
+//! bounds and the tunable set from [`PARAM_DEFS`].
 
-use std::sync::atomic::{AtomicI32, Ordering};
-
-/// Metadata + live value pointer for one tunable parameter.
+/// Static metadata for one tunable parameter. The live value rides in a
+/// [`SearchParams`], one per searcher; this is only the bounds the tuner reasons over.
 #[derive(Debug)]
 pub struct ParamDef {
     pub name: &'static str,
-    pub value: &'static AtomicI32,
     pub min: f64,
     pub max: f64,
     pub step: f64,
@@ -47,16 +46,6 @@ impl ParamDef {
         let val = normalized.mul_add(self.max - self.min, self.min);
         let snapped = if self.step > 1e-9 { self.min + ((val - self.min) / self.step).round() * self.step } else { val };
         snapped.clamp(self.min, self.max)
-    }
-
-    #[inline]
-    pub fn read(&self) -> i32 {
-        self.value.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn write(&self, v: i32) {
-        self.value.store(v, Ordering::Relaxed);
     }
 }
 
@@ -154,54 +143,51 @@ macro_rules! search_params {
             }
         }
 
-        $(
-            paste::paste! {
-                #[allow(non_upper_case_globals)]
-                static [<__VAL_ $field>]: AtomicI32 = AtomicI32::new($def);
-
-                #[inline(always)]
-                pub fn $field() -> i32 {
-                    [<__VAL_ $field>].load(Ordering::Relaxed)
-                }
-            }
-        )*
-
         /// All registered params in source-declaration order, frozen + tunable mixed.
         /// Use [`tunable_param_defs`] when the tuner only needs the active set.
         pub static PARAM_DEFS: &[ParamDef] = &[
-            $( paste::paste! {
+            $(
                 ParamDef {
                     name: stringify!($field),
-                    value: &[<__VAL_ $field>],
                     min: $min as f64,
                     max: $max as f64,
                     step: $step as f64,
                     default: $def as f64,
                     frozen: $frozen,
                 }
-            } ),*
+            ),*
         ];
 
-        pub fn flush_into(sp: &$name) {
-            $( paste::paste! { [<__VAL_ $field>].store(sp.$field, Ordering::Relaxed); } )*
-        }
-
-        pub fn collect_as() -> $name {
-            let mut sp = $name::default();
-            $( paste::paste! { sp.$field = [<__VAL_ $field>].load(Ordering::Relaxed); } )*
-            sp
-        }
-
         impl $name {
+            /// Build from a normalized tunable vector: frozen params keep their
+            /// default, tunables take `values` in declaration order.
             pub fn from_normalized(values: &[f64]) -> Self {
-                for (def, &norm) in tunable_param_defs().iter().zip(values) {
-                    def.write(def.denormalize(norm).round() as i32);
-                }
-                collect_as()
+                let defs = tunable_param_defs();
+                let mut sp = Self::default();
+                let mut i = 0;
+                $(
+                    if !$frozen {
+                        sp.$field = defs[i].denormalize(values[i]).round() as i32;
+                        i += 1;
+                    }
+                )*
+                let _ = i;
+                sp
             }
 
-            pub fn to_normalized() -> Vec<f64> {
-                tunable_param_defs().iter().map(|def| def.normalize(def.read() as f64)).collect()
+            /// Normalize this struct's tunable params back to `[0, 1]`, declaration order.
+            pub fn to_normalized(&self) -> Vec<f64> {
+                let defs = tunable_param_defs();
+                let mut out = Vec::with_capacity(defs.len());
+                let mut i = 0;
+                $(
+                    if !$frozen {
+                        out.push(defs[i].normalize(self.$field as f64));
+                        i += 1;
+                    }
+                )*
+                let _ = i;
+                out
             }
         }
     };

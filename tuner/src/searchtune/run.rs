@@ -52,20 +52,22 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
     // Convert default ParamDefs into normalized f64 vector
     let mut initial_mean = vec![0.0; n];
+
     for (i, p) in params.iter().enumerate() {
         initial_mean[i] = p.normalize(p.default);
     }
+
     cmaes.set_mean(&initial_mean);
     cmaes.set_sigma(config.sigma_init);
 
     let mut start_epoch = 1;
-
     let mut best_elo = 0.0;
     let mut best_params = cmaes.current_mean();
     let mut restart_count = 0usize;
     let mut epochs_without_improvement = 0usize;
     let mut last_best_elo = f64::NEG_INFINITY;
     let mut elo_cache = EloCache::default();
+
     let match_cache = MatchCache::new(config.tc.as_deref().unwrap_or("4+0.04"));
 
     // ── Adaptive Budget State ──
@@ -109,6 +111,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     println!("  Step size (σ₀):  {:.2}", cmaes.sigma());
     println!();
     println!("\x1b[90m ─── Parameters ({n}) ───\x1b[0m");
+
     for p in &params {
         println!(
             " \x1b[38;5;250m{:<22}\x1b[0m \x1b[1;37m{:>6}\x1b[0m   \x1b[90m{:>6} .. {:<6}\x1b[0m",
@@ -140,10 +143,12 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     // ── Bounds Reporter ──
     let bounds_path = config.bounds_report_path.clone();
     let bounds_path_ref = Path::new(&bounds_path);
+
     if !resume {
         // Fresh run: prior report's [min, max] interpretation may no longer apply.
         let _ = fs::remove_file(bounds_path_ref);
     }
+
     let mut bounds = BoundsTracker::new(n, BoundsConfig {
         window_gens: config.bounds_window_gens,
         alarm_multiplier: config.bounds_alarm_multiplier,
@@ -184,6 +189,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             config.h2h_pairs,
             config.h2h_tc.as_deref().unwrap_or("1.0+0.01"),
         );
+
         best_elo = grounded_elo;
         verified_elo = best_elo;
         last_best_elo = best_elo;
@@ -225,6 +231,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         rng.shuffle(&mut all_indices);
 
         let mut epoch_openings = Vec::with_capacity(effective_pairs);
+
         for i in 0..effective_pairs {
             epoch_openings.push(openings[all_indices[i % openings.len()]].clone());
         }
@@ -503,7 +510,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
                 // Feed the grounding match back to the cache too
                 let weight = 1.0 / (2.5f64.powi(2) + 1.0);
-                elo_cache.add(best_params.clone(), SearchParams::to_normalized(), verified_elo, weight);
+                elo_cache.add(best_params.clone(), SearchParams::default().to_normalized(), verified_elo, weight);
             }
 
             h2h_result = Some((h2h_elo > 0.0, h2h_elo));

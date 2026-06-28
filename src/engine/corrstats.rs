@@ -19,7 +19,10 @@ use std::{
 
 use crate::{
     color,
-    engine::history::{CORRECTION_LIMIT, CORRECTION_SCALE, CORRECTION_WEIGHT_SCALE},
+    engine::{
+        history::{CORRECTION_LIMIT, CORRECTION_SCALE, CORRECTION_WEIGHT_SCALE},
+        search_params::SearchParams,
+    },
 };
 
 const RESET: &str = "\x1b[0m";
@@ -159,8 +162,8 @@ fn sat_pct(i: usize) -> f64 {
 /// Blend weight each table contributes at, over `CORRECTION_WEIGHT_SCALE`.
 /// Pawn is unscaled, so it sits at full weight.
 fn weights() -> [i32; TABLES] {
-    use crate::engine::search_params::{major_corr_weight, minor_corr_weight};
-    [CORRECTION_WEIGHT_SCALE, minor_corr_weight(), major_corr_weight()]
+    let sp = SearchParams::default();
+    [CORRECTION_WEIGHT_SCALE, sp.minor_corr_weight, sp.major_corr_weight]
 }
 
 /// Hooman counters.
@@ -178,6 +181,7 @@ fn human(n: u64) -> String {
 fn cell(text: &str, col: usize, rgb: Option<color::Rgb>, ansi: bool) -> String {
     let (_, w, right) = COLS[col];
     let padded = if right { format!("{text:>w$}") } else { format!("{text:<w$}") };
+
     match rgb {
         Some(c) if ansi => format!("{}{padded}{RESET}", color::ansi_fg(c)),
         _ => padded,
