@@ -358,20 +358,28 @@ impl CmaEs {
         let old_mean = self.mean.clone();
         let std_devs: Vec<f64> = self.variances.iter().map(|v| v.sqrt()).collect();
 
-        self.mean.fill(0.0);
+        // Recombination mean at full rate (eta = 1). The evolution paths must see
+        // the unscaled natural-gradient step: eta scales only the final mean and
+        // covariance deltas, never the paths. An eta-scaled step biases ||p_sigma||
+        // toward eta·chi_n, so CSA shrinks sigma with no signal, and since eta falls
+        // as the search converges the decay compounds.
+        let mut recomb = vec![0.0; self.n];
+
         for (i, &idx) in indices.iter().enumerate().take(self.mu) {
-            let w = self.weights[i] * self.eta;
-            for (m, &x) in self.mean.iter_mut().zip(&population_normalized[idx]) {
-                *m = w.mul_add(x, *m);
+            let w = self.weights[i];
+
+            for (r, &x) in recomb.iter_mut().zip(&population_normalized[idx]) {
+                *r = w.mul_add(x, *r);
             }
         }
 
-        for (m, &om) in self.mean.iter_mut().zip(&old_mean) {
-            *m = (1.0 - self.eta).mul_add(om, *m);
-        }
-
-        let y: Vec<f64> = self.mean.iter().zip(&old_mean).map(|(&m, &om)| (m - om) / self.sigma).collect();
+        let y: Vec<f64> = recomb.iter().zip(&old_mean).map(|(&r, &om)| (r - om) / self.sigma).collect();
         let z_mean: Vec<f64> = y.iter().zip(&std_devs).map(|(&yi, &si)| yi / si).collect();
+
+        // Mean update at the LRA rate: m ← old_mean + eta · (recomb - old_mean).
+        for ((m, &r), &om) in self.mean.iter_mut().zip(&recomb).zip(&old_mean) {
+            *m = self.eta.mul_add(r - om, om);
+        }
 
         for (ps, &zi) in self.p_sigma.iter_mut().zip(&z_mean) {
             *ps = (1.0 - self.c_sigma).mul_add(*ps, (self.c_sigma * (2.0 - self.c_sigma) * self.mu_eff).sqrt() * zi);
