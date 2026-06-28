@@ -234,14 +234,14 @@ impl MovePicker {
                     if !self.is_qsearch && !mv.is_promotion() {
                         let attacker = board.piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
-                        let v_val = *debug_index!(self.mvvlva_v, victim as usize);
-                        let a_val = *debug_index!(self.mvvlva_v, attacker as usize);
+                        let victim_val = *debug_index!(self.mvvlva_v, victim as usize);
+                        let attacker_val = *debug_index!(self.mvvlva_v, attacker as usize);
 
                         // A capture winning material (victim worth at least the attacker) has
                         // SEE >= 0, so it's good without the exchange walk; only material-losing
                         // captures are ambiguous enough to need SEE. The common cutoff-causing
                         // captures sort to the front and skip it entirely.
-                        if v_val < a_val && !see_ge(board, mv, -self.good_capture_margin) {
+                        if victim_val < attacker_val && !see_ge(board, mv, -self.good_capture_margin) {
                             // SAFETY: count + bad_count <= total moves <= MAX_MOVES, so the park
                             // slot MAX_MOVES-1-bad_count is always >= count, never aliasing the
                             // active region [0, count) nor the quiets that later fill it.

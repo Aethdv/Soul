@@ -349,16 +349,16 @@ impl TranspositionTable {
         let mut is_exact_match = false;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, bound, depth) = slot.meta();
+            let (key, slot_bound, slot_depth) = slot.meta();
 
-            if bound == BOUND_NONE || key == key16 {
+            if slot_bound == BOUND_NONE || key == key16 {
                 replace = i;
                 is_exact_match = key == key16;
                 break;
             }
 
             let gen_diff = (cur.wrapping_sub(slot.age()) & AGE_MASK) as i32;
-            let quality = depth as i32 - gen_diff * AGE_FACTOR;
+            let quality = slot_depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality < worst_quality {
                 worst_quality = quality;
@@ -409,16 +409,16 @@ impl TranspositionTable {
         let mut is_key_match = false;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, bound, depth) = slot.meta();
+            let (key, slot_bound, slot_depth) = slot.meta();
 
-            if key == key16 || bound == BOUND_NONE || depth == 0 {
+            if key == key16 || slot_bound == BOUND_NONE || slot_depth == 0 {
                 best_idx = Some(i);
                 is_key_match = key == key16;
                 break;
             }
 
             let gen_diff = (cur.wrapping_sub(slot.age()) & AGE_MASK) as i32;
-            let quality = depth as i32 - gen_diff * AGE_FACTOR;
+            let quality = slot_depth as i32 - gen_diff * AGE_FACTOR;
 
             if quality <= 0 && quality < best_quality {
                 best_quality = quality;
