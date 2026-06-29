@@ -24,6 +24,7 @@ use crate::{
         board::{
             B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS, CASTLE_B_QS_CHECK,
             CASTLE_W_KS, CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position, W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
+            attacks::Pins,
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook},
         },
         defs::{Bitboard, Color, MAX_MOVES, MoveScore, NOT_A, NOT_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
@@ -33,7 +34,7 @@ use crate::{
     engine::{
         history::{ContContext, History},
         search::SearchConfig,
-        see::see_ge,
+        see::see_ge_with,
     },
 };
 
@@ -81,6 +82,8 @@ pub struct MovePicker {
     mvvlva_a: [i32; 8],
     mvvlva_ep: i32,
     capt_hist_divisor: i32,
+    /// The node's pins, so the good/bad split's SEE calls don't each rescan.
+    pins: Pins,
     killers: [Move; 2],
     threats: Bitboard,
     cont1: ContContext,
@@ -110,6 +113,7 @@ impl MovePicker {
     pub fn new(
         hash_move: Option<Move>,
         cfg: &SearchConfig,
+        pins: Pins,
         killers: [Move; 2],
         threats: Bitboard,
         cont1: ContContext,
@@ -127,6 +131,7 @@ impl MovePicker {
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
+            pins,
             killers,
             threats,
             cont1,
@@ -142,7 +147,7 @@ impl MovePicker {
     }
 
     #[inline]
-    pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, in_check: bool) -> Self {
+    pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
         Self {
             stage: Stage::Hash,
             hash_move,
@@ -154,6 +159,7 @@ impl MovePicker {
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
+            pins,
             killers: [Move::null(); 2],
             threats: Bitboard(0),
             cont1: ContContext::default(),
@@ -241,7 +247,7 @@ impl MovePicker {
                         // SEE >= 0, so it's good without the exchange walk; only material-losing
                         // captures are ambiguous enough to need SEE. The common cutoff-causing
                         // captures sort to the front and skip it entirely.
-                        if victim_val < attacker_val && !see_ge(board, mv, -self.good_capture_margin) {
+                        if victim_val < attacker_val && !see_ge_with(board, mv, -self.good_capture_margin, &self.pins) {
                             // SAFETY: count + bad_count <= total moves <= MAX_MOVES, so the park
                             // slot MAX_MOVES-1-bad_count is always >= count, never aliasing the
                             // active region [0, count) nor the quiets that later fill it.

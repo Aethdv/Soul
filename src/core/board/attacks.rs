@@ -151,3 +151,35 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
 
     pinned
 }
+
+/// Both colors' king-pinned pieces and their king squares. A pin is one fact, a
+/// piece tied to the line through its king, and it binds that piece the same way
+/// whether legality asks if a move leaves the line or SEE asks if a recapture
+/// would. So the position is scanned once here, and both read the one answer.
+#[derive(Clone, Copy)]
+pub struct Pins {
+    pinned: [Bitboard; 2],
+    king_sq: [Square; 2],
+}
+
+impl Pins {
+    #[inline]
+    pub fn new(pos: &Position) -> Self {
+        Self {
+            pinned: [pinned_pieces(pos, Color::White), pinned_pieces(pos, Color::Black)],
+            king_sq: [pos.pieces(PieceType::King, Color::White).lsb(), pos.pieces(PieceType::King, Color::Black).lsb()],
+        }
+    }
+
+    /// Pieces of `color` pinned to their own king.
+    #[inline]
+    pub fn blockers(&self, color: Color) -> Bitboard {
+        self.pinned[color]
+    }
+
+    /// `color`'s king square.
+    #[inline]
+    pub fn king(&self, color: Color) -> Square {
+        self.king_sq[color]
+    }
+}

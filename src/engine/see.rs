@@ -19,10 +19,10 @@ use crate::{
     core::{
         board::{
             Position,
-            attacks::all_attackers_to,
-            bitboard::{atk_bishop, atk_rook},
+            attacks::{Pins, all_attackers_to},
+            bitboard::{atk_bishop, atk_rook, line_bb},
         },
-        defs::{Bitboard, PieceType, Square},
+        defs::{Bitboard, Color, PieceType, Square},
         moves::Move,
     },
     engine::eval_params::MG_MATERIAL,
@@ -42,13 +42,23 @@ const SEE_VALUE: [i32; 8] = {
 /// Is the static exchange on `mv`'s destination square at least
 /// `threshold` centipawns for the side making `mv`?
 ///
+/// Scans the pins itself, for a one-off call. A loop of exchanges at one
+/// position should share a single [`Pins`] through [`see_ge_with`] instead.
+#[must_use]
+pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
+    see_ge_with(pos, mv, threshold, &Pins::new(pos))
+}
+
+/// [`see_ge`] handed a pin scan to reuse, so a loop of exchanges at one
+/// position pays for it once.
+///
 /// Correctly models en passant (the victim pawn lives on `to ^ 8`),
 /// promotion (the pawn transforms into the promoted piece for the rest
 /// of the trade, and the side earns the `promo − pawn` upgrade),
 /// castling (materially neutral; legality already guaranteed by
 /// movegen), and revealed slider x-rays through vacated squares.
 #[must_use]
-pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
+pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
     // Castling is the special case the exchange loop would mishandle:
     // the king and the rook both land on movegen-verified-safe squares,
     // and no capture is involved. Material impact is zero, so any
@@ -103,7 +113,9 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     if mv.is_en_passant() {
         occ ^= (to ^ 8).bitboard();
     }
-    let mut attackers = all_attackers_to(pos, to, occ) & occ;
+
+    let excluded = pin_excluded(pins, to);
+    let mut attackers = all_attackers_to(pos, to, occ) & occ & !excluded;
 
     let diag = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
     let orth = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
@@ -167,7 +179,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
             },
             _ => {},
         }
-        attackers &= occ;
+        attackers &= occ & !excluded;
 
         // Negamax flip: the next player's running deficit is this
         // attacker's value minus the previous player's deficit.
@@ -192,6 +204,14 @@ fn val(pt: PieceType) -> i32 {
 #[inline(always)]
 fn lsb_of(bb: Bitboard) -> Option<Square> {
     if bb.is_empty() { None } else { Some(bb.lsb()) }
+}
+
+/// Pinned attackers that can't legally recapture on `to`: a pinned piece moves
+/// only along its pin ray, so it reaches `to` only when `to` lies on that ray.
+#[inline]
+fn pin_excluded(pins: &Pins, to: Square) -> Bitboard {
+    (pins.blockers(Color::White) & !line_bb(pins.king(Color::White), to))
+        | (pins.blockers(Color::Black) & !line_bb(pins.king(Color::Black), to))
 }
 
 #[cfg(test)]
@@ -317,5 +337,11 @@ mod tests {
     fn capture_promotion_undefended() {
         // PxN with promotion: +N + (Q − P)
         assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", n() + q() - p());
+    }
+
+    #[test]
+    fn pinned_defender_cannot_recapture() {
+        // Nc4 guards e5 but is pinned to Ka6 by Be2, so RxP has no recapture
+        assert_see("8/8/k7/4p2R/2n5/8/4B3/6K1 w - - 0 1", "h5e5", p());
     }
 }
