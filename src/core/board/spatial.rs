@@ -102,26 +102,26 @@ impl SpatialTensor {
     pub fn compute(pos: &Position, pinned_w: u64, pinned_b: u64) -> Self {
         let occ = pos.occ.0;
         let empty = Vu64x4::splat(!occ);
-        let w_pcs = pos.side_bb[Color::White as usize].0;
-        let b_pcs = pos.side_bb[Color::Black as usize].0;
+        let w_pcs = pos.side_bb[Color::White].0;
+        let b_pcs = pos.side_bb[Color::Black].0;
 
-        let w_rq = (pos.role_bb[PieceType::Rook as usize] & pos.side_bb[Color::White as usize]
-            | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::White as usize])
+        let w_rq = (pos.role_bb[PieceType::Rook] & pos.side_bb[Color::White]
+            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::White])
             .0
             & !pinned_w;
 
-        let b_rq = (pos.role_bb[PieceType::Rook as usize] & pos.side_bb[Color::Black as usize]
-            | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::Black as usize])
+        let b_rq = (pos.role_bb[PieceType::Rook] & pos.side_bb[Color::Black]
+            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::Black])
             .0
             & !pinned_b;
 
-        let w_bq = (pos.role_bb[PieceType::Bishop as usize] & pos.side_bb[Color::White as usize]
-            | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::White as usize])
+        let w_bq = (pos.role_bb[PieceType::Bishop] & pos.side_bb[Color::White]
+            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::White])
             .0
             & !pinned_w;
 
-        let b_bq = (pos.role_bb[PieceType::Bishop as usize] & pos.side_bb[Color::Black as usize]
-            | pos.role_bb[PieceType::Queen as usize] & pos.side_bb[Color::Black as usize])
+        let b_bq = (pos.role_bb[PieceType::Bishop] & pos.side_bb[Color::Black]
+            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::Black])
             .0
             & !pinned_b;
 

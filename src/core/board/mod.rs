@@ -676,35 +676,27 @@ impl Position {
     /// Zobrist hash of all pawns (both colors). Recomputed from scratch, for
     /// initialization and debug verification against the incremental [`Self::pawn_key`].
     pub fn calc_pawn_hash(&self) -> u64 {
-        let mut key = 0u64;
-        let pawns = self.role_bb[PieceType::Pawn];
-
-        for sq in pawns {
-            key ^= zobrist::key_piece(PieceType::Pawn, self.color_at(sq), sq);
-        }
-        key
+        self.calc_subset_hash(self.role_bb[PieceType::Pawn])
     }
 
     /// Zobrist hash of all minor pieces (knights + bishops, both colors).
     /// Keys minor correction history. Global like `calc_pawn_hash`: the
     /// stm dimension in the table carries perspective.
     pub fn calc_minor_hash(&self) -> u64 {
-        let mut key = 0u64;
-        let minors = self.role_bb[PieceType::Knight] | self.role_bb[PieceType::Bishop];
-
-        for sq in minors {
-            key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
-        }
-        key
+        self.calc_subset_hash(self.role_bb[PieceType::Knight] | self.role_bb[PieceType::Bishop])
     }
 
     /// Zobrist hash of all major pieces (rooks + queens, both colors).
     /// Keys major correction history. Global like `calc_pawn_hash`.
     pub fn calc_major_hash(&self) -> u64 {
-        let mut key = 0u64;
-        let majors = self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen];
+        self.calc_subset_hash(self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen])
+    }
 
-        for sq in majors {
+    /// XOR-folds each piece's Zobrist key over a subset of the board,
+    /// the key schema the correction-history tables index on.
+    fn calc_subset_hash(&self, pieces: Bitboard) -> u64 {
+        let mut key = 0u64;
+        for sq in pieces {
             key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
         }
         key

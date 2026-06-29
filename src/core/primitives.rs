@@ -1,6 +1,4 @@
 //! Bitboards, squares, and core spatial primitives.
-//!
-//! Provides the fundamental representations for chess board geometry.
 
 use std::{
     fmt,
