@@ -19,10 +19,10 @@ use crate::{
     core::{
         board::{
             Position,
-            attacks::all_attackers_to,
-            bitboard::{atk_bishop, atk_rook},
+            attacks::{all_attackers_to, pinned_pieces},
+            bitboard::{atk_bishop, atk_rook, line_bb},
         },
-        defs::{Bitboard, PieceType, Square},
+        defs::{Bitboard, Color, PieceType, Square},
         moves::Move,
     },
     engine::eval_params::MG_MATERIAL,
@@ -103,7 +103,10 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
     if mv.is_en_passant() {
         occ ^= (to ^ 8).bitboard();
     }
-    let mut attackers = all_attackers_to(pos, to, occ) & occ;
+
+    // Past the early exits, so a trivial exchange skips the pin scan.
+    let excluded = pinned_excluded(pos, to);
+    let mut attackers = all_attackers_to(pos, to, occ) & occ & !excluded;
 
     let diag = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
     let orth = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
@@ -167,7 +170,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
             },
             _ => {},
         }
-        attackers &= occ;
+        attackers &= occ & !excluded;
 
         // Negamax flip: the next player's running deficit is this
         // attacker's value minus the previous player's deficit.
@@ -192,6 +195,28 @@ fn val(pt: PieceType) -> i32 {
 #[inline(always)]
 fn lsb_of(bb: Bitboard) -> Option<Square> {
     if bb.is_empty() { None } else { Some(bb.lsb()) }
+}
+
+/// Pinned attackers that can't legally recapture on `to`.
+///
+/// A pinned piece moves only along its pin ray, so it can recapture on `to`
+/// only when `to` lies on that ray.
+///
+/// Pins are read once against the pre-exchange occupancy, so a pin the trade
+/// later breaks still excludes its piece. A known approximation.
+fn pinned_excluded(pos: &Position, to: Square) -> Bitboard {
+    let mut excluded = Bitboard(0);
+
+    for color in [Color::White, Color::Black] {
+        let pinned = pinned_pieces(pos, color);
+
+        if pinned.is_not_empty() {
+            let king_sq = pos.pieces(PieceType::King, color).lsb();
+            excluded |= pinned & !line_bb(king_sq, to);
+        }
+    }
+
+    excluded
 }
 
 #[cfg(test)]
@@ -317,5 +342,11 @@ mod tests {
     fn capture_promotion_undefended() {
         // PxN with promotion: +N + (Q − P)
         assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", n() + q() - p());
+    }
+
+    #[test]
+    fn pinned_defender_cannot_recapture() {
+        // Nc4 guards e5 but is pinned to Ka6 by Be2, so RxP has no recapture
+        assert_see("8/8/k7/4p2R/2n5/8/4B3/6K1 w - - 0 1", "h5e5", p());
     }
 }
