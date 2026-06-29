@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     core::{
-        defs::{MATE, MAX_PLY},
+        defs::{is_loss, is_win},
         moves::Move,
     },
     hugepages::{HugePages, PageKind},
@@ -470,9 +470,9 @@ impl TranspositionTable {
     /// takes it back out. Ordinary scores pass through untouched.
     #[inline(always)]
     fn score_to_tt(score: i32, ply: usize) -> i32 {
-        if score >= MATE - MAX_PLY as i32 {
+        if is_win(score) {
             score + ply as i32
-        } else if score <= -MATE + MAX_PLY as i32 {
+        } else if is_loss(score) {
             score - ply as i32
         } else {
             score
@@ -483,9 +483,9 @@ impl TranspositionTable {
     /// the inverse of `score_to_tt`, subtracting the ply that store folded in.
     #[inline(always)]
     fn score_from_tt(score: i32, ply: usize) -> i32 {
-        if score >= MATE - MAX_PLY as i32 {
+        if is_win(score) {
             score - ply as i32
-        } else if score <= -MATE + MAX_PLY as i32 {
+        } else if is_loss(score) {
             score + ply as i32
         } else {
             score

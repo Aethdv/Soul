@@ -359,10 +359,22 @@ pub fn draw_score(nodes: u64) -> i32 {
     (nodes & 0x7) as i32 - 3
 }
 
+/// A forced mate the side to move delivers.
+#[inline]
+pub fn is_win(score: i32) -> bool {
+    score > MATE_BOUND
+}
+
+/// A forced mate delivered against the side to move.
+#[inline]
+pub fn is_loss(score: i32) -> bool {
+    score < -MATE_BOUND
+}
+
 /// Whether `score` is a forced mate rather than a normal evaluation.
 #[inline]
 pub fn is_mate(score: i32) -> bool {
-    score.abs() > MATE_BOUND
+    is_win(score) || is_loss(score)
 }
 
 /// Let chess types serve as array indices directly:
