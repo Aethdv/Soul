@@ -36,7 +36,7 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::Position,
-        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate},
+        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win},
         moves::Move,
     },
     engine::{
@@ -1137,7 +1137,7 @@ impl Worker<'_> {
             self.stack[ply + 1].is_null = false;
 
             if score >= beta {
-                let null_score = if score > MATE_BOUND { beta } else { score };
+                let null_score = if is_win(score) { beta } else { score };
 
                 // ── Verification Search ──
                 // At or below nmp_verif_min_depth, trust the cutoff outright.
@@ -1483,8 +1483,10 @@ impl Worker<'_> {
                         // The TT bound already reads the TT move as a fail-high,
                         // and with it excluded the verification still cleared beta:
                         // A second move beats it too. Two moves over beta isn't a singular
-                        // node, it's a cut node, so return the bound. The mate fence stops
-                        // a reduced excluded search from handing back a fabricated mate.
+                        // node, it's a cut node, so return the bound. Not on a mate, though:
+                        // the verification skipped the best move, which may mate faster than the
+                        // line it found, so sing_score's distance may overstate the node's.
+                        // Search the move instead of committing to it.
                         return Ok(sing_score);
                     }
                 }
