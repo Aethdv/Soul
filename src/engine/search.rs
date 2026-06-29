@@ -35,7 +35,7 @@ use std::{
 pub use crate::core::defs::Protocol;
 use crate::{
     core::{
-        board::Position,
+        board::{Position, attacks::Pins},
         defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win},
         moves::Move,
     },
@@ -45,7 +45,7 @@ use crate::{
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
         search_params::*,
-        see::see_ge,
+        see::see_ge_with,
         tm::TimeManager,
         tt,
         tt::TranspositionTable,
@@ -1160,6 +1160,9 @@ impl Worker<'_> {
             }
         }
 
+        // One pin scan for the whole node: legality and every SEE read it.
+        let pins = Pins::new(&self.pos);
+
         // ── ProbCut (~4 Elo) ──
         // A capture that clears a raised beta (beta + margin) under a shallow search
         // would almost surely clear plain beta at full depth, so the node is a
@@ -1171,10 +1174,10 @@ impl Worker<'_> {
 
             let stm = self.pos.stm;
             let opp = stm.opposite();
-            let ksq = self.pos.pieces(PieceType::King, stm).lsb();
-            let pinned = self.pos.king_blockers();
+            let ksq = pins.king(stm);
+            let pinned = pins.blockers(stm);
 
-            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, false);
+            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
 
             while let Some(mv) = picker.next(&self.pos, self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
@@ -1183,7 +1186,7 @@ impl Worker<'_> {
 
                 // The capture must win enough material to plausibly reach the
                 // raised beta from here; a smaller swing can't clear it.
-                if !see_ge(&self.pos, mv, probcut_beta - static_eval) {
+                if !see_ge_with(&self.pos, mv, probcut_beta - static_eval, &pins) {
                     continue;
                 }
 
@@ -1258,8 +1261,8 @@ impl Worker<'_> {
             let stm = self.pos.stm;
             let opp = stm.opposite();
             let threats = self.pos.threats(opp);
-            let ksq = self.pos.pieces(PieceType::King, stm).lsb();
-            let pinned = self.pos.king_blockers();
+            let ksq = pins.king(stm);
+            let pinned = pins.blockers(stm);
 
             // Track searched quiets and captures to penalize them if a later move causes a cutoff.
             self.stack[ply].quiet_count = 0;
@@ -1288,7 +1291,7 @@ impl Worker<'_> {
             };
 
             // Interior: staged move generation via MovePicker.
-            let mut picker = MovePicker::new(hash_move, searcher.cfg, self.stack[ply].killers, threats, cont1, cont2, cont4);
+            let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
             while let Some(mv) = picker.next(&self.pos, self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -1397,7 +1400,7 @@ impl Worker<'_> {
                     let margin =
                         if mv.is_capture() { -sp.see_capture_margin * depth } else { -sp.see_quiet_margin * depth * depth };
 
-                    if !see_ge(&self.pos, mv, margin) {
+                    if !see_ge_with(&self.pos, mv, margin, &pins) {
                         continue;
                     }
                 }
@@ -1945,10 +1948,11 @@ impl Worker<'_> {
         let mut moves_made = 0;
         let mut best_move = Move::null();
 
-        let ksq = self.pos.pieces(PieceType::King, stm).lsb();
-        let pinned = self.pos.king_blockers();
+        let pins = Pins::new(&self.pos);
+        let ksq = pins.king(stm);
+        let pinned = pins.blockers(stm);
 
-        let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, pins, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 
@@ -1974,7 +1978,7 @@ impl Worker<'_> {
             // Skip captures whose destination-square trade loses material
             // for us. Disabled in check because evasions are forced and
             // the only legal reply is often a losing defensive capture.
-            if !in_check && !see_ge(&self.pos, mv, 0) {
+            if !in_check && !see_ge_with(&self.pos, mv, 0, &pins) {
                 continue;
             }
 
