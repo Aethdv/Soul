@@ -1,6 +1,4 @@
 //! Bitboards, squares, and core spatial primitives.
-//!
-//! Provides the fundamental representations for chess board geometry.
 
 use std::{
     fmt,
@@ -317,9 +315,7 @@ impl Square {
     /// Returns the algebraic notation as an owned string (e.g. `"e4"`).
     #[must_use]
     pub fn to_algebraic(self) -> String {
-        let file = (b'a' + self.file()) as char;
-        let rank = (b'1' + self.rank()) as char;
-        format!("{file}{rank}")
+        self.to_string()
     }
 }
 
