@@ -41,7 +41,7 @@ use crate::{
     },
     engine::{
         eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, extract_phase},
-        history::{self, ContContext, History},
+        history::{self, ContContext, History, HistoryCaps},
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
         search_params::*,
@@ -439,6 +439,7 @@ impl<'cfg> Searcher<'cfg> {
     #[inline]
     pub fn iterative_deepening(&mut self, history: &mut History) {
         let sp = &self.cfg.search_params;
+        history.caps = HistoryCaps::from(sp);
         self.nodes = 0;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {

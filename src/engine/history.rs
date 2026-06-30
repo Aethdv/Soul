@@ -16,7 +16,10 @@
 //! outcomes, so it sits here despite the different job, and it's the heaviest
 //! single Elo contributor in the file.
 
-use crate::core::defs::{Bitboard, Color, PieceType, Square};
+use crate::{
+    core::defs::{Bitboard, Color, PieceType, Square},
+    engine::search_params::SearchParams,
+};
 
 pub const CORRECTION_SIZE: usize = 16384;
 pub const CORRECTION_SCALE: i32 = 256;
@@ -25,6 +28,36 @@ pub const CORRECTION_LIMIT: i32 = 256 * 32;
 pub const CORRECTION_WEIGHT_SCALE: i32 = 256;
 
 const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
+
+/// Per-table soft-gravity saturation caps, refreshed from `SearchParams` each
+/// search. A table pulls its entries toward ±cap; the same value bounds the
+/// entry and divides the gravity term, so the two move as one. Must stay in
+/// `(0, i16::MAX]`: a zero cap divides by zero, a cap past `i16::MAX` overflows
+/// the `as i16` store.
+#[derive(Clone, Copy)]
+pub struct HistoryCaps {
+    pub quiet: i32,
+    pub butterfly: i32,
+    pub cont: i32,
+    pub capt: i32,
+}
+
+impl From<&SearchParams> for HistoryCaps {
+    fn from(sp: &SearchParams) -> Self {
+        Self {
+            quiet: sp.quiet_hist_cap,
+            butterfly: sp.butterfly_hist_cap,
+            cont: sp.cont_hist_cap,
+            capt: sp.capt_hist_cap,
+        }
+    }
+}
+
+impl Default for HistoryCaps {
+    fn default() -> Self {
+        Self::from(&SearchParams::default())
+    }
+}
 
 /// Combined history tables for move ordering.
 #[derive(Clone)]
@@ -44,6 +77,8 @@ pub struct History {
     major_correction: CorrectionHistory,
     /// `[side][attacker][to][victim]`
     capt: CaptureHistory, // ~8 Elo
+    /// Soft-gravity saturation caps, refreshed from `SearchParams` each search.
+    pub caps: HistoryCaps,
 }
 
 #[derive(Clone, Copy)]
@@ -227,6 +262,7 @@ impl History {
             minor_correction: CorrectionHistory::new(),
             major_correction: CorrectionHistory::new(),
             capt: CaptureHistory::new(),
+            caps: HistoryCaps::default(),
         }
     }
 
@@ -299,17 +335,21 @@ impl History {
     ) {
         let from_atk = threats.check_bit(from) as usize;
         let to_atk = threats.check_bit(to) as usize;
-        Self::update_entry(&mut self.table[stm][pt][to], bonus);
-        Self::update_entry(&mut self.butterfly[stm][from_atk][to_atk][(from.0 as usize) * 64 + (to.0 as usize)], bonus);
+        Self::update_entry(&mut self.table[stm][pt][to], bonus, self.caps.quiet);
+        Self::update_entry(
+            &mut self.butterfly[stm][from_atk][to_atk][(from.0 as usize) * 64 + (to.0 as usize)],
+            bonus,
+            self.caps.butterfly,
+        );
 
         if cont1.pt != PieceType::None {
-            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
+            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus, self.caps.cont);
         }
         if cont2.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus);
+            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus, self.caps.cont);
         }
         if cont4.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus);
+            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus, self.caps.cont);
         }
     }
 
@@ -325,21 +365,21 @@ impl History {
         bonus: i32,
     ) {
         if cont1.pt != PieceType::None {
-            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus);
+            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus, self.caps.cont);
         }
         if cont2.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus);
+            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus, self.caps.cont);
         }
         if cont4.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus);
+            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus, self.caps.cont);
         }
     }
 
     /// Single soft-gravity update step. Extracted to keep updates DRY.
     #[inline(always)]
-    fn update_entry(entry: &mut i16, bonus: i32) {
+    fn update_entry(entry: &mut i16, bonus: i32, cap: i32) {
         let e = i32::from(*entry);
-        *entry = (e + bonus - e * bonus.abs() / 16384).clamp(-16384, 16384) as i16;
+        *entry = (e + bonus - e * bonus.abs() / cap).clamp(-cap, cap) as i16;
     }
 
     /// Blended correction. Pawn structure anchors; minor and major placement refine.
@@ -401,7 +441,7 @@ impl History {
 
     #[inline(always)]
     pub fn update_capture(&mut self, stm: Color, attacker: PieceType, to: Square, victim: PieceType, bonus: i32) {
-        Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus);
+        Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus, self.caps.capt);
     }
 }
 
@@ -421,6 +461,7 @@ impl Default for History {
             minor_correction: CorrectionHistory { data: Box::new([]) },
             major_correction: CorrectionHistory { data: Box::new([]) },
             capt: CaptureHistory { data: Box::new([]) },
+            caps: HistoryCaps::default(),
         }
     }
 }

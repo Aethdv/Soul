@@ -320,6 +320,12 @@ search_params! {
         NT(hist_bonus_mult,     4),
         NT(hist_bonus_cap,   1600),
 
+        //                    default    min    max  step
+        NT(quiet_hist_cap,      16384,  8192, 32000),
+        NT(butterfly_hist_cap,  16384,  8192, 32000),
+        NT(cont_hist_cap,       16384,  8192, 32000),
+        NT(capt_hist_cap,       16384,  8192, 32000),
+
         //                default min  max  step
         T (minor_corr_weight, 128,  8),
         T (major_corr_weight, 128,  8),
