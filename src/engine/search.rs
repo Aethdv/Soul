@@ -36,7 +36,7 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::{Position, attacks::Pins},
-        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win},
+        defs::{INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in},
         moves::Move,
     },
     engine::{
@@ -934,8 +934,8 @@ impl Worker<'_> {
         let (alpha, beta) = if N::ROOT {
             (alpha, beta)
         } else {
-            let a = alpha.max(-MATE + ply as i32);
-            let b = beta.min(MATE - ply as i32 - 1);
+            let a = alpha.max(mated_in(ply));
+            let b = beta.min(mate_in(ply + 1));
             if a >= b {
                 return Ok(a);
             }
@@ -1610,7 +1610,7 @@ impl Worker<'_> {
             return if !excluded.is_null() {
                 Ok(alpha)
             } else if in_check {
-                Ok(-MATE + ply as i32)
+                Ok(mated_in(ply))
             } else {
                 Ok(0)
             };
@@ -2016,7 +2016,7 @@ impl Worker<'_> {
         }
 
         if in_check && moves_made == 0 {
-            return Ok(-MATE + ply as i32);
+            return Ok(mated_in(ply));
         }
 
         // ── QSearch TT Store ──

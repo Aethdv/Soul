@@ -377,6 +377,48 @@ pub fn is_mate(score: i32) -> bool {
     is_win(score) || is_loss(score)
 }
 
+/// Score for delivering mate in `ply` plies from the root.
+#[inline]
+pub fn mate_in(ply: usize) -> i32 {
+    MATE - ply as i32
+}
+
+/// Score for being mated in `ply` plies from the root.
+#[inline]
+pub fn mated_in(ply: usize) -> i32 {
+    -MATE + ply as i32
+}
+
+/// Fold the current ply into a mate score before storing it.
+///
+/// A mate score is distance-to-mate from this node ("mate in 5 at ply 10").
+/// The table is shared across the tree, so it must hold something node-independent:
+/// distance from the root ("mate in 15"). Store folds the ply in, `score_from_tt`
+/// takes it back out. Ordinary scores pass through untouched.
+#[inline(always)]
+pub fn score_to_tt(score: i32, ply: usize) -> i32 {
+    if is_win(score) {
+        score + ply as i32
+    } else if is_loss(score) {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+
+/// Unfold a stored mate score back to a node-relative distance:
+/// the inverse of `score_to_tt`, subtracting the ply that store folded in.
+#[inline(always)]
+pub fn score_from_tt(score: i32, ply: usize) -> i32 {
+    if is_win(score) {
+        score - ply as i32
+    } else if is_loss(score) {
+        score + ply as i32
+    } else {
+        score
+    }
+}
+
 /// Let chess types serve as array indices directly:
 /// `table[Color::White]`, `scores[PieceType::Knight]`, `board[Square::E4]`.
 /// Bounds-checked in debug builds: compiles to bare pointer math in release.
