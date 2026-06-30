@@ -50,25 +50,3 @@ macro_rules! debug_index_mut {
         }
     }};
 }
-
-/// Unchecked swap in release, bounds-checked swap in debug.
-///
-/// Usage: `debug_swap!(collection, i, j)`
-#[macro_export]
-macro_rules! debug_swap {
-    ($collection:expr, $i:expr, $j:expr) => {{
-        #[cfg(debug_assertions)]
-        {
-            $collection.swap($i, $j)
-        }
-
-        #[cfg(not(debug_assertions))]
-        {
-            #[allow(unused_unsafe)]
-            // SAFETY: Caller guarantees that $i and $j are within the bounds of $collection
-            unsafe {
-                $collection.swap_unchecked($i, $j)
-            }
-        }
-    }};
-}

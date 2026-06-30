@@ -4,22 +4,15 @@
 
 use crate::core::{defs::TOTAL_PHASE, psqt};
 
-/// Compute phase weights from piece counts.
-/// Used directly during standard engine evaluation.
-#[inline]
-pub fn compute_phase_weights(piece_counts: &[i32; 6], values: &[f64]) -> (f64, f64) {
-    compute_phase_weights_inner(piece_counts, values)
-}
-
 /// Compute phase weights from f64 piece counts (for gradient tracing).
 #[inline]
 pub fn compute_phase_weights_f64(piece_counts: &[f64; 6], values: &[f64]) -> (f64, f64) {
     compute_phase_weights_inner(piece_counts, values)
 }
 
-/// Core phase interpolation. Generic over the count type so both the
-/// engine (`i32` piece counts from PSQT accumulators) and the tuner
-/// (`f64` counts from gradient traces) share the same formula.
+/// Core phase interpolation, generic over the count type. The tuner feeds
+/// `f64` counts from gradient traces; the engine reads its phase from the
+/// PSQT accumulator lane, not this formula.
 ///
 /// Returns `(mg_weight, eg_weight)` where both are in `[0.0, 1.0]`
 /// and `mg_weight + eg_weight == 1.0`.
