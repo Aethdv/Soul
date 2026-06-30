@@ -1,6 +1,6 @@
 [package]
 name = "soul"
-version = "0.6.7"
+version = "0.6.9"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
@@ -16,7 +16,7 @@ keywords = [
 ]
 categories = ["games", "simulation"]
 edition = "2024"
-rust-version = "1.95.0"
+rust-version = "1.96.1"
 include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [workspace]
@@ -33,14 +33,13 @@ path = "src/main.rs"
 [dependencies]
 parking_lot = "0.12.5"
 paste = "1.0.15"
-rayon = "1.12.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0.18"
 zstd = { version = "0.13.3", default-features = false }
 fastrand = "2.4.1"
 ctrlc = "3.5.2"
-zerocopy = { version = "0.8.48", default-features = false, features = ["derive", "simd"] }
+zerocopy = { version = "0.8.52", default-features = false, features = ["derive", "simd"] }
 atomic-wait = "1.1"
 
 [features]
