@@ -864,6 +864,19 @@ impl<'cfg> Searcher<'cfg> {
     }
 }
 
+/// Piece-to-square contexts 1, 2, and 4 plies back, for cont-hist lookup.
+/// Empty when the ply predates the search root.
+fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, ContContext) {
+    let at = |back: usize| {
+        if ply >= back {
+            ContContext { pt: stack[ply - back].moved_pt, to: stack[ply - back].moved_to }
+        } else {
+            ContContext::default()
+        }
+    };
+    (at(1), at(2), at(4))
+}
+
 impl Worker<'_> {
     /// Static evaluation with the pawn structure pulled from the cache.
     #[inline]
@@ -1046,17 +1059,17 @@ impl Worker<'_> {
         };
 
         // ── TT-Adjusted Eval ──
-        // A bounded TT score sharpens static eval when its bound backs the side
-        // it sits on: a lower bound above us means the truth is higher still,
-        // an upper bound below means lower still.
-        let tt_adjusted_eval = if tt_bound != tt::BOUND_NONE
-            && !is_mate(tt_score)
-            && tt_bound != (if tt_score > static_eval { tt::BOUND_UPPER } else { tt::BOUND_LOWER })
-        {
-            tt_score
-        } else {
-            static_eval
+        // The bound must back the direction the score moved from static eval:
+        // a score above eval needs a lower bound (truth is higher still), one
+        // below needs an upper bound. An exact bound backs either.
+        let tt_backs_eval = match tt_bound {
+            tt::BOUND_EXACT => true,
+            tt::BOUND_LOWER => tt_score > static_eval,
+            tt::BOUND_UPPER => tt_score < static_eval,
+            _ => false, // BOUND_NONE
         };
+
+        let tt_adjusted_eval = if tt_backs_eval && !is_mate(tt_score) { tt_score } else { static_eval };
 
         // ── Reverse Futility Pruning (~52 Elo) ──
         // Position is already so good that even after subtracting a generous
@@ -1081,7 +1094,6 @@ impl Worker<'_> {
         // ── Razoring (~17 Elo) ──
         // Position is so far below alpha that a full-depth search is unlikely
         // to recover. Drop straight into qsearch to confirm.
-        #[rustfmt::skip]
         if !in_check
             && !N::PV
             && excluded.is_null()
@@ -1109,6 +1121,7 @@ impl Worker<'_> {
         {
             let eval_r = ((tt_adjusted_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
             let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
+            let null_depth = (depth - r - sp.nmp_ply_offset).max(0);
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
@@ -1116,14 +1129,7 @@ impl Worker<'_> {
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.negamax::<NonPvNode>(
-                searcher,
-                (depth - r - sp.nmp_ply_offset).max(0),
-                -beta,
-                -beta + 1,
-                ply + 1,
-                None,
-            ) {
+            let score = match self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None) {
                 Ok(v) => -v,
                 Err(e) => {
                     searcher.zobrist_trail.pop();
@@ -1152,7 +1158,7 @@ impl Worker<'_> {
                 }
 
                 self.is_nmp_verif = true;
-                let verif = self.negamax::<NonPvNode>(searcher, (depth - r - sp.nmp_ply_offset).max(0), beta - 1, beta, ply, None);
+                let verif = self.negamax::<NonPvNode>(searcher, null_depth, beta - 1, beta, ply, None);
                 self.is_nmp_verif = false;
 
                 if verif? >= beta {
@@ -1273,23 +1279,7 @@ impl Worker<'_> {
             // the move played 1, 2, and 4 plies ago from this node.
             // These index into separate cont-hist tables and let the move
             // picker incorporate recent positional context into quiet ordering.
-            let cont1 = if ply > 0 {
-                ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
-            } else {
-                ContContext::default()
-            };
-
-            let cont2 = if ply > 1 {
-                ContContext { pt: self.stack[ply - 2].moved_pt, to: self.stack[ply - 2].moved_to }
-            } else {
-                ContContext::default()
-            };
-
-            let cont4 = if ply > 3 {
-                ContContext { pt: self.stack[ply - 4].moved_pt, to: self.stack[ply - 4].moved_to }
-            } else {
-                ContContext::default()
-            };
+            let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
@@ -1801,23 +1791,7 @@ impl Worker<'_> {
                 let pt = self.stack[ply].moved_pt;
                 let to = self.stack[ply].moved_to;
 
-                let cont1 = if ply > 0 {
-                    ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
-                } else {
-                    ContContext::default()
-                };
-
-                let cont2 = if ply > 1 {
-                    ContContext { pt: self.stack[ply - 2].moved_pt, to: self.stack[ply - 2].moved_to }
-                } else {
-                    ContContext::default()
-                };
-
-                let cont4 = if ply > 3 {
-                    ContContext { pt: self.stack[ply - 4].moved_pt, to: self.stack[ply - 4].moved_to }
-                } else {
-                    ContContext::default()
-                };
+                let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
                 let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
                 let signed = if score <= alpha { -bonus } else { bonus };
