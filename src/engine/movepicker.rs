@@ -216,6 +216,7 @@ impl MovePicker {
                         } else {
                             self.stage = Stage::GenQuiets;
                         }
+
                         continue;
                     }
                     // Pop from the back; since the array is sorted ascending,
@@ -324,6 +325,7 @@ impl MovePicker {
                         self.stage = Stage::Done;
                         continue;
                     }
+
                     self.count -= 1;
                     // SAFETY: count is in (MAX_MOVES - bad_count, MAX_MOVES], every slot
                     // written by the park step in YieldCaptures.
@@ -410,6 +412,7 @@ impl MovePicker {
     ) {
         let a_pen = *crate::debug_index!(self.mvvlva_a, PT as usize);
         let stm = board.stm;
+
         for from in board.role_bb[PT as usize] & us {
             for to in Self::attacks::<PT>(from, occ) & them {
                 let victim = board.piece_at(to);
@@ -604,6 +607,7 @@ impl MovePicker {
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
+
         for to in doubles {
             let from = Square((to.0 as i8 - up_d * 2) as u8);
             self.add_quiet_node(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
@@ -649,6 +653,7 @@ impl MovePicker {
             } else {
                 (&CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY)
             };
+
             self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
         }
 
@@ -660,6 +665,7 @@ impl MovePicker {
             } else {
                 (&CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY)
             };
+
             self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
         }
     }
