@@ -371,6 +371,7 @@ impl SearchConfig {
         for i in 1..=MAX_PLY {
             lut[i] = ((i as f64).ln() * scale).round() as i16;
         }
+
         lut
     }
 }
@@ -463,8 +464,10 @@ impl<'cfg> Searcher<'cfg> {
 
         if !self.cfg.limits.searchmoves.is_empty() {
             self.root_moves.retain(|rm| self.cfg.limits.searchmoves.contains(&rm.mv));
+
             if self.root_moves.is_empty() {
                 eprintln!("info string error: no legal moves match searchmoves");
+
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
@@ -492,6 +495,7 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
+
             history,
             pawn_cache: PawnCache::new(),
             eval_params: EvalParams::<i32>::from_const(),
@@ -777,6 +781,7 @@ impl<'cfg> Searcher<'cfg> {
                 self.print_realtime();
             }
         }
+
         false
     }
 
@@ -847,6 +852,7 @@ impl<'cfg> Searcher<'cfg> {
         {
             return;
         }
+
         println!("info depth {depth} currmove {} currmovenumber {move_number}", mv.to_uci(self.root_pos.is_frc));
     }
 
@@ -873,6 +879,7 @@ fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, Cont
             ContContext::default()
         }
     };
+
     (at(1), at(2), at(4))
 }
 
@@ -890,17 +897,9 @@ impl Worker<'_> {
     /// Raw eval shifted by the correction history tables, clamped to non-mate.
     #[inline]
     fn corrected_eval(&self, raw_eval: i32, sp: &SearchParams) -> i32 {
-        let correction = self
-            .history
-            .correction(
-                self.pos.stm,
-                self.pos.pawn_key,
-                self.pos.minor_key,
-                self.pos.major_key,
-                sp.minor_corr_weight,
-                sp.major_corr_weight,
-            )
-            / history::CORRECTION_SCALE;
+        let correction = self.history.correction(
+            self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, sp.minor_corr_weight, sp.major_corr_weight,
+        ) / history::CORRECTION_SCALE;
 
         (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
     }
@@ -971,6 +970,7 @@ impl Worker<'_> {
             if a >= b {
                 return Ok(a);
             }
+
             (a, b)
         };
 
@@ -1005,6 +1005,7 @@ impl Worker<'_> {
                 {
                     return Ok(score);
                 }
+
                 (tt_move, pv, Some(eval), score, bound, depth_stored)
             } else {
                 (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
@@ -1047,11 +1048,7 @@ impl Worker<'_> {
         // raw_static_eval stays untouched so the update at the end of this
         // frame learns from the unshifted baseline, not the already-corrected
         // value we use for pruning.
-        let static_eval = if in_check {
-            tt::SCORE_NONE
-        } else {
-            self.corrected_eval(raw_static_eval, sp)
-        };
+        let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval, sp) };
 
         self.stack[ply].static_eval = static_eval;
 
@@ -1059,12 +1056,13 @@ impl Worker<'_> {
         // Has our position strengthened since our last turn?
         // Step further back if the closer reference was in check:
         // no static_eval was stored there.
-        let _improving = !in_check && [2, 4]
-            .into_iter()
-            .filter(|&step| ply >= step)
-            .map(|step| self.stack[ply - step].static_eval)
-            .find(|&eval| eval != tt::SCORE_NONE)
-            .is_some_and(|past_eval| static_eval > past_eval);
+        let _improving = !in_check
+            && [2, 4]
+                .into_iter()
+                .filter(|&step| ply >= step)
+                .map(|step| self.stack[ply - step].static_eval)
+                .find(|&eval| eval != tt::SCORE_NONE)
+                .is_some_and(|past_eval| static_eval > past_eval);
 
         // ── TT-Adjusted Eval ──
         // The bound must back the direction the score moved from static eval:
@@ -1216,6 +1214,7 @@ impl Worker<'_> {
                     Ok(v) if -v >= probcut_beta => self
                         .negamax::<NonPvNode>(searcher, probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1, None)
                         .map(|x| -x),
+
                     Ok(v) => Ok(-v),
                     Err(e) => Err(e),
                 };
@@ -1230,6 +1229,7 @@ impl Worker<'_> {
                     searcher
                         .tt
                         .store(self.pos.hash, ply, probcut_depth, value, mv, tt::BOUND_LOWER, tt_pv, raw_static_eval);
+
                     return Ok(value);
                 }
             }
@@ -1745,6 +1745,7 @@ impl Worker<'_> {
                 current_pv.len = child_len + 1;
             }
         }
+
         Ok(())
     }
 
@@ -1812,6 +1813,7 @@ impl Worker<'_> {
             // Genuine improvement; search with full window on the PV.
             score = -self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?;
         }
+
         Ok(score)
     }
 
@@ -2067,6 +2069,7 @@ impl Worker<'_> {
                 return true;
             }
         }
+
         remainder.contains(&key)
     }
 }
