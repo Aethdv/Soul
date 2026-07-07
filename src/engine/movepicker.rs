@@ -703,7 +703,7 @@ impl MovePicker {
         debug_assert!(i < MAX_MOVES);
         // SAFETY: The caller contract of read_move requires that index i has been successfully initialized.
         let packed = unsafe { debug_index!(self.candidates, i).assume_init() };
-        Move::from_u16((packed & 0xFFFF) as u16)
+        Move::from_u16(packed as u16)
     }
 
     #[inline(always)]
