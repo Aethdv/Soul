@@ -464,10 +464,10 @@ impl MovePicker {
         self.add_move_packed(Move::new(from, to, Move::PROM_N_CAPTURE), n as MoveScore);
     }
 
-    /// Most Valuable Victim - Least Valuable Attacker.
+    /// Most Valuable Victim - Least Valuable Attacker: `V(victim) - V(attacker)`.
     ///
-    ///   `score = V(victim) - V(attacker) [+ V(promo)]`
-    ///
+    /// Promotion-captures never reach this function; they're scored entirely
+    /// by `add_promo_caps`, which is why there's no promotion term here.
     /// The Stage segregation in `MovePicker::next` ensures all captures are
     /// yielded before any quiet moves, so a global bias is no longer needed.
     #[inline(always)]
@@ -476,22 +476,14 @@ impl MovePicker {
             return self.mvvlva_ep as MoveScore;
         }
 
+        debug_assert!(mv.promo().is_none(), "mvv_lva is only reached by non-promotion captures");
         debug_assert!(usize::from(victim) < 8);
         debug_assert!(usize::from(attacker) < 8);
 
         let v = *crate::debug_index!(self.mvvlva_v, victim as usize);
         let a = *crate::debug_index!(self.mvvlva_a, attacker as usize);
 
-        let mut s = v - a;
-
-        // ── Promotion bonus ──
-        // A promotion-capture wins the victim and a new piece at once,
-        // so it outranks a plain capture of the same target.
-        if let Some(p) = mv.promo() {
-            debug_assert!(usize::from(p) < 8);
-            s += *crate::debug_index!(self.mvvlva_v, p as usize);
-        }
-        s as MoveScore
+        (v - a) as MoveScore
     }
 
     /// Generate only quiet queen promotions for QSearch.
