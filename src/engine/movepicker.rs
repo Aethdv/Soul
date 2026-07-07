@@ -436,9 +436,9 @@ impl MovePicker {
     /// Promotion-captures bypass this path entirely; they go through `add_promo_caps`.
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
-        let mvv = self.mvv_lva(board, mv, attacker);
         // Victim is always pawn (the captured pawn sits on an adjacent square, not the destination).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
+        let mvv = self.mvv_lva(mv, attacker, victim);
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
 
         self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
@@ -471,18 +471,17 @@ impl MovePicker {
     /// The Stage segregation in `MovePicker::next` ensures all captures are
     /// yielded before any quiet moves, so a global bias is no longer needed.
     #[inline(always)]
-    fn mvv_lva(&self, board: &Position, mv: Move, attacker: PieceType) -> MoveScore {
+    fn mvv_lva(&self, mv: Move, attacker: PieceType, victim: PieceType) -> MoveScore {
         if mv.is_en_passant() {
             return self.mvvlva_ep as MoveScore;
         }
-
-        let victim = board.piece_at(mv.to());
 
         debug_assert!(usize::from(victim) < 8);
         debug_assert!(usize::from(attacker) < 8);
 
         let v = *crate::debug_index!(self.mvvlva_v, victim as usize);
         let a = *crate::debug_index!(self.mvvlva_a, attacker as usize);
+
         let mut s = v - a;
 
         // ── Promotion bonus ──
