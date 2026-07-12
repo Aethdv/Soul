@@ -1089,7 +1089,7 @@ impl Worker<'_> {
             && !N::PV
             && excluded.is_null()
             && depth <= sp.rfp_depth
-            && !is_mate(beta)
+            && !is_mate(tt_adjusted_eval)
         {
             let margin = sp.rfp_base_margin
                 + sp.rfp_margin * depth
@@ -1508,6 +1508,7 @@ impl Worker<'_> {
                     #[cfg(feature = "mvpstats")]
                     {
                         use crate::engine::mvpstats::{CutoffKind, record_cutoff};
+
                         let kind = if Some(mv) == hash_move {
                             CutoffKind::Hash
                         } else if mv.is_capture() {
@@ -1517,6 +1518,7 @@ impl Worker<'_> {
                         } else {
                             CutoffKind::Quiet
                         };
+
                         record_cutoff(res.move_count as u32, kind);
                     }
 
