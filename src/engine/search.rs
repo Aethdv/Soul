@@ -678,6 +678,7 @@ impl<'cfg> Searcher<'cfg> {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
                 Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
             }
+
             let _ = io::stdout().flush();
         }
     }
@@ -1138,19 +1139,13 @@ impl Worker<'_> {
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None) {
-                Ok(v) => -v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_null_move(&undo);
-                    self.stack[ply + 1].is_null = false;
-                    return Err(e);
-                },
-            };
+            let score = self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None);
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_null_move(&undo);
             self.stack[ply + 1].is_null = false;
+
+            let score = -score?;
 
             if score >= beta {
                 let null_score = if is_win(score) { beta } else { score };
@@ -1698,20 +1693,13 @@ impl Worker<'_> {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval =
-            match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv) {
-                Ok(v) => v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_move(mv, &undo);
-                    self.accumulator = saved_acc;
-                    return Err(e);
-                },
-            };
+        let eval = self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv);
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
         self.accumulator = saved_acc;
+
+        let eval = eval?;
 
         if N::ROOT
             && let Some(i) = root_idx
@@ -1965,19 +1953,13 @@ impl Worker<'_> {
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1) {
-                Ok(v) => -v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_move(mv, &undo);
-                    self.accumulator = saved_acc;
-                    return Err(e);
-                },
-            };
+            let score = self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1);
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_move(mv, &undo);
             self.accumulator = saved_acc;
+
+            let score = -score?;
 
             if score > best_eval {
                 best_eval = score;
