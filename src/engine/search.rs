@@ -1484,16 +1484,15 @@ impl Worker<'_> {
 
                     if sing_score < sing_beta {
                         extension = 1;
-                    } else if sing_score >= beta && !is_mate(sing_score) {
+                    } else if sing_score >= beta {
                         // ── Multicut (~15 Elo) ──
                         // The TT bound already reads the TT move as a fail-high,
                         // and with it excluded the verification still cleared beta:
                         // A second move beats it too. Two moves over beta isn't a singular
-                        // node, it's a cut node, so return the bound. Not on a mate, though:
-                        // the verification skipped the best move, which may mate faster than the
-                        // line it found, so sing_score's distance may overstate the node's.
-                        // Search the move instead of committing to it.
-                        return Ok(sing_score);
+                        // node, it's a cut node, so return the bound. A mate is the exception,
+                        // returning plain beta: with the best move excluded, the verification
+                        // can't be trusted on the distance.
+                        return Ok(if is_mate(sing_score) { beta } else { sing_score });
                     }
                 }
 
