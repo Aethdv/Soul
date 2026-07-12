@@ -981,7 +981,7 @@ impl Worker<'_> {
         // Have we seen this position before?
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
-        // This is what makes iterative deepening fast: earlier iterations populate the table for later ones.
+        // Earlier iterations populate the table for later ones.
         //
         // During verification the entry here is the excluded move itself, and its
         // score would hand back the very cutoff we are trying to search without.
@@ -1250,7 +1250,6 @@ impl Worker<'_> {
         let mut res = MoveResult { move_count: 0, best_eval: -INF, alpha, best_move: Move::null() };
 
         if N::ROOT {
-            // Iterate the pre-sorted root move list.
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
 
@@ -1606,9 +1605,8 @@ impl Worker<'_> {
         }
 
         // No legal moves: checkmate (in check) or stalemate (not).
-        // Excluding the only legal move empties the list too, and that is not mate:
-        // fail low so the verification reads the TT move as singular, not the board
-        // as lost.
+        // Excluding the only legal move empties the list too, so fail low:
+        // the verification reads the TT move as singular, not the board as lost.
         if unlikely(res.move_count == 0) {
             return if !excluded.is_null() {
                 Ok(alpha)
@@ -2060,7 +2058,6 @@ impl Worker<'_> {
 
         // We vector-scan the full slice, including opponent-ply hashes.
         // Zobrist already encodes side-to-move, so cross-ply hashes can never match.
-        // The STM bit differs for every other entry, making false positives impossible.
         // The false-check cost is zero, and contiguous SIMD loads are cheaper than strided.
         //
         // Vu64x4::load uses _mm256_loadu_si256 internally (unaligned), which is correct
