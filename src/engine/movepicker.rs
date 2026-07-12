@@ -17,7 +17,7 @@
 //! popping the highest-scored moves from the back in 𝒪(1) time without
 //! index shifting.
 
-use std::{mem::MaybeUninit, slice};
+use std::mem::MaybeUninit;
 
 use crate::{
     core::{
@@ -144,30 +144,19 @@ impl MovePicker {
 
     #[inline]
     pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
-        Self {
-            stage: Stage::Hash,
+        let mut mp = Self::new(
             hash_move,
-            candidates: [MaybeUninit::uninit(); MAX_MOVES],
-            count: 0,
-            bad_count: 0,
-            good_capture_margin: cfg.search_params.good_capture_margin,
-            mvvlva_v: cfg.mvvlva_v,
-            mvvlva_a: cfg.mvvlva_a,
-            mvvlva_ep: cfg.search_params.mvvlva_ep,
-            capt_hist_divisor: cfg.search_params.capt_hist_divisor,
+            cfg,
             pins,
-            killers: [Move::null(); 2],
-            threats: Bitboard(0),
-            cont1: ContContext::default(),
-            cont2: ContContext::default(),
-            cont4: ContContext::default(),
-            is_qsearch: true,
-            in_check,
-            #[cfg(feature = "mvpstats")]
-            quiets_gen: 0,
-            #[cfg(feature = "mvpstats")]
-            quiets_used: 0,
-        }
+            [Move::null(); 2],
+            Bitboard(0),
+            ContContext::default(),
+            ContContext::default(),
+            ContContext::default(),
+        );
+        mp.is_qsearch = true;
+        mp.in_check = in_check;
+        mp
     }
 
     /// Produce the next move in priority order, or `None` when exhausted.
@@ -189,16 +178,7 @@ impl MovePicker {
                     // Even if a strong quiet move has a high history score,
                     // it will never override a capture because they are processed
                     // in strictly cordoned stages.
-                    //
-                    // SAFETY: self.count tracks the exact number of initialized elements.
-                    // ptr is valid for self.count reads and writes, and memory is exclusively owned.
-                    if self.count > 1 {
-                        unsafe {
-                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            // Sort natively ascending. Best elements float to the end.
-                            slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
-                        }
-                    }
+                    self.sort_candidates();
                     self.stage = Stage::YieldCaptures;
                 },
                 Stage::YieldCaptures => {
@@ -254,6 +234,7 @@ impl MovePicker {
                                     .add(MAX_MOVES - 1 - self.bad_count)
                                     .write(MaybeUninit::new(packed));
                             }
+
                             self.bad_count += 1;
                             continue;
                         }
@@ -264,13 +245,7 @@ impl MovePicker {
 
                 Stage::GenQSearchQuiets => {
                     self.gen_qsearch_quiets(board, history);
-                    // SAFETY: self.count accurately tracks initialized items.
-                    if self.count > 1 {
-                        unsafe {
-                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            std::slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
-                        }
-                    }
+                    self.sort_candidates();
                     self.stage = Stage::YieldQuiets;
                 },
 
@@ -281,16 +256,10 @@ impl MovePicker {
                     {
                         self.quiets_gen = self.count as u32;
                     }
-                    // SAFETY: self.count accurately tracks initialized items.
-                    // ptr covers valid memory and is sorted in-place.
-                    if self.count > 1 {
-                        unsafe {
-                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
-                        }
-                    }
+                    self.sort_candidates();
                     self.stage = Stage::YieldQuiets;
                 },
+
                 Stage::YieldQuiets => {
                     if self.count == 0 {
                         // Quiets done; reuse count as a top-down cursor over the parked bad
@@ -313,6 +282,7 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
+
                 Stage::YieldBadCaptures => {
                     // The deferred losing captures occupy [MAX_MOVES - bad_count, MAX_MOVES),
                     // best at the top since YieldCaptures parked them in descending score.
@@ -331,8 +301,20 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
+
                 Stage::Done => return None,
             }
+        }
+    }
+
+    /// Sort the live candidate window ascending, so the best-scored moves land
+    /// at the end and pop off the back in 𝒪(1).
+    #[inline]
+    fn sort_candidates(&mut self) {
+        if self.count > 1 {
+            // SAFETY: the gen step just wrote the first `count` entries; the rest
+            // of the array stays uninitialized and out of the sorted slice.
+            unsafe { self.candidates[..self.count].assume_init_mut() }.sort_unstable();
         }
     }
 

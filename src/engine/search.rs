@@ -6,10 +6,12 @@
 //! the rest, and the leaves fall through to quiescence so the horizon never
 //! lands mid-capture.
 //!
-//! Lazy SMP: threads search the same root in parallel, sharing only the TT and
-//! a stop flag. No explicit work distribution: each thread runs its own
-//! iterative-deepening loop, and the TT is the coordination surface. Diversity
-//! is emergent from threads cross-probing each other's entries at different depths.
+//! Lazy SMP is a parallel search algorithm that never divides the work. Each
+//! thread runs its own iterative-deepening search on the same root position,
+//! sharing only the transposition table and a stop flag. Their trees drift apart
+//! on their own, because each thread reaches a given position at a different
+//! depth and leaves its findings in the table for another to stumble onto and
+//! follow.
 //!
 //! State splits into two entities per thread:
 //! - `Searcher`: Owns global engine state (time management, history table, root moves).
