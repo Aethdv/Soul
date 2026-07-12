@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     core::{
-        defs::{is_loss, is_win},
+        defs::{score_from_tt, score_to_tt},
         moves::Move,
     },
     hugepages::{HugePages, PageKind},
@@ -325,7 +325,7 @@ impl TranspositionTable {
 
         for slot in &cluster.slots {
             if let Some(entry) = slot.probe_read(key16) {
-                let score = Self::score_from_tt(entry.score as i32, ply);
+                let score = score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
 
                 return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0, entry.eval as i32));
@@ -382,7 +382,7 @@ impl TranspositionTable {
         cluster.slots[replace].store(Decoded {
             key: key16,
             mv: store_mv,
-            score: Self::score_to_tt(score, ply) as i16,
+            score: score_to_tt(score, ply) as i16,
             eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             // 8-bit field covers MAX_DEPTH (246); clamp just guards the cast.
             depth: depth.clamp(0, u8::MAX as i32) as u8,
@@ -435,7 +435,7 @@ impl TranspositionTable {
             cluster.slots[best].store(Decoded {
                 key: key16,
                 mv: mv.inner(),
-                score: Self::score_to_tt(score, ply) as i16,
+                score: score_to_tt(score, ply) as i16,
                 eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                 depth: 0,
                 bound,
@@ -460,36 +460,6 @@ impl TranspositionTable {
         let clusters = self.clusters.len();
 
         (((hash as u128) * (clusters as u128)) >> 64) as usize
-    }
-
-    /// Fold the current ply into a mate score before storing it.
-    ///
-    /// A mate score is distance-to-mate from this node ("mate in 5 at ply 10").
-    /// The table is shared across the tree, so it must hold something node-independent:
-    /// distance from the root ("mate in 15"). Store folds the ply in, `score_from_tt`
-    /// takes it back out. Ordinary scores pass through untouched.
-    #[inline(always)]
-    fn score_to_tt(score: i32, ply: usize) -> i32 {
-        if is_win(score) {
-            score + ply as i32
-        } else if is_loss(score) {
-            score - ply as i32
-        } else {
-            score
-        }
-    }
-
-    /// Unfold a stored mate score back to a node-relative distance:
-    /// the inverse of `score_to_tt`, subtracting the ply that store folded in.
-    #[inline(always)]
-    fn score_from_tt(score: i32, ply: usize) -> i32 {
-        if is_win(score) {
-            score - ply as i32
-        } else if is_loss(score) {
-            score + ply as i32
-        } else {
-            score
-        }
     }
 }
 

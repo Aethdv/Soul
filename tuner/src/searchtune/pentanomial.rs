@@ -2,8 +2,8 @@
 //!
 //! Three standard-error estimators are provided, in ascending order of sample-size trust:
 //! - [`Pentanomial::fisher_std_err`]: theory-based (Davidson model), good for small N.
-//! - [`Pentanomial::std_err`]: empirical Welford variance, accurate for large N.
-//! - [`Pentanomial::std_err_hybrid`]: Hermite-interpolated blend; use this one in practice.
+//! - [`Pentanomial::std_err`]: empirical sample variance, accurate for large N.
+//! - [`Pentanomial::std_err_hybrid`]: agreement-weighted blend; use this one in practice.
 
 use std::f64::consts::LN_10;
 
@@ -211,7 +211,7 @@ impl Pentanomial {
         1.0 / (fisher_info * n_pairs).sqrt()
     }
 
-    /// Blends Fisher information (small samples) with empirical Welford (large samples).
+    /// Blends Fisher information (small samples) with empirical sample variance (large samples).
     #[must_use]
     pub fn std_err_hybrid(&self) -> f64 {
         let total = self.total();
@@ -249,7 +249,7 @@ impl Pentanomial {
         k.mul_add(-self.std_err_hybrid(), self.mle_elo())
     }
 
-    /// Welford-based variance estimate
+    /// Standard error from the empirical sample variance of pair scores.
     #[must_use]
     pub fn std_err(&self) -> f64 {
         let n = f64::from(self.total());

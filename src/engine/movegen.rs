@@ -50,9 +50,8 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
     legal
 }
 
-/// Const-generic on color: the compiler monomorphizes into two copies with
-/// all direction and rank logic resolved at compile time. No branches for
-/// "which way do pawns go?" It's baked into the binary.
+/// Dispatches on the runtime side to move, into the const-generic worker
+/// below, so the color check happens once per call, not once per piece.
 #[inline]
 pub fn gen_pseudo_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
@@ -288,6 +287,7 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     // (and the capturing pawn moving). We simulate post-EP occupancy and probe for
     // diagonal sliding attacks on the king.
     let bq = board.pieces(PieceType::Bishop, opp) | board.pieces(PieceType::Queen, opp);
+
     if bq.is_not_empty() {
         let ep_occ = (board.occ ^ from.bitboard() ^ cap_sq.bitboard()) | to.bitboard();
 
@@ -299,7 +299,9 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     true
 }
 
-/// Master dispatcher for pseudo-legal generation, heavily optimized via compile-time constants.
+/// Const-generic on color: the compiler monomorphizes into two copies with
+/// all direction and rank logic resolved at compile time. No branches for
+/// "which way do pawns go?" It's baked into the binary.
 #[inline(always)]
 fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList) {
     let us = board.side_bb[US];
@@ -363,9 +365,8 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 
     // ── Diagonal captures ──
     // File masks prevent board wrapping.
-    // Left and right directions are strictly relative to the
-    // side-to-move's visual perspective (e.g. for Black, left shifts
-    // toward the H-file).
+    // Left and right directions are strictly relative to the side-to-move's
+    // visual perspective (e.g. for Black, left shifts toward the H-file).
     let (mask_l, mask_r) = if US == Color::White { (!FILE_A, !FILE_H) } else { (!FILE_H, !FILE_A) };
 
     let cap_l = (pawns & mask_l).shift(left) & them;
@@ -424,6 +425,7 @@ fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: B
         if TACTICAL {
             targets &= them;
         }
+
         emit_from_mask(acc, from, targets, them);
     }
 }
@@ -456,6 +458,7 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
         if TACTICAL {
             targets &= them;
         }
+
         emit_from_mask(acc, from, targets, them);
     }
 }
@@ -469,6 +472,7 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
         if TACTICAL {
             targets &= them;
         }
+
         emit_from_mask(acc, from, targets, them);
     }
 }
@@ -600,8 +604,8 @@ mod tests {
     }
 
     /// Legality perft (after Rose): at each node, sweep every 16-bit move encoding
-    /// and recurse on whatever `is_pseudo_legal` + `is_legal` jointly accept. A 16-bit
-    /// TT key lets collisions feed the search any encoding, so this drives the
+    /// and recurse on whatever `is_pseudo_legal` + `is_legal` jointly accept.
+    /// A 16-bit TT key lets collisions feed the search any encoding, so this drives the
     /// validators exactly as collisions do. Matching known-good perft proves the pair
     /// accepts precisely the legal moves: no spurious move (which `make_move` would
     /// turn into a corrupt board) and none missing.
@@ -626,11 +630,8 @@ mod tests {
         }
     }
 
-    /// The same legality perft, pushed deeper. The all-encoding sweep is O(65536) per
-    /// node, so this is too slow for the default suite. Run it explicitly:
-    /// `cargo test --release legality_perft_deep -- --ignored`.
+    /// The same legality perft, pushed deeper.
     #[test]
-    #[ignore = "deep: run explicitly with --release"]
     fn legality_perft_deep() {
         let cases: &[(&str, &[u64])] = &[
             (STARTPOS, &[1, 20, 400, 8902, 197281]),
@@ -684,6 +685,7 @@ mod tests {
             child.make_move(mv, &mut acc);
             nodes += legality_perft(&child, depth - 1);
         }
+
         nodes
     }
 

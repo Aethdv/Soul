@@ -216,6 +216,7 @@ impl MovePicker {
                         } else {
                             self.stage = Stage::GenQuiets;
                         }
+
                         continue;
                     }
                     // Pop from the back; since the array is sorted ascending,
@@ -324,6 +325,7 @@ impl MovePicker {
                         self.stage = Stage::Done;
                         continue;
                     }
+
                     self.count -= 1;
                     // SAFETY: count is in (MAX_MOVES - bad_count, MAX_MOVES], every slot
                     // written by the park step in YieldCaptures.
@@ -410,6 +412,7 @@ impl MovePicker {
     ) {
         let a_pen = *crate::debug_index!(self.mvvlva_a, PT as usize);
         let stm = board.stm;
+
         for from in board.role_bb[PT as usize] & us {
             for to in Self::attacks::<PT>(from, occ) & them {
                 let victim = board.piece_at(to);
@@ -436,9 +439,9 @@ impl MovePicker {
     /// Promotion-captures bypass this path entirely; they go through `add_promo_caps`.
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
-        let mvv = self.mvv_lva(board, mv, attacker);
         // Victim is always pawn (the captured pawn sits on an adjacent square, not the destination).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
+        let mvv = self.mvv_lva(mv, attacker, victim);
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
 
         self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
@@ -464,35 +467,26 @@ impl MovePicker {
         self.add_move_packed(Move::new(from, to, Move::PROM_N_CAPTURE), n as MoveScore);
     }
 
-    /// Most Valuable Victim - Least Valuable Attacker.
+    /// Most Valuable Victim - Least Valuable Attacker: `V(victim) - V(attacker)`.
     ///
-    ///   `score = V(victim) - V(attacker) [+ V(promo)]`
-    ///
+    /// Promotion-captures never reach this function; they're scored entirely
+    /// by `add_promo_caps`, which is why there's no promotion term here.
     /// The Stage segregation in `MovePicker::next` ensures all captures are
     /// yielded before any quiet moves, so a global bias is no longer needed.
     #[inline(always)]
-    fn mvv_lva(&self, board: &Position, mv: Move, attacker: PieceType) -> MoveScore {
+    fn mvv_lva(&self, mv: Move, attacker: PieceType, victim: PieceType) -> MoveScore {
         if mv.is_en_passant() {
             return self.mvvlva_ep as MoveScore;
         }
 
-        let victim = board.piece_at(mv.to());
-
+        debug_assert!(mv.promo().is_none(), "mvv_lva is only reached by non-promotion captures");
         debug_assert!(usize::from(victim) < 8);
         debug_assert!(usize::from(attacker) < 8);
 
         let v = *crate::debug_index!(self.mvvlva_v, victim as usize);
         let a = *crate::debug_index!(self.mvvlva_a, attacker as usize);
-        let mut s = v - a;
 
-        // ── Promotion bonus ──
-        // A promotion-capture wins the victim and a new piece at once,
-        // so it outranks a plain capture of the same target.
-        if let Some(p) = mv.promo() {
-            debug_assert!(usize::from(p) < 8);
-            s += *crate::debug_index!(self.mvvlva_v, p as usize);
-        }
-        s as MoveScore
+        (v - a) as MoveScore
     }
 
     /// Generate only quiet queen promotions for QSearch.
@@ -613,6 +607,7 @@ impl MovePicker {
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
+
         for to in doubles {
             let from = Square((to.0 as i8 - up_d * 2) as u8);
             self.add_quiet_node(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
@@ -658,6 +653,7 @@ impl MovePicker {
             } else {
                 (&CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY)
             };
+
             self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
         }
 
@@ -669,6 +665,7 @@ impl MovePicker {
             } else {
                 (&CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY)
             };
+
             self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
         }
     }
@@ -703,7 +700,7 @@ impl MovePicker {
         debug_assert!(i < MAX_MOVES);
         // SAFETY: The caller contract of read_move requires that index i has been successfully initialized.
         let packed = unsafe { debug_index!(self.candidates, i).assume_init() };
-        Move::from_u16((packed & 0xFFFF) as u16)
+        Move::from_u16(packed as u16)
     }
 
     #[inline(always)]

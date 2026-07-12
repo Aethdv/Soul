@@ -36,12 +36,12 @@ pub use crate::core::defs::Protocol;
 use crate::{
     core::{
         board::{Position, attacks::Pins},
-        defs::{INF, MATE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win},
+        defs::{INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in},
         moves::Move,
     },
     engine::{
         eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, extract_phase},
-        history::{self, ContContext, History},
+        history::{self, ContContext, History, HistoryCaps},
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
         search_params::*,
@@ -61,7 +61,7 @@ pub const NODE_CHECK_INTERVAL: u64 = 2048;
 pub const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
 pub const PRINT_UPDATE_MS: u128 = 25;
 
-/// MAX_TRACKED_QUIETS matches MAX_MOVES today, but only because the legal quiet
+/// MAX_TRACKED_QUIETS matches MAX_MOVES today, and only because the legal quiet
 /// count is bounded by the total pseudo-legal count. If MAX_MOVES grows, this
 /// can shrink independently; we only care that quiet penalties cover all
 /// quiets searched before a cutoff, not all possible quiets in a position.
@@ -342,8 +342,8 @@ impl SearchConfig {
 
         macro_rules! map {
             ($pt:ident, $v:expr, $a:expr) => {
-                v[PieceType::$pt.as_usize()] = $v;
-                a[PieceType::$pt.as_usize()] = $a;
+                v[PieceType::$pt] = $v;
+                a[PieceType::$pt] = $a;
             };
         }
 
@@ -371,6 +371,7 @@ impl SearchConfig {
         for i in 1..=MAX_PLY {
             lut[i] = ((i as f64).ln() * scale).round() as i16;
         }
+
         lut
     }
 }
@@ -439,6 +440,7 @@ impl<'cfg> Searcher<'cfg> {
     #[inline]
     pub fn iterative_deepening(&mut self, history: &mut History) {
         let sp = &self.cfg.search_params;
+        history.caps = HistoryCaps::from(sp);
         self.nodes = 0;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
@@ -462,8 +464,10 @@ impl<'cfg> Searcher<'cfg> {
 
         if !self.cfg.limits.searchmoves.is_empty() {
             self.root_moves.retain(|rm| self.cfg.limits.searchmoves.contains(&rm.mv));
+
             if self.root_moves.is_empty() {
                 eprintln!("info string error: no legal moves match searchmoves");
+
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
@@ -491,6 +495,7 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
+
             history,
             pawn_cache: PawnCache::new(),
             eval_params: EvalParams::<i32>::from_const(),
@@ -507,7 +512,7 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         // ── Lazy SMP ──
-        // Every thread searches every depth, sharing nothing but the TT and
+        // Every thread searches every depth, sharing only the TT and
         // the stop flag. Diversity is emergent: thread A writes an entry at
         // the edge of what it can reach, thread B probes it mid-search and
         // redirects its tree along a branch A already explored. The TT is
@@ -751,8 +756,7 @@ impl<'cfg> Searcher<'cfg> {
         self.root_moves.first().map(|rm| rm.score)
     }
 
-    /// Periodic Heartbeat:
-    /// Check stop flag, hard time limit, node limit.
+    /// Periodic signal check: stop flag, hard time limit, node limit.
     /// Also drives realtime TUI updates, piggybacking on the same interval.
     #[inline]
     fn check_signals(&mut self) -> bool {
@@ -777,6 +781,7 @@ impl<'cfg> Searcher<'cfg> {
                 self.print_realtime();
             }
         }
+
         false
     }
 
@@ -847,6 +852,7 @@ impl<'cfg> Searcher<'cfg> {
         {
             return;
         }
+
         println!("info depth {depth} currmove {} currmovenumber {move_number}", mv.to_uci(self.root_pos.is_frc));
     }
 
@@ -863,6 +869,20 @@ impl<'cfg> Searcher<'cfg> {
     }
 }
 
+/// Piece-to-square contexts 1, 2, and 4 plies back, for cont-hist lookup.
+/// Empty when the ply predates the search root.
+fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, ContContext) {
+    let at = |back: usize| {
+        if ply >= back {
+            ContContext { pt: stack[ply - back].moved_pt, to: stack[ply - back].moved_to }
+        } else {
+            ContContext::default()
+        }
+    };
+
+    (at(1), at(2), at(4))
+}
+
 impl Worker<'_> {
     /// Static evaluation with the pawn structure pulled from the cache.
     #[inline]
@@ -872,6 +892,16 @@ impl Worker<'_> {
         let features = SharedFeatures::with_pawn(&self.pos, &pawn);
 
         evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &self.eval_params, Some(&features))
+    }
+
+    /// Raw eval shifted by the correction history tables, clamped to non-mate.
+    #[inline]
+    fn corrected_eval(&self, raw_eval: i32, sp: &SearchParams) -> i32 {
+        let correction = self.history.correction(
+            self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, sp.minor_corr_weight, sp.major_corr_weight,
+        ) / history::CORRECTION_SCALE;
+
+        (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
     }
 
     /// Negamax with alpha-beta pruning. Since chess is zero-sum, we maximize the
@@ -934,11 +964,13 @@ impl Worker<'_> {
         let (alpha, beta) = if N::ROOT {
             (alpha, beta)
         } else {
-            let a = alpha.max(-MATE + ply as i32);
-            let b = beta.min(MATE - ply as i32 - 1);
+            let a = alpha.max(mated_in(ply));
+            let b = beta.min(mate_in(ply + 1));
+
             if a >= b {
                 return Ok(a);
             }
+
             (a, b)
         };
 
@@ -957,10 +989,13 @@ impl Worker<'_> {
         let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { None };
         let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) =
             if let Some((mv, score, depth_stored, bound, pv, eval)) = tt_probe {
-                // Hash collisions can inject moves from unrelated positions.
-                // Full pseudo-legality check rejects garbage before it reaches
-                // the move picker or triggers a cutoff with a bogus score.
-                let valid = mv.is_null() || is_pseudo_legal(&self.pos, mv);
+                // TT entries can carry moves from an unrelated position after
+                // a hash collision. A move that fails pseudo-legality here is
+                // proof of that, so tt_move stays None and the entry is untrusted
+                // for a cutoff too: valid is false unless the move is null,
+                // which fail-low nodes store legitimately.
+                let tt_move = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
+                let valid = tt_move.is_some() || mv.is_null();
 
                 #[rustfmt::skip]
                 if valid
@@ -971,7 +1006,6 @@ impl Worker<'_> {
                     return Ok(score);
                 }
 
-                let tt_move = if valid && !mv.is_null() { Some(mv) } else { None };
                 (tt_move, pv, Some(eval), score, bound, depth_stored)
             } else {
                 (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
@@ -994,8 +1028,6 @@ impl Worker<'_> {
 
         // ── Static Eval ──
         // Our best guess at how good this position is without searching deeper.
-        // Used as a baseline for pruning decisions: if the position looks
-        // overwhelmingly good or hopeless, we can take shortcuts.
         // Meaningless when in check (we're forced to respond, not evaluate).
         // A TT hit already carries this position's raw eval, so reuse it and skip
         // the full evaluation; the stored sentinel (an in-check store) falls through.
@@ -1016,46 +1048,37 @@ impl Worker<'_> {
         // raw_static_eval stays untouched so the update at the end of this
         // frame learns from the unshifted baseline, not the already-corrected
         // value we use for pruning.
-        let pawn_hash = if in_check { 0 } else { self.pos.pawn_key };
-        let minor_hash = if in_check { 0 } else { self.pos.minor_key };
-        let major_hash = if in_check { 0 } else { self.pos.major_key };
-        let static_eval = if in_check {
-            tt::SCORE_NONE
-        } else {
-            let correction = self
-                .history
-                .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, sp.minor_corr_weight, sp.major_corr_weight)
-                / history::CORRECTION_SCALE;
+        let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval, sp) };
 
-            (raw_static_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
-        };
-
-        self.stack[ply].static_eval = static_eval;
+        // The stack slot inherits through checks: a node in check republishes
+        // its grandparent's eval, so a descendant's two-ply hop always lands on
+        // the last real eval however long the check sequence ran. The local
+        // stays NONE; in-frame logic still needs "no eval here" to mean that.
+        self.stack[ply].static_eval = if in_check && ply >= 2 { self.stack[ply - 2].static_eval } else { static_eval };
 
         // ── Improving Flag ──
         // Has our position strengthened since our last turn?
-        // Step further back if the closer reference was in check:
-        // no static_eval was stored there.
-        let _improving = if !in_check && ply >= 2 && self.stack[ply - 2].static_eval != tt::SCORE_NONE {
-            static_eval > self.stack[ply - 2].static_eval
-        } else if !in_check && ply >= 4 && self.stack[ply - 4].static_eval != tt::SCORE_NONE {
-            static_eval > self.stack[ply - 4].static_eval
-        } else {
-            false
-        };
+        // Inheritance above makes one hop reach the last eval;
+        // a reference still missing means the root edge, which counts
+        // as improving.
+        let _improving = !in_check
+            && (ply >= 2)
+                .then(|| self.stack[ply - 2].static_eval)
+                .filter(|&e| e != tt::SCORE_NONE)
+                .is_none_or(|past| static_eval > past);
 
         // ── TT-Adjusted Eval ──
-        // A bounded TT score sharpens static eval when its bound backs the side
-        // it sits on: a lower bound above us means the truth is higher still,
-        // an upper bound below means lower still.
-        let tt_adjusted_eval = if tt_bound != tt::BOUND_NONE
-            && !is_mate(tt_score)
-            && tt_bound != (if tt_score > static_eval { tt::BOUND_UPPER } else { tt::BOUND_LOWER })
-        {
-            tt_score
-        } else {
-            static_eval
+        // The bound must back the direction the score moved from static eval:
+        // a score above eval needs a lower bound (truth is higher still), one
+        // below needs an upper bound. An exact bound backs either.
+        let tt_backs_eval = match tt_bound {
+            tt::BOUND_EXACT => true,
+            tt::BOUND_LOWER => tt_score > static_eval,
+            tt::BOUND_UPPER => tt_score < static_eval,
+            _ => false, // BOUND_NONE
         };
+
+        let tt_adjusted_eval = if tt_backs_eval && !is_mate(tt_score) { tt_score } else { static_eval };
 
         // ── Reverse Futility Pruning (~52 Elo) ──
         // Position is already so good that even after subtracting a generous
@@ -1080,7 +1103,6 @@ impl Worker<'_> {
         // ── Razoring (~17 Elo) ──
         // Position is so far below alpha that a full-depth search is unlikely
         // to recover. Drop straight into qsearch to confirm.
-        #[rustfmt::skip]
         if !in_check
             && !N::PV
             && excluded.is_null()
@@ -1108,6 +1130,7 @@ impl Worker<'_> {
         {
             let eval_r = ((tt_adjusted_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
             let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
+            let null_depth = (depth - r - sp.nmp_ply_offset).max(0);
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
@@ -1115,14 +1138,7 @@ impl Worker<'_> {
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.negamax::<NonPvNode>(
-                searcher,
-                (depth - r - sp.nmp_ply_offset).max(0),
-                -beta,
-                -beta + 1,
-                ply + 1,
-                None,
-            ) {
+            let score = match self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None) {
                 Ok(v) => -v,
                 Err(e) => {
                     searcher.zobrist_trail.pop();
@@ -1151,7 +1167,7 @@ impl Worker<'_> {
                 }
 
                 self.is_nmp_verif = true;
-                let verif = self.negamax::<NonPvNode>(searcher, (depth - r - sp.nmp_ply_offset).max(0), beta - 1, beta, ply, None);
+                let verif = self.negamax::<NonPvNode>(searcher, null_depth, beta - 1, beta, ply, None);
                 self.is_nmp_verif = false;
 
                 if verif? >= beta {
@@ -1170,7 +1186,7 @@ impl Worker<'_> {
         // qsearch as the filter, a reduced search only to confirm a pass.
         if !N::PV && !in_check && excluded.is_null() && depth >= sp.probcut_depth_min && !is_mate(beta) {
             let probcut_beta = beta + sp.probcut_margin;
-            let probcut_depth = (depth - 4).clamp(1, depth - 1);
+            let probcut_depth = (depth - 4).max(1);
 
             let stm = self.pos.stm;
             let opp = stm.opposite();
@@ -1201,6 +1217,7 @@ impl Worker<'_> {
                     Ok(v) if -v >= probcut_beta => self
                         .negamax::<NonPvNode>(searcher, probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1, None)
                         .map(|x| -x),
+
                     Ok(v) => Ok(-v),
                     Err(e) => Err(e),
                 };
@@ -1215,6 +1232,7 @@ impl Worker<'_> {
                     searcher
                         .tt
                         .store(self.pos.hash, ply, probcut_depth, value, mv, tt::BOUND_LOWER, tt_pv, raw_static_eval);
+
                     return Ok(value);
                 }
             }
@@ -1272,32 +1290,17 @@ impl Worker<'_> {
             // the move played 1, 2, and 4 plies ago from this node.
             // These index into separate cont-hist tables and let the move
             // picker incorporate recent positional context into quiet ordering.
-            let cont1 = if ply > 0 {
-                ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
-            } else {
-                ContContext::default()
-            };
-
-            let cont2 = if ply > 1 {
-                ContContext { pt: self.stack[ply - 2].moved_pt, to: self.stack[ply - 2].moved_to }
-            } else {
-                ContContext::default()
-            };
-
-            let cont4 = if ply > 3 {
-                ContContext { pt: self.stack[ply - 4].moved_pt, to: self.stack[ply - 4].moved_to }
-            } else {
-                ContContext::default()
-            };
+            let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+
             while let Some(mv) = picker.next(&self.pos, self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
 
-                // The verification weighs every move but the one it set aside.
+                // The verification weighs every move except the one it set aside.
                 if mv == excluded {
                     continue;
                 }
@@ -1427,7 +1430,7 @@ impl Worker<'_> {
                     // unlikely to be the move, so reduce them harder.
                     r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > 2) as i32;
 
-                    let max_r = (depth - sp.lmr_retained) * LMR_SCALE;
+                    let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
 
                     (r - hist / sp.lmr_hist_div).clamp(0, max_r) / LMR_SCALE
                 } else {
@@ -1524,9 +1527,8 @@ impl Worker<'_> {
                     // and we punish the preceding moves that failed to refute the branch.
                     //
                     // Bonus is quadratic with depth to prioritize deep heuristics,
-                    // scaled 4x and capped at 1600 to push entries toward the
-                    // nominal ±16384 attractor without a single deep search
-                    // permanently dominating the history table.
+                    // then scaled and capped (hist_bonus_mult, hist_bonus_cap) so
+                    // no single deep search permanently dominates the table's ±16384 attractor.
                     let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
 
                     // Only reward if the cutoff itself was caused by a quiet move.
@@ -1581,7 +1583,7 @@ impl Worker<'_> {
 
                     // Captures: penalize all preceding captures that were searched
                     // and failed to cut. Without this, capture history only drifts
-                    // positive: it can reward good captures but never push bad
+                    // positive; it rewards good captures and never pushes bad
                     // ones down.
                     let cap_penalty_limit = if appended_capture {
                         self.stack[ply].capture_count.saturating_sub(1)
@@ -1610,7 +1612,7 @@ impl Worker<'_> {
             return if !excluded.is_null() {
                 Ok(alpha)
             } else if in_check {
-                Ok(-MATE + ply as i32)
+                Ok(mated_in(ply))
             } else {
                 Ok(0)
             };
@@ -1650,17 +1652,18 @@ impl Worker<'_> {
             let diff = res.best_eval - raw_static_eval;
 
             self.history
-                .update_correction(self.pos.stm, pawn_hash, minor_hash, major_hash, diff, depth);
+                .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, diff, depth);
         }
 
         Ok(res.best_eval)
     }
 
-    /// Make a move, search it, unmake it. The "heartbeat" of alpha-beta.
+    /// Make a move, search it, unmake it. The innermost loop body every
+    /// move in the tree passes through exactly once.
     ///
-    /// # Safety
-    /// The move `mv` MUST be legal. Root legality is guaranteed by the root
-    /// move list generated at search start; interior legality is verified by
+    /// # Precondition
+    /// `mv` must be legal. Root legality is guaranteed by the root move
+    /// list generated at search start; interior legality is verified by
     /// the explicit `is_legal` call in the move loop before each invocation.
     fn search_move<N: NodeType>(
         &mut self,
@@ -1682,8 +1685,8 @@ impl Worker<'_> {
         searcher.tt.prefetch(self.pos.hash);
 
         // ── Gives-Check LMR Adjustment (~4 Elo) ──
-        // A move that delivers check is forcing: the opponent has no choice
-        // but to respond. Don't reduce it as aggressively; give it a bit more
+        // A move that delivers check is forcing: the opponent must respond.
+        // Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
         if self.pos.checkers().is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
@@ -1800,23 +1803,7 @@ impl Worker<'_> {
                 let pt = self.stack[ply].moved_pt;
                 let to = self.stack[ply].moved_to;
 
-                let cont1 = if ply > 0 {
-                    ContContext { pt: self.stack[ply - 1].moved_pt, to: self.stack[ply - 1].moved_to }
-                } else {
-                    ContContext::default()
-                };
-
-                let cont2 = if ply > 1 {
-                    ContContext { pt: self.stack[ply - 2].moved_pt, to: self.stack[ply - 2].moved_to }
-                } else {
-                    ContContext::default()
-                };
-
-                let cont4 = if ply > 3 {
-                    ContContext { pt: self.stack[ply - 4].moved_pt, to: self.stack[ply - 4].moved_to }
-                } else {
-                    ContContext::default()
-                };
+                let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
                 let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
                 let signed = if score <= alpha { -bonus } else { bonus };
@@ -1892,11 +1879,10 @@ impl Worker<'_> {
         let opp = stm.opposite();
 
         // ── QSearch Evaluations & Evasions ──
-        // If we are in check, the position is forced and static evaluation is meaningless.
-        // We drop the stand-pat evaluation (-INF) and the MovePicker will generate
-        // all legal evasions instead of just captures/queen promotions.
-        // A TT hit already carries this position's raw eval; reuse it over a fresh
-        // evaluation. SCORE_NONE when in check, which is also the value stored below.
+        // In check, static eval is meaningless; stand-pat drops to -INF
+        // and the picker generates all evasions instead of just captures.
+        // A TT hit already carries this position's raw eval; the stored
+        // sentinel (an in-check store) falls through.
         let raw_eval = if in_check {
             tt::SCORE_NONE
         } else if let Some(eval) = qs_tt_eval.filter(|&e| e != tt::SCORE_NONE) {
@@ -1908,15 +1894,7 @@ impl Worker<'_> {
         let mut best_eval = if in_check {
             -INF
         } else {
-            let pawn_hash = self.pos.pawn_key;
-            let minor_hash = self.pos.minor_key;
-            let major_hash = self.pos.major_key;
-            let correction = self
-                .history
-                .correction(self.pos.stm, pawn_hash, minor_hash, major_hash, sp.minor_corr_weight, sp.major_corr_weight)
-                / history::CORRECTION_SCALE;
-
-            let eval = (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND);
+            let eval = self.corrected_eval(raw_eval, sp);
 
             if eval >= beta {
                 // Static eval is blind to quiet replies;
@@ -1935,7 +1913,7 @@ impl Worker<'_> {
             let best_capturable = [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn]
                 .into_iter()
                 .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
-                .map_or(0, |pt| searcher.cfg.mvvlva_v[pt as usize]);
+                .map_or(0, |pt| searcher.cfg.mvvlva_v[pt]);
 
             if eval + best_capturable + sp.delta_margin < alpha {
                 return Ok(alpha);
@@ -2016,7 +1994,7 @@ impl Worker<'_> {
         }
 
         if in_check && moves_made == 0 {
-            return Ok(-MATE + ply as i32);
+            return Ok(mated_in(ply));
         }
 
         // ── QSearch TT Store ──
@@ -2094,6 +2072,7 @@ impl Worker<'_> {
                 return true;
             }
         }
+
         remainder.contains(&key)
     }
 }
