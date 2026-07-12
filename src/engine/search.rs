@@ -1054,8 +1054,7 @@ impl Worker<'_> {
         // its grandparent's eval, so a descendant's two-ply hop always lands on
         // the last real eval however long the check sequence ran. The local
         // stays NONE; in-frame logic still needs "no eval here" to mean that.
-        self.stack[ply].static_eval =
-            if in_check && ply >= 2 { self.stack[ply - 2].static_eval } else { static_eval };
+        self.stack[ply].static_eval = if in_check && ply >= 2 { self.stack[ply - 2].static_eval } else { static_eval };
 
         // ── Improving Flag ──
         // Has our position strengthened since our last turn?

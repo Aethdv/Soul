@@ -455,8 +455,7 @@ impl CmaEs {
         // Formula: (1 - c₁ - c_μ·Σw)·C + c₁·(p_c·p_cᵀ) + c_μ·Σ(w·y·yᵀ)
         // With h_σ correction: (1 - c₁ - c_μ·Σw + (1-h_σ)·c₁·c_c·(2-c_c))·C
         // Ref: Hansen (2016) Eq. 38.
-        let old_cov_weight =
-            c_mu_eff.mul_add(-sum_w, 1.0 - c_1_eff) + (1.0 - h_sigma) * c_1_eff * self.c_c * (2.0 - self.c_c);
+        let old_cov_weight = c_mu_eff.mul_add(-sum_w, 1.0 - c_1_eff) + (1.0 - h_sigma) * c_1_eff * self.c_c * (2.0 - self.c_c);
 
         for i in 0..self.n {
             let rank_one = c_1_eff * self.p_c[i] * self.p_c[i];
