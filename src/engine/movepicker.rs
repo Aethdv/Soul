@@ -472,7 +472,7 @@ impl MovePicker {
     /// Promotion-captures never reach this function; they're scored entirely
     /// by `add_promo_caps`, which is why there's no promotion term here.
     /// The Stage segregation in `MovePicker::next` ensures all captures are
-    /// yielded before any quiet moves, so a global bias is no longer needed.
+    /// yielded before any quiet moves, so a global bias isn't needed.
     #[inline(always)]
     fn mvv_lva(&self, mv: Move, attacker: PieceType, victim: PieceType) -> MoveScore {
         if mv.is_en_passant() {
