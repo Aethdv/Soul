@@ -51,10 +51,6 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
 // Because Big-O is a lie when it hits modern hardware.
 // An ipnsort beats a branch-heavy selection sort loop, even when K is small.
-//
-// Moves and their scores are cleanly bitpacked into u32s. Native sorting
-// places the highest-scored moves at the end of the array, allowing us
-// to pop them off the back (count -= 1) with zero index-shifting overhead.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
@@ -225,7 +221,7 @@ impl MovePicker {
                     self.count -= 1;
                     // SAFETY: count was strictly > 0 above, so this index holds a valid packed move.
                     let packed = unsafe { debug_index!(self.candidates, self.count).assume_init() };
-                    let mv = Move::from_u16((packed & 0xFFFF) as u16);
+                    let mv = Move::from_u16(packed as u16);
 
                     if Some(mv) == self.hash_move {
                         continue;
@@ -427,11 +423,15 @@ impl MovePicker {
 
     #[inline(always)]
     fn add_move_packed(&mut self, mv: Move, score: MoveScore) {
-        debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
         let sort_score = (score as i32 + 32768).clamp(0, 65535) as u32;
-        let packed = (sort_score << 16) | (mv.inner() as u32);
-        crate::debug_index_mut!(self.candidates, self.count).write(packed);
+        self.write_packed((sort_score << 16) | (mv.inner() as u32));
+    }
 
+    /// Append a pre-packed `(sort_score << 16) | move` entry.
+    #[inline(always)]
+    fn write_packed(&mut self, packed: u32) {
+        debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
+        crate::debug_index_mut!(self.candidates, self.count).write(packed);
         self.count += 1;
     }
 
@@ -439,7 +439,6 @@ impl MovePicker {
     /// Promotion-captures bypass this path entirely; they go through `add_promo_caps`.
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
-        // Victim is always pawn (the captured pawn sits on an adjacent square, not the destination).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let mvv = self.mvv_lva(mv, attacker, victim);
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
@@ -563,11 +562,7 @@ impl MovePicker {
             sort_score = 64000;
         }
 
-        let packed = (sort_score << 16) | (mv.inner() as u32);
-
-        // SAFETY: count < MAX_MOVES is guarded above.
-        unsafe { self.candidates.as_mut_ptr().add(self.count).write(MaybeUninit::new(packed)) };
-        self.count += 1;
+        self.write_packed((sort_score << 16) | (mv.inner() as u32));
     }
 
     /// Emit all four quiet promotions for a single pawn push.
