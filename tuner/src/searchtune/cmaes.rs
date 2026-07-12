@@ -394,22 +394,22 @@ impl CmaEs {
         // parameters are normalized to [0, 1], meaning 10.0 covers several search space widths.
         self.sigma = self.sigma.clamp(1e-6, 10.0);
 
-        // ── h_sigma: Evolution Path Stall Detector ──
-        // If the evolution path length ||p_sigma|| is significantly shorter than a random walk,
-        // it indicates we are in a "stagnation" regime where consecutive steps are canceling
-        // each other out (pacing back and forth). This often happens when the step size (sigma)
-        // is too large for the local gradient or when we are trapped in a narrow valley.
-        //
-        // We calculate h_sigma based on the expected value under a random walk (Hansen, 2016).
-        // If stagnation is detected (h_sigma=0), we freeze the rank-one covariance update
-        // to prevent the matrix from collapsing into a flat point or warping around noise.
+        // ── h_sigma: Rank-One Update Guard ──
+        // Compare ||p_sigma|| against its expected length under a random walk
+        // (Hansen, 2016), with the startup correction for a path still filling up.
+        // An unusually LONG path means sigma is far too small for the landscape:
+        // consecutive steps all point the same way, and the path direction is a
+        // transient of that correction, not converged curvature. h_sigma = 0 then
+        // stalls the rank-one input so the covariance doesn't inflate along a
+        // temporary direction; the (1 - h_sigma) term in old_cov_weight repays
+        // the variance the frozen path update would have carried.
         let expected_ps = self.chi_n * (1.0 - (1.0 - self.c_sigma).powi(2 * self.generation as i32)).sqrt();
 
         let h_sigma_cond = ps_norm < (1.4 + 2.0 / (self.n as f64 + 1.0)) * expected_ps;
-        let delta_h_sigma = if h_sigma_cond { 1.0 } else { 0.0 };
+        let h_sigma = if h_sigma_cond { 1.0 } else { 0.0 };
 
         for (pc, &yi) in self.p_c.iter_mut().zip(&y) {
-            *pc = (1.0 - self.c_c).mul_add(*pc, delta_h_sigma * (self.c_c * (2.0 - self.c_c) * self.mu_eff).sqrt() * yi);
+            *pc = (1.0 - self.c_c).mul_add(*pc, h_sigma * (self.c_c * (2.0 - self.c_c) * self.mu_eff).sqrt() * yi);
         }
 
         // Precalculate dynamic weights (SNR scaling + Mahalanobis normalization)
@@ -456,7 +456,7 @@ impl CmaEs {
         // With h_σ correction: (1 - c₁ - c_μ·Σw + (1-h_σ)·c₁·c_c·(2-c_c))·C
         // Ref: Hansen (2016) Eq. 38.
         let old_cov_weight =
-            c_mu_eff.mul_add(-sum_w, 1.0 - c_1_eff) + (1.0 - delta_h_sigma) * c_1_eff * self.c_c * (2.0 - self.c_c);
+            c_mu_eff.mul_add(-sum_w, 1.0 - c_1_eff) + (1.0 - h_sigma) * c_1_eff * self.c_c * (2.0 - self.c_c);
 
         for i in 0..self.n {
             let rank_one = c_1_eff * self.p_c[i] * self.p_c[i];
