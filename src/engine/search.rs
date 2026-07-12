@@ -1050,19 +1050,23 @@ impl Worker<'_> {
         // value we use for pruning.
         let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval, sp) };
 
-        self.stack[ply].static_eval = static_eval;
+        // The stack slot inherits through checks: a node in check republishes
+        // its grandparent's eval, so a descendant's two-ply hop always lands on
+        // the last real eval however long the check sequence ran. The local
+        // stays NONE; in-frame logic still needs "no eval here" to mean that.
+        self.stack[ply].static_eval =
+            if in_check && ply >= 2 { self.stack[ply - 2].static_eval } else { static_eval };
 
         // ── Improving Flag ──
         // Has our position strengthened since our last turn?
-        // Step further back if the closer reference was in check:
-        // no static_eval was stored there.
+        // Inheritance above makes one hop reach the last eval;
+        // a reference still missing means the root edge, which counts
+        // as improving.
         let _improving = !in_check
-            && [2, 4]
-                .into_iter()
-                .filter(|&step| ply >= step)
-                .map(|step| self.stack[ply - step].static_eval)
-                .find(|&eval| eval != tt::SCORE_NONE)
-                .is_some_and(|past_eval| static_eval > past_eval);
+            && (ply >= 2)
+                .then(|| self.stack[ply - 2].static_eval)
+                .filter(|&e| e != tt::SCORE_NONE)
+                .is_none_or(|past| static_eval > past);
 
         // ── TT-Adjusted Eval ──
         // The bound must back the direction the score moved from static eval:
