@@ -267,6 +267,7 @@ impl LinearTerm for MobilityTerm {
 
         let metrics_us = &features.data.metrics_us;
         let metrics_them = &features.data.metrics_them;
+
         let diff = [
             (metrics_us.mobility - metrics_them.mobility) as f64,
             (metrics_us.shadow_mobility - metrics_them.shadow_mobility) as f64,
@@ -346,14 +347,18 @@ impl LinearTerm for KingSafetyTerm {
 
         let idx_us = safety_us.attackers.min(ATTACKER_WEIGHTS.len() - 1);
         let idx_them = safety_them.attackers.min(ATTACKER_WEIGHTS.len() - 1);
+
         for atk_k in 0..ATTACKER_WEIGHTS.len() {
             let mut atk_deriv = 0.0;
+
             if atk_k == idx_us {
                 atk_deriv -= safety_us.weak as f64 / 10.0;
             }
+
             if atk_k == idx_them {
                 atk_deriv += safety_them.weak as f64 / 10.0;
             }
+
             if atk_deriv != 0.0 {
                 grads[ao + atk_k] += upstream * atk_deriv;
             }
@@ -390,10 +395,13 @@ impl EvalCtx {
 
         // Knights: pinned = zero mobility.
         let mut knight_atk_us = Bitboard(0);
+
         for sq in (knights & us) & !pinned_us {
             knight_atk_us |= atk_knight(sq);
         }
+
         let mut knight_atk_them = Bitboard(0);
+
         for sq in (knights & them) & !pinned_them {
             knight_atk_them |= atk_knight(sq);
         }
@@ -425,12 +433,15 @@ impl EvalCtx {
 
         let inject_pinned = |pinned: Bitboard, ksq: Square| {
             let mut atk = Bitboard(0);
+
             for sq in pinned & rq {
                 atk |= atk_rook(sq, occ) & line_bb(ksq, sq);
             }
+
             for sq in pinned & bq {
                 atk |= atk_bishop(sq, occ) & line_bb(ksq, sq);
             }
+
             atk
         };
 

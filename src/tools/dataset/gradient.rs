@@ -14,6 +14,7 @@ use crate::{
         eval::{SharedFeatures, evaluate_fast, extract_phase},
         mobility::{OPEN_UNITY, SafetyMetrics, SideMetrics, compute_openness_raw},
     },
+    weave::Vf64x4,
 };
 
 /// All tuner-side features for one position, packed into a single contiguous
@@ -158,6 +159,7 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
 
     // Zero diff adds nothing, so eval omits the zero-diff guard the gradient scatter keeps.
     let mat = l.material_offset;
+
     for pt in 0..6 {
         score += f64::from(record.mat_diffs[pt]) * (values[mat + pt] * mg_w + values[mat + 6 + pt] * eg_w);
     }
@@ -176,8 +178,10 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
 
     // Mobility blends open/closed weights by pawn openness before tapering.
     let (openness, closedness) = openness_pair(record.open_raw);
+
     for i in 0..4 {
         let diff = f64::from(record.mobility[i]) - f64::from(record.mobility[i + 4]);
+
         score += diff
             * interpolate_weight(
                 values,
@@ -238,8 +242,8 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
     score
 }
 
-/// Accumulate parameter gradients for `record` into `grads`, scaled by the
-/// upstream `gradient` (∂loss/∂score).
+/// Accumulate parameter gradients for `record` into `grads`,
+/// scaled by the upstream `gradient` (∂loss/∂score).
 pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: f64, grads: &mut [f64]) {
     let phase_counts: [f64; 6] = array::from_fn(|i| f64::from(record.phase_counts[i]));
     let (mg_w, eg_w) = compute_phase_weights_f64(&phase_counts, values);
@@ -288,7 +292,6 @@ pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: 
     grads[l.king_safety_offset + 2] -= gradient * diag_diff * mg_w;
     grads[l.xray_offset] += gradient * f64::from(record.xray_ortho) * mg_w;
 
-    // Tapered terms: the scatter mirror of the eval side.
     taper_grad(record.bishop_pair, gradient, mg_w, eg_w, grads, l.bishop_pair_offset, l.bishop_pair_offset + 1);
     taper_grad(record.rook_open, gradient, mg_w, eg_w, grads, l.rook_open_offset, l.rook_open_offset + 1);
 
@@ -339,15 +342,28 @@ pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: 
         l.minor_behind_pawn_offset + 1,
     );
 
-    // Mobility: open/closed weights scaled by openness, both phases.
     let (openness, closedness) = openness_pair(record.open_raw);
-    for i in 0..4 {
-        let g_diff = gradient * (f64::from(record.mobility[i]) - f64::from(record.mobility[i + 4]));
-        grads[l.mobility_open_offset + i] += g_diff * openness * mg_w;
-        grads[l.mobility_open_offset + 4 + i] += g_diff * openness * eg_w;
-        grads[l.mobility_closed_offset + i] += g_diff * closedness * mg_w;
-        grads[l.mobility_closed_offset + 4 + i] += g_diff * closedness * eg_w;
-    }
+
+    let g_diff = Vf64x4::from([
+        f64::from(record.mobility[0]) - f64::from(record.mobility[4]),
+        f64::from(record.mobility[1]) - f64::from(record.mobility[5]),
+        f64::from(record.mobility[2]) - f64::from(record.mobility[6]),
+        f64::from(record.mobility[3]) - f64::from(record.mobility[7]),
+    ]) * Vf64x4::splat(gradient);
+
+    let mut scatter = |offset: usize, scale: f64| {
+        // SAFETY: the block is 4 fixed LAYOUT slots inside the parameter region, and
+        // grads spans every parameter (grads.len() == values.len()).
+        unsafe {
+            let p = grads.as_mut_ptr().add(offset);
+            (Vf64x4::loadu(p) + g_diff * Vf64x4::splat(scale)).storeu(p);
+        }
+    };
+
+    scatter(l.mobility_open_offset, openness * mg_w);
+    scatter(l.mobility_open_offset + 4, openness * eg_w);
+    scatter(l.mobility_closed_offset, closedness * mg_w);
+    scatter(l.mobility_closed_offset + 4, closedness * eg_w);
 }
 
 /// Sign bit of a packed [`FeatureRecord::piece_idx`] slot.
