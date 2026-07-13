@@ -164,12 +164,7 @@ impl SafetyMetrics {
 
 impl Mobility {
     #[inline]
-    pub fn compute_all(
-        pos: &Position,
-        tensor: &SpatialTensor,
-        pinned_w: Bitboard,
-        pinned_b: Bitboard,
-    ) -> MobilityData {
+    pub fn compute_all(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> MobilityData {
         let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
 
         // King safety: computed once per side, then both the raw features

@@ -19,7 +19,7 @@ use std::{
 };
 
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
-use crate::{engine::eval_params, weave::Vf32x8};
+use crate::{core::defs::TOTAL_PHASE, engine::eval_params, weave::Vf32x8};
 
 /// Partials per dual number; the tunable input count rounded up to a multiple
 /// of 8 for the AVX2 chunk loop. Auto-grows when an eval term is added.
@@ -57,6 +57,7 @@ impl DualNode {
     pub fn seed(val: f64, idx: usize) -> Self {
         let mut grad = [0.0f32; DUAL_N];
         grad[idx] = 1.0;
+
         Self { grad, val, active: true }
     }
 
@@ -290,6 +291,7 @@ impl EvalMath for DualNode {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }
+
         DualVec4(out)
     }
 
@@ -302,6 +304,7 @@ impl EvalMath for DualNode {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }
+
         out
     }
 
@@ -313,6 +316,7 @@ impl EvalMath for DualNode {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }
+
         out
     }
 
@@ -372,6 +376,7 @@ impl EvalMath for DualNode {
         if self.val >= max.val {
             return Self { val: max.val, grad: [0.0; DUAL_N], active: false };
         }
+
         self
     }
 
@@ -380,8 +385,8 @@ impl EvalMath for DualNode {
         let mg = acc.0[0];
         let eg = acc.0[1];
         let p = phase;
-        let eg_p = Self::from_i32(24) - phase;
-        let tot = Self::from_i32(24);
+        let eg_p = Self::from_i32(TOTAL_PHASE) - phase;
+        let tot = Self::from_i32(TOTAL_PHASE);
 
         ((mg * p + eg * eg_p) / tot).trunc()
     }
