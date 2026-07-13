@@ -531,15 +531,15 @@ where I: Iterator<Item = &'a str> {
 fn process_moves<'a, I>(state: &mut UciState, moves: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     for move_str in moves.by_ref() {
-        let legal = gen_legal_moves(&state.board);
-        let mv = legal.iter().find(|mv| mv.to_uci(state.board.is_frc) == move_str);
-
-        if let Some(&valid_move) = mv {
-            state.board.make_move(valid_move, &mut state.accumulator);
-            state.history.push(state.board.hash);
-        } else {
-            println!("info string warning: illegal move {move_str}");
-            break;
+        match parse_uci_move(&state.board, move_str) {
+            Ok(mv) => {
+                state.board.make_move(mv, &mut state.accumulator);
+                state.history.push(state.board.hash);
+            },
+            Err(_) => {
+                println!("info string warning: illegal move {move_str}");
+                break;
+            },
         }
     }
 }
