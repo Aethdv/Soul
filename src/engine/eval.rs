@@ -44,6 +44,7 @@ macro_rules! impl_eval_params {
         }
 
         impl<T: EvalMath<Scalar = T>> EvalParams<T> {
+            // Tuner-only: the engine build seeds params via from_const, never this.
             #[allow(dead_code)]
             pub fn load_tunable(values: &[f64]) -> Self {
                 // Slots 0 and 1 are reserved for the PSQT accumulator gradients:
@@ -208,17 +209,15 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 
 /// Generic evaluation: monomorphized to `i32` for search, `DualNode` for tuning.
 ///
-/// WARNING: Autograd Linearity Booby Trap
-/// If you introduce any non-linear math (e.g. `feature · feature · weight` or `max(feature, 0)`)
+/// Linearity trap: if you introduce any non-linear math (e.g. `feature · feature · weight` or `max(feature, 0)`)
 /// to the evaluation parameters, the affected [`crate::engine::term::LinearTerm::scatter`]
 /// impl will silently compute mathematically invalid gradients because
 /// [`LinearTerm`] assumes perfect parameter linearity (`y = w · x`).
 /// Non-linear shapes belong in the [`crate::engine::combiner::Combiner`] layer
 /// or soon a future `NonlinearTerm`.
 ///
-/// If you aren't sure, just run the `test_linear_oracle_verification` test in
-/// `tuner/src/evaltune/tape.rs`, which compares against the dual-number forward
-/// pass and fails on any drift.
+/// If you aren't sure, run `make oracle`, which compares against the dual-number
+/// forward pass and fails on any drift.
 #[inline(always)]
 pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
     board: &Position,
