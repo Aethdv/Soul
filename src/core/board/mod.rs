@@ -318,7 +318,7 @@ impl Position {
     pub fn get_initial_accumulator(&self) -> Vi16x8 {
         let mut acc = Vi16x8::splat(0);
         for sq in self.occ {
-            // NOTE: MG/EG lanes are i16 and won't overflow at realistic piece values
+            // MG/EG lanes are i16 and won't overflow at realistic piece values
             acc += psqt::get_vec(self.piece_at(sq), sq, self.color_at(sq));
         }
         acc
@@ -329,7 +329,7 @@ impl Position {
     /// Only the last `halfmove_clock + 1` positions matter: anything before
     /// a capture or pawn push can never be the same position again.
     ///
-    /// NOTE: This uses a `step_by(2)` optimization for adjudication (where we
+    /// This uses a `step_by(2)` optimization for adjudication (where we
     /// explicitly need 3-fold counts). Contrast with `Worker::is_repetition`
     /// which scans every ply for early draw detection in search.
     ///

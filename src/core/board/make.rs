@@ -302,7 +302,7 @@ fn refresh_en_passant(pos: &mut Position, mv: Move, from: Square, to: Square, ol
     pos.en_passant = None;
 
     if mv.is_double_push() {
-        let ep_sq = Square((from.0 + to.0) / 2);
+        let ep_sq = Square(u8::midpoint(from.0, to.0));
 
         if pos.can_capture_ep(ep_sq, pos.stm) {
             pos.en_passant = Some(ep_sq);

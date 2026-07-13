@@ -275,7 +275,7 @@ impl MoveList {
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES, "MoveList capacity exceeded");
         // SAFETY: Caller guarantees the list is not full; debug_assert above catches violations in debug builds.
-        unsafe { self.moves.as_mut_ptr().add(self.len).write(MaybeUninit::new(mv)) };
+        unsafe { self.moves.get_unchecked_mut(self.len).write(mv) };
         self.len += 1;
     }
 
@@ -306,13 +306,13 @@ impl MoveList {
     #[inline(always)]
     pub fn as_slice(&self) -> &[Move] {
         // SAFETY: The first len elements are guaranteed to be initialized.
-        unsafe { std::slice::from_raw_parts(self.moves.as_ptr() as *const Move, self.len) }
+        unsafe { self.moves[..self.len].assume_init_ref() }
     }
 
     #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [Move] {
         // SAFETY: The first len elements are guaranteed to be initialized.
-        unsafe { std::slice::from_raw_parts_mut(self.moves.as_mut_ptr() as *mut Move, self.len) }
+        unsafe { self.moves[..self.len].assume_init_mut() }
     }
 
     #[inline(always)]
@@ -335,9 +335,8 @@ impl Index<usize> for MoveList {
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
         debug_assert!(index < self.len);
-        // SAFETY: The first len elements are guaranteed to be initialized.
-        // We cast to *const Move and index it.
-        unsafe { &*(self.moves.as_ptr() as *const Move).add(index) }
+        // SAFETY: index < len, and the first len elements are initialized.
+        unsafe { self.moves.get_unchecked(index).assume_init_ref() }
     }
 }
 
@@ -345,9 +344,8 @@ impl IndexMut<usize> for MoveList {
     #[inline(always)]
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         debug_assert!(index < self.len);
-        // SAFETY: The first len elements are guaranteed to be initialized.
-        // We cast to *mut Move and index it.
-        unsafe { &mut *(self.moves.as_mut_ptr() as *mut Move).add(index) }
+        // SAFETY: index < len, and the first len elements are initialized.
+        unsafe { self.moves.get_unchecked_mut(index).assume_init_mut() }
     }
 }
 

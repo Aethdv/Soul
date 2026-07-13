@@ -246,7 +246,7 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     let them = us.opposite();
     let their_king_sq = (pos.role_bb[PieceType::King] & pos.side_bb[them]).lsb();
 
-    // In Soul, is_attacked::<false> is the most efficient way to check this.
+    // is_attacked::<false> is the most efficient way to check this.
     if pos.is_attacked::<false>(their_king_sq, us, Bitboard::EMPTY) {
         return Err(FenError::IllegalCheck);
     }

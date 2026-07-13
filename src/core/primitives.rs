@@ -286,7 +286,7 @@ impl Square {
     #[inline(always)]
     #[must_use]
     pub const fn offset_unchecked(self, off: i8) -> Self {
-        let result = (self.0 as i8 + off) as u8;
+        let result = (self.0.cast_signed() + off).cast_unsigned();
         debug_assert!(result < 64, "Square::offset produced invalid square");
         Self(result)
     }
