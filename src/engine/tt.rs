@@ -69,9 +69,9 @@ const fn verification_key(hash: u64) -> u16 {
     hash as u16
 }
 
-/// One slot, five `AtomicU16` words. The atomics are what let Lazy SMP threads
-/// share the table without locks; 16-bit words keep the entry at 10 bytes and
-/// align 2, where a single `AtomicU32` would force align 4 and pad it back out,
+/// One slot, five `AtomicU16` words. The atomics let Lazy SMP threads share
+/// the table without locks; 16-bit words keep the entry at 10 bytes and align 2,
+/// where a single `AtomicU32` would force align 4 and pad it back out,
 /// thinning the table for nothing.
 ///
 /// `key` is the commit point. A store writes the other four words first and
@@ -331,6 +331,7 @@ impl TranspositionTable {
                 return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0, entry.eval as i32));
             }
         }
+
         None
     }
 
@@ -455,7 +456,7 @@ impl TranspositionTable {
     /// Maps a 64-bit hash to a cluster index.
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
-        // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly
+        // mulhi64: the top 64 bits of hash · len. Lands the hash uniformly
         // in [0, len), the way hash % len would, but with a multiply.
         let clusters = self.clusters.len();
 
@@ -463,8 +464,8 @@ impl TranspositionTable {
     }
 }
 
-/// First-touch the cluster region in parallel, each NUMA node's thread zeroing the
-/// slice bound to it. First-touch decides a page's home node, so this is what spreads
+/// First-touch the cluster region in parallel, each NUMA node's thread zeroing
+/// the slice bound to it. First-touch decides a page's home node, so it spreads
 /// the table across the memory controllers instead of leaving it all on one.
 ///
 /// Only ever runs with the engine idle (allocation, or `ucinewgame`), so building
