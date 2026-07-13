@@ -267,7 +267,7 @@ where I: Iterator<Item = &'a str> {
             "perft" => limits.perft = Some(parse_val(tokens)),
             "searchmoves" => {
                 // Peek before consuming;
-                // Tokens like depth must not be swallowed
+                // tokens like depth must not be swallowed
                 // when they fail to parse as a UCI move.
                 while let Some(&mv_str) = tokens.peek() {
                     if let Ok(mv) = parse_uci_move(board, mv_str) {
@@ -307,8 +307,9 @@ pub fn print_help(use_ansi: bool) {
     h.separator();
 
     h.header("Options");
-    h.command_default("Hash", "Hash table size in MB (1-65536)", "16");
-    h.command_default("Overhead", "Move overhead in ms (0-1000)", "10");
+    h.command_default("Hash", "Hash table size in MB (1-524288)", "16");
+    h.command_default("Threads", "Number of search threads (1-1024)", "1");
+    h.command_default("Overhead", "Move overhead in ms (0-2000)", "10");
     h.command_default("UCI_ShowWDL", "Show win/draw/loss stats", "false");
     h.command_default("UCI_Chess960", "Enable Chess960/FRC mode", "false");
     h.command_default("UCI_ShowCurrMove", "Show current move being searched", "true");
@@ -485,9 +486,9 @@ fn print_id() {
 }
 
 fn print_options() {
-    println!("option name Hash type spin default 16 min 1 max 65536");
+    println!("option name Hash type spin default 16 min 1 max 524288");
     println!("option name Threads type spin default 1 min 1 max 1024");
-    println!("option name Overhead type spin default 10 min 0 max 1000");
+    println!("option name Overhead type spin default 10 min 0 max 2000");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
     println!("option name UCI_ShowCurrMove type check default true");
@@ -611,6 +612,7 @@ where I: Iterator<Item = &'a str> {
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
+                let mb = mb.clamp(1, 524288);
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
@@ -618,8 +620,8 @@ where I: Iterator<Item = &'a str> {
         },
 
         "overhead" => {
-            if let Ok(v) = value.parse() {
-                state.overhead = v;
+            if let Ok(v) = value.parse::<u64>() {
+                state.overhead = v.clamp(0, 2000);
             }
         },
 
@@ -676,7 +678,8 @@ fn parse_bool(value: &str) -> bool {
 }
 
 fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
-    if uci.len() < 4 {
+    // Non-ASCII would put a multibyte boundary mid-slice below and panic; reject it.
+    if uci.len() < 4 || !uci.is_ascii() {
         return Err(MoveError::InvalidFormat);
     }
 

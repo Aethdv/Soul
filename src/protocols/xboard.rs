@@ -331,8 +331,8 @@ fn print_features() {
     println!("feature smp=1");
     println!("feature nps=1");
     println!("feature variants=\"normal\"");
-    println!("feature option=\"Hash -spin 16 1 65536\"");
-    println!("feature option=\"Overhead -spin 10 0 1000\"");
+    println!("feature option=\"Hash -spin 16 1 524288\"");
+    println!("feature option=\"Overhead -spin 10 0 2000\"");
     println!("feature option=\"ShowWDL -check 0\"");
     println!("feature done=1");
 }
@@ -462,6 +462,7 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
+                let mb = mb.clamp(1, 524288);
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
@@ -469,8 +470,8 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
         },
 
         "overhead" => {
-            if let Ok(v) = value.parse() {
-                state.overhead = v;
+            if let Ok(v) = value.parse::<u64>() {
+                state.overhead = v.clamp(0, 2000);
             }
         },
 
