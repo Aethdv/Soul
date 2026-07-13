@@ -490,7 +490,7 @@ impl SharedFeatures {
         let pinned_b = board.pinned_pieces(Color::Black);
         let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
 
-        let data = Mobility::compute_all(board, Color::White, &tensor, pinned_w, pinned_b);
+        let data = Mobility::compute_all(board, &tensor, pinned_w, pinned_b);
 
         let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
         let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();

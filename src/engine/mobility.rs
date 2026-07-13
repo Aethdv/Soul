@@ -166,12 +166,11 @@ impl Mobility {
     #[inline]
     pub fn compute_all(
         pos: &Position,
-        color: Color,
         tensor: &SpatialTensor,
         pinned_w: Bitboard,
         pinned_b: Bitboard,
     ) -> MobilityData {
-        let ctx = EvalCtx::build(pos, color, tensor, pinned_w, pinned_b);
+        let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
 
         // King safety: computed once per side, then both the raw features
         // and the derived score feed into the final metrics.
@@ -360,8 +359,7 @@ impl LinearTerm for KingSafetyTerm {
 }
 
 impl EvalCtx {
-    /// Builds symmetric attack maps for `color` ("us") vs its opponent
-    /// ("them").
+    /// Builds both sides' attack maps: White is "us", Black is "them".
     ///
     /// Pinned pieces contribute mobility conservatively:
     /// - Knights: zero mobility. A knight can never legally move while
@@ -372,10 +370,9 @@ impl EvalCtx {
     ///
     /// This prevents the evaluation from crediting mobility that would leave the king in check.
     #[inline(always)]
-    fn build(pos: &Position, color: Color, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
-        let opp = color.opposite();
-        let us = pos.side_bb[color];
-        let them = pos.side_bb[opp];
+    fn build(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
+        let us = pos.side_bb[Color::White];
+        let them = pos.side_bb[Color::Black];
         let occ = pos.occupancy();
 
         let knights = pos.role_bb[PieceType::Knight];
@@ -384,18 +381,16 @@ impl EvalCtx {
         let ksq_us = king_sq(kings & us);
         let ksq_them = king_sq(kings & them);
 
-        let (pinned_us, pinned_them) = if color == Color::White { (pinned_w, pinned_b) } else { (pinned_b, pinned_w) };
-
         // Knights: pinned = zero mobility.
         let mut knight_atk_us = Bitboard(0);
 
-        for sq in (knights & us) & !pinned_us {
+        for sq in (knights & us) & !pinned_w {
             knight_atk_us |= atk_knight(sq);
         }
 
         let mut knight_atk_them = Bitboard(0);
 
-        for sq in (knights & them) & !pinned_them {
+        for sq in (knights & them) & !pinned_b {
             knight_atk_them |= atk_knight(sq);
         }
 
@@ -404,21 +399,12 @@ impl EvalCtx {
         // Pinned pieces are deliberately excluded from xray_us and xray_them as well.
         // While a pinned piece could theoretically provide x-ray battery support along its pin ray,
         // this is a CPU-cycle tradeoff, sacrificing a rare edge case for raw speed.
-        let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = if color == Color::White {
-            (
-                Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
-                Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
-                Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
-                Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
-            )
-        } else {
-            (
-                Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
-                Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
-                Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
-                Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
-            )
-        };
+        let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = (
+            Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
+            Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
+            Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
+            Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
+        );
 
         // Inject the strictly legal (restricted) pin-rays for pinned sliders.
         let rq = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
@@ -438,11 +424,11 @@ impl EvalCtx {
             atk
         };
 
-        slider_atk_us |= inject_pinned(pinned_us, ksq_us);
-        slider_atk_them |= inject_pinned(pinned_them, ksq_them);
+        slider_atk_us |= inject_pinned(pinned_w, ksq_us);
+        slider_atk_them |= inject_pinned(pinned_b, ksq_them);
 
-        let pawn_atk_us = pos.pawn_attacks(color);
-        let pawn_atk_them = pos.pawn_attacks(opp);
+        let pawn_atk_us = pos.pawn_attacks(Color::White);
+        let pawn_atk_them = pos.pawn_attacks(Color::Black);
 
         let atk_us = slider_atk_us | knight_atk_us | pawn_atk_us;
         let atk_them = slider_atk_them | knight_atk_them | pawn_atk_them;
@@ -456,8 +442,8 @@ impl EvalCtx {
             pawn_atk_them,
             ksq_us,
             ksq_them,
-            pawn_us: pos.pieces(PieceType::Pawn, color),
-            pawn_them: pos.pieces(PieceType::Pawn, opp),
+            pawn_us: pos.pieces(PieceType::Pawn, Color::White),
+            pawn_them: pos.pieces(PieceType::Pawn, Color::Black),
             us,
             them,
             occ,
