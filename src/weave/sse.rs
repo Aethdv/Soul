@@ -217,8 +217,7 @@ impl Vi32x4 {
 
     #[inline(always)]
     pub fn from_lanes(a: i32, b: i32, c: i32, d: i32) -> Self {
-        // NOTE: _mm_set_epi32 takes elements in reverse order (3, 2, 1, 0).
-        // This wrapper re-reverses them so arguments map to lanes 0..3.
+        // _mm_set_epi32 takes lanes in reverse (3, 2, 1, 0); re-reversed here so a..d map to lanes 0..3.
         // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
         Self(unsafe { _mm_set_epi32(d, c, b, a) })
     }
@@ -228,7 +227,7 @@ impl Vi32x4 {
         Self::new(arr)
     }
 
-    /// Horizontal sum (2x hadd + extract)
+    /// Horizontal sum: unpack-add then shuffle-add, dodging the slower `_mm_hadd_epi32`.
     #[inline]
     pub fn reduce_sum(self) -> i32 {
         // SAFETY: Pure SIMD arithmetic intrinsics. Hardware support guaranteed by target features.
@@ -244,17 +243,14 @@ impl Vi32x4 {
 
     /// Pack to i16 with signed saturation.
     ///
-    /// NOTE: This relies on the 128-bit SSE behavior of `_mm_packs_epi32`,
-    /// which cleanly appends the 4 lanes of `hi` to the 4 lanes of `self`.
-    /// This keeps the [MG, EG] and [Diff, Diff] lanes correctly aligned
-    /// for the subsequent horizontal dot product in `evaluate_score_diff`.
+    /// Relies on the 128-bit `_mm_packs_epi32` appending `hi`'s 4 lanes after
+    /// `self`'s 4, which keeps the [MG, EG] and [Diff, Diff] lanes aligned for the
+    /// horizontal dot product in `evaluate_score_diff`.
     ///
-    /// WARNING: AVX2 PORTING TRAP
-    /// If you upgrade this operation to AVX2 (256-bit `_mm256_packs_epi32`),
-    /// the instruction interleaves per 128-bit lane rather than appending
-    /// the full vectors sequentially! It will output `[A0, A1, B0, B1, A2, A3, B2, B3]`,
-    /// instantly destroying the horizontal dot product math. You must issue an
-    /// explicit `_mm256_permute4x64_epi64` after packing to restore sequential lane order.
+    /// Porting trap: the 256-bit `_mm256_packs_epi32` packs each 128-bit lane
+    /// independently instead of appending, emitting `[A0..3, B0..3, A4..7, B4..7]`
+    /// rather than the sequential `[A0..7, B0..7]` and wrecking the dot-product order.
+    /// A port has to follow it with `_mm256_permute4x64_epi64` to restore sequential lanes.
     #[inline(always)]
     pub fn pack_i16(self, hi: Self) -> Vi16x8 {
         // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.

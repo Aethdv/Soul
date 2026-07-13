@@ -98,8 +98,7 @@ impl Vu64x4 {
 
     #[inline(always)]
     pub fn from_lanes(a: u64, b: u64, c: u64, d: u64) -> Self {
-        // NOTE: _mm256_set_epi64x takes elements in reverse order (3, 2, 1, 0).
-        // This wrapper re-reverses them so arguments map to lanes 0..3.
+        // _mm256_set_epi64x takes lanes in reverse (3, 2, 1, 0); re-reversed here so a..d map to lanes 0..3.
         // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
         Self(unsafe { _mm256_set_epi64x(d as i64, c as i64, b as i64, a as i64) })
     }
