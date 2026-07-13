@@ -154,6 +154,7 @@ impl MovePicker {
             ContContext::default(),
             ContContext::default(),
         );
+
         mp.is_qsearch = true;
         mp.in_check = in_check;
         mp
@@ -181,6 +182,7 @@ impl MovePicker {
                     self.sort_candidates();
                     self.stage = Stage::YieldCaptures;
                 },
+
                 Stage::YieldCaptures => {
                     if self.count == 0 {
                         // INVARIANT: when YieldCaptures is exhausted, count is exactly 0,
@@ -353,12 +355,12 @@ impl MovePicker {
 
             // Promotion-captures bypass capture history entirely (see add_promo_caps).
             for to in promo {
-                let from = Square((to.0 as i8 - delta) as u8);
+                let from = Square((to.0.cast_signed() - delta).cast_unsigned());
                 self.add_promo_caps(board, from, to);
             }
 
             for to in standard {
-                let from = Square((to.0 as i8 - delta) as u8);
+                let from = Square((to.0.cast_signed() - delta).cast_unsigned());
                 self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn, history);
             }
         }
@@ -488,7 +490,7 @@ impl MovePicker {
         let promo_pushes = all_pushes & prom_mask;
 
         for to in promo_pushes {
-            let from = Square((to.0 as i8 - up_d) as u8);
+            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
         }
     }
@@ -574,19 +576,19 @@ impl MovePicker {
         let quiet_pushes = all_pushes & !prom_mask;
 
         for to in promo_pushes {
-            let from = Square((to.0 as i8 - up_d) as u8);
+            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_promo_quiets(from, to, stm, history);
         }
 
         for to in quiet_pushes {
-            let from = Square((to.0 as i8 - up_d) as u8);
+            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::QUIET), PieceType::Pawn, stm, history);
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
 
         for to in doubles {
-            let from = Square((to.0 as i8 - up_d * 2) as u8);
+            let from = Square((to.0.cast_signed() - up_d * 2).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
         }
     }

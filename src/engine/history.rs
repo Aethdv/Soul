@@ -62,9 +62,9 @@ impl Default for HistoryCaps {
 /// Combined history tables for move ordering.
 #[derive(Clone)]
 pub struct History {
-    /// `[side][piece][to_square]`: bounds `[-16384, 16384]`
+    /// `[side][piece][to_square]`: bounds ±cap
     table: [[[i16; 64]; 6]; 2],
-    /// `[side][from_atk][to_atk][from · 64 + to]`: bounds `[-16384, 16384]`
+    /// `[side][from_atk][to_atk][from · 64 + to]`: bounds ±cap
     butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~35 Elo
     /// `[ply_offset][side][prev_piece][prev_to][piece][to]`. Two slots, three distances:
     /// n-1 owns slot 0, while n-2 and n-4 deliberately share slot 1, pooling into one table.
@@ -72,7 +72,7 @@ pub struct History {
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
     /// `[side][minor_hash & 0x3FFF]`: knights + bishops, both colors
-    minor_correction: CorrectionHistory, // minor + major split from lumped non-pawn (~18 Elo): net ~5 Elo
+    minor_correction: CorrectionHistory, // minor + major: ~23 Elo
     /// `[side][major_hash & 0x3FFF]`: rooks + queens, both colors
     major_correction: CorrectionHistory,
     /// `[side][attacker][to][victim]`
@@ -309,8 +309,8 @@ impl History {
 
     /// Update a history entry with soft gravity.
     ///
-    /// Each update pulls `*entry` toward ±16384 with strength proportional to `bonus.abs()`.
-    /// Positive `bonus` drives it toward +16384 (good move); negative drives it toward −16384 (bad move).
+    /// Each update pulls `*entry` toward its table's ±cap with strength proportional to `bonus.abs()`.
+    /// Positive `bonus` drives it toward +cap (good move); negative drives it toward −cap (bad move).
     ///
     /// Unlike a plain accumulator, this naturally decays stale information:
     /// a move that caused a cutoff at depth 10 won't permanently dominate over
@@ -342,15 +342,7 @@ impl History {
             self.caps.butterfly,
         );
 
-        if cont1.pt != PieceType::None {
-            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus, self.caps.cont);
-        }
-        if cont2.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus, self.caps.cont);
-        }
-        if cont4.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus, self.caps.cont);
-        }
+        self.update_conthist(stm, pt, to, cont1, cont2, cont4, bonus);
     }
 
     #[inline(always)]
@@ -375,7 +367,7 @@ impl History {
         }
     }
 
-    /// Single soft-gravity update step. Extracted to keep updates DRY.
+    /// Single soft-gravity update step.
     #[inline(always)]
     fn update_entry(entry: &mut i16, bonus: i32, cap: i32) {
         let e = i32::from(*entry);

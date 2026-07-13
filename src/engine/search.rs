@@ -1761,8 +1761,8 @@ impl Worker<'_> {
     ) -> Result<i32, SearchAborted> {
         let sp = &searcher.cfg.search_params;
 
-        // Retrieve the expected PV move for the next ply (ply + 1 is the child node's level).
-        // If we are on the PV line and we just played the PV move, we expect the child to also have a PV move.
+        // Retrieve the expected PV move for the next ply. If we are on the PV line
+        // and we just played the PV move, we expect the child to also have a PV move.
         let next_pv = if (N::ROOT || N::PV) && is_pv_move { searcher.prev_pv.get(ply + 1) } else { None };
 
         // Only the singular move arrives with an extension; the rest pass 0.
@@ -1971,6 +1971,7 @@ impl Worker<'_> {
                     if score >= beta {
                         break;
                     }
+
                     alpha = score;
                 }
             }

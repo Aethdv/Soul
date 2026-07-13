@@ -11,7 +11,7 @@
 //! array, no post-loop minimax pass. Move type is dispatched once at
 //! entry; captures, en passant, promotions, and castling each set their
 //! own initial balance before sharing the exchange loop. The king carries
-//! zero material: if it would capture while an opponent attacker remains,
+//! zero material. If it would capture while an opponent attacker remains,
 //! the chain stops short: illegal recapture, not a trade. A `us` bool
 //! tracks who owns the trade; when flipped, break-even isn't good enough.
 
@@ -200,7 +200,7 @@ fn val(pt: PieceType) -> i32 {
 }
 
 /// LSB of a bitboard, or `None` if empty. Separates the emptiness test
-/// from the LSB extraction so the `if let` chain in `see_ge` stays tight.
+/// from the LSB extraction so the `if let` chain in `see_ge_with` stays tight.
 #[inline(always)]
 fn lsb_of(bb: Bitboard) -> Option<Square> {
     if bb.is_empty() { None } else { Some(bb.lsb()) }

@@ -2,7 +2,7 @@
 //!
 //! Every node iterative deepening revisits, it hopes to find here: the score, the
 //! best move, the depth that score was proven to. A hit can cut a whole subtree,
-//! and that is what makes deepening cheap, since each iteration seeds the next.
+//! and since each iteration seeds the next, deepening stays cheap.
 //!
 //! The table is lockless because Lazy SMP has every thread reading and writing it
 //! at once. Probe and store take `&self` and touch entries through atomics, so no
@@ -117,7 +117,7 @@ struct Decoded {
 }
 
 impl TtEntry {
-    /// The cheap scan read: just the key and the (bound, depth) replacement
+    /// The cheap scan read: just the key and the (bound, depth) that replacement
     /// weighs. Relaxed is enough, since these scans never read payload off this
     /// load; the paths that do go through `load()`, which carries its own ordering.
     #[inline(always)]
