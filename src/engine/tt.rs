@@ -1,8 +1,8 @@
 //! Transposition table - the search's memory of positions it has already seen.
 //!
-//! Every node iterative deepening revisits, it hopes to find here: the score, the
-//! best move, the depth that score was proven to. A hit can cut a whole subtree,
-//! and since each iteration seeds the next, deepening stays cheap.
+//! When iterative deepening revisits a node, it hopes to find it already here:
+//! the score, the best move, the depth that score was proven to. A hit can cut a
+//! whole subtree, and since each iteration seeds the next, deepening stays cheap.
 //!
 //! The table is lockless because Lazy SMP has every thread reading and writing it
 //! at once. Probe and store take `&self` and touch entries through atomics, so no
@@ -101,8 +101,7 @@ struct Cluster {
 /// The decoded view of a [`TtEntry`], used by probe and store.
 #[derive(Clone, Copy, Default)]
 struct Decoded {
-    /// 16-bit verification key (low bits of the Zobrist hash). Collisions that
-    /// survive it are caught downstream by `is_pseudo_legal` on the stored move.
+    /// 16-bit verification key (low bits of the Zobrist hash).
     key: u16,
     mv: u16,
     score: i16,
