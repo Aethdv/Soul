@@ -1,7 +1,7 @@
 //! Dataset CLI - inspect, analyze, and encode chess training data.
 //!
 //! The `.soul` binary format packs board states, scores, and WDL labels
-//! into a compact layout optimized for NNUE training pipelines.
+//! into a compact layout optimized for training pipelines.
 
 use std::{
     fs::File,
@@ -189,6 +189,7 @@ fn dump_scores(path: &str) {
     let mut out = BufWriter::new(file);
 
     let _ = writeln!(out, "result,score");
+
     for entry in &entries {
         let _ = writeln!(out, "{:.1},{}", f64::from(entry.result) / 2.0, entry.score);
     }
@@ -275,6 +276,7 @@ fn encode(input: &str, output: &str) {
             if bad < 5 {
                 eprintln!("Warning: failed to parse line {}: '{line}'", line_idx + 1);
             }
+
             bad += 1;
         }
 

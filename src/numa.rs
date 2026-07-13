@@ -94,6 +94,7 @@ impl NumaTopology {
             occupied[pick] += 1;
             assignment.push(pick);
         }
+
         assignment
     }
 
@@ -227,6 +228,7 @@ fn parse_cpu_list(s: &str) -> Vec<Cpu> {
             },
         }
     }
+
     cpus
 }
 
@@ -313,6 +315,7 @@ mod sys {
                 options(nostack),
             );
         }
+
         ret
     }
 }

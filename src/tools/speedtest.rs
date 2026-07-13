@@ -37,19 +37,22 @@ pub fn run(limit: usize) {
     use crate::engine::{search::SearchConfig, search_params::SearchParams};
 
     let fens: Vec<&str> = if limit > 0 { SPEEDTEST_FENS.lines().take(limit).collect() } else { SPEEDTEST_FENS.lines().collect() };
-    let mut total_nodes: u64 = 0;
     let total = fens.len();
     let start = Instant::now();
     let stop_signal = Arc::new(AtomicBool::new(false));
 
-    // Print header
+    let mut total_nodes: u64 = 0;
+
+    // Header
     println!();
     println!("  Running speedtest on {total} positions...");
     println!();
+
     io::stdout().flush().ok();
 
     for (i, fen) in fens.iter().enumerate() {
         let board = Position::from_fen(fen);
+
         let ply = fen
             .rsplit_once(' ')
             .and_then(|(_, s)| s.parse::<u64>().ok())
@@ -95,18 +98,18 @@ pub fn run(limit: usize) {
     let features = get_feature_flags();
 
     println!("\n");
-    println!("  {DIM}────────────────────────────────────────────────{RESET}");
+    println!("  {DIM}──────────────────────────────────────────────────{RESET}");
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Binary", binary_name);
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Version", env!("CARGO_PKG_VERSION"));
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Rust", rustc_version);
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Arch", arch);
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Features", features);
-    println!("  {DIM}────────────────────────────────────────────────{RESET}");
+    println!("  {DIM}──────────────────────────────────────────────────{RESET}");
     println!("   {LAVENDER}{:<15}{RESET} {TEXT}{}{RESET}", "Positions", total);
     println!("   {LAVENDER}{:<15}{RESET} {BOLD}{TEXT}{}{RESET}", "Nodes", nodes_formatted);
     println!("   {LAVENDER}{:<15}{RESET} {BOLD}{TEXT}{:.3} s{RESET}", "Time", elapsed.as_secs_f64());
     println!("   {PEACH}{:<15}{RESET} {BOLD}{PEACH}{}{RESET}", "NPS", nps_formatted);
-    println!("  {DIM}────────────────────────────────────────────────{RESET}");
+    println!("  {DIM}──────────────────────────────────────────────────{RESET}");
     println!();
 }
 

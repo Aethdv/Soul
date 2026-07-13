@@ -45,6 +45,7 @@ impl ParamDef {
     pub fn denormalize(&self, normalized: f64) -> f64 {
         let val = normalized.mul_add(self.max - self.min, self.min);
         let snapped = if self.step > 1e-9 { self.min + ((val - self.min) / self.step).round() * self.step } else { val };
+
         snapped.clamp(self.min, self.max)
     }
 }
@@ -165,12 +166,14 @@ macro_rules! search_params {
                 let defs = tunable_param_defs();
                 let mut sp = Self::default();
                 let mut i = 0;
+
                 $(
                     if !$frozen {
                         sp.$field = defs[i].denormalize(values[i]).round() as i32;
                         i += 1;
                     }
                 )*
+
                 let _ = i;
                 sp
             }
@@ -180,12 +183,14 @@ macro_rules! search_params {
                 let defs = tunable_param_defs();
                 let mut out = Vec::with_capacity(defs.len());
                 let mut i = 0;
+
                 $(
                     if !$frozen {
                         out.push(defs[i].normalize(self.$field as f64));
                         i += 1;
                     }
                 )*
+
                 let _ = i;
                 out
             }

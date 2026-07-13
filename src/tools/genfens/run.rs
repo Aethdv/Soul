@@ -90,6 +90,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     // Graceful shutdown on Ctrl-C. Workers check this flag between games.
     let stop_for_handler = stop.clone();
+
     let _ = ctrlc::set_handler(move || {
         println!("\n{YELLOW}Interrupt received, stopping workers...{RESET}");
         stop_for_handler.store(true, Ordering::SeqCst);
@@ -104,7 +105,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     let rr = config.random_restart;
 
-    // ── Dashboard thread ──
+    // Dashboard thread
     {
         let global_mon = global.clone();
         let gen_mon = shared_generated.clone();
@@ -123,7 +124,6 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         });
     }
 
-    // ── Persistent worker threads ──
     // Each worker owns its TT and history table for the entire run.
     // One allocation per worker, no churn between games.
     let (tx, rx) = channel::<Vec<SoulEntry>>();
@@ -152,7 +152,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     drop(tx); // channel closes when all senders drop
 
-    // ── Collection loop: flush results to disk periodically ──
+    // Flush results to disk periodically
     for entries in rx {
         total_generated += entries.len();
         shared_generated.store(total_generated, Ordering::Relaxed);
@@ -174,7 +174,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         handle.join().unwrap();
     }
 
-    // Final flush: don't lose the tail end of a long run.
+    // Don't lose the tail end of a long run.
     flush_to_disk(&output_path, &mut pending, &config);
     finished.store(true, Ordering::Relaxed);
 
@@ -336,6 +336,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         for _ in 0..DASHBOARD_LINES {
             println!();
         }
+
         *first_frame = false;
     }
 
@@ -452,6 +453,7 @@ fn load_books(paths: &[String]) -> Vec<String> {
             Err(e) => eprintln!("  {RED}Failed to load {path}: {e}{RESET}"),
         }
     }
+
     all
 }
 
@@ -463,6 +465,7 @@ fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
         cfg.book_paths = parsed.book_paths;
         return cfg;
     }
+
     parsed
 }
 
@@ -509,6 +512,7 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
     }
+
     println!();
 }
 
@@ -672,6 +676,7 @@ fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
                 print_help();
                 process::exit(0);
             },
+
             _ => {}, // Unknown flags silently ignored.
         }
     }
@@ -724,5 +729,6 @@ fn load_epd_fens(path: &str) -> Result<Vec<String>> {
         // Lines that fail both parses are silently skipped,
         // they're comments, blank lines, or corrupted entries.
     }
+
     Ok(fens)
 }

@@ -32,7 +32,7 @@ use crate::{
     weave::Vi16x8,
 };
 
-/// A self-play worker that generates NNUE training data one game at a time.
+/// A self-play worker that generates training data one game at a time.
 ///
 /// Each worker independently draws openings from a shared book, runs fixed-depth searches,
 /// applies adjudication heuristics, filters positions for training quality,
@@ -163,10 +163,13 @@ impl WorkerState {
 
         for _ in 0..self.config.random_plies {
             let moves = gen_legal_moves(&self.board);
+
             if moves.is_empty() {
                 return Vec::new();
             }
+
             let mv = moves[self.rng.usize(0..moves.len())];
+
             self.board.make_move(mv, &mut self.accumulator);
             self.search_history.push(self.board.hash);
             self.game_history.push(self.board.hash);
@@ -193,6 +196,7 @@ impl WorkerState {
             self.global.filtered_quiet.fetch_add(1, Relaxed);
             return Vec::new();
         }
+
         if !within_score_window {
             self.global.filtered_score.fetch_add(1, Relaxed);
             return Vec::new();
@@ -239,7 +243,7 @@ impl WorkerState {
 
             let moves = gen_legal_moves(&self.board);
 
-            // ── Checkmate / Stalemate ──
+            // Checkmate / Stalemate
             if moves.is_empty() {
                 outcome = if self.board.checkers().is_not_empty() {
                     self.global.term_check.fetch_add(1, Relaxed);
@@ -254,28 +258,28 @@ impl WorkerState {
                 break;
             }
 
-            // ── 50-move rule ──
+            // 50-move rule
             if self.board.halfmove_clock >= 100 {
                 outcome = GameOutcome::Draw;
                 self.global.term_d50.fetch_add(1, Relaxed);
                 break;
             }
 
-            // ── Threefold repetition ──
+            // Threefold repetition
             if self.board.is_threefold_repetition(&self.game_history) {
                 outcome = GameOutcome::Draw;
                 self.global.term_drep.fetch_add(1, Relaxed);
                 break;
             }
 
-            // ── Insufficient material ──
+            // Insufficient material
             if self.board.is_draw_by_material() {
                 outcome = GameOutcome::Draw;
                 self.global.term_dmat.fetch_add(1, Relaxed);
                 break;
             }
 
-            // ── Fixed depth search ──
+            // Fixed depth search
             self.search_history.clear();
             let irrev_idx = self.game_history.len().saturating_sub(self.board.halfmove_clock as usize);
             if irrev_idx < self.game_history.len() {
@@ -294,12 +298,14 @@ impl WorkerState {
             // to terminate hopelessly decided or drawn games early.
             let abs_eval = search_eval.abs();
 
-            // ── Adjudication ──
+            // Adjudication
             let ply = (self.board.fullmove_number as usize - 1) * 2 + (self.board.stm as usize);
+
             if let Some(res) = check_adjudication(
                 search_eval, self.last_eval, &mut self.win_adj_counter, &mut self.draw_adj_counter, self.board.stm, ply,
             ) {
                 outcome = res;
+
                 if res == GameOutcome::Draw {
                     self.global.term_draw_adj.fetch_add(1, Relaxed);
                 } else {
@@ -307,9 +313,10 @@ impl WorkerState {
                 }
                 break;
             }
+
             self.last_eval = search_eval;
 
-            // ── Position quality filter ──
+            // Position quality filter
             let is_quiet = self.board.checkers().is_empty() && !best_move.is_tactical();
             let prev_was_tactical = self.last_move_was_tactical;
 
@@ -343,7 +350,6 @@ impl WorkerState {
             // Stochastic subsampling for training diversity.
             let sampled = self.config.sample_rate >= 1.0 || self.rng.f64() < self.config.sample_rate;
 
-            let ply = (self.board.fullmove_number as usize - 1) * 2 + (self.board.stm as usize);
             let pieces: u32 = PieceType::ALL.iter().map(|&pt| self.board.piece_count(pt) as u32).sum();
 
             let should_save = should_save && ply >= self.config.min_ply && pieces >= self.config.min_pieces;

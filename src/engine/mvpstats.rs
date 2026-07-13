@@ -93,12 +93,14 @@ fn report_quiets() {
     let used = colored(format!("{used_pct:.1}%"), (used_pct / 50.0 - 1.0).clamp(-1.0, 1.0));
 
     header("MovePicker quiet stats");
+
     println!(
         "  sorting nodes {}   generated {}   consumed {}   ({used} used)",
         human(nodes),
         human(generated),
         human(consumed)
     );
+
     columns(["consumed", "nodes", "share", "cumul"]);
     histogram(&QUIET_HIST, nodes, 0);
 }
@@ -118,7 +120,9 @@ fn report_cutoffs() {
     columns(["move", "nodes", "share", "cumul"]);
     histogram(&CUTOFF_HIST, nodes, 1);
 
-    println!("  {}by mechanism{}", header_color().0, header_color().1);
+    let (gold, reset) = header_color();
+    println!("  {gold}by mechanism{reset}");
+
     for (i, name) in KIND_NAMES.iter().enumerate() {
         let c = CUTOFF_KIND[i].load(Relaxed);
         println!("  {name:>8}  {:>11}  {:>6.1}%", human(c), 100.0 * c as f64 / nodes as f64);
@@ -130,6 +134,7 @@ fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize) {
 
     for (i, b) in buckets.iter().enumerate() {
         let c = b.load(Relaxed);
+
         cumulative += c;
 
         let n = base + i;

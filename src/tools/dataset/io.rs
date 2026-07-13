@@ -1,8 +1,8 @@
 //! Serialization layer for `SoulEntry` training data.
 //!
 //! Two formats are supported:
-//!   * `SoulEntry` - 32-byte nibble-array frames, zstd-compressed.
-//!   * EPD text - one position per line, with game-result annotations.
+//!   - `SoulEntry`; 32-byte nibble-array frames, zstd-compressed.
+//!   - EPD text; one position per line, with game-result annotations.
 
 use std::{
     fs,
@@ -21,8 +21,6 @@ pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
 
 const V5_SIZE: usize = 96;
 
-// ──────── Binary codec ────────
-//
 /// Loads every [`SoulEntry`] from a zstd-compressed dataset.
 ///
 /// V5 files are transparently upgraded on load: the legacy 96-byte entries
@@ -78,6 +76,7 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
         }
     }
+
     Ok(entries)
 }
 
@@ -93,15 +92,13 @@ pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
     write_frame(file, entries)
 }
 
-// ──────── EPD text codec ────────
-
 /// Parses a single EPD line into a `(Position, result)` pair.
 ///
 /// Two notation families are recognized:
 ///
-///   * Pipe-delimited - `fen | eval | wdl`. The third field is the
+///   - Pipe-delimited; `fen | eval | wdl`. The third field is the
 ///     WDL outcome as a float (1.0 = white wins, 0.0 = black wins).
-///   * Classic EPD - a FEN followed by a result token: `1-0`, `0-1`,
+///   - Classic EPD; a FEN followed by a result token: `1-0`, `0-1`,
 ///     `1/2-1/2`, numeric suffixes (`1.0`/`0.5`/`0.0`), or the terse
 ///     `;w`/`;b`/`;d` convention some tools emit.
 ///
@@ -129,7 +126,7 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
         // Fewer than three fields, or bad FEN → fall through to classic heuristics.
     }
 
-    // Classic EPD result detection.
+    // Result detection.
     const RESULT_SUFFIXES: &[(&str, f64)] = &[
         ("1-0", 1.0),
         ("0-1", 0.0),
@@ -162,6 +159,7 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
     let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
+
     Some(SoulEntry::from_board(&board, stm_wdl, None, None))
 }
 

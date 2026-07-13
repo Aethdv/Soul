@@ -81,9 +81,11 @@ impl Default for GenfensConfig {
 impl GenfensConfig {
     pub fn load() -> Result<Self> {
         let path = CONFIG_FILENAME;
+
         if !Path::new(path).exists() {
             return Ok(Self::default());
         }
+
         let content = read_to_string(path)?;
         serde_json::from_str(&content).map_err(|e| Error::new(ErrorKind::InvalidData, format!("Invalid config: {e}")))
     }
