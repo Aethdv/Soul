@@ -201,7 +201,7 @@ pub fn tunable_param_defs() -> Vec<&'static ParamDef> {
 
 search_params! {
     pub struct SearchParams {
-        //            default   min  max  step
+        //            default  min  max  step
         NT(asp_depth,       4,   1,    6),
         T (asp_initial,    15,   1,   32),
         T (asp_widen_div,   3,   1,   14),
@@ -223,6 +223,15 @@ search_params! {
         NT(mtg_endgame,      40),
         NT(tm_iter_scale,   200),
         NT(tm_single_root,    5),
+
+        //  TM budget, values ·100 (tm_sd_ramp ·1000)
+        //                 default   min  max  step
+        NT(tm_hard_mult,       500),
+        NT(tm_hard_clock_cap,   95),
+        NT(tm_sd_base,          50),
+        NT(tm_sd_ramp,           1),
+        NT(tm_sd_cap,           80),
+        NT(tm_soft_inc,         80),
 
         //                 default min  max  step
         NT(score_drop_depth,     5),
