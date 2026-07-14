@@ -128,6 +128,20 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     Ok(CheckpointData { epoch: cp.epoch, lr_scale: cp.lr_scale, values, momentum, rng_seed: cp.rng_seed })
 }
 
+/// Read just the shuffle seed from a checkpoint.
+///
+/// The train/val split happens before the full checkpoint load, and resuming
+/// under a different seed reshuffles it: former training positions land in
+/// val and the validation loss goes optimistic.
+///
+/// # Errors
+/// Returns an error if the file cannot be opened or parsed.
+pub fn checkpoint_seed(path: &str) -> Result<u64, CheckpointError> {
+    let file = File::open(path)?;
+    let cp: Checkpoint = serde_json::from_reader(BufReader::new(file))?;
+    Ok(cp.rng_seed)
+}
+
 /// FNV-1a hash over parameter names to detect layout changes.
 pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
     let mut fnv = Fnv1a::new();

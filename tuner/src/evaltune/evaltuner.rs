@@ -64,6 +64,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     let Some(paths) = paths else { return };
 
     let mut all_entries = Vec::new();
+
     for path in &paths {
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {
             println!("Loading encoded dataset: {path}");
@@ -159,7 +160,26 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
 }
 
 fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
-    let rng_seed = config.seed.unwrap_or_else(|| fastrand::u64(..));
+    // A resume must shuffle under the checkpoint's seed, or the train/val
+    // split moves and old training positions leak into val.
+    let rng_seed = match resume_path {
+        Some(path) => {
+            let seed = checkpoint_seed(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read checkpoint seed: {e}");
+                std::process::exit(1);
+            });
+
+            if let Some(s) = config.seed
+                && s != seed
+            {
+                println!("--seed {s} ignored: resume reuses the checkpoint's shuffle seed {seed}");
+            }
+
+            seed
+        },
+
+        None => config.seed.unwrap_or_else(|| fastrand::u64(..)),
+    };
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     rng.shuffle(&mut entries);
 
@@ -239,6 +259,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                         loader::accumulate_record_grad(record, values, loss_fn.grad_scale(sig, target, k) * w, &mut g);
                         count += 1;
                     }
+
                     (g, loss, count)
                 },
             )
@@ -271,10 +292,12 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 
                     wsum += w * loss_fn.loss(sig, target);
                     weight += w;
+
                     (wsum, weight)
                 },
             )
             .reduce(|| (0.0_f64, 0.0_f64), |(s1, w1), (s2, w2)| (s1 + s2, w1 + w2));
+
         if weight > 0.0 { wsum / weight } else { 0.0 }
     };
 
@@ -331,6 +354,7 @@ fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64
             if raw < lo || raw > hi {
                 clamped += 1;
             }
+
             raw.clamp(lo, hi)
         })
         .collect();
@@ -369,6 +393,7 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
     let lab = palette::fg(palette::LABEL);
     let v = palette::fg(palette::VALUE);
     let r = "\x1b[0m";
+
     println!("{lab}Phase balance:{r} {v}{bars}{r} {lab}(phase 0..{}){r}", hist.len() - 1);
     println!(
         "  {lab}imbalance{r} {v}{imbalance:.0}×{r} {lab}vs cap{r} {v}{cap:.0}×{r}  \
@@ -380,6 +405,7 @@ fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Ve
     for (a, b) in g1.iter_mut().zip(g2) {
         *a += b;
     }
+
     (g1, l1 + l2)
 }
 
@@ -400,6 +426,7 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
             (w, b, d + 1)
         }
     });
+
     println!("  {lab}White wins:{r} {c}{ww}{r}");
     println!("  {lab}Black wins:{r} {c}{bw}{r}");
     println!("  {lab}Draws:{r}      {c}{dr}{r}");
@@ -428,6 +455,7 @@ fn loss_sparkline(history: &[f64]) -> String {
         out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
         out.push(BLOCKS[level]);
     }
+
     out.push_str("\x1b[0m");
     out
 }
@@ -461,6 +489,7 @@ fn train_loop<G, V>(
                 eprintln!("Failed to load checkpoint: {e}");
                 std::process::exit(1);
             });
+
             (data.epoch, data.lr_scale, data.values, data.momentum)
         },
     );
@@ -516,6 +545,7 @@ fn train_loop<G, V>(
 
     let log_file = File::create("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
+
     if let Some(ref mut w) = logger {
         writeln!(w, "# Seed: {rng_seed}").unwrap();
         writeln!(w).unwrap();
@@ -559,6 +589,7 @@ fn train_loop<G, V>(
         for f in &mut fixed_mask[base_end..] {
             *f = true;
         }
+
         println!("Progressive unfreeze: params {base_end}+ frozen until epoch {}", config.unfreeze_epoch);
     }
 
@@ -566,12 +597,14 @@ fn train_loop<G, V>(
         let t0 = Instant::now();
         let blend = wdl_scheduler.blend(epoch, config.epochs);
 
-        // ── Periodic K factor re-optimization ──
+        // Periodic K factor re-optimization
         if epoch % 200 == 0 {
             k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
                 val_eval(&ema_values, kk, blend)
             });
+
             println!("  Reoptimized K: {k:.6}");
+
             if let Some(ref mut w) = logger {
                 writeln!(w, "# K re-opt @ epoch {epoch}: {k:.6}").ok();
             }
@@ -620,9 +653,10 @@ fn train_loop<G, V>(
             let norm: f64 = grads.iter().map(|g| g * g).sum::<f64>().sqrt();
             let avg_norm = norm / n;
 
+            grad_stats.update(avg_norm);
+
             // ── Dynamic Gradient Clipping ──
             // Clips outliers based on the distribution of recent batch norms.
-            grad_stats.update(avg_norm);
             let clip_thresh = grad_stats.clip_threshold(config.grad_clip);
             let threshold = clip_thresh * n;
 
@@ -665,12 +699,14 @@ fn train_loop<G, V>(
             for (i, p) in all_params.iter().enumerate() {
                 fixed_mask[i] = p.is_fixed;
             }
+
             println!("  Unfrozen all remaining parameters at epoch {epoch}");
         }
 
-        // ── Auto-freeze stagnant parameters ──
+        // Auto-freeze stagnant parameters
         if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
             let mut frozen = 0;
+
             for i in 0..values.len() {
                 if !fixed_mask[i] && grad_ema_per_param[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
                     stagnant_epochs[i] += 1;
@@ -739,6 +775,7 @@ fn train_loop<G, V>(
             if is_restart {
                 l.log("restart", &serde_json::json!({ "epoch": epoch }));
             }
+
             l.log(
                 "epoch",
                 &serde_json::json!({
@@ -900,6 +937,7 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
                 }
             })
             .collect();
+
         Some(paths)
     }
 }
