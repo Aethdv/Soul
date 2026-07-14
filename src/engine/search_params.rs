@@ -206,7 +206,7 @@ pub fn tunable_param_defs() -> Vec<&'static ParamDef> {
 
 search_params! {
     pub struct SearchParams {
-        //            default  min  max  step
+        //            default  min   max  step
         NT(asp_depth,       4,   1,    6),
         T (asp_initial,    15,   1,   32),
         T (asp_widen_div,   3,   1,   14),
