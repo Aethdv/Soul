@@ -138,6 +138,10 @@ pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
 }
 
 /// Snapshot hall of fame: keep the N best checkpoints by validation loss.
+///
+/// Returns whether `error` beats the previous best, not whether the snapshot
+/// was admitted: while the hall is still filling, every epoch is admitted, and
+/// reporting those as best would mark the whole warmup tail ✦.
 pub fn update_snapshots(
     snapshots: &mut Vec<Snapshot>,
     epoch: usize,
@@ -152,6 +156,7 @@ pub fn update_snapshots(
     }
 
     let snap = Snapshot { epoch, params, error };
+    let is_best = snapshots.first().is_none_or(|s| error < s.error);
 
     let admitted = if snapshots.len() < limit {
         snapshots.push(snap);
@@ -170,7 +175,7 @@ pub fn update_snapshots(
         snapshots[pos..].rotate_right(1);
     }
 
-    admitted
+    is_best
 }
 
 fn default_lr_scale() -> f64 {
