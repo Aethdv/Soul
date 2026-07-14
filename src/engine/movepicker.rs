@@ -142,22 +142,38 @@ impl MovePicker {
         }
     }
 
+    // The duplicated literal below is load-bearing: Rust guarantees no copy
+    // elision, and a bare struct literal in return position is the one shape
+    // rustc reliably builds in the caller's slot. Delegating to new() and
+    // mutating the result, or routing both constructors through a shared
+    // builder, measurably recopies the ~1KB picker once per qsearch node
+    // (~1% nps).
     #[inline]
     pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
-        let mut mp = Self::new(
+        Self {
+            stage: Stage::Hash,
             hash_move,
-            cfg,
+            candidates: [MaybeUninit::uninit(); MAX_MOVES],
+            count: 0,
+            bad_count: 0,
+            good_capture_margin: cfg.search_params.good_capture_margin,
+            mvvlva_v: cfg.mvvlva_v,
+            mvvlva_a: cfg.mvvlva_a,
+            mvvlva_ep: cfg.search_params.mvvlva_ep,
+            capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             pins,
-            [Move::null(); 2],
-            Bitboard(0),
-            ContContext::default(),
-            ContContext::default(),
-            ContContext::default(),
-        );
-
-        mp.is_qsearch = true;
-        mp.in_check = in_check;
-        mp
+            killers: [Move::null(); 2],
+            threats: Bitboard(0),
+            cont1: ContContext::default(),
+            cont2: ContContext::default(),
+            cont4: ContContext::default(),
+            is_qsearch: true,
+            in_check,
+            #[cfg(feature = "mvpstats")]
+            quiets_gen: 0,
+            #[cfg(feature = "mvpstats")]
+            quiets_used: 0,
+        }
     }
 
     /// Produce the next move in priority order, or `None` when exhausted.
