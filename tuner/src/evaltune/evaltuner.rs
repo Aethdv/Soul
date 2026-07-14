@@ -34,6 +34,7 @@ use soul::{
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
 use crate::core::{
     config::{EvalTuneConfig, LrScheduleConfig},
+    fnv::Fnv1a,
     logger::JsonLogger,
 };
 
@@ -160,26 +161,39 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
 }
 
 fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
+    let dataset_fnv = dataset_fingerprint(&entries);
+
     // A resume must shuffle under the checkpoint's seed, or the train/val
     // split moves and old training positions leak into val.
     let rng_seed = match resume_path {
         Some(path) => {
-            let seed = checkpoint_seed(path).unwrap_or_else(|e| {
-                eprintln!("Failed to read checkpoint seed: {e}");
+            let cp = peek_checkpoint(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read checkpoint: {e}");
                 std::process::exit(1);
             });
 
             if let Some(s) = config.seed
-                && s != seed
+                && s != cp.rng_seed
             {
-                println!("--seed {s} ignored: resume reuses the checkpoint's shuffle seed {seed}");
+                println!("--seed {s} ignored: resume reuses the checkpoint's shuffle seed {}", cp.rng_seed);
             }
 
-            seed
+            // The seed replays the same shuffle only over the same entries.
+            if cp.dataset != dataset_fnv {
+                eprintln!(
+                    "{}[!] Warning: dataset does not match the checkpoint's fingerprint.\n\
+                     [!] The train/val split will differ from the original run: positions the\n\
+                     [!] checkpoint trained on may now sit in val, making its loss optimistic.\x1b[0m",
+                    color::ansi_fg((225, 89, 91)),
+                );
+            }
+
+            cp.rng_seed
         },
 
         None => config.seed.unwrap_or_else(|| fastrand::u64(..)),
     };
+
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     rng.shuffle(&mut entries);
 
@@ -267,6 +281,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                 || (vec![0.0; values.len()], 0.0, 0usize),
                 |(g1, l1, c1), (g2, l2, c2)| {
                     let (g, l) = grad_combine((g1, l1), (g2, l2));
+
                     (g, l, c1 + c2)
                 },
             )
@@ -301,7 +316,27 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         if weight > 0.0 { wsum / weight } else { 0.0 }
     };
 
-    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, batch_grad, val_eval);
+    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, batch_grad, val_eval);
+}
+
+/// Sampled FNV fingerprint of the dataset: entry count plus every strided
+/// entry's packed fields, hashed before the shuffle so it identifies the
+/// loaded contents, not a permutation. A checkpoint's seed replays the same
+/// train/val split only over the same entries; this is what detects "same
+/// seed, different data".
+fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
+    let mut fnv = Fnv1a::new();
+    fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
+
+    let stride = (entries.len() / 1024).max(1);
+
+    for e in entries.iter().step_by(stride) {
+        fnv.write_bytes(&e.occupancy.to_le_bytes());
+        fnv.write_bytes(&e.score.to_le_bytes());
+        fnv.write_bytes(&[e.result, e.stm_and_ep]);
+    }
+
+    fnv.digest()
 }
 
 /// Per-sample phase-balancing weights for `records`, normalized to mean 1.
@@ -469,6 +504,7 @@ fn train_loop<G, V>(
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     rng_seed: u64,
+    dataset_fnv: u64,
     batch_grad: G,
     val_eval: V,
 ) where
@@ -478,21 +514,17 @@ fn train_loop<G, V>(
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
 
-    let (start_epoch, mut lr_scale, mut values, mut momentum) = resume_path.map_or_else(
-        || {
-            let momentum = vec![0.0; default_values.len()];
-            (1, 1.0_f64, default_values.clone(), momentum)
-        },
-        |path| {
-            println!("Resuming from checkpoint: {}{path}\x1b[0m", palette::fg(palette::VALUE));
-            let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
-                eprintln!("Failed to load checkpoint: {e}");
-                std::process::exit(1);
-            });
+    let resume = resume_path.map(|path| {
+        println!("Resuming from checkpoint: {}{path}\x1b[0m", palette::fg(palette::VALUE));
+        load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
+            eprintln!("Failed to load checkpoint: {e}");
+            std::process::exit(1);
+        })
+    });
 
-            (data.epoch, data.lr_scale, data.values, data.momentum)
-        },
-    );
+    let (start_epoch, mut lr_scale) = resume.as_ref().map_or((1, 1.0), |d| (d.epoch, d.lr_scale));
+    let mut values = resume.as_ref().map_or_else(|| default_values.clone(), |d| d.values.clone());
+    let mut momentum = resume.as_ref().map_or_else(|| vec![0.0; default_values.len()], |d| d.momentum.clone());
 
     let is_constant_schedule = matches!(config.lr_schedule, LrScheduleConfig::Constant { .. });
     let lr_scheduler = config.lr_schedule.clone().into_scheduler();
@@ -500,11 +532,22 @@ fn train_loop<G, V>(
 
     // ── K line search ──
     // the sigmoid scaling constant that best maps
-    // raw centipawn scores to win/draw/loss outcomes
-    println!("Optimizing K...");
-    let init_blend = wdl_scheduler.blend(1, config.epochs);
-    let mut k =
-        golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| val_eval(&values, kk, init_blend));
+    // raw centipawn scores to win/draw/loss outcomes.
+    // A resume restores both K's instead: re-deriving k_ref would re-anchor
+    // L_ref and break loss comparability with the original run's log.
+    let (mut k, k_ref) = match &resume {
+        Some(d) => (d.k, d.k_ref),
+        None => {
+            println!("Optimizing K...");
+            let init_blend = wdl_scheduler.blend(1, config.epochs);
+            let k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
+                val_eval(&values, kk, init_blend)
+            });
+
+            (k, k)
+        },
+    };
+
     let v = palette::fg(palette::VALUE);
     let lab = palette::fg(palette::LABEL);
     let r = "\x1b[0m";
@@ -514,9 +557,14 @@ fn train_loop<G, V>(
     // Frozen reference K - never re-optimized.
     // L_ref uses this K so that loss numbers are comparable across epochs
     // and runs regardless of K-reopt drift.
-    let k_ref = k;
     println!("{lab}Ref K:{r}      {v}{k_ref:.6}{r}");
-    let seed_label = if config.seed.is_some() { " (deterministic)" } else { "" };
+    let seed_label = if resume.is_some() {
+        " (checkpoint)"
+    } else if config.seed.is_some() {
+        " (deterministic)"
+    } else {
+        ""
+    };
     println!("{lab}Seed:{r}       {v}{rng_seed}{r}{seed_label}");
 
     let initial_values = values.clone();
@@ -531,11 +579,13 @@ fn train_loop<G, V>(
     // before epoch 500 when auto-freeze activates, so the auto-freeze sees
     // only real gradient history. A non-zero seed only delays detection of
     // genuinely dead parameters.
-    let mut grad_ema_per_param = vec![0.0_f64; values.len()];
-    let mut stagnant_epochs = vec![0usize; values.len()];
+    let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
+    let mut stagnant_epochs = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
 
     let snapshot_limit = (config.epochs / 10).max(1);
-    let mut snapshots: Vec<Snapshot> = Vec::with_capacity(snapshot_limit);
+    let mut snapshots: Vec<Snapshot> = resume
+        .as_ref()
+        .map_or_else(|| Vec::with_capacity(snapshot_limit), |d| d.snapshots.clone());
 
     println!("{lab}Parameters:{r} {v}{}{r}", all_params.len());
     println!("{lab}Mode:{r}       {v}{mode_label}{r}");
@@ -560,7 +610,7 @@ fn train_loop<G, V>(
     let mut grad_stats = GradientStats::new(100);
     let mut indices: Vec<usize> = (0..train_len).collect();
 
-    let mut ema_values = values.clone();
+    let mut ema_values = resume.as_ref().map_or_else(|| values.clone(), |d| d.ema.clone());
     let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
 
     // Tail-only EMA doesn't apply to constant schedules,
@@ -568,8 +618,8 @@ fn train_loop<G, V>(
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
     let warmup_end = (config.epochs as f64 * 0.1).max(1.0) as usize;
-    let mut best_val_loss = f64::MAX;
-    let mut plateau_count = 0usize;
+    let mut best_val_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_val_loss);
+    let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
 
     // Validation-loss trajectory for the milestone sparkline, and the previous
     // epoch's loss for the per-line trend arrow.
@@ -584,8 +634,11 @@ fn train_loop<G, V>(
     // ── Progressive unfreeze: material-only warmup ──
     // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
     // so PSQT + material settle before the refinements join.
-    // A resume past the gate skips the freeze; the == lift below would never fire.
-    if config.unfreeze_epoch > 0 && start_epoch <= config.unfreeze_epoch {
+    // A resume restores the saved mask instead: it already encodes this gate,
+    // plus whatever auto-freeze had claimed by the checkpoint.
+    if let Some(d) = &resume {
+        fixed_mask.copy_from_slice(&d.frozen);
+    } else if config.unfreeze_epoch > 0 {
         for f in &mut fixed_mask[base_end..] {
             *f = true;
         }
@@ -771,6 +824,7 @@ fn train_loop<G, V>(
             )
             .ok();
         }
+
         if let Some(ref mut l) = json_logger {
             if is_restart {
                 l.log("restart", &serde_json::json!({ "epoch": epoch }));
@@ -830,15 +884,23 @@ fn train_loop<G, V>(
             println!("\n  {lab}L_val{r}  {}", loss_sparkline(tail));
             print_params(&all_params, &initial_values, &ema_values);
 
-            if let Err(e) = save_checkpoint(
-                "evaltune_checkpoint.json",
-                epoch + 1, // resume starts here; the current epoch is already done
+            if let Err(e) = save_checkpoint("evaltune_checkpoint.json", &all_params, &TrainerState {
+                epoch: epoch + 1, // resume starts here; the current epoch is already done
                 lr_scale,
-                &values,
-                &momentum,
-                &all_params,
+                k,
+                k_ref,
+                best_val_loss,
+                plateau_count,
                 rng_seed,
-            ) {
+                dataset: dataset_fnv,
+                values: &values,
+                momentum: &momentum,
+                ema: &ema_values,
+                grad_ema: &grad_ema_per_param,
+                stagnant: &stagnant_epochs,
+                frozen: &fixed_mask,
+                snapshots: &snapshots,
+            }) {
                 eprintln!("Failed to save checkpoint: {e}");
             }
         }
@@ -856,8 +918,10 @@ fn train_loop<G, V>(
 fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
     let Ok(mut f) = fs::File::create("sensitivity-report.txt") else { return };
     let mut w = io::BufWriter::new(&mut f);
+
     writeln!(w, "Sensitivity Analysis").ok();
     writeln!(w).ok();
+
     let mut sensitivities = Vec::new();
     let mut frozen = Vec::new();
 
@@ -981,6 +1045,7 @@ fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
                 let is_center = (2..=5).contains(&row) && (2..=3).contains(&col);
                 if is_center { 0.5 } else { 1.0 }
             },
+
             ParamGroup::Mobility => 1.5,
             ParamGroup::Material | ParamGroup::Other => 1.0,
         })
