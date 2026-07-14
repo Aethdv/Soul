@@ -554,7 +554,8 @@ fn train_loop<G, V>(
     // ── Progressive unfreeze: material-only warmup ──
     // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
     // so PSQT + material settle before the refinements join.
-    if config.unfreeze_epoch > 0 {
+    // A resume past the gate skips the freeze; the == lift below would never fire.
+    if config.unfreeze_epoch > 0 && start_epoch <= config.unfreeze_epoch {
         for f in &mut fixed_mask[base_end..] {
             *f = true;
         }
