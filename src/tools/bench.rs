@@ -81,13 +81,15 @@ pub fn run(depth: i32, hash_mb: usize) {
     for fen in &fens {
         let board = Position::from_fen(fen);
         let history = vec![board.hash];
+
         tt.clear(1);
 
+        let t0 = Instant::now();
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
+
         let mut history_table = History::new();
         let mut searcher = Searcher::new(&cfg, &board, &history, tt.clone());
 
-        let t0 = Instant::now();
         searcher.iterative_deepening(&mut history_table);
         search_time += t0.elapsed();
 

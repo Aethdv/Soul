@@ -6,7 +6,10 @@ use std::{
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use crate::weave::{Vi16x8, Vi32x4};
+use crate::{
+    core::defs::TOTAL_PHASE,
+    weave::{Vi16x8, Vi32x4},
+};
 
 /// The unified math interface behind evaluation and tuning. `evaluate` is written
 /// once, generic over `T`, and monomorphized two ways so search and the tuner run
@@ -81,7 +84,7 @@ pub trait EvalMath:
     /// Clamp the value between min and max.
     fn math_clamp(self, min: Self, max: Self) -> Self;
 
-    /// Tapered interpolation: (MG · phase + EG · (24 - phase)) / 24.
+    /// Tapered interpolation: (MG · phase + EG · (TOTAL_PHASE - phase)) / TOTAL_PHASE.
     /// Specialized per-type to allow SIMD `madd` in the engine hot path.
     fn tapered(acc: &Self::Vec8, phase: Self) -> Self;
 }
@@ -210,8 +213,8 @@ impl EvalMath for i32 {
 
     #[inline(always)]
     fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
-        let eg_p = 24 - phase;
-        // phase ∈ [0, 24] (clamped by extract_phase), so eg_p ∈ [0, 24]. Both fit in
+        let eg_p = TOTAL_PHASE - phase;
+        // phase ∈ [0, TOTAL_PHASE] (clamped by extract_phase), so eg_p ∈ [0, TOTAL_PHASE]. Both fit in
         // 16 bits and stay non-negative, so the two halves pack into one i32 losslessly,
         // no sign bit bleeding from the low lane into the high.
         let packed = (phase as u32) | ((eg_p as u32) << 16);
@@ -220,7 +223,7 @@ impl EvalMath for i32 {
         // (acc.mg · phase) + (acc.eg · eg_phase), folding both products and their sum
         // into one multiply-add.
         let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed as i32) });
-        acc.madd(weights).extract::<0>() / 24
+        acc.madd(weights).extract::<0>() / TOTAL_PHASE
     }
 }
 
@@ -324,8 +327,9 @@ impl EvalMath for f64 {
         let mg = acc.0[0];
         let eg = acc.0[1];
         let p = phase;
+        let tot = f64::from(TOTAL_PHASE);
 
-        ((mg * p + eg * (24.0 - p)) / 24.0).trunc()
+        ((mg * p + eg * (tot - p)) / tot).trunc()
     }
 }
 

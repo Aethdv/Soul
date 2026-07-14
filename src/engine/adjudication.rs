@@ -49,13 +49,16 @@ pub fn check_adjudication(
         if *win_adj_counter >= ADJ_WIN_PLIES {
             return Some(GameOutcome::from_stm_score(score, stm));
         }
+
         *draw_adj_counter = 0;
     } else if abs_score < ADJ_DRAW_SCORE && ply >= ADJ_DRAW_START_PLY {
         // Draw: a quiet margin sustained past the opening.
         *draw_adj_counter += 1;
+
         if *draw_adj_counter >= ADJ_DRAW_PLIES {
             return Some(GameOutcome::Draw);
         }
+
         *win_adj_counter = 0;
     } else {
         // No clear verdict: score between the thresholds, or too early to draw. Reset both.

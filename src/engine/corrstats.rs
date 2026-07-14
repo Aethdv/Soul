@@ -109,7 +109,7 @@ pub fn report() {
     let weights = weights();
     let ansi = std::io::stdout().is_terminal();
 
-    // Title and column labels in the engine's section-header gold.
+    // Title and column labels in the section-header gold.
     let gold = if ansi { color::ansi_fg(HEADER) } else { String::new() };
     let (bold, reset) = if ansi { (BOLD, RESET) } else { ("", "") };
 

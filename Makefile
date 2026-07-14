@@ -187,7 +187,7 @@ test: ## Run test suite
 oracle: ## Run the eval-tuner gradient oracle tests
 	@RUSTFLAGS="-C target-cpu=native" cargo test -p tuner --release oracle
 
-seeformat: ## Check formatting (no changes)
+seeformat: ## Check formatting
 	@cargo fmt --check
 
 format: ## Auto-format with rustfmt

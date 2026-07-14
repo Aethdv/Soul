@@ -34,9 +34,10 @@ pub fn get_vec(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
     debug_assert!(idx < 14, "PSQT index out of bounds: {idx} >= 14");
     debug_assert!(usize::from(sq) < 64, "Square index out of bounds: {sq} >= 64");
 
-    // SAFETY: PSQT is aligned to 32 bytes (via AlignedTable).
-    // Access inner array .0 for indexing.
+    // SAFETY: idx = pt + color·7 ≤ 6 + 7 = 13 < 14 (PieceType ≤ 6, Color ≤ 1) and
+    // sq < 64 by the Square invariant, so both get_unchecked indices are in bounds.
     let entry = unsafe { PSQT.get_unchecked(idx).0.get_unchecked(usize::from(sq)) };
+    // SAFETY: AlignedTable's 32-byte alignment makes each [i16; 8] entry 16-byte aligned.
     Vi16x8(unsafe { arch::x86_64::_mm_load_si128(entry.as_ptr() as *const _) })
 }
 
@@ -75,7 +76,7 @@ const fn init_psqt() -> [AlignedTable; 14] {
             let mg_val_b = clamp_i16(-(mg_w + get_raw_mg(pt, b_visual_idx)));
             let eg_val_b = clamp_i16(-(eg_w + get_raw_eg(pt, b_visual_idx)));
 
-            // NOTE: PSQT values for Black are mirrored using 'sq'.
+            // PSQT values for Black are mirrored using 'sq'.
             // This allows us to use the same tables built from White's perspective,
             // as piece movement symmetry holds when ranks are flipped.
             tables[pt + 7].0[sq] = [mg_val_b, eg_val_b, ph_w as i16, 0, 0, 0, 0, 0];

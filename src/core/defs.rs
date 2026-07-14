@@ -228,9 +228,8 @@ impl PieceType {
 const impl From<u8> for PieceType {
     #[inline(always)]
     fn from(val: u8) -> Self {
-        // SAFETY: The engine guarantees that pieces are strictly within 0..=6.
-        // We use an explicit match rather than modulo arithmetic to ensure
-        // niche safety for Option<PieceType>
+        // Explicit match, not modulo: 7 is PieceType's Option niche, and the match
+        // maps every input to a valid variant (stray values to None) with no unsafe.
         match val {
             0 => Self::Pawn,
             1 => Self::Knight,

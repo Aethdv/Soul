@@ -299,8 +299,8 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     true
 }
 
-/// Const-generic on color: the compiler monomorphizes into two copies with
-/// all direction and rank logic resolved at compile time. No branches for
+/// Const-generic on color and `TACTICAL` mode: each combination gets its own
+/// copy, direction and rank logic resolved at compile time. No branches for
 /// "which way do pawns go?" It's baked into the binary.
 #[inline(always)]
 fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList) {
@@ -520,10 +520,6 @@ fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList) {
 }
 
 /// Push all four promotion variants (Queen, Rook, Bishop, Knight) to the move list.
-///
-/// Queen is emitted first as it is almost always the strongest move.
-/// Rook and Bishop follow, and Knight is last. While underpromotions are
-/// rare, they are necessary for tactical completeness.
 #[inline]
 fn emit_promotions(acc: &mut MoveList, from: Square, to: Square, capture: bool) {
     for &flag in if capture { &CAPTURE_PROMOS } else { &QUIET_PROMOS } {

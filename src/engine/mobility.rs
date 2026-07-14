@@ -164,14 +164,8 @@ impl SafetyMetrics {
 
 impl Mobility {
     #[inline]
-    pub fn compute_all(
-        pos: &Position,
-        color: Color,
-        tensor: &SpatialTensor,
-        pinned_w: Bitboard,
-        pinned_b: Bitboard,
-    ) -> MobilityData {
-        let ctx = EvalCtx::build(pos, color, tensor, pinned_w, pinned_b);
+    pub fn compute_all(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> MobilityData {
+        let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
 
         // King safety: computed once per side, then both the raw features
         // and the derived score feed into the final metrics.
@@ -207,11 +201,11 @@ impl Mobility {
         let c = T::Vec4::splat(OPEN_UNITY - openness);
         let half = T::Vec4::splat(OPEN_UNITY / 2); // rounding bias
 
-        // Interpolate between open/closed weight vectors, then taper MG↔EG.
+        // Interpolate the open/closed weight vectors by openness.
         let w_mg = (w_mg_o * o + w_mg_c * c + half).srai::<10>();
         let w_eg = (w_eg_o * o + w_eg_c * c + half).srai::<10>();
 
-        // Interpolate open/closed, then combine MG+EG via SIMD dot products.
+        // SIMD dot-product diff against the MG and EG weights.
         let w_packed = w_mg.pack_i16(w_eg);
         let diff_packed = diff.pack_i16(diff);
         let madd = diff_packed.madd(w_packed);
@@ -267,34 +261,28 @@ impl LinearTerm for MobilityTerm {
 
         let metrics_us = &features.data.metrics_us;
         let metrics_them = &features.data.metrics_them;
-        let diff = [
+
+        let v_diff = Vf64x4::from([
             (metrics_us.mobility - metrics_them.mobility) as f64,
             (metrics_us.shadow_mobility - metrics_them.shadow_mobility) as f64,
             (metrics_us.threats - metrics_them.threats) as f64,
             (metrics_us.shadow_threats - metrics_them.shadow_threats) as f64,
-        ];
+        ]);
 
-        let v_diff = Vf64x4::from(diff);
-        let v_d_om = Vf64x4::splat(upstream.d_mg * o_frac);
-        let v_d_oe = Vf64x4::splat(upstream.d_eg * o_frac);
-        let v_d_cm = Vf64x4::splat(upstream.d_mg * c_frac);
-        let v_d_ce = Vf64x4::splat(upstream.d_eg * c_frac);
+        let mut scatter = |offset: usize, scale: f64| {
+            // SAFETY: each mobility block is 4 contiguous LAYOUT slots in the tunable
+            // region; the caller guarantees grads.len() >= LAYOUT.xray_offset + 1
+            // (asserted in the tape), which covers them.
+            unsafe {
+                let p = grads.as_mut_ptr().add(offset);
+                (Vf64x4::loadu(p) + v_diff * Vf64x4::splat(scale)).storeu(p);
+            }
+        };
 
-        // SAFETY: LAYOUT offsets place all four 4-wide mobility blocks (lo, lo+4,
-        // lc, lc+4) contiguously within the tunable region. Caller guarantees
-        // grads.len() >= LAYOUT.xray_offset + 1 (asserted in the tape), which
-        // covers this range.
-        unsafe {
-            let p_lo_m = grads.as_mut_ptr().add(lo);
-            let p_lo_e = grads.as_mut_ptr().add(lo + 4);
-            let p_lc_m = grads.as_mut_ptr().add(lc);
-            let p_lc_e = grads.as_mut_ptr().add(lc + 4);
-
-            (Vf64x4::loadu(p_lo_m) + v_diff * v_d_om).storeu(p_lo_m);
-            (Vf64x4::loadu(p_lo_e) + v_diff * v_d_oe).storeu(p_lo_e);
-            (Vf64x4::loadu(p_lc_m) + v_diff * v_d_cm).storeu(p_lc_m);
-            (Vf64x4::loadu(p_lc_e) + v_diff * v_d_ce).storeu(p_lc_e);
-        }
+        scatter(lo, upstream.d_mg * o_frac);
+        scatter(lo + 4, upstream.d_eg * o_frac);
+        scatter(lc, upstream.d_mg * c_frac);
+        scatter(lc + 4, upstream.d_eg * c_frac);
     }
 }
 
@@ -346,14 +334,18 @@ impl LinearTerm for KingSafetyTerm {
 
         let idx_us = safety_us.attackers.min(ATTACKER_WEIGHTS.len() - 1);
         let idx_them = safety_them.attackers.min(ATTACKER_WEIGHTS.len() - 1);
+
         for atk_k in 0..ATTACKER_WEIGHTS.len() {
             let mut atk_deriv = 0.0;
+
             if atk_k == idx_us {
                 atk_deriv -= safety_us.weak as f64 / 10.0;
             }
+
             if atk_k == idx_them {
                 atk_deriv += safety_them.weak as f64 / 10.0;
             }
+
             if atk_deriv != 0.0 {
                 grads[ao + atk_k] += upstream * atk_deriv;
             }
@@ -362,8 +354,7 @@ impl LinearTerm for KingSafetyTerm {
 }
 
 impl EvalCtx {
-    /// Builds symmetric attack maps for `color` ("us") vs its opponent
-    /// ("them").
+    /// Builds both sides' attack maps: White is "us", Black is "them".
     ///
     /// Pinned pieces contribute mobility conservatively:
     /// - Knights: zero mobility. A knight can never legally move while
@@ -374,10 +365,9 @@ impl EvalCtx {
     ///
     /// This prevents the evaluation from crediting mobility that would leave the king in check.
     #[inline(always)]
-    fn build(pos: &Position, color: Color, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
-        let opp = color.opposite();
-        let us = pos.side_bb[color];
-        let them = pos.side_bb[opp];
+    fn build(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
+        let us = pos.side_bb[Color::White];
+        let them = pos.side_bb[Color::Black];
         let occ = pos.occupancy();
 
         let knights = pos.role_bb[PieceType::Knight];
@@ -386,15 +376,16 @@ impl EvalCtx {
         let ksq_us = king_sq(kings & us);
         let ksq_them = king_sq(kings & them);
 
-        let (pinned_us, pinned_them) = if color == Color::White { (pinned_w, pinned_b) } else { (pinned_b, pinned_w) };
-
         // Knights: pinned = zero mobility.
         let mut knight_atk_us = Bitboard(0);
-        for sq in (knights & us) & !pinned_us {
+
+        for sq in (knights & us) & !pinned_w {
             knight_atk_us |= atk_knight(sq);
         }
+
         let mut knight_atk_them = Bitboard(0);
-        for sq in (knights & them) & !pinned_them {
+
+        for sq in (knights & them) & !pinned_b {
             knight_atk_them |= atk_knight(sq);
         }
 
@@ -403,21 +394,12 @@ impl EvalCtx {
         // Pinned pieces are deliberately excluded from xray_us and xray_them as well.
         // While a pinned piece could theoretically provide x-ray battery support along its pin ray,
         // this is a CPU-cycle tradeoff, sacrificing a rare edge case for raw speed.
-        let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = if color == Color::White {
-            (
-                Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
-                Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
-                Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
-                Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
-            )
-        } else {
-            (
-                Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
-                Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
-                Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
-                Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
-            )
-        };
+        let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = (
+            Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
+            Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
+            Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
+            Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
+        );
 
         // Inject the strictly legal (restricted) pin-rays for pinned sliders.
         let rq = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
@@ -425,21 +407,23 @@ impl EvalCtx {
 
         let inject_pinned = |pinned: Bitboard, ksq: Square| {
             let mut atk = Bitboard(0);
+
             for sq in pinned & rq {
                 atk |= atk_rook(sq, occ) & line_bb(ksq, sq);
             }
+
             for sq in pinned & bq {
                 atk |= atk_bishop(sq, occ) & line_bb(ksq, sq);
             }
+
             atk
         };
 
-        slider_atk_us |= inject_pinned(pinned_us, ksq_us);
-        slider_atk_them |= inject_pinned(pinned_them, ksq_them);
+        slider_atk_us |= inject_pinned(pinned_w, ksq_us);
+        slider_atk_them |= inject_pinned(pinned_b, ksq_them);
 
-        // Cache pawn attacks and combine with piece attacks.
-        let pawn_atk_us = pos.pawn_attacks(color);
-        let pawn_atk_them = pos.pawn_attacks(opp);
+        let pawn_atk_us = pos.pawn_attacks(Color::White);
+        let pawn_atk_them = pos.pawn_attacks(Color::Black);
 
         let atk_us = slider_atk_us | knight_atk_us | pawn_atk_us;
         let atk_them = slider_atk_them | knight_atk_them | pawn_atk_them;
@@ -453,8 +437,8 @@ impl EvalCtx {
             pawn_atk_them,
             ksq_us,
             ksq_them,
-            pawn_us: pos.pieces(PieceType::Pawn, color),
-            pawn_them: pos.pieces(PieceType::Pawn, opp),
+            pawn_us: pos.pieces(PieceType::Pawn, Color::White),
+            pawn_them: pos.pieces(PieceType::Pawn, Color::Black),
             us,
             them,
             occ,
@@ -488,11 +472,11 @@ fn score_side(
     // Mobility rewards exclusive territorial control more than shared space.
     // We count all safe squares, but double count those that they don't reach.
     let mobility = (safe & !area_them).popcount() as i32 + safe.popcount() as i32;
-    // Shadow mobility (battery squares)
+    // Safe battery squares
     let shadow_mobility = (xray_us & !enemy_pawn_atk).popcount() as i32;
-    // Direct piece threats (excluding king)
+    // Direct threats, king excluded
     let threats = (atk_us & them).popcount() as i32;
-    // Shadow threats (X-ray threats)
+    // X-ray threats
     let shadow_threats = (xray_us & them).popcount() as i32;
 
     SideMetrics { mobility, shadow_mobility, threats, shadow_threats }

@@ -20,21 +20,17 @@ use crate::{
     cli::Help,
     core::{
         board::{Position, STARTPOS},
-        defs::{PieceType, Square},
-        error::MoveError,
-        moves::Move,
         zobrist::key_side,
     },
     engine::{
         eval::detailed_eval,
         history::History,
-        movegen::gen_legal_moves,
         search::{Limits, SearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
         tt::TranspositionTable,
     },
     numa::NumaTopology,
-    protocols::smp::LazySmpPool,
+    protocols::{notation::parse_uci_move, smp::LazySmpPool},
     tools,
     weave::Vi16x8,
 };
@@ -267,7 +263,7 @@ where I: Iterator<Item = &'a str> {
             "perft" => limits.perft = Some(parse_val(tokens)),
             "searchmoves" => {
                 // Peek before consuming;
-                // Tokens like depth must not be swallowed
+                // tokens like depth must not be swallowed
                 // when they fail to parse as a UCI move.
                 while let Some(&mv_str) = tokens.peek() {
                     if let Ok(mv) = parse_uci_move(board, mv_str) {
@@ -307,8 +303,9 @@ pub fn print_help(use_ansi: bool) {
     h.separator();
 
     h.header("Options");
-    h.command_default("Hash", "Hash table size in MB (1-65536)", "16");
-    h.command_default("Overhead", "Move overhead in ms (0-1000)", "10");
+    h.command_default("Hash", "Hash table size in MB (1-524288)", "16");
+    h.command_default("Threads", "Number of search threads (1-1024)", "1");
+    h.command_default("Overhead", "Move overhead in ms (0-2000)", "10");
     h.command_default("UCI_ShowWDL", "Show win/draw/loss stats", "false");
     h.command_default("UCI_Chess960", "Enable Chess960/FRC mode", "false");
     h.command_default("UCI_ShowCurrMove", "Show current move being searched", "true");
@@ -485,9 +482,9 @@ fn print_id() {
 }
 
 fn print_options() {
-    println!("option name Hash type spin default 16 min 1 max 65536");
+    println!("option name Hash type spin default 16 min 1 max 524288");
     println!("option name Threads type spin default 1 min 1 max 1024");
-    println!("option name Overhead type spin default 10 min 0 max 1000");
+    println!("option name Overhead type spin default 10 min 0 max 2000");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
     println!("option name UCI_ShowCurrMove type check default true");
@@ -530,15 +527,15 @@ where I: Iterator<Item = &'a str> {
 fn process_moves<'a, I>(state: &mut UciState, moves: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     for move_str in moves.by_ref() {
-        let legal = gen_legal_moves(&state.board);
-        let mv = legal.iter().find(|mv| mv.to_uci(state.board.is_frc) == move_str);
-
-        if let Some(&valid_move) = mv {
-            state.board.make_move(valid_move, &mut state.accumulator);
-            state.history.push(state.board.hash);
-        } else {
-            println!("info string warning: illegal move {move_str}");
-            break;
+        match parse_uci_move(&state.board, move_str) {
+            Ok(mv) => {
+                state.board.make_move(mv, &mut state.accumulator);
+                state.history.push(state.board.hash);
+            },
+            Err(_) => {
+                println!("info string warning: illegal move {move_str}");
+                break;
+            },
         }
     }
 }
@@ -611,6 +608,7 @@ where I: Iterator<Item = &'a str> {
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
+                let mb = mb.clamp(1, 524288);
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
@@ -618,8 +616,8 @@ where I: Iterator<Item = &'a str> {
         },
 
         "overhead" => {
-            if let Ok(v) = value.parse() {
-                state.overhead = v;
+            if let Ok(v) = value.parse::<u64>() {
+                state.overhead = v.clamp(0, 2000);
             }
         },
 
@@ -673,70 +671,6 @@ where
 
 fn parse_bool(value: &str) -> bool {
     matches!(value.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1")
-}
-
-fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
-    if uci.len() < 4 {
-        return Err(MoveError::InvalidFormat);
-    }
-
-    let from_sq = square_from_str(&uci[0..2])?;
-    let to_sq = square_from_str(&uci[2..4])?;
-
-    let promo = if uci.len() == 5 { Some(piece_from_char(uci.chars().nth(4).unwrap())?) } else { None };
-
-    // Find matching legal move
-    let legal = gen_legal_moves(board);
-
-    legal
-        .iter()
-        .find(|&&mv| {
-            if mv.from() == from_sq && mv.to() == to_sq && mv.promo() == promo {
-                return true;
-            }
-            // ── Castling Normalization ──
-            // Internal representation is King-onto-Rook (FRC), but incoming strings
-            // may use standard King-to-destination notation (e.g., e1g1).
-            // Delegate to to_uci to normalize both formats for reliable comparison.
-            if mv.is_castling() && mv.to_uci(board.is_frc) == uci {
-                return true;
-            }
-
-            // Fallback: If GUI sends standard castling (e1g1) but we are in FRC mode, still accept it.
-            if mv.is_castling() && mv.from() == from_sq {
-                let rank = from_sq.rank();
-                let is_kingside = mv.to().file() > from_sq.file();
-                let dest_file = if is_kingside { 6 } else { 2 }; // G or C
-
-                if to_sq == Square::from_coords(dest_file, rank) {
-                    return true;
-                }
-            }
-            false
-        })
-        .copied()
-        .ok_or(MoveError::NotFound)
-}
-
-fn square_from_str(s: &str) -> Result<Square, MoveError> {
-    let file = s.as_bytes()[0].wrapping_sub(b'a');
-    let rank = s.as_bytes()[1].wrapping_sub(b'1');
-
-    if file > 7 || rank > 7 {
-        return Err(MoveError::InvalidFormat);
-    }
-
-    Ok(Square::from_coords(file, rank))
-}
-
-fn piece_from_char(c: char) -> Result<PieceType, MoveError> {
-    match c.to_ascii_lowercase() {
-        'q' => Ok(PieceType::Queen),
-        'r' => Ok(PieceType::Rook),
-        'b' => Ok(PieceType::Bishop),
-        'n' => Ok(PieceType::Knight),
-        _ => Err(MoveError::InvalidFormat),
-    }
 }
 
 fn cmd_isatty<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)

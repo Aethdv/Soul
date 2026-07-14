@@ -145,6 +145,7 @@ macro_rules! define_psqt_params {
                             freeze_resistant: false,
                         });
                     }
+
                     for (i, param) in $name.iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
 
@@ -157,6 +158,7 @@ macro_rules! define_psqt_params {
                         });
                     }
                 )*
+
                 params
             }
         }
@@ -209,6 +211,7 @@ macro_rules! define_simple_params {
                             freeze_resistant: false,
                         });
                     }
+
                     for (i, param) in $name.iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
 
@@ -221,6 +224,7 @@ macro_rules! define_simple_params {
                         });
                     }
                 )*
+
                 params
             }
         }
@@ -229,8 +233,7 @@ macro_rules! define_simple_params {
 
 macro_rules! define_simd_params {
     ($($name:ident = [$($val:expr),*]),* $(,)?) => {
-        $(#[allow(clippy::excessive_precision)]
-          pub const $name: Vi32x4 = Vi32x4::new([
+        $(pub const $name: Vi32x4 = Vi32x4::new([
             $(
                 match $val {
                     Param::Val(v) | Param::Const(v) => v,
@@ -245,6 +248,7 @@ macro_rules! define_simd_params {
                 let arr = [$($val),*];
                 params.append(&mut collect_params_from_arrays(stringify!($name), &arr));
             )*
+
             params
         }
     };
@@ -267,6 +271,7 @@ macro_rules! define_weight_params {
                 let arr = [$($val),*];
                 params.append(&mut collect_params_from_arrays(stringify!($name), &arr));
             )*
+
             params
         }
     };
@@ -328,10 +333,12 @@ macro_rules! define_layout {
             pub const LAYOUT: Layout = {
                 $( let [<$name _len>]: usize = $len; )*
                 let mut acc = 0usize;
+
                 $(
                     let [<$name _offset>] = acc;
                     acc += [<$name _len>];
                 )*
+
                 let _total = acc;
                 Layout { $( [<$name _offset>], [<$name _len>], )* }
             };
@@ -369,31 +376,37 @@ pub fn collect_parameters() -> Vec<Tunable> {
     let mut all = Vec::new();
 
     let psqts = collect_psqt_params();
+
     for mut p in psqts {
         p.idx = all.len();
         all.push(p);
     }
 
     let simples = collect_simple_params();
+
     for mut p in simples {
         p.idx = all.len();
         all.push(p);
     }
 
     let simds = collect_simd_params();
+
     for mut p in simds {
         p.idx = all.len();
         all.push(p);
     }
 
     let weights = collect_weight_params();
+
     for mut p in weights {
         if p.name.starts_with("PHASE_WEIGHTS") {
             assert!(p.is_fixed, "PHASE_WEIGHTS must be constant (CV); tuning phase is not supported.");
         }
+
         p.idx = all.len();
         all.push(p);
     }
+
     all
 }
 

@@ -1,7 +1,5 @@
-//! Terminal UI formatting for search progress and board rendering.
-//!
-//! Provides ANSI-colored CLI output for interactive use, displaying Principal Variations (PV),
-//! node counts, and static evaluation breakdown.
+//! Terminal UI formatting for search output: the pretty status strip, eval
+//! and WDL bars, the PV in SAN, and an iteration-history sparkline.
 
 use std::{fmt::Write, io, io::Write as _};
 
@@ -111,6 +109,7 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
         Protocol::Uci => print_uci(data, pretty),
         Protocol::XBoard => print_xboard(data),
     }
+
     let _ = io::stdout().flush();
 }
 
@@ -118,12 +117,13 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
 /// the principal variation in SAN, and a colored history of recent iterations.
 pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let ansi = data.use_ansi;
+
     if ansi {
         print!("\x1b[H");
     }
 
-    let reset = if ansi { RESET } else { "" };
-    let bold = if ansi { BOLD } else { "" };
+    let reset = ansi_code(RESET, ansi);
+    let bold = ansi_code(BOLD, ansi);
     let dim = tui_fg(DIM, ansi);
     let label = tui_fg(GOLD_DIM, ansi);
 
@@ -143,43 +143,46 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     );
 
     print!("  ");
+
     for i in 0..48 {
         print!("{}━", tui_fg(color::mix(GOLD_BRIGHT, TEAL, f64::from(i) / 47.0), ansi));
     }
+
     println!("{reset}\x1b[K\n");
 
-    // ── Eval + WDL ──
-    // Labels share a 4-column gutter, so the eval value lines
-    // up with the bars' left edge.
+    // Eval + WDL
     let bar_width = 50;
     let (wf, df, lf) = wdl::wdl_model(data.score, data.material);
-    println!("  {bold}{label}Eval{reset}    {bold}{}{reset}\x1b[K", fmt_score_pretty(data.score, ansi));
+
+    println!("  {bold}{label}Eval{reset}    {bold}{}{reset}\x1b[K", fmt_score_colored(data.score, 0, ansi));
     println!("{}", wdl_row("Win", (wf * 100.0) as f32, WIN_C, bar_width, ansi));
     println!("{}", wdl_row("Draw", (df * 100.0) as f32, color::LEVEL, bar_width, ansi));
     println!("{}\n", wdl_row("Lose", (lf * 100.0) as f32, LOSE_C, bar_width, ansi));
 
-    // ── Best PV ──
-    // Numbered SAN, replayed from the root.
+    // Best PV
     println!("  {bold}{label}Best PV{reset}");
     print!("  {}", fmt_pv(data.board, &data.pv.moves[..data.pv.len.min(10)], ansi));
+
     if data.pv.len > 10 {
         print!("{dim}…{reset}");
     }
+
     println!("\x1b[K\n");
 
-    // ── History ──
-    // Eval trajectory as a sparkline, then the most recent
-    // iterations: depth, clock, eval with a rise/fall arrow, and the line.
+    // History
     println!("  {bold}{label}History{reset}  {}\x1b[K", eval_sparkline(data.history, ansi));
     let start = data.history.len().saturating_sub(6);
+
     for (i, snap) in data.history[start..].iter().enumerate() {
         let ts = fmt_time(snap.time_ms.try_into().unwrap_or(u64::MAX));
         let prev = (start + i).checked_sub(1).and_then(|p| data.history.get(p));
+
         let (arrow, arrow_c) = match prev {
             Some(p) if snap.score - p.score > 5 => ('▲', WIN_C),
             Some(p) if snap.score - p.score < -5 => ('▼', LOSE_C),
             _ => ('·', DIM),
         };
+
         print!(
             "  {dim}d{:>2}{reset}  {dim}{ts:>7}{reset}  {}{:>6}{reset} {}{arrow}{reset}  {}",
             snap.depth,
@@ -188,16 +191,20 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
             tui_fg(arrow_c, ansi),
             fmt_pv(data.board, &snap.line.moves[..snap.line.len.min(8)], ansi),
         );
+
         if snap.line.len > 8 {
             print!("{dim}…{reset}");
         }
+
         println!("\x1b[K");
     }
+
     println!();
 
     if ansi {
         print!("\x1b[J"); // Clear to end of screen
     }
+
     let _ = io::stdout().flush();
 }
 
@@ -205,12 +212,15 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
 /// iteration, height by win probability, hue by the advantage gradient.
 fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let reset = if enabled { RESET } else { "" };
+
+    let reset = ansi_code(RESET, enabled);
     let mut out = String::with_capacity(history.len() * 20);
+
     for snap in history {
         let level = ((sigmoid(snap.score) * 8.0) as usize).min(7);
         write!(out, "{}{}", tui_fg(score_color(snap.score), enabled), BLOCKS[level]).unwrap();
     }
+
     out.push_str(reset);
     out
 }
@@ -218,6 +228,12 @@ fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
 #[inline]
 fn tui_fg(c: Rgb, enabled: bool) -> String {
     if enabled { color::ansi_fg(c) } else { String::new() }
+}
+
+/// A static ANSI code when enabled, empty otherwise; the toggle for `RESET`/`BOLD`.
+#[inline]
+fn ansi_code(code: &'static str, enabled: bool) -> &'static str {
+    if enabled { code } else { "" }
 }
 
 /// Maps centipawn score to [0, 1] win probability.
@@ -249,14 +265,9 @@ fn fmt_score_num(score: i32) -> String {
     }
 }
 
-fn fmt_score_pretty(score: i32, enabled: bool) -> String {
-    let reset = if enabled { RESET } else { "" };
-    format!("{}{}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), reset)
-}
-
-fn fmt_score_colored(score: i32, enabled: bool) -> String {
-    let reset = if enabled { RESET } else { "" };
-    format!("{}{:>7}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), reset)
+/// Colored bare score, right-padded to `width` (0 = natural width).
+fn fmt_score_colored(score: i32, width: usize, enabled: bool) -> String {
+    format!("{}{:>width$}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), ansi_code(RESET, enabled))
 }
 
 /// One WDL row; a probability-keyed intensity bar plus a magnitude-lit percent.
@@ -264,17 +275,20 @@ fn fmt_score_colored(score: i32, enabled: bool) -> String {
 /// track `pct`; the percent ramps the same way by its own magnitude, settling
 /// to the dim floor when the outcome is negligible.
 fn wdl_row(label: &str, pct: f32, hue: Rgb, width: usize, enabled: bool) -> String {
-    let reset = if enabled { RESET } else { "" };
-    let bold = if enabled { BOLD } else { "" };
+    let reset = ansi_code(RESET, enabled);
+    let bold = ansi_code(BOLD, enabled);
     let frac = f64::from(pct.clamp(0.0, 100.0)) / 100.0;
     let filled = (frac * width as f64) as usize;
 
     let mut bars = String::with_capacity(width * 20);
+
     for i in 0..filled {
         let t = i as f64 / width.saturating_sub(1).max(1) as f64;
         write!(bars, "{}#", tui_fg(color::mix(WDL_FLOOR, hue, t), enabled)).unwrap();
     }
+
     bars.push_str(&tui_fg(WDL_EMPTY, enabled));
+
     for _ in filled..width {
         bars.push('.');
     }
@@ -313,11 +327,14 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
             if m == mv || m.to() != to {
                 continue;
             }
+
             if board.piece_at(m.from()) == pt {
                 needs = true;
+
                 if m.from().file() == from.file() {
                     amb_file = true;
                 }
+
                 if m.from().rank() == from.rank() {
                     amb_rank = true;
                 }
@@ -350,10 +367,12 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
 
     let mut acc = board.get_initial_accumulator();
     let undo = board.make_move(mv, &mut acc);
+
     if board.checkers().is_not_empty() {
         let responses = gen_legal_moves(board);
         san.push(if responses.is_empty() { '#' } else { '+' });
     }
+
     board.unmake_move(mv, &undo);
     san
 }
@@ -362,6 +381,7 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
 fn sq_file(sq: Square) -> char {
     (b'a' + sq.file()) as char
 }
+
 #[inline]
 fn sq_rank(sq: Square) -> char {
     (b'1' + sq.rank()) as char
@@ -385,6 +405,7 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
         let w = (wf * 1000.0).round() as u32;
         let d = (df * 1000.0).round() as u32;
         let l = (lf * 1000.0).round() as u32;
+
         format!(" wdl {w} {d} {l}")
     } else {
         String::new()
@@ -392,11 +413,12 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
 
     if pretty {
         let t = data.time_ms.try_into().unwrap_or(u64::MAX);
+
         print!(
             "info depth {:>2} seldepth {:>2} score {}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
             data.depth,
             data.sel_depth,
-            fmt_score_colored(data.score, data.use_ansi),
+            fmt_score_colored(data.score, 7, data.use_ansi),
             wdl_str,
             fmt_nodes(data.nodes),
             fmt_nps(data.nps),
@@ -428,30 +450,35 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             (Some(b), Some(a)) => {
                 let legal = gen_legal_moves(b);
                 let san = to_san(b, mv, legal.as_slice());
+
                 b.make_move(mv, a);
                 san
             },
+
             _ => mv.to_uci(false),
         };
 
         if pretty {
             let is_white = (i % 2 == 0) == white_first;
             let color = if is_white { PV_WHITE } else { PV_BLACK };
-            let reset = if data.use_ansi { RESET } else { "" };
+            let reset = ansi_code(RESET, data.use_ansi);
             print!(" {}{}{}", tui_fg(color, data.use_ansi), s, reset);
         } else {
             print!(" {s}");
         }
     }
+
     println!();
 }
 
 fn print_xboard(data: &SearchInfoData<'_>) {
     let cs = (data.time_ms + 5) / 10;
     print!("{:>2} {:>5} {:>6} {:>10} ", data.depth, data.score, cs, data.nodes);
+
     for i in 0..data.pv.len {
         print!("{} ", data.pv.moves[i].to_uci(data.board.is_frc));
     }
+
     println!();
 }
 
@@ -460,13 +487,14 @@ fn print_xboard(data: &SearchInfoData<'_>) {
 /// Black's muted; the count follows `root`'s side and fullmove so a line that
 /// opens on Black reads `29… c5 30. Nf3`.
 fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
-    let reset = if enabled { RESET } else { "" };
+    let reset = ansi_code(RESET, enabled);
     let mut board = *root;
     let mut acc = board.get_initial_accumulator();
     let mut num = board.fullmove_number;
     let mut white_to_move = board.stm == Color::White;
 
     let mut out = String::with_capacity(moves.len() * 12);
+
     for (i, &mv) in moves.iter().enumerate() {
         if white_to_move {
             write!(out, "{}{num}.{reset} ", tui_fg(DIM, enabled)).unwrap();
@@ -484,7 +512,9 @@ fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
         if !white_to_move {
             num += 1;
         }
+
         white_to_move = !white_to_move;
     }
+
     out
 }

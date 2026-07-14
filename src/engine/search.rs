@@ -6,10 +6,12 @@
 //! the rest, and the leaves fall through to quiescence so the horizon never
 //! lands mid-capture.
 //!
-//! Lazy SMP: threads search the same root in parallel, sharing only the TT and
-//! a stop flag. No explicit work distribution: each thread runs its own
-//! iterative-deepening loop, and the TT is the coordination surface. Diversity
-//! is emergent from threads cross-probing each other's entries at different depths.
+//! Lazy SMP is a parallel search algorithm that never divides the work. Each
+//! thread runs its own iterative-deepening search on the same root position,
+//! sharing only the transposition table and a stop flag. Their trees drift apart
+//! on their own, because each thread reaches a given position at a different
+//! depth and leaves its findings in the table for another to stumble onto and
+//! follow.
 //!
 //! State splits into two entities per thread:
 //! - `Searcher`: Owns global engine state (time management, history table, root moves).
@@ -678,6 +680,7 @@ impl<'cfg> Searcher<'cfg> {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
                 Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
             }
+
             let _ = io::stdout().flush();
         }
     }
@@ -981,7 +984,7 @@ impl Worker<'_> {
         // Have we seen this position before?
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
-        // This is what makes iterative deepening fast: earlier iterations populate the table for later ones.
+        // Earlier iterations populate the table for later ones.
         //
         // During verification the entry here is the excluded move itself, and its
         // score would hand back the very cutoff we are trying to search without.
@@ -1138,19 +1141,13 @@ impl Worker<'_> {
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None) {
-                Ok(v) => -v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_null_move(&undo);
-                    self.stack[ply + 1].is_null = false;
-                    return Err(e);
-                },
-            };
+            let score = self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None);
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_null_move(&undo);
             self.stack[ply + 1].is_null = false;
+
+            let score = -score?;
 
             if score >= beta {
                 let null_score = if is_win(score) { beta } else { score };
@@ -1250,7 +1247,6 @@ impl Worker<'_> {
         let mut res = MoveResult { move_count: 0, best_eval: -INF, alpha, best_move: Move::null() };
 
         if N::ROOT {
-            // Iterate the pre-sorted root move list.
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
 
@@ -1488,8 +1484,8 @@ impl Worker<'_> {
                         // ── Multicut (~15 Elo) ──
                         // The TT bound already reads the TT move as a fail-high,
                         // and with it excluded the verification still cleared beta:
-                        // A second move beats it too. Two moves over beta isn't a singular
-                        // node, it's a cut node, so return the bound. A mate is the exception,
+                        // a second move beats it too, so this is a cut node, not a
+                        // singular one. Return the bound. A mate is the exception,
                         // returning plain beta: with the best move excluded, the verification
                         // can't be trusted on the distance.
                         return Ok(if is_mate(sing_score) { beta } else { sing_score });
@@ -1606,9 +1602,8 @@ impl Worker<'_> {
         }
 
         // No legal moves: checkmate (in check) or stalemate (not).
-        // Excluding the only legal move empties the list too, and that is not mate:
-        // fail low so the verification reads the TT move as singular, not the board
-        // as lost.
+        // Excluding the only legal move empties the list too, so fail low:
+        // the verification reads the TT move as singular, not the board as lost.
         if unlikely(res.move_count == 0) {
             return if !excluded.is_null() {
                 Ok(alpha)
@@ -1700,20 +1695,13 @@ impl Worker<'_> {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval =
-            match self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv) {
-                Ok(v) => v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_move(mv, &undo);
-                    self.accumulator = saved_acc;
-                    return Err(e);
-                },
-            };
+        let eval = self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv);
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
         self.accumulator = saved_acc;
+
+        let eval = eval?;
 
         if N::ROOT
             && let Some(i) = root_idx
@@ -1773,8 +1761,8 @@ impl Worker<'_> {
     ) -> Result<i32, SearchAborted> {
         let sp = &searcher.cfg.search_params;
 
-        // Retrieve the expected PV move for the next ply (ply + 1 is the child node's level).
-        // If we are on the PV line and we just played the PV move, we expect the child to also have a PV move.
+        // Retrieve the expected PV move for the next ply. If we are on the PV line
+        // and we just played the PV move, we expect the child to also have a PV move.
         let next_pv = if (N::ROOT || N::PV) && is_pv_move { searcher.prev_pv.get(ply + 1) } else { None };
 
         // Only the singular move arrives with an extension; the rest pass 0.
@@ -1967,19 +1955,13 @@ impl Worker<'_> {
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = match self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1) {
-                Ok(v) => -v,
-                Err(e) => {
-                    searcher.zobrist_trail.pop();
-                    self.pos.unmake_move(mv, &undo);
-                    self.accumulator = saved_acc;
-                    return Err(e);
-                },
-            };
+            let score = self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1);
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_move(mv, &undo);
             self.accumulator = saved_acc;
+
+            let score = -score?;
 
             if score > best_eval {
                 best_eval = score;
@@ -1989,6 +1971,7 @@ impl Worker<'_> {
                     if score >= beta {
                         break;
                     }
+
                     alpha = score;
                 }
             }
@@ -2060,7 +2043,6 @@ impl Worker<'_> {
 
         // We vector-scan the full slice, including opponent-ply hashes.
         // Zobrist already encodes side-to-move, so cross-ply hashes can never match.
-        // The STM bit differs for every other entry, making false positives impossible.
         // The false-check cost is zero, and contiguous SIMD loads are cheaper than strided.
         //
         // Vu64x4::load uses _mm256_loadu_si256 internally (unaligned), which is correct

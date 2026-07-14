@@ -1,3 +1,17 @@
+//! Eval-tuner training driver: gradient descent on the HCE weights against a
+//! WDL-labeled dataset.
+//!
+//! Features are extracted to `FeatureRecord`s once at startup, so every epoch reads
+//! them straight through: shuffle, then batched Lion steps over the cached SoA path
+//! (`eval_record` + `accumulate_record_grad`, not the dual-number oracle). A one-time
+//! K line-search fixes the sigmoid's centipawn→win-rate scale before the loop.
+//!
+//! The rest is convergence machinery: per-group masks give PSQT, material, and
+//! mobility their own learning rate, decay, and momentum, and tail-EMA, plateau
+//! halving, and progressive/auto freeze each damp a different late-training noise.
+//! Snapshots track the validation split; the frozen `k_ref` loss stays comparable
+//! across runs.
+
 use std::{
     fs,
     fs::File,
@@ -32,12 +46,14 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     // Enable FTZ/DAZ on the MAIN thread immediately.
     #[cfg(target_arch = "x86_64")]
     unsafe {
+        // SAFETY: MXCSR manipulation has no memory precondition; the call is always sound.
         enable_ftz_daz();
     }
 
     // Configure the Rayon thread pool (catches new worker threads).
     rayon::ThreadPoolBuilder::new()
         .start_handler(|_| unsafe {
+            // SAFETY: MXCSR manipulation has no memory precondition; the call is always sound.
             #[cfg(target_arch = "x86_64")]
             enable_ftz_daz();
         })
@@ -91,6 +107,8 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 unsafe fn enable_ftz_daz() {
     use std::arch::asm;
     let mut mxcsr: u32 = 0;
+    // SAFETY: stmxcsr/ldmxcsr read and write the 4-byte MXCSR to/from mxcsr, a valid
+    // aligned local u32; the ops only toggle FP denormal handling, never memory.
     unsafe {
         asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack, preserves_flags));
         mxcsr |= 0x8040; // FTZ | DAZ
@@ -948,6 +966,8 @@ fn build_beta2_mask(params: &[Tunable], default_beta2: f64) -> Vec<f64> {
         .collect()
 }
 
+/// Per-group learning-rate mask: PSQT, material, mobility, and the rest each scale
+/// by their configured rate, so groups on different gradient scales tune independently.
 fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
     (0..params.len())
         .map(|i| match param_group(i) {

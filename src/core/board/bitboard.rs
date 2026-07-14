@@ -6,10 +6,10 @@
 //! Sliders (bishop, rook, queen) index into an attack table
 //! built by `build.rs`. The indexing scheme adapts to hardware:
 //!
-//! | Target        | Method                | Cost      |
-//! |---------------|-----------------------|-----------|
-//! | BMI2          | `PEXT` instruction    | 1 cycle   |
-//! | Fallback      | magic multiplication  | 3 cycles  |
+//! | Target   | Method               | Win                       |
+//! |----------|----------------------|---------------------------|
+//! | BMI2     | `PEXT` instruction   | one op, no magic constant |
+//! | Fallback | magic multiply-shift | works everywhere          |
 //!
 //! Both paths share a single `ATTACK_TABLE`: only the hash function differs.
 

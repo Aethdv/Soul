@@ -1,8 +1,8 @@
 //! Transposition table - the search's memory of positions it has already seen.
 //!
-//! Every node iterative deepening revisits, it hopes to find here: the score, the
-//! best move, the depth that score was proven to. A hit can cut a whole subtree,
-//! and that is what makes deepening cheap, since each iteration seeds the next.
+//! When iterative deepening revisits a node, it hopes to find it already here:
+//! the score, the best move, the depth that score was proven to. A hit can cut a
+//! whole subtree, and since each iteration seeds the next, deepening stays cheap.
 //!
 //! The table is lockless because Lazy SMP has every thread reading and writing it
 //! at once. Probe and store take `&self` and touch entries through atomics, so no
@@ -69,9 +69,9 @@ const fn verification_key(hash: u64) -> u16 {
     hash as u16
 }
 
-/// One slot, five `AtomicU16` words. The atomics are what let Lazy SMP threads
-/// share the table without locks; 16-bit words keep the entry at 10 bytes and
-/// align 2, where a single `AtomicU32` would force align 4 and pad it back out,
+/// One slot, five `AtomicU16` words. The atomics let Lazy SMP threads share
+/// the table without locks; 16-bit words keep the entry at 10 bytes and align 2,
+/// where a single `AtomicU32` would force align 4 and pad it back out,
 /// thinning the table for nothing.
 ///
 /// `key` is the commit point. A store writes the other four words first and
@@ -101,8 +101,7 @@ struct Cluster {
 /// The decoded view of a [`TtEntry`], used by probe and store.
 #[derive(Clone, Copy, Default)]
 struct Decoded {
-    /// 16-bit verification key (low bits of the Zobrist hash). Collisions that
-    /// survive it are caught downstream by `is_pseudo_legal` on the stored move.
+    /// 16-bit verification key (low bits of the Zobrist hash).
     key: u16,
     mv: u16,
     score: i16,
@@ -117,7 +116,7 @@ struct Decoded {
 }
 
 impl TtEntry {
-    /// The cheap scan read: just the key and the (bound, depth) replacement
+    /// The cheap scan read: just the key and the (bound, depth) that replacement
     /// weighs. Relaxed is enough, since these scans never read payload off this
     /// load; the paths that do go through `load()`, which carries its own ordering.
     #[inline(always)]
@@ -331,6 +330,7 @@ impl TranspositionTable {
                 return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0, entry.eval as i32));
             }
         }
+
         None
     }
 
@@ -455,7 +455,7 @@ impl TranspositionTable {
     /// Maps a 64-bit hash to a cluster index.
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
-        // mulhi64: the top 64 bits of hash × len. Lands the hash uniformly
+        // mulhi64: the top 64 bits of hash · len. Lands the hash uniformly
         // in [0, len), the way hash % len would, but with a multiply.
         let clusters = self.clusters.len();
 
@@ -463,8 +463,8 @@ impl TranspositionTable {
     }
 }
 
-/// First-touch the cluster region in parallel, each NUMA node's thread zeroing the
-/// slice bound to it. First-touch decides a page's home node, so this is what spreads
+/// First-touch the cluster region in parallel, each NUMA node's thread zeroing
+/// the slice bound to it. First-touch decides a page's home node, so it spreads
 /// the table across the memory controllers instead of leaving it all on one.
 ///
 /// Only ever runs with the engine idle (allocation, or `ucinewgame`), so building

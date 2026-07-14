@@ -23,12 +23,11 @@ use crate::{
     },
     engine::{
         history::History,
-        movegen::gen_legal_moves,
         search::{Limits, SearchConfig, SearchDisplay, Searcher},
         search_params::SearchParams,
         tt::TranspositionTable,
     },
-    protocols::smp::LazySmpPool,
+    protocols::{notation::parse_uci_move, smp::LazySmpPool},
     weave::Vi16x8,
 };
 
@@ -263,11 +262,16 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
 
         "setboard" => {
-            let rest: Vec<&str> = args.collect();
-            let fen = rest.join(" ");
-            state.stop_search();
-            state.load_position(Position::from_fen(&fen));
-            state.tt.new_search();
+            let fen = args.collect::<Vec<_>>().join(" ");
+
+            match Position::try_from_fen(&fen) {
+                Ok(board) => {
+                    state.stop_search();
+                    state.load_position(board);
+                    state.tt.new_search();
+                },
+                Err(e) => eprintln!("Error (invalid fen): {e}"),
+            }
         },
 
         "result" => {
@@ -280,6 +284,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             if let Some(arg) = args.next()
                 && let Ok(mb) = arg.parse::<usize>()
             {
+                let mb = mb.clamp(1, 524288);
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
@@ -302,14 +307,18 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
 
         "usermove" => {
-            if let Some(move_str) = args.next() {
-                cmd_move(state, move_str);
+            if let Some(move_str) = args.next()
+                && !cmd_move(state, move_str)
+            {
+                eprintln!("Illegal move: {move_str}");
             }
         },
 
         "accepted" | "rejected" => { /* Feature negotiation, no-op */ },
         _ => {
-            cmd_move(state, cmd);
+            if !cmd_move(state, cmd) {
+                eprintln!("Error (unknown command): {cmd}");
+            }
         },
     }
     io::stdout().flush().ok();
@@ -331,36 +340,33 @@ fn print_features() {
     println!("feature smp=1");
     println!("feature nps=1");
     println!("feature variants=\"normal\"");
-    println!("feature option=\"Hash -spin 16 1 65536\"");
-    println!("feature option=\"Overhead -spin 10 0 1000\"");
+    println!("feature option=\"Hash -spin 16 1 524288\"");
+    println!("feature option=\"Overhead -spin 10 0 2000\"");
     println!("feature option=\"ShowWDL -check 0\"");
     println!("feature done=1");
 }
 
-fn cmd_move(state: &mut XBoardState, move_str: &str) {
-    let legal = gen_legal_moves(&state.board);
+fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
+    let Ok(mv) = parse_uci_move(&state.board, move_str) else {
+        return false;
+    };
 
-    if let Some(mv) = legal
-        .iter()
-        .find(|mv| mv.to_uci(state.board.is_frc) == move_str || mv.to_uci(state.board.is_frc) == move_str.to_lowercase())
-    {
-        state.stop_search();
-        state.board.make_move(*mv, &mut state.accumulator);
-        state.history.push(state.board.hash);
-        state.tt.new_search();
+    state.stop_search();
+    state.board.make_move(mv, &mut state.accumulator);
+    state.history.push(state.board.hash);
+    state.tt.new_search();
 
-        if state.board.is_threefold_repetition(&state.history) {
-            println!("1/2-1/2 {{Draw by repetition}}");
-        }
-
-        let engine_turn = state.engine_side == Some(state.board.stm);
-
-        if state.mode == Mode::Normal && engine_turn {
-            state.start_search();
-        }
-    } else {
-        eprintln!("Error (unknown command): {move_str}");
+    if state.board.is_threefold_repetition(&state.history) {
+        println!("1/2-1/2 {{Draw by repetition}}");
     }
+
+    let engine_turn = state.engine_side == Some(state.board.stm);
+
+    if state.mode == Mode::Normal && engine_turn {
+        state.start_search();
+    }
+
+    true
 }
 
 fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
@@ -462,6 +468,7 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
+                let mb = mb.clamp(1, 524288);
                 state.hash_size = mb;
                 state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
                 state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
@@ -469,8 +476,8 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
         },
 
         "overhead" => {
-            if let Ok(v) = value.parse() {
-                state.overhead = v;
+            if let Ok(v) = value.parse::<u64>() {
+                state.overhead = v.clamp(0, 2000);
             }
         },
 

@@ -28,6 +28,7 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
     while occ != 0 {
         let lsb_idx = occ.trailing_zeros() as u8;
         occ &= occ - 1;
+
         let sq = Square(lsb_idx);
         let piece = board.piece_at(sq);
         let color = board.color_at(sq);
@@ -65,6 +66,7 @@ fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
             return true;
         }
     }
+
     false
 }
 
@@ -93,6 +95,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         let pt = if pt_raw == CASTLING_ROOK { 3 } else { pt_raw };
 
         board[usize::from(sq)] = PIECE_CHARS[color_idx][pt];
+
         if pt_raw == 5 {
             king_sq[color_idx] = sq;
         }
@@ -120,11 +123,13 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     }
 
     let mut fen = String::with_capacity(80);
+
     for rank in (0..8usize).rev() {
         let mut empty = 0u8;
 
         for file in 0..8usize {
             let ch = board[rank * 8 + file];
+
             if ch == b'.' {
                 empty += 1;
             } else {
@@ -175,6 +180,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
                 if castling_bits & (1u8 << slot) != 0 {
                     let file = u8::from(rook) % 8;
                     let base = if slot < 2 { b'A' } else { b'a' };
+
                     fen.push((base + file) as char);
                 }
             }
@@ -182,6 +188,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     }
 
     fen.push(' ');
+
     let ep = entry.stm_and_ep & 0x7F;
 
     if ep >= 64 {
@@ -189,6 +196,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     } else {
         fen.push_str(&Square(ep).to_string());
     }
+
     fen.push_str(" 0 1");
     fen
 }
@@ -197,6 +205,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
 pub(super) fn next_nibble(pieces: &[u8; 16], idx: &mut usize) -> u8 {
     let i = *idx;
     *idx += 1;
+
     let byte = pieces[i / 2];
     if i & 1 == 0 { byte & 0x0F } else { byte >> 4 }
 }

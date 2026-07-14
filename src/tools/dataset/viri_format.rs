@@ -47,7 +47,9 @@ pub fn parse_viri_file(path: &str) -> io::Result<Vec<SoulEntry>> {
             if pos + 4 > data.len() {
                 break;
             }
+
             let candidate = &data[pos..pos + 4];
+
             if candidate == SENTINEL {
                 pos += 4;
                 break;
@@ -171,6 +173,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
 
     // Reconstruct castling rights from unmoved rooks relative to kings.
     let mut set_castling_rights = 0u8;
+
     if let Some(king_sq) = white_king {
         for &rook_idx in &unmoved_rooks[Color::White as usize] {
             let rook = Square(rook_idx);
@@ -184,6 +187,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
             }
         }
     }
+
     if let Some(king_sq) = black_king {
         for &rook_idx in &unmoved_rooks[Color::Black as usize] {
             let rook = Square(rook_idx);
@@ -197,6 +201,7 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8)> {
             }
         }
     }
+
     pos.castling_rights = set_castling_rights;
 
     // Mark as FRC if any castling rook is off its standard home square.

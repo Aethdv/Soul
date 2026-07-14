@@ -128,6 +128,7 @@ impl Clock {
             Color::White => (limits.wtime, limits.winc),
             Color::Black => (limits.btime, limits.binc),
         };
+
         Self { time, inc, movestogo: limits.movestogo, ply: game_ply }
     }
 
@@ -146,7 +147,7 @@ impl Clock {
     /// early, fewer late.
     fn moves_to_go(&self, phase: i32, params: &SearchParams) -> f64 {
         if self.movestogo > 0 {
-            // Classical time control. Subtracting 0.5 front-loads time usage.
+            // Classical time control.
             return (self.movestogo as f64 - 0.5).max(1.0);
         }
 
@@ -157,20 +158,35 @@ impl Clock {
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
-    fn hard_ms(&self, mtg: f64) -> u64 {
+    /// What a single move may spend before the search is forced to bail.
+    ///
+    /// Classical bursts to `tm_hard_mult`× the per-move share (`time / mtg`),
+    /// floored by `tm_hard_clock_cap`% of the clock. Sudden death instead spends a
+    /// fraction that ramps from `tm_sd_base`% with game ply (`tm_sd_ramp` per mille
+    /// per ply) toward the `tm_sd_cap`% ceiling, so a longer game lets one move take
+    /// a bigger slice. Either way the increment is added back, since it's regained,
+    /// capped at the full remaining time.
+    fn hard_ms(&self, mtg: f64, params: &SearchParams) -> u64 {
         let hard = if self.movestogo > 0 {
-            (self.time as f64 / mtg * 5.0).min(self.time as f64 * 0.95) as u64
+            let mult = params.tm_hard_mult as f64 / 100.0;
+            let clock_cap = params.tm_hard_clock_cap as f64 / 100.0;
+            (self.time as f64 / mtg * mult).min(self.time as f64 * clock_cap) as u64
         } else {
-            let ceiling = (self.time as f64 * 0.80) as u64;
-            let base = (self.time as f64 * (0.50 + 0.001 * self.ply as f64)) as u64;
+            let cap = params.tm_sd_cap as f64 / 100.0;
+            let frac = params.tm_sd_base as f64 / 100.0 + params.tm_sd_ramp as f64 / 1000.0 * self.ply as f64;
+            let ceiling = (self.time as f64 * cap) as u64;
+            let base = (self.time as f64 * frac) as u64;
+
             base.min(ceiling)
         };
+
         (hard.saturating_add(self.inc)).min(self.time)
     }
 
-    fn soft_ms(&self, mtg: f64) -> u64 {
+    /// The per-move share plus `tm_soft_inc`% of the increment.
+    fn soft_ms(&self, mtg: f64, params: &SearchParams) -> u64 {
         let base = (self.time as f64 / mtg) as u64;
-        let inc_contrib = (self.inc as f64 * 0.8) as u64;
+        let inc_contrib = (self.inc as f64 * (params.tm_soft_inc as f64 / 100.0)) as u64;
 
         base + inc_contrib
     }
@@ -205,8 +221,8 @@ fn compute_budget(
     }
 
     let mtg = clock.moves_to_go(phase, params);
-    let soft_ms = clock.soft_ms(mtg);
-    let hard_ms = clock.hard_ms(mtg);
+    let soft_ms = clock.soft_ms(mtg, params);
+    let hard_ms = clock.hard_ms(mtg, params);
 
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }

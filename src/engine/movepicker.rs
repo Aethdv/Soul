@@ -17,7 +17,7 @@
 //! popping the highest-scored moves from the back in 𝒪(1) time without
 //! index shifting.
 
-use std::{mem::MaybeUninit, slice};
+use std::mem::MaybeUninit;
 
 use crate::{
     core::{
@@ -51,10 +51,6 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
 // Because Big-O is a lie when it hits modern hardware.
 // An ipnsort beats a branch-heavy selection sort loop, even when K is small.
-//
-// Moves and their scores are cleanly bitpacked into u32s. Native sorting
-// places the highest-scored moves at the end of the array, allowing us
-// to pop them off the back (count -= 1) with zero index-shifting overhead.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
@@ -146,6 +142,12 @@ impl MovePicker {
         }
     }
 
+    // The duplicated literal below is load-bearing: Rust guarantees no copy
+    // elision, and a bare struct literal in return position is the one shape
+    // rustc reliably builds in the caller's slot. Delegating to new() and
+    // mutating the result, or routing both constructors through a shared
+    // builder, measurably recopies the ~1KB picker once per qsearch node
+    // (~1% nps).
     #[inline]
     pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
         Self {
@@ -193,18 +195,10 @@ impl MovePicker {
                     // Even if a strong quiet move has a high history score,
                     // it will never override a capture because they are processed
                     // in strictly cordoned stages.
-                    //
-                    // SAFETY: self.count tracks the exact number of initialized elements.
-                    // ptr is valid for self.count reads and writes, and memory is exclusively owned.
-                    if self.count > 1 {
-                        unsafe {
-                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            // Sort natively ascending. Best elements float to the end.
-                            slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
-                        }
-                    }
+                    self.sort_candidates();
                     self.stage = Stage::YieldCaptures;
                 },
+
                 Stage::YieldCaptures => {
                     if self.count == 0 {
                         // INVARIANT: when YieldCaptures is exhausted, count is exactly 0,
@@ -225,7 +219,7 @@ impl MovePicker {
                     self.count -= 1;
                     // SAFETY: count was strictly > 0 above, so this index holds a valid packed move.
                     let packed = unsafe { debug_index!(self.candidates, self.count).assume_init() };
-                    let mv = Move::from_u16((packed & 0xFFFF) as u16);
+                    let mv = Move::from_u16(packed as u16);
 
                     if Some(mv) == self.hash_move {
                         continue;
@@ -258,6 +252,7 @@ impl MovePicker {
                                     .add(MAX_MOVES - 1 - self.bad_count)
                                     .write(MaybeUninit::new(packed));
                             }
+
                             self.bad_count += 1;
                             continue;
                         }
@@ -268,13 +263,7 @@ impl MovePicker {
 
                 Stage::GenQSearchQuiets => {
                     self.gen_qsearch_quiets(board, history);
-                    // SAFETY: self.count accurately tracks initialized items.
-                    if self.count > 1 {
-                        unsafe {
-                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            std::slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
-                        }
-                    }
+                    self.sort_candidates();
                     self.stage = Stage::YieldQuiets;
                 },
 
@@ -285,16 +274,10 @@ impl MovePicker {
                     {
                         self.quiets_gen = self.count as u32;
                     }
-                    // SAFETY: self.count accurately tracks initialized items.
-                    // ptr covers valid memory and is sorted in-place.
-                    if self.count > 1 {
-                        unsafe {
-                            let ptr = self.candidates.as_mut_ptr() as *mut u32;
-                            slice::from_raw_parts_mut(ptr, self.count).sort_unstable();
-                        }
-                    }
+                    self.sort_candidates();
                     self.stage = Stage::YieldQuiets;
                 },
+
                 Stage::YieldQuiets => {
                     if self.count == 0 {
                         // Quiets done; reuse count as a top-down cursor over the parked bad
@@ -317,6 +300,7 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
+
                 Stage::YieldBadCaptures => {
                     // The deferred losing captures occupy [MAX_MOVES - bad_count, MAX_MOVES),
                     // best at the top since YieldCaptures parked them in descending score.
@@ -335,8 +319,20 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
+
                 Stage::Done => return None,
             }
+        }
+    }
+
+    /// Sort the live candidate window ascending, so the best-scored moves land
+    /// at the end and pop off the back in 𝒪(1).
+    #[inline]
+    fn sort_candidates(&mut self) {
+        if self.count > 1 {
+            // SAFETY: the gen step just wrote the first `count` entries; the rest
+            // of the array stays uninitialized and out of the sorted slice.
+            unsafe { self.candidates[..self.count].assume_init_mut() }.sort_unstable();
         }
     }
 
@@ -375,12 +371,12 @@ impl MovePicker {
 
             // Promotion-captures bypass capture history entirely (see add_promo_caps).
             for to in promo {
-                let from = Square((to.0 as i8 - delta) as u8);
+                let from = Square((to.0.cast_signed() - delta).cast_unsigned());
                 self.add_promo_caps(board, from, to);
             }
 
             for to in standard {
-                let from = Square((to.0 as i8 - delta) as u8);
+                let from = Square((to.0.cast_signed() - delta).cast_unsigned());
                 self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn, history);
             }
         }
@@ -427,11 +423,15 @@ impl MovePicker {
 
     #[inline(always)]
     fn add_move_packed(&mut self, mv: Move, score: MoveScore) {
-        debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
         let sort_score = (score as i32 + 32768).clamp(0, 65535) as u32;
-        let packed = (sort_score << 16) | (mv.inner() as u32);
-        crate::debug_index_mut!(self.candidates, self.count).write(packed);
+        self.write_packed((sort_score << 16) | (mv.inner() as u32));
+    }
 
+    /// Append a pre-packed `(sort_score << 16) | move` entry.
+    #[inline(always)]
+    fn write_packed(&mut self, packed: u32) {
+        debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
+        crate::debug_index_mut!(self.candidates, self.count).write(packed);
         self.count += 1;
     }
 
@@ -439,7 +439,6 @@ impl MovePicker {
     /// Promotion-captures bypass this path entirely; they go through `add_promo_caps`.
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
-        // Victim is always pawn (the captured pawn sits on an adjacent square, not the destination).
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let mvv = self.mvv_lva(mv, attacker, victim);
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
@@ -472,7 +471,7 @@ impl MovePicker {
     /// Promotion-captures never reach this function; they're scored entirely
     /// by `add_promo_caps`, which is why there's no promotion term here.
     /// The Stage segregation in `MovePicker::next` ensures all captures are
-    /// yielded before any quiet moves, so a global bias is no longer needed.
+    /// yielded before any quiet moves, so a global bias isn't needed.
     #[inline(always)]
     fn mvv_lva(&self, mv: Move, attacker: PieceType, victim: PieceType) -> MoveScore {
         if mv.is_en_passant() {
@@ -507,7 +506,7 @@ impl MovePicker {
         let promo_pushes = all_pushes & prom_mask;
 
         for to in promo_pushes {
-            let from = Square((to.0 as i8 - up_d) as u8);
+            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
         }
     }
@@ -563,11 +562,7 @@ impl MovePicker {
             sort_score = 64000;
         }
 
-        let packed = (sort_score << 16) | (mv.inner() as u32);
-
-        // SAFETY: count < MAX_MOVES is guarded above.
-        unsafe { self.candidates.as_mut_ptr().add(self.count).write(MaybeUninit::new(packed)) };
-        self.count += 1;
+        self.write_packed((sort_score << 16) | (mv.inner() as u32));
     }
 
     /// Emit all four quiet promotions for a single pawn push.
@@ -597,19 +592,19 @@ impl MovePicker {
         let quiet_pushes = all_pushes & !prom_mask;
 
         for to in promo_pushes {
-            let from = Square((to.0 as i8 - up_d) as u8);
+            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_promo_quiets(from, to, stm, history);
         }
 
         for to in quiet_pushes {
-            let from = Square((to.0 as i8 - up_d) as u8);
+            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::QUIET), PieceType::Pawn, stm, history);
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
 
         for to in doubles {
-            let from = Square((to.0 as i8 - up_d * 2) as u8);
+            let from = Square((to.0.cast_signed() - up_d * 2).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
         }
     }
