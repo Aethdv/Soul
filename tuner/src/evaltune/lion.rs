@@ -78,6 +78,7 @@ impl Lion {
             if fixed_mask[i] {
                 continue;
             }
+
             let p = params[i];
             let m = momentum[i];
             let g = gradients[i];
@@ -93,9 +94,10 @@ impl Lion {
             // still fires: a converged parameter without gradient signal should
             // not lose its regularisation pressure.
             //
-            // Per-parameter disagreement gate (m.signum() ≠ g.signum()) catches
-            // local oscillation: if momentum and gradient disagree, the sign
-            // update is skipped for this parameter.
+            // Per-parameter disagreement gate (m · g ≤ 0) catches local oscillation:
+            // if momentum and gradient disagree, the sign update is skipped for this
+            // parameter. An absent gradient (g = 0) is disagreement; a signum test
+            // would let one momentum sign coast.
             //
             //
             // Ref: Taejong Joo, Wenhan Xia, Cheolmin Kim, Ming Zhang & Eugene Ie (2026).
@@ -109,12 +111,8 @@ impl Lion {
             // Probably revisit at NNUE scale.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
             // Skip the Lion sign step when the correlation gate is open (c≈0) or the
-            // momentum and gradient signs disagree: either way, decay only.
-            let updated = if c.abs() < 1e-9 || (m.signum() != g.signum() && m.abs() > 1e-6) {
-                decayed
-            } else {
-                decayed - eff_lr * c.signum()
-            };
+            // gradient is absent or disagrees with momentum: either way, decay only.
+            let updated = if c.abs() < 1e-9 || (m * g <= 0.0 && m.abs() > 1e-6) { decayed } else { decayed - eff_lr * c.signum() };
 
             // 3. Optional weight clipping
             params[i] = match self.clip {
@@ -159,6 +157,23 @@ mod tests {
         let lr_mask2 = vec![1.0; params_sparse.len()];
         opt.update(&mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2, &lr_mask2);
         assert!((params_sparse[0] - 2.0).abs() < 1e-9, "Sparse update should still clip: {}", params_sparse[0]);
+    }
+
+    #[test]
+    fn lion_absent_gradient_skips_both_momentum_signs() {
+        // g = 0 must not step either momentum sign.
+        let decay_mask = vec![0.0];
+        let fixed_mask = vec![false];
+        let beta2 = vec![0.99];
+        let lr_mask = vec![1.0];
+        let opt = Lion::new(0.9, 1.0, 0.0);
+
+        for m0 in [0.5, -0.5] {
+            let mut params = vec![1.0];
+            let mut momentum = vec![m0];
+            opt.update(&mut params, &mut momentum, &[0.0], &decay_mask, &fixed_mask, &beta2, &lr_mask);
+            assert!((params[0] - 1.0).abs() < 1e-12, "g=0 must not step (m={m0}): {}", params[0]);
+        }
     }
 
     #[test]
