@@ -23,6 +23,7 @@ Options:
 
 from __future__ import annotations
 
+from os import wait
 import sys
 import argparse
 import numpy as np
@@ -52,22 +53,34 @@ def parse_log(path: str) -> dict:
             if ep is None or t is None or v is None:
                 continue
 
+            t, v = float(t), float(v)
+            # Drop diverged/NaN epochs so they don't poison EMA and ylim
+            if not (np.isfinite(t) and np.isfinite(v)):
+                continue
+
             epochs.append(int(ep))
-            train.append(float(t))
-            val.append(float(v))
+            train.append(t)
+            val.append(v)
 
             if (r := e.get("ref_loss")) is not None:
-                ref.append(float(r))
+                r = float(r)
+
+                if np.isfinite(r):
+                    ref.append(r)
 
             if e.get("is_best") and v < best_val:
                 best_idx, best_val = len(epochs) - 1, v
         elif e.get("event") == "restart":
-
             if (ep := e.get("epoch")) is not None:
                 restarts.append(int(ep))
 
     if not epochs:
         return {}
+
+    # Fallback if no epoch was ever explicitly marked is_best
+    if not np.isfinite(best_val):
+        best_idx = int(np.argmin(val))
+        best_val = float(val[best_idx])
 
     epochs = np.array(epochs, dtype=np.int64)
     train = np.array(train, dtype=np.float64)
@@ -146,7 +159,13 @@ def plot_loss(
         core += [t_loss, v_loss]
 
     core = np.concatenate(core)
-    c_lo, c_hi = float(core.min()), float(core.max())
+    finite_core = core[np.isfinite(core)]
+
+    if finite_core.size == 0:
+        c_lo, c_hi = 0.0, 1.0
+    else:
+        c_lo, c_hi = float(finite_core.min()), float(finite_core.max())
+
     c_span = (c_hi - c_lo) or 1.0
     y_lo, y_hi = c_lo - c_span * 0.10, c_hi + c_span * 0.10
 
