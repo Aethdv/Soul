@@ -13,10 +13,9 @@ pub const CHECKPOINT_VERSION: u32 = 3;
 
 /// Serialisable training checkpoint: everything needed to resume a run.
 ///
-/// Everything means the convergence machinery too, not just values and
-/// momentum. A resume that reconstructs K, the EMA trail, the freeze masks,
-/// or the snapshot hall from defaults trains a subtly different run wearing
-/// the old one's epoch counter.
+/// A resume that reconstructs K, the EMA trail, the freeze mask, or the
+/// snapshot hall from defaults trains a subtly different run wearing the old
+/// one's epoch counter.
 ///
 /// Parameters are keyed by name to ensure robustness against layout changes
 /// (e.g. adding or reordering evaluation terms).

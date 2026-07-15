@@ -328,6 +328,8 @@ macro_rules! define_layout {
                     pub [<$name _offset>]: usize,
                     pub [<$name _len>]: usize,
                 )*
+                /// One past the last slot: the full tunable-region length.
+                pub total: usize,
             }
 
             pub const LAYOUT: Layout = {
@@ -339,8 +341,7 @@ macro_rules! define_layout {
                     acc += [<$name _len>];
                 )*
 
-                let _total = acc;
-                Layout { $( [<$name _offset>], [<$name _len>], )* }
+                Layout { $( [<$name _offset>], [<$name _len>], )* total: acc }
             };
         }
     };

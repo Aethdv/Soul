@@ -9,16 +9,64 @@ use soul::{color, core::psqt, engine::eval_params::Tunable};
 
 use crate::evaltune::storage::Snapshot;
 
+/// The `define_weight_params!` paste block: `(name, offset, count, comment)`
+/// per band, in layout order. A hand-maintained mirror of `LAYOUT`, like
+/// `gradient.rs` and `register_terms!`.
+#[rustfmt::skip]
+const WEIGHT_BANDS: &[(&str, usize, usize, &str)] = {
+    let l = psqt::LAYOUT;
+    &[
+        ("PHASE_WEIGHTS",             l.weight_offset,             6, " // [P, N, B, R, Q, K]"),
+        ("ATTACKER_WEIGHTS",          l.attacker_offset,           6, " // [0, 1, 2, 3, 4, 5] attackers × weak"),
+        ("KING_SAFETY_WEIGHTS",       l.king_safety_offset,        3, " // [Pawn Shield, Ortho Exp, Diag Exp]"),
+        ("XRAY_WEIGHTS",              l.xray_offset,               1, " // [Ortho King]"),
+        ("BISHOP_PAIR_WEIGHTS",       l.bishop_pair_offset,        2, " // [MG, EG]"),
+        ("ROOK_OPEN_WEIGHTS",         l.rook_open_offset,          2, " // [MG, EG]"),
+        ("PASSED_PAWN_MG",            l.passed_pawn_mg_offset,     6, " // by relative rank 1-6"),
+        ("PASSED_PAWN_EG",            l.passed_pawn_eg_offset,     6, " // by relative rank 1-6"),
+        ("ENEMY_KING_DIST_MG",        l.enemy_king_dist_mg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
+        ("ENEMY_KING_DIST_EG",        l.enemy_king_dist_eg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
+        ("DOUBLED_PAWN_WEIGHTS",      l.doubled_pawn_offset,       2, " // [MG, EG]"),
+        ("ISOLATED_PAWN_WEIGHTS",     l.isolated_pawn_offset,      2, " // [MG, EG]"),
+        ("PHALANX_MG",                l.phalanx_mg_offset,         6, " // by relative rank 2-7"),
+        ("PHALANX_EG",                l.phalanx_eg_offset,         6, " // by relative rank 2-7"),
+        ("DEFENDED_PAWN_MG",          l.defended_pawn_mg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
+        ("DEFENDED_PAWN_EG",          l.defended_pawn_eg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
+        ("BACKWARD_PAWN_WEIGHTS",     l.backward_pawn_offset,      2, " // [MG, EG]"),
+        ("TEMPO_WEIGHTS",             l.tempo_offset,              2, " // [MG, EG], side-to-move initiative"),
+        ("MINOR_BEHIND_PAWN_WEIGHTS", l.minor_behind_pawn_offset,  2, " // [MG, EG]"),
+    ]
+};
+
+// The bands must tile weight_offset..total exactly, or a new LAYOUT field
+// would silently vanish from the paste block until someone diffed it.
+const _: () = {
+    let mut expected = psqt::LAYOUT.weight_offset;
+    let mut i = 0;
+
+    while i < WEIGHT_BANDS.len() {
+        assert!(WEIGHT_BANDS[i].1 == expected, "gap or overlap in WEIGHT_BANDS");
+        expected = WEIGHT_BANDS[i].1 + WEIGHT_BANDS[i].2;
+
+        i += 1;
+    }
+
+    assert!(expected == psqt::LAYOUT.total, "WEIGHT_BANDS stops short of LAYOUT's end");
+};
+
 pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64], final_epoch: usize) {
     let count = snapshots.len();
+
     if count == 0 {
         return;
     }
 
     let best_snap = snapshots.first().unwrap();
     let best_epoch = best_snap.epoch;
+
     println!();
     println!("Best Snapshot (Epoch {best_epoch}):");
+
     let mut best_values = vec![0.0; values.len()];
 
     for t in all_params {
@@ -43,11 +91,14 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
 
     if let Ok(log_file) = fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
         let mut w = BufWriter::new(log_file);
+
         writeln!(w, "\n{0} Final EMA Parameters (Epoch {final_epoch}) {0}", "──").ok();
         write_params(&mut w, all_params, values, None);
+
         writeln!(w, "\n{0} Best Snapshot Parameters (Epoch {best_epoch}) {0}", "──").ok();
         write_params(&mut w, all_params, &best_values, None);
     }
+
     println!("{}Best L_val: {best:.6} (Epoch {best_epoch})\x1b[0m", color::ansi_fg((218, 165, 32)));
 }
 
@@ -79,10 +130,12 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             .split('[')
             .next()
             .unwrap();
+
         writeln!(w, "    {name} = [").ok();
 
         for row in 0..8 {
             write!(w, "        ").ok();
+
             for col in 0..4 {
                 let sq_idx = row * 4 + col;
                 let mg_idx = psqt_offset + sq_idx;
@@ -101,8 +154,10 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
                 let cell = if col < 3 { format!("{s: <16}") } else { s };
                 write!(w, "{}", highlight(&cell, changed, initial)).ok();
             }
+
             writeln!(w).ok();
         }
+
         writeln!(w, "    ],").ok();
 
         if p_idx < 5 {
@@ -135,6 +190,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             let changed = initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
             writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
         }
+
         writeln!(w, "    ],").ok();
     }
 
@@ -164,32 +220,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     if params.len() > psqt::LAYOUT.weight_offset {
         writeln!(w, "\ndefine_weight_params! {{").ok();
 
-        let l = psqt::LAYOUT;
-
-        #[rustfmt::skip]
-        let bands: &[(&str, usize, usize, &str)] = &[
-            ("PHASE_WEIGHTS",             l.weight_offset,             6, " // [P, N, B, R, Q, K]"),
-            ("ATTACKER_WEIGHTS",          l.attacker_offset,           6, " // [0, 1, 2, 3, 4, 5] attackers × weak"),
-            ("KING_SAFETY_WEIGHTS",       l.king_safety_offset,        3, " // [Pawn Shield, Ortho Exp, Diag Exp]"),
-            ("XRAY_WEIGHTS",              l.xray_offset,               1, " // [Ortho King]"),
-            ("BISHOP_PAIR_WEIGHTS",       l.bishop_pair_offset,        2, " // [MG, EG]"),
-            ("ROOK_OPEN_WEIGHTS",         l.rook_open_offset,          2, " // [MG, EG]"),
-            ("PASSED_PAWN_MG",            l.passed_pawn_mg_offset,     6, " // by relative rank 1-6"),
-            ("PASSED_PAWN_EG",            l.passed_pawn_eg_offset,     6, " // by relative rank 1-6"),
-            ("ENEMY_KING_DIST_MG",        l.enemy_king_dist_mg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
-            ("ENEMY_KING_DIST_EG",        l.enemy_king_dist_eg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
-            ("DOUBLED_PAWN_WEIGHTS",      l.doubled_pawn_offset,       2, " // [MG, EG]"),
-            ("ISOLATED_PAWN_WEIGHTS",     l.isolated_pawn_offset,      2, " // [MG, EG]"),
-            ("PHALANX_MG",                l.phalanx_mg_offset,         6, " // by relative rank 2-7"),
-            ("PHALANX_EG",                l.phalanx_eg_offset,         6, " // by relative rank 2-7"),
-            ("DEFENDED_PAWN_MG",          l.defended_pawn_mg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
-            ("DEFENDED_PAWN_EG",          l.defended_pawn_eg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
-            ("BACKWARD_PAWN_WEIGHTS",     l.backward_pawn_offset,      2, " // [MG, EG]"),
-            ("TEMPO_WEIGHTS",             l.tempo_offset,              2, " // [MG, EG], side-to-move initiative"),
-            ("MINOR_BEHIND_PAWN_WEIGHTS", l.minor_behind_pawn_offset,  2, " // [MG, EG]"),
-        ];
-
-        for &(name, offset, count, comment) in bands {
+        for &(name, offset, count, comment) in WEIGHT_BANDS {
             if params.len() > offset {
                 write!(w, "    {name:<26}= [").ok();
                 write_weight_array(w, offset, count, values, params, initial);

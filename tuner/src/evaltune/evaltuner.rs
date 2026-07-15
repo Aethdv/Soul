@@ -216,7 +216,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     });
 
     // Shared reference for the closure captures below.
-    // `train`/`val` and `records` are parallel arrays indexed by the same subscript.
+    // train/val and records are parallel arrays indexed by the same subscript.
     let records_ref = &records;
 
     // Phase-stratified balancing: weight each sample by the inverse frequency of
@@ -322,8 +322,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
 /// Sampled FNV fingerprint of the dataset: entry count plus every strided
 /// entry's packed fields, hashed before the shuffle so it identifies the
 /// loaded contents, not a permutation. A checkpoint's seed replays the same
-/// train/val split only over the same entries; this is what detects "same
-/// seed, different data".
+/// train/val split only over the same entries.
 fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
     let mut fnv = Fnv1a::new();
     fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
@@ -575,10 +574,9 @@ fn train_loop<G, V>(
     let beta2_mask = build_beta2_mask(&all_params, config.beta2);
     let lr_mask = build_lr_mask(&all_params, config);
 
-    // Zero init - the EMA decay (0.99 per batch) extinguishes any seed value
-    // before epoch 500 when auto-freeze activates, so the auto-freeze sees
-    // only real gradient history. A non-zero seed only delays detection of
-    // genuinely dead parameters.
+    // Zero init: the 0.99-per-batch EMA decay extinguishes any seed value long
+    // before freeze_start_epoch, so auto-freeze sees only real gradient history.
+    // A non-zero seed only delays detection of genuinely dead parameters.
     let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
     let mut stagnant_epochs = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
 
