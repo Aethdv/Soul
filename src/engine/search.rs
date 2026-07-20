@@ -461,6 +461,7 @@ impl<'cfg> Searcher<'cfg> {
             if !self.cfg.limits.silent {
                 println!("bestmove 0000");
             }
+
             return;
         }
 
@@ -473,6 +474,7 @@ impl<'cfg> Searcher<'cfg> {
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
+
                 return;
             }
         }
@@ -739,6 +741,7 @@ impl<'cfg> Searcher<'cfg> {
         if keep > 0 {
             trail.extend_from_slice(&history[history.len() - keep..]);
         }
+
         trail.push(pos.hash);
     }
 
