@@ -20,7 +20,7 @@ weight_decay = 0.00001
 batch_size = 65536
 
 epochs = 4000
-loss = "cross_entropy" # mse
+loss = "mse" # cross_entropy
 
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
