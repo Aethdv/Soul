@@ -192,7 +192,7 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
     let from = mv.from();
     let to = mv.to();
 
-    // ── King moves ──
+    // King moves
     if from == ksq {
         if mv.is_castling() {
             // Castling out of check is flatly illegal:
@@ -206,26 +206,24 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
         return !board.is_attacked::<true>(to, opp, from.bitboard());
     }
 
-    // ── Double check: only the king can escape ──
+    // Double check: only the king can escape
     if checkers.popcount() > 1 {
         return false;
     }
 
-    // ── En passant ──
     // The one move where the captured piece isn't on the destination square,
     // requiring a special x-ray check.
     if mv.is_en_passant() {
         return is_ep_legal(board, mv, ksq, pinned, checkers, opp);
     }
 
-    // ── Pinned piece: may only slide along its pin ray ──
     // line_bb(from, to) returns the entire line through both squares.
     // If the king isn't on that line, the piece is leaving the ray.
     if pinned.check_bit(from) && !line_bb(from, to).check_bit(ksq) {
         return false;
     }
 
-    // ── Single check: capture the checker or interpose ──
+    // Single check: capture the checker or interpose
     if checkers.is_empty() {
         return true;
     }
@@ -266,7 +264,7 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
         return false;
     }
 
-    // ── Horizontal discovered checks ──
+    // ── Horizontal discovered checks
     // En Passant is the only move where two pieces disappear from the same rank
     // simultaneously. If both were masking a horizontal sliding attack against
     // the king, the move is illegal.
@@ -282,7 +280,7 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
         }
     }
 
-    // ── Diagonal discovered check via captured-pawn removal ──
+    // ── Diagonal discovered check via captured-pawn removal
     // Unlike the horizontal case, the diagonal case involves only the captured pawn
     // (and the capturing pawn moving). We simulate post-EP occupancy and probe for
     // diagonal sliding attacks on the king.
@@ -342,7 +340,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 
     let (promo_rank, third_rank) = if US == Color::White { (RANK_8, RANK_3) } else { (RANK_1, RANK_6) };
 
-    // ── Single pushes (non-promoting) ──
+    // ── Single pushes (non-promoting)
     let all_pushes = pawns.shift(up) & empty;
 
     if !TACTICAL {
@@ -353,7 +351,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
             acc.push(Move::new(to.offset_unchecked(-up_d), to, Move::QUIET));
         }
 
-        // ── Double pushes ──
+        // ── Double pushes
         // Must pass through the 3rd rank on the way, since it can't leap over pieces.
         let mut doubles = (all_pushes & third_rank).shift(up) & empty;
 
@@ -363,7 +361,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
         }
     }
 
-    // ── Diagonal captures ──
+    // ── Diagonal captures
     // File masks prevent board wrapping.
     // Left and right directions are strictly relative to the side-to-move's
     // visual perspective (e.g. for Black, left shifts toward the H-file).
@@ -398,7 +396,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
         acc.push(Move::new(to.offset_unchecked(-right_d), to, Move::CAPTURE));
     }
 
-    // ── Quiet promotions ──
+    // ── Quiet promotions
     let mut promo_pushes = all_pushes & promo_rank;
 
     while promo_pushes.is_not_empty() {
@@ -406,7 +404,7 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
         emit_promotions(acc, to.offset_unchecked(-up_d), to, false);
     }
 
-    // ── En passant ──
+    // ── En passant
     if let Some(ep_sq) = board.en_passant {
         let mut attackers = board.get_attackers_on(ep_sq, US) & pawns;
 
@@ -477,7 +475,7 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
     }
 }
 
-/// ── Castling (Chess960-compatible) ──
+/// ── Castling (Chess960-compatible)
 ///
 /// Encoded as king→rook (not king→destination) so it generalizes to
 /// Fischer Random positions where the rook can start on either side.

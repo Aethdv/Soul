@@ -168,6 +168,7 @@ impl Bitboard {
         b |= b >> 8;
         b |= b >> 16;
         b |= b >> 32;
+
         Bitboard(b)
     }
 
@@ -179,6 +180,7 @@ impl Bitboard {
         b |= b << 8;
         b |= b << 16;
         b |= b << 32;
+
         Bitboard(b)
     }
 
@@ -190,6 +192,7 @@ impl Bitboard {
         b |= b >> 8;
         b |= b >> 16;
         b |= b >> 32;
+
         Bitboard(b)
     }
 
@@ -298,14 +301,14 @@ impl Square {
         self.0 as usize
     }
 
-    /// Mirrors vertically (rank → 7 − rank). E.g. e1 ↔ e8.
+    /// Mirrors vertically (rank → 7 − rank). E.g. e1 → e8.
     #[inline(always)]
     #[must_use]
     pub const fn flip_rank(self) -> Self {
         Self(self.0 ^ 56)
     }
 
-    /// Mirrors horizontally (file → 7 − file). E.g. a4 ↔ h4.
+    /// Mirrors horizontally (file → 7 − file). E.g. a4 → h4.
     #[inline(always)]
     #[must_use]
     pub const fn flip_file(self) -> Self {
@@ -450,6 +453,7 @@ impl std::str::FromStr for Square {
         if file >= 8 || rank >= 8 {
             return Err(ParseSquareError);
         }
+
         Ok(Self::from_coords(file, rank))
     }
 }
@@ -617,6 +621,7 @@ impl fmt::Display for Bitboard {
                 writeln!(f)?;
             }
         }
+
         Ok(())
     }
 }

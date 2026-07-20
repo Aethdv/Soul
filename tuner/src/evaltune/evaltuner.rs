@@ -494,7 +494,7 @@ fn loss_sparkline(history: &[f64]) -> String {
     out
 }
 
-/// ── Shared training loop ──
+// ── Shared training loop
 /// Gradient computation and validation eval are injected as closures,
 /// everything else (schedulers, optimizer, clipping, logging, checkpointing) is common.
 fn train_loop<G, V>(
@@ -529,7 +529,7 @@ fn train_loop<G, V>(
     let lr_scheduler = config.lr_schedule.clone().into_scheduler();
     let wdl_scheduler = config.wdl_schedule.clone().into_scheduler();
 
-    // ── K line search ──
+    // ── K line search
     // the sigmoid scaling constant that best maps
     // raw centipawn scores to win/draw/loss outcomes.
     // A resume restores both K's instead: re-deriving k_ref would re-anchor
@@ -629,7 +629,7 @@ fn train_loop<G, V>(
     let mob_start = psqt::LAYOUT.mobility_open_offset;
     let mob_end = psqt::LAYOUT.weight_offset;
 
-    // ── Progressive unfreeze: material-only warmup ──
+    // ── Progressive unfreeze: material-only warmup
     // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
     // so PSQT + material settle before the refinements join.
     // A resume restores the saved mask instead: it already encodes this gate,
@@ -706,7 +706,7 @@ fn train_loop<G, V>(
 
             grad_stats.update(avg_norm);
 
-            // ── Dynamic Gradient Clipping ──
+            // ── Dynamic Gradient Clipping
             // Clips outliers based on the distribution of recent batch norms.
             let clip_thresh = grad_stats.clip_threshold(config.grad_clip);
             let threshold = clip_thresh * n;
@@ -724,7 +724,7 @@ fn train_loop<G, V>(
                 *value = value.clamp(-MOB_CLAMP, MOB_CLAMP);
             }
 
-            // ── Per-parameter Convergence Tracking ──
+            // ── Per-parameter Convergence Tracking
             // Freeze parameters that have statistically converged to reduce noise.
             for i in 0..values.len() {
                 if !fixed_mask[i] {
@@ -732,7 +732,7 @@ fn train_loop<G, V>(
                 }
             }
 
-            // ── Tail-only EMA ──
+            // ── Tail-only EMA
             // Skip the noisy high-LR phase; only average once LR has
             // decayed below 30 % of its peak. Before that, snapshot
             // the live weights directly.
@@ -780,7 +780,7 @@ fn train_loop<G, V>(
         let ref_loss = val_eval(&ema_values, k_ref, 0.0);
         let train_loss = train_loss / train_count.max(1) as f64;
 
-        // ── Validation Plateau Detection ──
+        // ── Validation Plateau Detection
         // Reduce LR if validation loss stalls for Constant schedule.
         if val_loss < best_val_loss - 1e-6 {
             best_val_loss = val_loss;

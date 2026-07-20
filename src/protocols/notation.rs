@@ -34,7 +34,7 @@ pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
                 return true;
             }
 
-            // ── Castling Normalization ──
+            // ── Castling Normalization
             // Internal representation is King-onto-Rook (FRC), but incoming strings
             // may use standard King-to-destination notation (e.g., e1g1).
             // Delegate to to_uci to normalize both formats for reliable comparison.

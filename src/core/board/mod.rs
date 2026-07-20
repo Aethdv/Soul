@@ -422,7 +422,7 @@ impl Position {
         empty_mask: Bitboard,
         opp: Color,
     ) -> bool {
-        // ── Fast path: Standard castling with canonical piece placement ──
+        // ── Fast path: Standard castling with canonical piece placement
         if ksq.0 == data[0] && rsq.0 == data[1] && (occ & empty_mask).is_empty() {
             for &sq in check_sqs {
                 if self.is_attacked::<false>(Square(sq), opp, Bitboard(0)) {
@@ -432,7 +432,7 @@ impl Position {
             return true;
         }
 
-        // ── Slow path: Chess960 arbitrary placement ──
+        // ── Slow path: Chess960 arbitrary placement
         // We use a "1D Bounding Box" simplification. Because all valid castling
         // squares reside exclusively on the 1st or 8th rank, checking the emptiness
         // of all squares between the minimum and maximum of the (king, rook, and

@@ -40,6 +40,7 @@ impl ConstRng {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
+
         self.state = x;
         x
     }

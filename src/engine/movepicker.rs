@@ -41,7 +41,7 @@ use crate::{
 // Ensure move bit-packing assumes correctly.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
-// ── Staged Move Picker ──
+// ── Staged Move Picker
 //
 // Pipeline:
 //   [ Hash Move ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
@@ -225,7 +225,7 @@ impl MovePicker {
                         continue;
                     }
 
-                    // ── Good / Bad Capture Split ──
+                    // ── Good / Bad Capture Split
                     // A SEE-losing capture rarely deserves to jump ahead of every quiet; a
                     // killer or a high-history move usually refutes the node first. Defer it:
                     // park the packed entry at the array top, which the quiets never fill, and

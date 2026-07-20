@@ -99,7 +99,7 @@ impl UciState {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx, pool) => {
-                        // ── Lazy SMP ──
+                        // ── Lazy SMP
                         // Helpers are persistent, parked on a channel, not spawned per
                         // search. The pool sends each helper a cloned config and root state,
                         // then they run iterative_deepening alongside main. The TT is the

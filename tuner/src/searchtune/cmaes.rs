@@ -115,7 +115,7 @@ pub struct CmaEs {
     mu_eff_neg: f64,
     active_softness: f64,
 
-    // ── Adaptation State ──
+    // ── Adaptation State
     eta: f64,             // Global learning rate factor
     lra_e: Vec<f64>,      // Moving average of updates (Signal)
     lra_v: f64,           // Moving average of update magnitudes (Noise)
@@ -286,7 +286,7 @@ impl CmaEs {
         }
     }
 
-    /// ── Generates λ candidates using mirrored sampling ──
+    /// Generates λ candidates using mirrored sampling
     ///
     /// Instead of independent random samples, we evaluate opposite pairs (+z and -z).
     /// This structural anti-correlation cancels out odd-order bias in the mean update,
@@ -304,6 +304,7 @@ impl CmaEs {
                 .zip(&z)
                 .map(|((&m, &var), &zi)| (self.sigma * var.sqrt()).mul_add(zi, m))
                 .collect();
+
             population.push(x);
 
             let x_neg: Vec<f64> = self
@@ -328,7 +329,7 @@ impl CmaEs {
         let mut indices: Vec<usize> = (0..self.lambda).collect();
         indices.sort_unstable_by(|&a, &b| penalized_elo[b].total_cmp(&penalized_elo[a]));
 
-        // ── SNR Gating (Reliability Coefficient) ──
+        // ── SNR Gating (Reliability Coefficient)
         // Raw match variance combines true engine strength (signal) and match luck (noise).
         // Gating on raw variance alone punishes candidates for unlucky pairings, so we
         // decompose: Var(Observed) = Var(True) + Var(Noise). The noise term is the
@@ -394,7 +395,7 @@ impl CmaEs {
         // parameters are normalized to [0, 1], meaning 10.0 covers several search space widths.
         self.sigma = self.sigma.clamp(1e-6, 10.0);
 
-        // ── h_sigma: Rank-One Update Guard ──
+        // ── h_sigma: Rank-One Update Guard
         // Compare ||p_sigma|| against its expected length under a random walk
         // (Hansen, 2016), with the startup correction for a path still filling up.
         // An unusually LONG path means sigma is far too small for the landscape:
@@ -474,11 +475,12 @@ impl CmaEs {
             self.variances[i] = self.variances[i].min(100.0);
         }
 
-        // ── Adaptation Metrics ──
+        // ── Adaptation Metrics
         // 1. Mean Shift Norm
         // Measure the magnitude of the update in the current coordinate system.
         // g = (m_new - m_old) / sigma, normalized by diagonal variances.
         let mut g_sq_norm = 0.0;
+
         for (i, &v) in self.variances.iter().enumerate() {
             let gi = (self.mean[i] - old_mean[i]) / self.sigma;
             g_sq_norm += gi * gi / v;
@@ -488,6 +490,7 @@ impl CmaEs {
         // 2. Signal/Noise Estimators
         // Track the raw jitter in parameter updates to estimate the reliable signal.
         let mut delta_norm_sq = 0.0;
+
         for (e, (&m, &om)) in self.lra_e.iter_mut().zip(self.mean.iter().zip(&old_mean)) {
             let delta_i = m - om;
             *e = (1.0_f64 - LRA_BETA).mul_add(*e, LRA_BETA * delta_i);
@@ -592,9 +595,11 @@ impl CmaEs {
         if variances.len() == self.n {
             self.variances = variances;
         }
+
         if p_sigma.len() == self.n {
             self.p_sigma = p_sigma;
         }
+
         if p_c.len() == self.n {
             self.p_c = p_c;
         }
@@ -651,6 +656,7 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
     for i in 0..k {
         // 1. Sample standard normal
         let mut z = Vec::with_capacity(n);
+
         for _ in (0..n).step_by(2) {
             let u1: f64 = rng.f64().max(1e-9);
             let u2: f64 = rng.f64();
@@ -658,6 +664,7 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
             let theta = 2.0 * std::f64::consts::PI * u2;
             let (sin, cos) = theta.sin_cos();
             z.push(radius * cos);
+
             if z.len() < n {
                 z.push(radius * sin);
             }
@@ -671,6 +678,7 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
         if i < n {
             for u in &matrix {
                 let dot: f64 = z.iter().zip(u).map(|(a, b)| a * b).sum();
+
                 for (zi, &ui) in z.iter_mut().zip(u) {
                     *zi -= dot * ui;
                 }
@@ -678,6 +686,7 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
 
             // Normalize the direction vector
             let norm: f64 = z.iter().map(|x| x * x).sum::<f64>().sqrt();
+
             if norm > 1e-10 {
                 for x in &mut z {
                     *x /= norm;
@@ -688,7 +697,9 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
                 for x in &mut z {
                     *x = rand_norm(rng);
                 }
+
                 let norm: f64 = z.iter().map(|x| x * x).sum::<f64>().sqrt();
+
                 for x in &mut z {
                     *x /= norm;
                 }
@@ -716,5 +727,6 @@ fn sample_orthogonal_z_matrix(n: usize, k: usize, rng: &mut fastrand::Rng) -> Ve
             *x *= norm;
         }
     }
+
     matrix
 }

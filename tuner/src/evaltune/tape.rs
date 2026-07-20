@@ -203,7 +203,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 /// Returns squared error for loss tracking.
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    // ── PSQT + Material accumulator ──
+    // ── PSQT + Material accumulator
     // (for lane values + PSQT scatter)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
@@ -218,7 +218,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let phase = phase_raw.clamp(0.0, 24.0).trunc();
     let score = eval_f64(board, values);
 
-    // ── Sigmoid + loss derivative ──
+    // ── Sigmoid + loss derivative
     // `d` folds the STM sign into the outer derivative once,
     // so every downstream scatter can stay STM-agnostic.
     let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
@@ -241,7 +241,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // the rest via `scatter_all_terms`.
     let upstreams = LinearCombiner::backward(phase, d, param_grads);
 
-    // ── PSQT + material (out-of-band, not a term) ──
+    // ── PSQT + material (out-of-band, not a term)
     // Stays in the tape because it lives in the accumulator, not the
     // per-term parameter block. One board sweep writes both PSQT
     // and material gradients for every active piece.

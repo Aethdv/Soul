@@ -190,6 +190,7 @@ const fn init_passed_pawn_masks() -> [[Bitboard; 64]; 2] {
         table[1][sq] = Bitboard(files & below);
         sq += 1;
     }
+
     table
 }
 
@@ -220,8 +221,10 @@ const fn init_knight_attacks() -> [Bitboard; 64] {
           | ((bb >> 15) & !FILE_A.0)  //  ↓↓→
           | ((bb >> 17) & !FILE_H.0), //  ↓↓←
         );
+
         sq += 1;
     }
+
     table
 }
 
@@ -250,8 +253,10 @@ const fn init_king_attacks() -> [Bitboard; 64] {
           | ((bb >> 7) & !FILE_A.0)  // SE
           | ((bb >> 9) & !FILE_H.0), // SW
         );
+
         sq += 1;
     }
+
     table
 }
 
@@ -273,6 +278,7 @@ const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
         table[sq as usize] = (rank_mask | file_mask) & !sq_bit;
         sq += 1;
     }
+
     table
 }
 
@@ -307,5 +313,6 @@ const fn init_pseudo_bishop_attacks() -> [Bitboard; 64] {
         table[sq as usize] = Bitboard(attacks);
         sq += 1;
     }
+
     table
 }

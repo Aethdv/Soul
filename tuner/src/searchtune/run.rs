@@ -75,7 +75,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
     let match_cache = MatchCache::new(config.tc.as_deref().unwrap_or("4+0.04"));
 
-    // ── Adaptive Budget State ──
+    // ── Adaptive Budget State
     // Tracks the optimal number of match pairs to play based on signal quality.
     let mut adaptive_pairs = config.pairs as f64 * 0.6; // Start at 60% budget
 
@@ -145,7 +145,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     let mut rng = fastrand::Rng::new();
     let total_start = Instant::now();
 
-    // ── Bounds Reporter ──
+    // Bounds Reporter
     let bounds_path = config.bounds_report_path.clone();
     let bounds_path_ref = Path::new(&bounds_path);
 
@@ -206,7 +206,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         let lambda = cmaes.lambda();
         let epoch_start_best_elo = best_elo;
 
-        // ── Adaptive Budgeting ──
+        // ── Adaptive Budgeting
         // The evaluation budget (matches per candidate) is scaled by the Signal-to-Noise Ratio.
         // If the mean shift is clear (high signal), we can get away with fewer matches.
         // As we converge and the signal shrinks, we automatically ramp up games to reduce noise.
@@ -228,7 +228,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             (adaptive_pairs as usize).clamp(min_p, max_p)
         };
 
-        // ── Sample Candidates ──
+        // Sample Candidates
         let population = cmaes.sample_population(&mut rng);
 
         let opponent_norm = clamp_normalized(&best_params); // Anchor to the stable Elite
@@ -243,13 +243,13 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
 
         let opponent_params = SearchParams::from_normalized(&opponent_norm);
 
-        // ── Adaptive Surrogate Bandwidth ──
+        // ── Adaptive Surrogate Bandwidth
         // Silverman's rule naturally "zooms in" the kernel as the optimizer converges.
         // We blend it with the config value to ensure we don't start too narrow.
         let silverman_h = elo_cache.silverman_bandwidth();
         let adaptive_radius = if elo_cache.len() > 10 { silverman_h } else { config.smoothing_radius };
 
-        // ── Surrogate-Assisted Rank Imputation ──
+        // ── Surrogate-Assisted Rank Imputation
         // We use the EloCache to predict results for candidates in well-explored regions.
         // This saves massive amounts of compute without skewing the optimizer's distribution.
         let mut fitness_results = vec![(0.0, 0.0, 0, 0); lambda];
@@ -388,12 +388,12 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         // so squaring the mean would systematically under-state noise variance.
         let avg_var_noise: f64 = fitness_results.iter().map(|&(_, err, ..)| err * err).sum::<f64>() / lambda as f64;
 
-        // ── Penalization & Bayesian Consensus ──
+        // ── Penalization & Bayesian Consensus
         let penalized_elo: Vec<f64> = population
             .iter()
             .zip(&fitness_results)
             .map(|(candidate, (raw_elo, std_err, c_nodes, b_nodes))| {
-                // ── Efficiency Penalty ──
+                // ── Efficiency Penalty
                 // We penalize slow nodes, but we DO NOT reward fast nodes to prevent the
                 // optimizer from converging on instant-fail parameters.
                 let tc = config.tc.as_deref().unwrap_or("4+0.04");
@@ -420,7 +420,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                     })
                     .sum();
 
-                // ── Continuous Centering Penalty ──
+                // ── Continuous Centering Penalty
                 // Snap to integers to avoid plateau blindness.
                 // We use the raw unsnapped value to provide a micro-gradient that pulls
                 // the continuous vector toward the exact center of the discrete bucket.
@@ -430,6 +430,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                     let raw = v.mul_add(p.max - p.min, p.min);
                     let snapped = p.denormalize(v);
                     let err_norm = (raw - snapped) / (p.max - p.min).max(1.0);
+
                     centering_penalty += err_norm.powi(2);
                 }
 
@@ -444,7 +445,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
         let raw_elos: Vec<f64> = fitness_results.iter().map(|&(r, ..)| r).collect();
         cmaes.update(&population, &penalized_elo, &raw_elos, avg_var_noise);
 
-        // ── Bounds observation ──
+        // ── Bounds observation
         // Replays CMA-ES's ranking locally (top-μ by penalized fitness) to feed elite stats.
         {
             let mu = lambda / 2;
@@ -454,7 +455,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             bounds.observe(&population, &elite_indices, &params);
         }
 
-        // ── Learning Rate Adaptation (LRA) ──
+        // ── Learning Rate Adaptation (LRA)
         // Scale the global learning rate based on the estimated Signal-to-Noise Ratio.
         let snr = cmaes.update_snr();
         let target_snr = 0.5; // Baseline alpha for default lambda
@@ -506,7 +507,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
                     config.h2h_tc.as_deref().unwrap_or("1.0+0.01"),
                 );
 
-                // ── Dampened Grounding ──
+                // ── Dampened Grounding
                 // Blend the H2H gain with the absolute grounding match.
                 // This prevents a single noisy match from causing a massive absolute jump.
                 best_elo = ((best_elo + h2h_elo) + grounded_elo) / 2.0;
@@ -593,12 +594,14 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             restart_count += 1;
             let old_lambda = cmaes.lambda();
             let new_lambda = old_lambda * 2;
+
             println!(
                 "\x1b[93m>> IPOP Restart #{restart_count}: σ collapsed ({:.2e} < {:.0e}), λ: {old_lambda} → \
                  {new_lambda}\x1b[0m",
                 cmaes.sigma(),
                 config.min_sigma
             );
+
             cmaes.restart_from(best_params.clone(), new_lambda, config.sigma_restart);
             // After restart: old Elo estimates are relative to a different optimizer region.
             // Clear the cache to let the surrogate rebuild cleanly from the new mean.
@@ -631,7 +634,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             verified_elite_state = cmaes.clone();
         }
 
-        // ── Periodic Elite Cross-Examination ──
+        // ── Periodic Elite Cross-Examination
         // Re-verify elite against baseline to catch flukes.
         if epoch % config.reeval_interval == 0 && epoch > 1 {
             print!("\x1b[94m        └─ Re-evaluating elite...\x1b[0m");
@@ -665,7 +668,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             }
         }
 
-        // ── Save Checkpoint ──
+        // Save Checkpoint
         let mut best_values_map = BTreeMap::new();
         let current_best_clamped = clamp_normalized(&best_params);
         for (i, param) in params.iter().enumerate() {
@@ -690,14 +693,17 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
             eprintln!("\n\x1b[31m[!] Failed to save checkpoint: {e}\x1b[0m");
         }
 
-        // ── Bounds report: periodic + on SIGINT ──
+        // Bounds report: periodic + on SIGINT
         let stop_requested = stop_flag.load(Ordering::SeqCst);
+
         if stop_requested || (config.bounds_report_interval > 0 && epoch % config.bounds_report_interval == 0) {
             let label = if stop_requested { "SIGINT" } else { "periodic" };
+
             if let Err(e) = bounds.write_report(bounds_path_ref, &params, &cmaes, epoch, label) {
                 eprintln!("\x1b[31m[!] Failed to write bounds report: {e}\x1b[0m");
             }
         }
+
         if stop_requested {
             eprintln!("\x1b[93m>> Bounds report flushed to {bounds_path}; exiting.\x1b[0m");
             break;
@@ -722,6 +728,7 @@ pub fn run(openings_path: &str, config: &SearchTuneConfig, resume: bool) {
     );
 
     let final_radius = if elo_cache.len() > 10 { elo_cache.silverman_bandwidth() } else { config.smoothing_radius };
+
     if let Some((denoised, count)) = elo_cache.denoised_elo(&best_params, final_radius) {
         println!("\x1b[90m   Denoised estimate: {denoised:+.1} Elo (from {count} nearby samples)\x1b[0m");
     }

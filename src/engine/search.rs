@@ -231,7 +231,7 @@ pub struct RootMove {
     pub nodes: u64,
 }
 
-// ── Principal Variation Line ──
+// ── Principal Variation Line
 /// The PV is our predicted best play for both sides.
 /// When a new best move is found at any ply, we compose the line:
 /// this move first, then the child's continuation, bubbling the full
@@ -508,14 +508,14 @@ impl<'cfg> Searcher<'cfg> {
 
         let mut last_iter_elapsed = 0;
 
-        // ── Singular Bailout ──
+        // ── Singular Bailout
         // Only one legal move. Slash the budget to 5% so we exit the depth
         // loop almost instantly, banking the saved time.
         if self.root_moves.len() == 1 {
             self.tm.set_bm_stab_factor(sp.tm_single_root as f64 / 100.0);
         }
 
-        // ── Lazy SMP ──
+        // ── Lazy SMP
         // Every thread searches every depth, sharing only the TT and
         // the stop flag. Diversity is emergent: thread A writes an entry at
         // the edge of what it can reach, thread B probes it mid-search and
@@ -560,7 +560,7 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            // ── Aspiration Windows (~42 Elo) ──
+            // ── Aspiration Windows (~42 Elo)
             // A score rarely lurches between iterations, so we bracket the last
             // one in a narrow window instead of searching (-INF, INF). Tighter
             // bounds prune far more, and most iterations land inside for free.
@@ -615,7 +615,7 @@ impl<'cfg> Searcher<'cfg> {
 
             let new_score = self.root_moves[0].score;
 
-            // ── Best-Move Stability TM (~20 Elo) ──
+            // ── Best-Move Stability TM (~20 Elo)
             // Scale the soft budget by the best move's share
             // of total search effort. A large share means the search keeps
             // confirming one move, so shrink the budget. A small share means
@@ -634,7 +634,7 @@ impl<'cfg> Searcher<'cfg> {
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
-            // ── Score Swing (~28 Elo) ──
+            // ── Score Swing (~28 Elo)
             // Scale the soft budget by how far the score moved since last iteration.
             // A drop means a refutation surfaced, so double the budget to buy depth
             // and resolve it. A surge means we found something strong, so halve it
@@ -910,9 +910,10 @@ impl Worker<'_> {
         (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
     }
 
-    /// Negamax with alpha-beta pruning. Since chess is zero-sum, we maximize the
-    /// score from the current side's perspective at every node, negating the score
-    /// as it returns up the tree.
+    /// Negamax with alpha-beta pruning.
+    ///
+    /// Since chess is zero-sum, we maximize the evaluation from the current side's
+    /// perspective at every node, negating the score as it returns up the tree.
     ///
     /// PVS layered on top:
     /// After the presumed best move gets a full-window search,
@@ -957,7 +958,7 @@ impl Worker<'_> {
         // was cleared by the parent's reset two plies up.
         self.stack[ply + 2].cutoff_count = 0;
 
-        // ── Mate Distance Pruning ──
+        // ── Mate Distance Pruning
         // Scores are bounded; no line from here can find mate faster than
         // MATE - ply plies, and we can't be mated before -MATE + ply.
         // Tighten the search window to those limits. If the tightened
@@ -983,8 +984,9 @@ impl Worker<'_> {
         let alpha_orig = alpha;
         let excluded = self.stack[ply].excluded;
 
-        // ── TT Probe (~128 Elo) ──
+        // ── TT Probe (~128 Elo)
         // Have we seen this position before?
+        //
         // If a previous search already explored it to sufficient depth,
         // we can reuse its result and skip the entire subtree.
         // Earlier iterations populate the table for later ones.
@@ -1017,7 +1019,7 @@ impl Worker<'_> {
                 (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
             };
 
-        // ── TT Move Ordering (~56 Elo) ──
+        // ── TT Move Ordering (~56 Elo)
         // Even when the TT score didn't produce a cutoff, the move it stored
         // is still our best guess at what's good here. Searching it first makes
         // beta cutoffs happen earlier, which lets alpha-beta prune far more of the tree.
@@ -1027,12 +1029,12 @@ impl Worker<'_> {
         let checkers = self.pos.checkers();
         let in_check = checkers.is_not_empty();
 
-        // ── Check Extension (~11 Elo) ──
+        // ── Check Extension (~11 Elo)
         // Being in check is forcing, so don't let the horizon cut us off
         // mid-tactic. Extend by one ply so the reply is always searched.
         let depth = if in_check { depth + 1 } else { depth };
 
-        // ── Static Eval ──
+        // ── Static Eval
         // Our best guess at how good this position is without searching deeper.
         // Meaningless when in check (we're forced to respond, not evaluate).
         // A TT hit already carries this position's raw eval, so reuse it and skip
@@ -1045,7 +1047,7 @@ impl Worker<'_> {
             self.evaluate()
         };
 
-        // ── Correction History ──
+        // ── Correction History
         // The evaluator has systematic biases tied to structural features
         // it can't see directly. Correction tables observe (search - eval)
         // deltas keyed by such features: pawn structure, non-pawn material,
@@ -1062,7 +1064,7 @@ impl Worker<'_> {
         // stays NONE; in-frame logic still needs "no eval here" to mean that.
         self.stack[ply].static_eval = if in_check && ply >= 2 { self.stack[ply - 2].static_eval } else { static_eval };
 
-        // ── Improving Flag ──
+        // ── Improving Flag
         // Has our position strengthened since our last turn?
         // Inheritance above makes one hop reach the last eval;
         // a reference still missing means the root edge, which counts
@@ -1073,7 +1075,7 @@ impl Worker<'_> {
                 .filter(|&e| e != tt::SCORE_NONE)
                 .is_none_or(|past| static_eval > past);
 
-        // ── TT-Adjusted Eval ──
+        // ── TT-Adjusted Eval
         // The bound must back the direction the score moved from static eval:
         // a score above eval needs a lower bound (truth is higher still), one
         // below needs an upper bound. An exact bound backs either.
@@ -1086,7 +1088,7 @@ impl Worker<'_> {
 
         let tt_adjusted_eval = if tt_backs_eval && !is_mate(tt_score) { tt_score } else { static_eval };
 
-        // ── Reverse Futility Pruning (~52 Elo) ──
+        // ── Reverse Futility Pruning (~52 Elo)
         // Position is already so good that even after subtracting a generous
         // margin, we're still above beta. The opponent wouldn't have let us
         // get here, so just return the eval and move on.
@@ -1106,7 +1108,7 @@ impl Worker<'_> {
             }
         }
 
-        // ── Razoring (~17 Elo) ──
+        // ── Razoring (~17 Elo)
         // Position is so far below alpha that a full-depth search is unlikely
         // to recover. Drop straight into qsearch to confirm.
         if !in_check
@@ -1122,7 +1124,7 @@ impl Worker<'_> {
             }
         }
 
-        // ── Null Move Pruning (~85 Elo) ──
+        // ── Null Move Pruning (~85 Elo)
         // If our position is so good that we can pass the turn (do nothing)
         // and still beat beta after a reduced search, the opponent would
         // never allow this line. Skip it. The "null move" is the pass.
@@ -1155,7 +1157,7 @@ impl Worker<'_> {
             if score >= beta {
                 let null_score = if is_win(score) { beta } else { score };
 
-                // ── Verification Search ──
+                // ── Verification Search
                 // At or below nmp_verif_min_depth, trust the cutoff outright.
                 // Cheap nodes are almost never zugzwangs. Above the threshold,
                 // re-search the same position without a null move at reduced depth.
@@ -1179,7 +1181,7 @@ impl Worker<'_> {
         // One pin scan for the whole node: legality and every SEE read it.
         let pins = Pins::new(&self.pos);
 
-        // ── ProbCut (~4 Elo) ──
+        // ── ProbCut (~4 Elo)
         // A capture that clears a raised beta (beta + margin) under a shallow search
         // would almost surely clear plain beta at full depth, so the node is a
         // near-certain cutoff. Prove it cheaply instead of searching every move:
@@ -1238,7 +1240,7 @@ impl Worker<'_> {
             }
         }
 
-        // ── Internal Iterative Reduction (~14 Elo) ──
+        // ── Internal Iterative Reduction (~14 Elo)
         // No TT move means we're searching blind: our first guesses are just
         // that, guesses. Reduce by one ply to acknowledge the uncertainty
         // and avoid investing full depth into an unguided search.
@@ -1253,7 +1255,7 @@ impl Worker<'_> {
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
 
-                // ── Root LMR (~21 Elo) ──
+                // ── Root LMR (~21 Elo)
                 // Root moves are pre-sorted by the previous iteration's scores,
                 // so late moves in the list are already our worst guesses.
                 // Scout them at reduced depth; a fail-high triggers a full re-search.
@@ -1322,7 +1324,7 @@ impl Worker<'_> {
                     appended_capture = true;
                 }
 
-                // ── Futility Pruning (~10 Elo) ──
+                // ── Futility Pruning (~10 Elo)
                 // At shallow depth, if static eval is already so far below alpha
                 // that a quiet move is unlikely to raise it, skip the move.
                 if !in_check
@@ -1335,7 +1337,7 @@ impl Worker<'_> {
                     continue;
                 }
 
-                // ── Late Move Pruning (~14 Elo) ──
+                // ── Late Move Pruning (~14 Elo)
                 // At shallow depth, quiet moves beyond a fixed count threshold
                 // are unlikely to be the best move, so skip them entirely.
                 if !in_check
@@ -1347,7 +1349,7 @@ impl Worker<'_> {
                     continue;
                 }
 
-                // ── History Pruning (~7 Elo) ──
+                // ── History Pruning (~7 Elo)
                 // A quiet with deeply negative history has been punished
                 // repeatedly by the gravity update. Trust that signal at
                 // shallow depth and skip the full search.
@@ -1381,7 +1383,7 @@ impl Worker<'_> {
                     }
                 }
 
-                // ── SEE Pruning (~20 Elo) ──
+                // ── SEE Pruning (~20 Elo)
                 // Skip moves whose destination-square exchange clearly
                 // loses material.
                 //
@@ -1407,7 +1409,7 @@ impl Worker<'_> {
                     }
                 }
 
-                // ── Late Move Reductions (~90 Elo) ──
+                // ── Late Move Reductions (~90 Elo)
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
                 let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
@@ -1438,7 +1440,7 @@ impl Worker<'_> {
 
                 let mut extension = 0i32;
 
-                // ── Singular Extensions (~7 Elo) ──
+                // ── Singular Extensions (~7 Elo)
                 // The TT move already came back strong from a deep search.
                 // The sharper question is whether it stands alone: re-search every other
                 // move in a window pinned just under its score, and if they all fall
@@ -1484,7 +1486,7 @@ impl Worker<'_> {
                     if sing_score < sing_beta {
                         extension = 1;
                     } else if sing_score >= beta {
-                        // ── Multicut (~15 Elo) ──
+                        // ── Multicut (~15 Elo)
                         // The TT bound already reads the TT move as a fail-high,
                         // and with it excluded the verification still cleared beta:
                         // a second move beats it too, so this is a cut node, not a
@@ -1521,7 +1523,7 @@ impl Worker<'_> {
                         record_cutoff(res.move_count as u32, kind);
                     }
 
-                    // ── History Gravity Heuristic (~95 Elo) ──
+                    // ── History Gravity Heuristic (~95 Elo)
                     // When a move causes a beta-cutoff, it's presumably a strong response.
                     // We reward it so it surfaces earlier in future sibling nodes,
                     // and we punish the preceding moves that failed to refute the branch.
@@ -1538,7 +1540,7 @@ impl Worker<'_> {
 
                         self.history.update(stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4, bonus);
 
-                        // ── Killer Moves (~35 Elo) ──
+                        // ── Killer Moves (~35 Elo)
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
                         // If the move isn't already the primary killer, shift the old primary to slot 1
                         // and promote the new move to slot 0. If it was slot 1, this natively swaps them.
@@ -1547,7 +1549,7 @@ impl Worker<'_> {
                             self.stack[ply].killers[0] = mv;
                         }
                     } else if mv.is_capture() && !mv.is_promotion() {
-                        // ── Capture History Update ──
+                        // ── Capture History Update
                         // Promotion-captures are deliberately excluded: they bypass
                         // the normal MVV-LVA + capture-history blend in the picker
                         // (see add_promo_caps), so updating their entries here would
@@ -1561,7 +1563,7 @@ impl Worker<'_> {
                         self.history.update_capture(stm, attacker, mv.to(), victim, bonus);
                     }
 
-                    // ── Asymmetric Penalty (~25 Elo) ──
+                    // ── Asymmetric Penalty (~25 Elo)
                     // When a move causes a beta-cutoff, all moves searched before it
                     // at this ply are "losers": they failed to refute the branch.
                     // We drive their history scores down so they surface later in
@@ -1625,7 +1627,7 @@ impl Worker<'_> {
             tt::BOUND_UPPER
         };
 
-        // ── TT store ──
+        // ── TT store
         // The verification searched this position with a move missing, so its
         // result is a lie about the real node. Keep it out of the table.
         if excluded.is_null() {
@@ -1634,7 +1636,7 @@ impl Worker<'_> {
                 .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv, raw_static_eval);
         }
 
-        // ── Correction History Update ──
+        // ── Correction History Update
         // Only learn from positions resolved by quiet moves: tactical
         // resolutions (captures/promotions) reflect tactics, not evaluator bias.
         // Skip when the bound direction contradicts the diff: a fail-high with
@@ -1683,7 +1685,7 @@ impl Worker<'_> {
 
         searcher.tt.prefetch(self.pos.hash);
 
-        // ── Gives-Check LMR Adjustment (~4 Elo) ──
+        // ── Gives-Check LMR Adjustment (~4 Elo)
         // A move that delivers check is forcing: the opponent must respond.
         // Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
@@ -1744,7 +1746,7 @@ impl Worker<'_> {
         Ok(())
     }
 
-    // ── Principal Variation Search (~14 Elo) ──
+    // ── Principal Variation Search (~14 Elo)
     /// Full window for the first move,
     /// zero-width scout for the rest,
     /// full window again on surprise fail-high.
@@ -1776,7 +1778,7 @@ impl Worker<'_> {
             return Ok(-self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?);
         }
 
-        // ── LMR Scout ──
+        // ── LMR Scout
         // Late quiet moves get a shallower scout. If the reduced search
         // still beats alpha, the move earned a full-depth re-search.
         let reduced_depth = search_depth - reduction;
@@ -1786,7 +1788,7 @@ impl Worker<'_> {
         if score > alpha && reduction > 0 {
             score = -self.negamax::<NonPvNode>(searcher, search_depth, -alpha - 1, -alpha, ply + 1, None)?;
 
-            // ── Post-LMR Continuation History (~8 Elo) ──
+            // ── Post-LMR Continuation History (~8 Elo)
             // The reduced scout beat alpha; the full-depth re-search settles it.
             // A fail-low means the reduction over-promised; a fail-high means a cutoff.
             // Punish or reward continuation history accordingly, ordering only.
@@ -1812,7 +1814,7 @@ impl Worker<'_> {
         Ok(score)
     }
 
-    // ── Quiescence Search (~655 Elo) ──
+    // ── Quiescence Search (~655 Elo)
     /// Evaluates positions only after all "noisy" (tactical/forcing) moves are resolved,
     /// preventing the horizon effect where a search stops right before a massive blunder.
     fn qsearch<N: NodeType>(
@@ -1847,7 +1849,7 @@ impl Worker<'_> {
 
         let alpha_orig = alpha;
 
-        // ── QSearch TT Probe (~22 Elo) ──
+        // ── QSearch TT Probe (~22 Elo)
         // Read TT entries stored by negamax or prior qsearch visits.
         // Cutoffs gated on non-PV nodes: PV nodes need the full capture
         // sequence for accurate PV reporting.
@@ -1870,7 +1872,7 @@ impl Worker<'_> {
         let stm = self.pos.stm;
         let opp = stm.opposite();
 
-        // ── QSearch Evaluations & Evasions ──
+        // ── QSearch Evaluations & Evasions
         // In check, static eval is meaningless; stand-pat drops to -INF
         // and the picker generates all evasions instead of just captures.
         // A TT hit already carries this position's raw eval; the stored
@@ -1895,7 +1897,7 @@ impl Worker<'_> {
                 return Ok((eval + beta) / 2);
             }
 
-            // ── Delta Pruning (~20 Elo) ──
+            // ── Delta Pruning (~20 Elo)
             // Stand-pat already failed to beat alpha.
             // Even if we capture the most valuable piece on the board, can we reach alpha?
             // If not, no capture in this position can raise us high enough, so bail early.
@@ -1931,7 +1933,7 @@ impl Worker<'_> {
                 continue;
             }
 
-            // ── Recapture-only Deep QS (~1 Elo) ──
+            // ── Recapture-only Deep QS (~1 Elo)
             // Past qs_recapture_ply, captures only matter if they continue
             // the forcing exchange on the square the opponent just moved to.
             // Speculative off-square captures are what explodes in mutual-
@@ -1944,7 +1946,7 @@ impl Worker<'_> {
                 continue;
             }
 
-            // ── QSearch SEE Pruning (~65 Elo) ──
+            // ── QSearch SEE Pruning (~65 Elo)
             // Skip captures whose destination-square trade loses material
             // for us. Disabled in check because evasions are forced and
             // the only legal reply is often a losing defensive capture.
@@ -1984,7 +1986,7 @@ impl Worker<'_> {
             return Ok(mated_in(ply));
         }
 
-        // ── QSearch TT Store ──
+        // ── QSearch TT Store
         let bound = if best_eval >= beta {
             tt::BOUND_LOWER
         } else if best_eval > alpha_orig {

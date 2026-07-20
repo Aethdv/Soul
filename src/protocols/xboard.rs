@@ -167,7 +167,7 @@ impl XBoardState {
             cfg.threads = threads;
             cfg.node_slots = SearchConfig::node_slots(threads);
 
-            // ── Lazy SMP ──
+            // ── Lazy SMP
             // Persistent helpers fan out across the depth ladder alongside main;
             // the TT is the only shared surface. Main finishes, then we signal
             // the helpers and wait for them to park before clearing the flag.
