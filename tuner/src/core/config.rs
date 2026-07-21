@@ -19,8 +19,7 @@ pub enum LossFn {
 }
 
 impl LossFn {
-    /// Per-sample loss for tracking, from the model win probability `sig` and the
-    /// blended `target`. Cross-entropy clamps `S` so `ln` stays finite at the ends.
+    /// Returns `L(sig, target)` for the configured loss function.
     pub fn loss(self, sig: f64, target: f64) -> f64 {
         match self {
             // L = (S − target)²
@@ -36,8 +35,7 @@ impl LossFn {
         }
     }
 
-    /// Outer derivative ∂L/∂score: the upstream gradient handed to the parameter
-    /// scatter. `k` is the sigmoid scaling constant.
+    /// Outer derivative ∂L/∂score. `k` is the sigmoid scaling constant.
     pub fn grad_scale(self, sig: f64, target: f64, k: f64) -> f64 {
         let err = sig - target;
         match self {
