@@ -11,9 +11,10 @@ pub const DEFAULT_WDL_END: f64 = 0.3;
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LossFn {
+    #[serde(rename = "mse")]
+    MeanSquaredError,
     #[default]
-    Mse,
-    #[serde(rename = "cross_entropy")]
+    #[serde(rename = "ce")]
     CrossEntropy,
 }
 
@@ -23,7 +24,7 @@ impl LossFn {
     pub fn loss(self, sig: f64, target: f64) -> f64 {
         match self {
             // L = (S − target)²
-            Self::Mse => {
+            Self::MeanSquaredError => {
                 let err = sig - target;
                 err * err
             },
@@ -41,7 +42,7 @@ impl LossFn {
         let err = sig - target;
         match self {
             // dJ/dx = 2·(S − target)·K·S·(1 − S)
-            Self::Mse => 2.0 * err * sig * (1.0 - sig) * k,
+            Self::MeanSquaredError => 2.0 * err * sig * (1.0 - sig) * k,
             // dL/dx = (S − target)·K
             Self::CrossEntropy => err * k,
         }
@@ -361,9 +362,9 @@ impl Default for TunerConfig {
                 beta1: 0.9,
                 beta2: 0.99,
                 weight_decay: 0.00001,
-                loss: LossFn::Mse,
-                batch_size: 32768,
-                epochs: 8000,
+                loss: LossFn::CrossEntropy,
+                batch_size: 65536,
+                epochs: 4000,
                 grad_clip: 1.0,
                 k_min: 0.003,
                 k_max: 0.010,
@@ -382,8 +383,8 @@ impl Default for TunerConfig {
                 phase_balance_cap: 8.0,
                 phase_target: None,
                 lr_psqt: 1.0,
-                lr_material: 0.3,
-                lr_mobility: 0.5,
+                lr_material: 1.0,
+                lr_mobility: 1.0,
                 lr_other: 1.0,
             },
             searchtune: SearchTuneConfig {
