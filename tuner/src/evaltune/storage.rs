@@ -35,7 +35,6 @@ pub struct Checkpoint {
     pub dataset: u64,
 }
 
-/// Per-parameter training state, one entry per tunable.
 #[derive(Serialize, Deserialize)]
 pub struct ParamState {
     pub value: f64,

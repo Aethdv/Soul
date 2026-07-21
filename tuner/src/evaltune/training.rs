@@ -2,11 +2,7 @@ use soul::core::{board::Position, defs::Color};
 
 use crate::evaltune::{loader, tape::eval_f64};
 
-/// Adaptive gradient clipping based on exponentially weighted percentile estimation.
-///
-/// Rather than a fixed clip threshold or a sliding window (which requires sorting),
-/// this uses Stochastic Gradient Descent (SGD) to maintain an O(1) estimate of the
-/// 95th percentile of gradient norms.
+/// Online 95th percentile estimation of gradient norms via SGD.
 ///
 /// The estimation happens in log-space to ensure the threshold remains positive and
 /// tracks the order-of-magnitude changes in norms as the learning rate decays.

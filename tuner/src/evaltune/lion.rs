@@ -1,5 +1,4 @@
 //! Lion: "Evolved Sign Momentum".
-//! In human terms: gradient descent with mood swings.
 //!
 //! Unlike Adam, which carefully tracks variance and bias,
 //! Lion just goes "is the gradient positive?"
