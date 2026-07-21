@@ -12,6 +12,12 @@ pub const COUNT: Rgb = (176, 196, 222); // dataset counts
 pub const BRAND: Rgb = (218, 165, 32); // new-best marker
 pub const DIM: Rgb = (118, 112, 104); // incidental (train/ref/time)
 
+/// ANSI reset.
+pub const RESET: &str = "\x1b[0m";
+
+/// Erase to end of line (non-destructive).
+pub const CLEAR_LINE: &str = "\x1b[K";
+
 /// Truecolor foreground escape for `c`.
 #[must_use]
 pub fn fg(c: Rgb) -> String {

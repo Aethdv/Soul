@@ -32,6 +32,7 @@ use soul::{
 };
 
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
+use palette::{CLEAR_LINE, RESET};
 use crate::core::{
     config::{EvalTuneConfig, LossFn, LrScheduleConfig},
     fnv::Fnv1a,
@@ -95,12 +96,12 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         eprintln!("Error: No positions loaded.");
         return;
     }
-    println!("Total positions: {}{}\x1b[0m", palette::fg(palette::COUNT), all_entries.len());
+    println!("Total positions: {}{}{RESET}", palette::fg(palette::COUNT), all_entries.len());
 
     train_entries(all_entries, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
-    println!("\n{}Done in {elapsed:.2}s\x1b[0m", palette::fg(palette::BRAND));
+    println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
 }
 
 /// Enable Flush-to-Zero and Denormals-are-Zero for performance.
@@ -274,7 +275,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
                 eprintln!(
                     "{}[!] Warning: dataset does not match the checkpoint's fingerprint.\n\
                      [!] The train/val split will differ from the original run: positions the\n\
-                     [!] checkpoint trained on may now sit in val, making its loss optimistic.\x1b[0m",
+                     [!] checkpoint trained on may now sit in val, making its loss optimistic.{RESET}",
                     color::ansi_fg((225, 89, 91)),
                 );
             }
@@ -438,12 +439,11 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
 
     let lab = palette::fg(palette::LABEL);
     let v = palette::fg(palette::VALUE);
-    let r = "\x1b[0m";
 
-    println!("{lab}Phase balance:{r} {v}{bars}{r} {lab}(phase 0..{}){r}", hist.len() - 1);
+    println!("{lab}Phase balance:{RESET} {v}{bars}{RESET} {lab}(phase 0..{}){RESET}", hist.len() - 1);
     println!(
-        "  {lab}imbalance{r} {v}{imbalance:.0}×{r} {lab}vs cap{r} {v}{cap:.0}×{r}  \
-         {lab}weights{r} {v}{wmin:.2}–{wmax:.2}×{r}  {lab}clamped{r} {v}{clamp_pct:.1}%{r}"
+        "  {lab}imbalance{RESET} {v}{imbalance:.0}×{RESET} {lab}vs cap{RESET} {v}{cap:.0}×{RESET}  \
+         {lab}weights{RESET} {v}{wmin:.2}–{wmax:.2}×{RESET}  {lab}clamped{RESET} {v}{clamp_pct:.1}%{RESET}"
     );
 }
 
@@ -458,8 +458,7 @@ fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Ve
 fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
     let lab = palette::fg(palette::LABEL);
     let c = palette::fg(palette::COUNT);
-    let r = "\x1b[0m";
-    println!("{lab}Positions:{r}  {c}{total}{r} ({} train / {} val)", train.len(), val.len());
+    println!("{lab}Positions:{RESET}  {c}{total}{RESET} ({} train / {} val)", train.len(), val.len());
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
@@ -473,9 +472,9 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
         }
     });
 
-    println!("  {lab}White wins:{r} {c}{ww}{r}");
-    println!("  {lab}Black wins:{r} {c}{bw}{r}");
-    println!("  {lab}Draws:{r}      {c}{dr}{r}");
+    println!("  {lab}White wins:{RESET} {c}{ww}{RESET}");
+    println!("  {lab}Black wins:{RESET} {c}{bw}{RESET}");
+    println!("  {lab}Draws:{RESET}      {c}{dr}{RESET}");
 }
 
 /// Validation-loss trajectory as a colored block sparkline, each cell ranked
@@ -502,7 +501,7 @@ fn loss_sparkline(history: &[f64]) -> String {
         out.push(BLOCKS[level]);
     }
 
-    out.push_str("\x1b[0m");
+    out.push_str(RESET);
     out
 }
 
@@ -519,7 +518,7 @@ fn train_loop(
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
 
     let resume = resume_path.map(|path| {
-        println!("Resuming from checkpoint: {}{path}\x1b[0m", palette::fg(palette::VALUE));
+        println!("Resuming from checkpoint: {}{path}{RESET}", palette::fg(palette::VALUE));
         load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
             eprintln!("Failed to load checkpoint: {e}");
             std::process::exit(1);
@@ -554,14 +553,13 @@ fn train_loop(
 
     let v = palette::fg(palette::VALUE);
     let lab = palette::fg(palette::LABEL);
-    let r = "\x1b[0m";
     let win_rate_100cp = sigmoid(100.0, k);
-    println!("{lab}K Factor:{r}   {v}{k:.6}{r} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
+    println!("{lab}K Factor:{RESET}   {v}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
 
     // Frozen reference K - never re-optimized.
     // L_ref uses this K so that loss numbers are comparable across epochs
     // and runs regardless of K-reopt drift.
-    println!("{lab}Ref K:{r}      {v}{k_ref:.6}{r}");
+    println!("{lab}Ref K:{RESET}      {v}{k_ref:.6}{RESET}");
     let seed_label = if resume.is_some() {
         " (checkpoint)"
     } else if config.seed.is_some() {
@@ -569,7 +567,7 @@ fn train_loop(
     } else {
         ""
     };
-    println!("{lab}Seed:{r}       {v}{rng_seed}{r}{seed_label}");
+    println!("{lab}Seed:{RESET}       {v}{rng_seed}{RESET}{seed_label}");
 
     let initial_values = values.clone();
 
@@ -590,11 +588,11 @@ fn train_loop(
         .as_ref()
         .map_or_else(|| Vec::with_capacity(snapshot_limit), |d| d.snapshots.clone());
 
-    println!("{lab}Parameters:{r} {v}{}{r}", all_params.len());
-    println!("{lab}Mode:{r}       {v}{mode_label}{r}");
-    println!("{lab}LR Sched:{r}   {v}{}{r}", lr_scheduler.describe());
-    println!("{lab}WDL Sched:{r}  {v}{}{r}", wdl_scheduler.describe());
-    println!("{lab}Optimizer:{r}  {v}Lion{r} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
+    println!("{lab}Parameters:{RESET} {v}{}{RESET}", all_params.len());
+    println!("{lab}Mode:{RESET}       {v}{mode_label}{RESET}");
+    println!("{lab}LR Sched:{RESET}   {v}{}{RESET}", lr_scheduler.describe());
+    println!("{lab}WDL Sched:{RESET}  {v}{}{RESET}", wdl_scheduler.describe());
+    println!("{lab}Optimizer:{RESET}  {v}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = File::create("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
@@ -862,19 +860,18 @@ fn train_loop(
             ('▲', palette::fg(color::advantage(-0.7)))
         };
 
-        let r = "\x1b[0m";
         let lab = palette::fg(palette::LABEL);
         let dim = palette::fg(palette::DIM);
         let (mark, epoch_c) = if is_best { ("✦ ", palette::fg(palette::BRAND)) } else { ("  ", dim.clone()) };
-        let warn = if overfit { format!("  {}⚠ overfit{r}", palette::fg(color::advantage(-1.0))) } else { String::new() };
+        let warn = if overfit { format!("  {}⚠ overfit{RESET}", palette::fg(color::advantage(-1.0))) } else { String::new() };
 
         #[rustfmt::skip]
         println!(
-            "{mark}{epoch_c}Epoch {epoch:>3}/{}{r}  \
-             {lab}val{r} {trend}{val_loss:.6}{r} {trend}{arrow}{r}  \
-             {lab}train{r} {dim}{train_loss:.6}{r}  \
-             {lab}ref{r} {dim}{ref_loss:.6}{r}  \
-             {lab}lr{r} {}{lr:.4}{r}  {dim}{elapsed:.2}s{r}{warn}\x1b[K",
+            "{mark}{epoch_c}Epoch {epoch:>3}/{}{RESET}  \
+             {lab}val{RESET} {trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}  \
+             {lab}train{RESET} {dim}{train_loss:.6}{RESET}  \
+             {lab}ref{RESET} {dim}{ref_loss:.6}{RESET}  \
+             {lab}lr{RESET} {}{lr:.4}{RESET}  {dim}{elapsed:.2}s{RESET}{warn}{CLEAR_LINE}",
             config.epochs,
             palette::fg(palette::VALUE),
         );
@@ -884,7 +881,7 @@ fn train_loop(
 
         if epoch % 20 == 0 || epoch == config.epochs {
             let tail = &val_history[val_history.len().saturating_sub(40)..];
-            println!("\n  {lab}L_val{r}  {}", loss_sparkline(tail));
+            println!("\n  {lab}L_val{RESET}  {}", loss_sparkline(tail));
             print_params(&all_params, &initial_values, &ema_values);
 
             if let Err(e) = save_checkpoint("evaltune_checkpoint.json", &all_params, &TrainerState {
@@ -984,7 +981,7 @@ fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
         }
 
         if paths.is_empty() {
-            eprintln!("{}Error: No default dataset found in data/ directory.\x1b[0m", color::ansi_fg((225, 89, 91)));
+            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", color::ansi_fg((225, 89, 91)));
             eprintln!("Please provide a dataset path using --dataset <path>");
             None
         } else {

@@ -7,7 +7,7 @@ use std::{
 
 use soul::{color, core::psqt, engine::eval_params::Tunable};
 
-use crate::evaltune::storage::Snapshot;
+use crate::evaltune::{palette, storage::Snapshot};
 
 /// The `define_weight_params!` paste block: `(name, offset, count, comment)`
 /// per band, in layout order. A hand-maintained mirror of `LAYOUT`, like
@@ -99,7 +99,7 @@ pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_val
         write_params(&mut w, all_params, &best_values, None);
     }
 
-    println!("{}Best L_val: {best:.6} (Epoch {best_epoch})\x1b[0m", color::ansi_fg((218, 165, 32)));
+    println!("{}Best L_val: {best:.6} (Epoch {best_epoch}){}", color::ansi_fg((218, 165, 32)), palette::RESET);
 }
 
 /// Prints parameters to stdout with ANSI green highlighting for changed values.
@@ -272,7 +272,7 @@ pub fn write_weight_array<W: Write>(
 /// Wraps text in the advantage-win green if `changed` is true and `initial` is `Some`.
 fn highlight(s: &str, changed: bool, initial: Option<&[f64]>) -> String {
     if initial.is_some() && changed {
-        format!("{}{s}\x1b[0m", color::ansi_fg((100, 200, 120)))
+        format!("{}{s}{}", color::ansi_fg((100, 200, 120)), palette::RESET)
     } else {
         s.to_string()
     }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use soul::{color, engine::eval_params::Tunable};
 
 use crate::core::{error::CheckpointError, fnv::Fnv1a};
+use crate::evaltune::palette;
 
 pub const CHECKPOINT_VERSION: u32 = 3;
 
@@ -149,10 +150,11 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 
     if cp.version != CHECKPOINT_VERSION {
         eprintln!(
-            "{}[!] Error: Checkpoint version mismatch! (Expected: {}, Found: {})\x1b[0m",
+            "{}[!] Error: Checkpoint version mismatch! (Expected: {}, Found: {}){}",
             color::ansi_fg((225, 89, 91)),
             CHECKPOINT_VERSION,
-            cp.version
+            cp.version,
+            palette::RESET,
         );
 
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Checkpoint version mismatch").into());
@@ -169,10 +171,11 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 
     if cp.hash != current_hash {
         eprintln!(
-            "{}Warning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x})\x1b[0m",
+            "{}Warning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x}){}",
             color::ansi_fg((218, 165, 32)),
             cp.hash,
-            current_hash
+            current_hash,
+            palette::RESET,
         );
         eprintln!("New parameters will use current default values.");
     }
