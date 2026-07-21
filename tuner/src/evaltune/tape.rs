@@ -37,14 +37,6 @@ mod scatter {
         *slot += 4;
     }
 
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub(super) fn scatter_array4(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
-        for i in 0..4 {
-            out[offset + i] += outer * f64::from(grad[*slot + i]);
-        }
-        *slot += 4;
-    }
 
     #[inline(always)]
     pub(super) fn scatter_array6(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
