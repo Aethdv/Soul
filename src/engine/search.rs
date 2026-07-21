@@ -2050,9 +2050,10 @@ impl Worker<'_> {
         // Zobrist already encodes side-to-move, so cross-ply hashes can never match.
         // The false-check cost is zero, and contiguous SIMD loads are cheaper than strided.
         //
-        // Vu64x4::load uses _mm256_loadu_si256 internally (unaligned), which is correct
+        // SAFETY: Vu64x4::load uses _mm256_loadu_si256 (unaligned), which is correct
         // because Vec<u64> guarantees only 8-byte alignment, not the 32-byte alignment
-        // that an aligned load would require.
+        // that an aligned load would require. The chunk pointer is valid for 32 bytes
+        // by Vec layout and rchunks_exact(4).
         for chunk in chunks {
             let vec = unsafe { Vu64x4::load(chunk.as_ptr()) };
 

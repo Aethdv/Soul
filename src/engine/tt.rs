@@ -241,8 +241,10 @@ impl TranspositionTable {
     fn alloc(size_mb: usize, numa: &NumaTopology, threads: usize) -> HugePages<Cluster> {
         let bytes = size_mb.max(1) * 1024 * 1024;
 
-        // SAFETY (both paths): a zeroed Cluster is the empty state, every field an
-        // AtomicU16(0); first_touch does the zeroing on the multi-node path.
+        // SAFETY (both paths): Cluster is valid when zero-initialized (all fields
+        // are AtomicU16(0), which is the empty entry). Satisfies HugePages::mapped
+        // and HugePages::zeroed's documented precondition. On the multi-node path,
+        // first_touch does the actual zeroing before any reader reaches the data.
         if numa.should_distribute(threads) {
             let clusters = unsafe { HugePages::mapped(bytes) };
             first_touch(&clusters, numa);
@@ -309,6 +311,8 @@ impl TranspositionTable {
     pub fn prefetch(&self, hash: u64) {
         let idx = self.index(hash);
 
+        // SAFETY: _mm_prefetch is a non-faulting hint instruction available on
+        // all x86_64 targets; ptr is valid within the allocation.
         unsafe {
             let ptr = self.clusters.as_ptr().add(idx) as *const i8;
             #[cfg(target_arch = "x86_64")]

@@ -1,6 +1,11 @@
 //! SSE (128-bit) SIMD intrinsics wrapper.
 //!
 //! Provides safely typed wrappers around `__m128i` for parallel evaluation math.
+//!
+//! # Safety
+//! Builds without `target_feature = "avx2"` are rejected at compile time by
+//! `weave/mod.rs`. AVX2 is a superset of SSE, so all SSE intrinsics here
+//! are available on any binary that reaches this module.
 
 use core::{
     arch::x86_64::*,
@@ -25,13 +30,13 @@ impl Vi16x8 {
 
     #[inline(always)]
     pub fn zero() -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_setzero_si128() })
     }
 
     #[inline(always)]
     pub fn splat(v: i16) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_set1_epi16(v) })
     }
 
@@ -64,49 +69,49 @@ impl Vi16x8 {
 
     #[inline(always)]
     pub fn extract<const N: i32>(self) -> i16 {
-        // SAFETY: The lane index N is constrained by const generics. Hardware support is guaranteed.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics. Const generic enforces bounds.
         unsafe { _mm_extract_epi16::<N>(self.0) as i16 }
     }
 
     #[inline(always)]
     pub fn adds(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_adds_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
     pub fn subs(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_subs_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
     pub fn max(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_max_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
     pub fn min(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_min_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
     pub fn mullo(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_mullo_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
     pub fn mulhi(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_mulhi_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
     pub fn madd(self, rhs: Self) -> Vi32x4 {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Vi32x4(unsafe { _mm_madd_epi16(self.0, rhs.0) })
     }
 
@@ -117,7 +122,7 @@ impl Vi16x8 {
 
     #[inline(always)]
     pub fn srai<const N: i32>(self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Const generic N ensures valid shift count.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics. Const generic enforces bounds.
         Self(unsafe { _mm_srai_epi16::<N>(self.0) })
     }
 
@@ -125,7 +130,7 @@ impl Vi16x8 {
     /// Uses `vpmovsxwd` (SSE4.1).
     #[inline(always)]
     pub fn load_i32_4(self) -> Vi32x4 {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Vi32x4(unsafe { _mm_cvtepi16_epi32(self.0) })
     }
 }
@@ -141,7 +146,7 @@ impl Add for Vi16x8 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_add_epi16(self.0, rhs.0) })
     }
 }
@@ -150,7 +155,7 @@ impl Sub for Vi16x8 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_sub_epi16(self.0, rhs.0) })
     }
 }
@@ -173,7 +178,7 @@ impl BitAnd for Vi16x8 {
     type Output = Self;
     #[inline(always)]
     fn bitand(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_and_si128(self.0, rhs.0) })
     }
 }
@@ -182,7 +187,7 @@ impl BitOr for Vi16x8 {
     type Output = Self;
     #[inline(always)]
     fn bitor(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_or_si128(self.0, rhs.0) })
     }
 }
@@ -191,7 +196,7 @@ impl BitXor for Vi16x8 {
     type Output = Self;
     #[inline(always)]
     fn bitxor(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_xor_si128(self.0, rhs.0) })
     }
 }
@@ -205,20 +210,20 @@ impl Vi32x4 {
 
     #[inline(always)]
     pub fn zero() -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_setzero_si128() })
     }
 
     #[inline(always)]
     pub fn splat(v: i32) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_set1_epi32(v) })
     }
 
     #[inline(always)]
     pub fn from_lanes(a: i32, b: i32, c: i32, d: i32) -> Self {
         // _mm_set_epi32 takes lanes in reverse (3, 2, 1, 0); re-reversed here so a..d map to lanes 0..3.
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_set_epi32(d, c, b, a) })
     }
 
@@ -230,7 +235,7 @@ impl Vi32x4 {
     /// Horizontal sum: unpack-add then shuffle-add, dodging the slower `_mm_hadd_epi32`.
     #[inline]
     pub fn reduce_sum(self) -> i32 {
-        // SAFETY: Pure SIMD arithmetic intrinsics. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         unsafe {
             let v = self.0;
             let hi64 = _mm_unpackhi_epi64(v, v);
@@ -253,7 +258,7 @@ impl Vi32x4 {
     /// A port has to follow it with `_mm256_permute4x64_epi64` to restore sequential lanes.
     #[inline(always)]
     pub fn pack_i16(self, hi: Self) -> Vi16x8 {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Vi16x8(unsafe { _mm_packs_epi32(self.0, hi.0) })
     }
 
@@ -266,13 +271,13 @@ impl Vi32x4 {
 
     #[inline(always)]
     pub fn extract<const N: i32>(self) -> i32 {
-        // SAFETY: The lane index N is constrained by const generics. Hardware support is guaranteed.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics. Const generic enforces bounds.
         unsafe { _mm_extract_epi32::<N>(self.0) }
     }
 
     #[inline(always)]
     pub fn srai<const N: i32>(self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Const generic N ensures valid shift count.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics. Const generic enforces bounds.
         Self(unsafe { _mm_srai_epi32::<N>(self.0) })
     }
 }
@@ -288,7 +293,7 @@ impl Add for Vi32x4 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_add_epi32(self.0, rhs.0) })
     }
 }
@@ -297,7 +302,7 @@ impl Sub for Vi32x4 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_sub_epi32(self.0, rhs.0) })
     }
 }
@@ -306,7 +311,7 @@ impl Mul for Vi32x4 {
     type Output = Self;
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         Self(unsafe { _mm_mullo_epi32(self.0, rhs.0) })
     }
 }
@@ -325,7 +330,7 @@ impl Shr<i32> for Vi32x4 {
         // _mm_srai_epi32 requires an immediate, so we can't use it directly if rhs is variable.
         // But for mobility usage, rhs is a constant 10.
         // We act like portable_simd and use _mm_sra_epi32 which takes an XMM count.
-        // SAFETY: Pure SIMD arithmetic intrinsics. Hardware support guaranteed by target features.
+        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
         unsafe {
             let count = _mm_cvtsi32_si128(rhs);
             Self(_mm_sra_epi32(self.0, count))
