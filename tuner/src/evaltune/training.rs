@@ -31,7 +31,10 @@ impl GradientStats {
         // Balancing: 0.05 * 0.95 (up) + 0.95 * -0.05 (down) = 0.
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
 
-        // Update in log-space to handle the exponential decay of norms.
+        // Update in log-space. Stays positive regardless of how
+        // small norms get, and the multiplicative step scales with
+        // the current magnitude. This eliminates the need for a floor
+        // at initialization or late in training.
         self.p95 *= (self.alpha * step).exp();
     }
 

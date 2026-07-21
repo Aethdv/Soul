@@ -33,7 +33,7 @@ use soul::{
 
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
 use crate::core::{
-    config::{EvalTuneConfig, LrScheduleConfig},
+    config::{EvalTuneConfig, LossFn, LrScheduleConfig},
     fnv::Fnv1a,
     logger::JsonLogger,
 };
@@ -115,6 +115,97 @@ unsafe fn enable_ftz_daz() {
         asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack, preserves_flags));
         mxcsr |= 0x8040; // FTZ | DAZ
         asm!("ldmxcsr [{}]", in(reg) &mxcsr, options(nostack, preserves_flags));
+    }
+}
+
+struct TrainerContext<'a> {
+    train: &'a [loader::SoulEntry],
+    val: &'a [loader::SoulEntry],
+    records: &'a [FeatureRecord],
+    train_count: usize,
+    phase_weights: &'a [f64],
+    loss_fn: LossFn,
+    vol_threshold: i16,
+    vol_adaptive: bool,
+}
+
+impl TrainerContext<'_> {
+    fn passes_vol_filter(&self, entry: &loader::SoulEntry, static_eval: i16) -> bool {
+        if self.vol_threshold == 0 || entry.score == i16::MAX {
+            return true;
+        }
+        let t = if self.vol_adaptive {
+            let short = 10i16.saturating_sub(entry.occupancy.count_ones() as i16);
+            self.vol_threshold + short.saturating_mul(2)
+        } else {
+            self.vol_threshold
+        };
+        (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
+    }
+
+    fn batch_grad(&self, batch_indices: &[usize], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, usize) {
+        batch_indices
+            .par_chunks(256)
+            .fold(
+                || (vec![0.0; values.len()], 0.0, 0usize),
+                |(mut g, mut loss, mut count), chunk| {
+                    for &i in chunk {
+                        let entry = &self.train[i];
+                        let record = &self.records[i];
+
+                        if !self.passes_vol_filter(entry, record.static_eval) {
+                            continue;
+                        }
+
+                        let target = wdl_target(entry, k, blend);
+                        let sig = sigmoid(loader::eval_record(record, values), k);
+                        let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
+
+                        loss += w * self.loss_fn.loss(sig, target);
+                        loader::accumulate_record_grad(record, values, self.loss_fn.grad_scale(sig, target, k) * w, &mut g);
+                        count += 1;
+                    }
+
+                    (g, loss, count)
+                },
+            )
+            .reduce(
+                || (vec![0.0; values.len()], 0.0, 0usize),
+                |(g1, l1, c1), (g2, l2, c2)| {
+                    let (g, l) = grad_combine((g1, l1), (g2, l2));
+                    (g, l, c1 + c2)
+                },
+            )
+    }
+
+    fn val_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
+        let (wsum, weight) = self
+            .val
+            .par_iter()
+            .enumerate()
+            .fold(
+                || (0.0_f64, 0.0_f64),
+                |(mut wsum, mut weight), (idx, entry)| {
+                    let record = &self.records[self.train_count + idx];
+
+                    if !self.passes_vol_filter(entry, record.static_eval) {
+                        return (wsum, weight);
+                    }
+
+                    let score = loader::eval_record(record, values);
+                    let sig = sigmoid(score, k);
+                    let target = wdl_target(entry, k, blend);
+                    let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[self.train_count + idx] };
+
+                    wsum += w * self.loss_fn.loss(sig, target);
+                    weight += w;
+
+                    (wsum, weight)
+                },
+            )
+            .reduce(|| (0.0_f64, 0.0_f64), |(s1, w1), (s2, w2)| (s1 + s2, w1 + w2));
+
+        if weight > 0.0 { wsum / weight } else { 0.0 }
     }
 }
 
@@ -215,10 +306,6 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         if stm_white { r } else { 1.0 - r }
     });
 
-    // Shared reference for the closure captures below.
-    // train/val and records are parallel arrays indexed by the same subscript.
-    let records_ref = &records;
-
     // Phase-stratified balancing: weight each sample by the inverse frequency of
     // its phase bucket, so sparse endgame phases pull a fair share of the gradient,
     // and of the loss, instead of drowning under the midgame crowd. Weighting
@@ -230,93 +317,18 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         Vec::new()
     };
 
-    let phase_weights_ref = &phase_weights;
-
-    let vol_threshold = config.volatility_threshold;
-    let vol_adaptive = config.volatility_adaptive;
-    let loss_fn = config.loss;
-
-    let passes_vol_filter = |entry: &loader::SoulEntry, static_eval: i16| -> bool {
-        if vol_threshold == 0 || entry.score == i16::MAX {
-            return true;
-        }
-
-        let t = if vol_adaptive {
-            let short = 10i16.saturating_sub(entry.occupancy.count_ones() as i16);
-            vol_threshold + short.saturating_mul(2)
-        } else {
-            vol_threshold
-        };
-
-        (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
+    let ctx = TrainerContext {
+        train,
+        val,
+        records: &records,
+        train_count,
+        phase_weights: &phase_weights,
+        loss_fn: config.loss,
+        vol_threshold: config.volatility_threshold,
+        vol_adaptive: config.volatility_adaptive,
     };
 
-    let batch_grad = |batch_indices: &[usize], values: &[f64], k: f64, blend: f64| -> (Vec<f64>, f64, usize) {
-        batch_indices
-            .par_chunks(256)
-            .fold(
-                || (vec![0.0; values.len()], 0.0, 0usize),
-                |(mut g, mut loss, mut count), chunk| {
-                    for &i in chunk {
-                        let entry = &train[i];
-                        let record = &records_ref[i];
-
-                        if !passes_vol_filter(entry, record.static_eval) {
-                            continue;
-                        }
-
-                        let target = wdl_target(entry, k, blend);
-                        let sig = sigmoid(loader::eval_record(record, values), k);
-                        let w = if phase_weights_ref.is_empty() { 1.0 } else { phase_weights_ref[i] };
-
-                        loss += w * loss_fn.loss(sig, target);
-                        loader::accumulate_record_grad(record, values, loss_fn.grad_scale(sig, target, k) * w, &mut g);
-                        count += 1;
-                    }
-
-                    (g, loss, count)
-                },
-            )
-            .reduce(
-                || (vec![0.0; values.len()], 0.0, 0usize),
-                |(g1, l1, c1), (g2, l2, c2)| {
-                    let (g, l) = grad_combine((g1, l1), (g2, l2));
-
-                    (g, l, c1 + c2)
-                },
-            )
-    };
-
-    let val_eval = |values: &[f64], k: f64, blend: f64| -> f64 {
-        let (wsum, weight) = val
-            .par_iter()
-            .enumerate()
-            .fold(
-                || (0.0_f64, 0.0_f64),
-                |(mut wsum, mut weight), (idx, entry): (usize, &loader::SoulEntry)| {
-                    let record = &records_ref[train_count + idx];
-
-                    if !passes_vol_filter(entry, record.static_eval) {
-                        return (wsum, weight);
-                    }
-
-                    let score = loader::eval_record(record, values);
-                    let sig = sigmoid(score, k);
-                    let target = wdl_target(entry, k, blend);
-                    let w = if phase_weights_ref.is_empty() { 1.0 } else { phase_weights_ref[train_count + idx] };
-
-                    wsum += w * loss_fn.loss(sig, target);
-                    weight += w;
-
-                    (wsum, weight)
-                },
-            )
-            .reduce(|| (0.0_f64, 0.0_f64), |(s1, w1), (s2, w2)| (s1 + s2, w1 + w2));
-
-        if weight > 0.0 { wsum / weight } else { 0.0 }
-    };
-
-    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, batch_grad, val_eval);
+    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, &ctx);
 }
 
 /// Sampled FNV fingerprint of the dataset: entry count plus every strided
@@ -494,22 +506,15 @@ fn loss_sparkline(history: &[f64]) -> String {
     out
 }
 
-// ── Shared training loop
-/// Gradient computation and validation eval are injected as closures,
-/// everything else (schedulers, optimizer, clipping, logging, checkpointing) is common.
-fn train_loop<G, V>(
+fn train_loop(
     train_len: usize,
     mode_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     rng_seed: u64,
     dataset_fnv: u64,
-    batch_grad: G,
-    val_eval: V,
-) where
-    G: Fn(&[usize], &[f64], f64, f64) -> (Vec<f64>, f64, usize),
-    V: Fn(&[f64], f64, f64) -> f64,
-{
+    ctx: &TrainerContext,
+) {
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
 
@@ -540,7 +545,7 @@ fn train_loop<G, V>(
             println!("Optimizing K...");
             let init_blend = wdl_scheduler.blend(1, config.epochs);
             let k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                val_eval(&values, kk, init_blend)
+                ctx.val_eval(&values, kk, init_blend)
             });
 
             (k, k)
@@ -651,7 +656,7 @@ fn train_loop<G, V>(
         // Periodic K factor re-optimization
         if epoch % 200 == 0 {
             k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                val_eval(&ema_values, kk, blend)
+                ctx.val_eval(&ema_values, kk, blend)
             });
 
             println!("  Reoptimized K: {k:.6}");
@@ -695,7 +700,7 @@ fn train_loop<G, V>(
         let mut total_grads = vec![0.0; values.len()];
 
         for batch in indices.chunks(config.batch_size) {
-            let (mut grads, batch_loss, batch_count) = batch_grad(batch, &values, k, blend);
+            let (mut grads, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k, blend);
 
             train_loss += batch_loss;
             train_count += batch_count;
@@ -776,8 +781,8 @@ fn train_loop<G, V>(
             }
         }
 
-        let val_loss = val_eval(&ema_values, k, blend);
-        let ref_loss = val_eval(&ema_values, k_ref, 0.0);
+        let val_loss = ctx.val_eval(&ema_values, k, blend);
+        let ref_loss = ctx.val_eval(&ema_values, k_ref, 0.0);
         let train_loss = train_loss / train_count.max(1) as f64;
 
         // ── Validation Plateau Detection
