@@ -9,7 +9,7 @@ k_max = 0.010
 # lr × wd = 3e-7 per step; bump by 2-3× only when params drift significantly from their starting values over training.
 weight_decay = 0.00001
 
-# positions / batch_size → ~100 u/epoch (80-150 all identical for HCE; Lion's uniform step + near-convex surface saturate quickly)
+# positions / batch_size → ~100 u/epoch (80-150 all 'identical' for HCE; Lion's uniform step + near-convex surface saturate quickly)
 #
 # positions  batch     u/epoch
 # 2.8M       32,768     85
@@ -30,7 +30,7 @@ volatility_adaptive = true # scales with piece count.
 # bucket (0..24), so rare endgame phases aren't drowned by the midgame-heavy
 # crowd. Weights are mean-normalized — overall gradient scale is unchanged.
 #
-# _cap bounds the per-sample weight to [1/cap, cap] — the bias↔variance knob:
+# _cap bounds the per-sample weight to [1/cap, cap], the bias→variance knob:
 #   small (≈2)  : gentle nudge, endgames stay under-trained.
 #   large (≈16) : near-full equalization, but sparse buckets turn noisy.
 # Startup prints the phase histogram + the data's imbalance ratio + clamp %;
@@ -38,7 +38,7 @@ volatility_adaptive = true # scales with piece count.
 phase_balance = false
 phase_balance_cap = 8.0
 
-# phase_target; re-weight toward a custom phase density instead of uniform.
+# Re-weight toward a custom phase density instead of uniform.
 # 25 values (phase 0..24, need not sum to 1); the per-sample weight becomes
 # target[phase] / observed[phase]. Left out = uniform inverse-frequency (the default above).
 # phase_target = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.10, 0.10, 0.10, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.04, 0.03, 0.03, 0.02, 0.02, 0.02]

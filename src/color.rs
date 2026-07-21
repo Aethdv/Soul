@@ -37,7 +37,14 @@ pub fn advantage(t: f64) -> Rgb {
 /// ANSI truecolor foreground escape for `c`.
 #[must_use]
 pub fn ansi_fg(c: Rgb) -> String {
-    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+    let mut s = String::with_capacity(20);
+    let _ = write_ansi_fg(&mut s, c);
+    s
+}
+
+/// Write an ANSI truecolor foreground escape for `c` into `w`.
+pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result {
+    write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
 /// Perceptual blend of two sRGB colors; interpolate in OkLab so the midpoint
