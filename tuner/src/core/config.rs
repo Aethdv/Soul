@@ -16,9 +16,8 @@ pub enum LossFn {
     #[default]
     CrossEntropy,
     MeanSquaredError,
-    Focal {
-        gamma: f64,
-    },
+    Focal { gamma: f64 },
+    SmoothedCE { epsilon: f64 },
 }
 
 struct LossFnVisitor;
@@ -27,7 +26,7 @@ impl<'de> Visitor<'de> for LossFnVisitor {
     type Value = LossFn;
 
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("\"ce\", \"mse\", \"focal\", or a map { gamma: f64 }")
+        f.write_str("\"ce\", \"mse\", \"focal\", \"sce\", or a map { gamma/epsilon: f64 }")
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<LossFn, E> {
@@ -35,21 +34,30 @@ impl<'de> Visitor<'de> for LossFnVisitor {
             "ce" => Ok(LossFn::CrossEntropy),
             "mse" => Ok(LossFn::MeanSquaredError),
             "focal" => Ok(LossFn::Focal { gamma: 2.0 }),
-            _ => Err(de::Error::unknown_variant(value, &["ce", "mse", "focal"])),
+            "sce" => Ok(LossFn::SmoothedCE { epsilon: 0.01 }),
+            _ => Err(de::Error::unknown_variant(value, &["ce", "mse", "focal", "sce"])),
         }
     }
 
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<LossFn, M::Error> {
         let mut gamma = None;
+        let mut epsilon = None;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "gamma" => gamma = Some(map.next_value::<f64>()?),
-                other => return Err(de::Error::unknown_field(other, &["gamma"])),
+                "epsilon" => epsilon = Some(map.next_value::<f64>()?),
+                other => return Err(de::Error::unknown_field(other, &["gamma", "epsilon"])),
             }
         }
 
-        Ok(LossFn::Focal { gamma: gamma.unwrap_or(2.0) })
+        if let Some(gamma) = gamma {
+            Ok(LossFn::Focal { gamma })
+        } else if let Some(epsilon) = epsilon {
+            Ok(LossFn::SmoothedCE { epsilon })
+        } else {
+            Err(de::Error::custom("expected map with 'gamma' (Focal) or 'epsilon' (SmoothedCE)"))
+        }
     }
 }
 
@@ -81,6 +89,11 @@ impl LossFn {
                 let base = (prob - target).abs();
                 base.powf(gamma) * ce
             },
+            // SCE = CE(s, T·(1-ε) + 0.5·ε)
+            Self::SmoothedCE { epsilon } => {
+                let t = target * (1.0 - epsilon) + 0.5 * epsilon;
+                Self::CrossEntropy.loss(sig, t)
+            },
         }
     }
 
@@ -103,6 +116,11 @@ impl LossFn {
                     * diff.signum() * k * prob * (1.0 - prob) * ce;
 
                 ce_grad + focal_grad
+            },
+            // ∂SCE/∂x = CE_grad(s, T·(1-ε) + 0.5·ε)
+            Self::SmoothedCE { epsilon } => {
+                let t = target * (1.0 - epsilon) + 0.5 * epsilon;
+                Self::CrossEntropy.grad_scale(sig, t, k)
             },
         }
     }
