@@ -20,6 +20,7 @@ use std::{
     time::Instant,
 };
 
+use palette::{CLEAR_LINE, RESET};
 use rayon::prelude::*;
 use soul::{
     color,
@@ -32,7 +33,6 @@ use soul::{
 };
 
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
-use palette::{CLEAR_LINE, RESET};
 use crate::core::{
     config::{EvalTuneConfig, LossFn, LrScheduleConfig},
     fnv::Fnv1a,

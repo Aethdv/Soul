@@ -2,20 +2,62 @@
 
 use std::{error::Error, fs};
 
-use serde::Deserialize;
+use serde::{
+    de::{self, MapAccess, Visitor},
+    Deserialize,
+};
 
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
 pub const DEFAULT_WDL_END: f64 = 0.3;
 
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LossFn {
-    #[serde(rename = "mse")]
-    MeanSquaredError,
     #[default]
-    #[serde(rename = "ce")]
     CrossEntropy,
+    MeanSquaredError,
+    Focal {
+        gamma: f64,
+    },
+}
+
+struct LossFnVisitor;
+
+impl<'de> Visitor<'de> for LossFnVisitor {
+    type Value = LossFn;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("\"ce\", \"mse\", \"focal\", or a map { gamma: f64 }")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<LossFn, E> {
+        match value {
+            "ce" => Ok(LossFn::CrossEntropy),
+            "mse" => Ok(LossFn::MeanSquaredError),
+            "focal" => Ok(LossFn::Focal { gamma: 2.0 }),
+            _ => Err(de::Error::unknown_variant(value, &["ce", "mse", "focal"])),
+        }
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<LossFn, M::Error> {
+        let mut gamma = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "gamma" => gamma = Some(map.next_value::<f64>()?),
+                other => return Err(de::Error::unknown_field(other, &["gamma"])),
+            }
+        }
+
+        Ok(LossFn::Focal { gamma: gamma.unwrap_or(2.0) })
+    }
+}
+
+impl<'de> Deserialize<'de> for LossFn {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        deserializer.deserialize_any(LossFnVisitor)
+    }
 }
 
 impl LossFn {
@@ -32,6 +74,13 @@ impl LossFn {
                 let s = sig.clamp(1e-7, 1.0 - 1e-7);
                 -(target * s.ln() + (1.0 - target) * (1.0 - s).ln())
             },
+            // FL = |s-T|^γ · CE
+            Self::Focal { gamma } => {
+                let prob = sig.clamp(1e-7, 1.0 - 1e-7);
+                let ce = Self::CrossEntropy.loss(sig, target);
+                let base = (prob - target).abs();
+                base.powf(gamma) * ce
+            },
         }
     }
 
@@ -43,6 +92,18 @@ impl LossFn {
             Self::MeanSquaredError => 2.0 * err * sig * (1.0 - sig) * k,
             // dL/dx = (S − target)·K
             Self::CrossEntropy => err * k,
+            // dFL/dx = |s-T|^γ·(s-T)·K + γ·|s-T|^(γ-1)·sign(s-T)·K·s·(1-s)·CE
+            Self::Focal { gamma } => {
+                let prob = sig.clamp(1e-7, 1.0 - 1e-7);
+                let ce = Self::CrossEntropy.loss(sig, target);
+                let diff = prob - target;
+                let base = diff.abs();
+                let ce_grad = base.powf(gamma) * diff * k;
+                let focal_grad = gamma * base.powf(gamma - 1.0)
+                    * diff.signum() * k * prob * (1.0 - prob) * ce;
+
+                ce_grad + focal_grad
+            },
         }
     }
 }

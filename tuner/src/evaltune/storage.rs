@@ -7,8 +7,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use soul::{color, engine::eval_params::Tunable};
 
-use crate::core::{error::CheckpointError, fnv::Fnv1a};
-use crate::evaltune::palette;
+use crate::{
+    core::{error::CheckpointError, fnv::Fnv1a},
+    evaltune::palette,
+};
 
 pub const CHECKPOINT_VERSION: u32 = 3;
 
