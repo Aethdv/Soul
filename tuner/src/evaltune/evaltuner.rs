@@ -385,11 +385,8 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     rng.shuffle(&mut entries);
 
-    // Decode every nibble-encoded entry into a packed FeatureRecord at startup:
-    // reconstruct the Position, compute mobility / king safety / x-ray / pawn
-    // structure, pre-resolve the PSQT gather indices, and pack it all into one
-    // contiguous record. This is the one-time cost: training reads the records
-    // straight through. Parallel because the entries are independent.
+    // One-time cost: training reads FeatureRecords straight through.
+    // Parallel because entries are independent.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
 
@@ -403,11 +400,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         if stm_white { r } else { 1.0 - r }
     });
 
-    // Phase-stratified balancing: weight each sample by the inverse frequency of
-    // its phase bucket, so sparse endgame phases pull a fair share of the gradient,
-    // and of the loss, instead of drowning under the midgame crowd. Weighting
-    // the loss too keeps optimization, validation, and model selection on one
-    // objective; weighting only the gradient leaves selection fighting training.
+    // Weight loss too, not just gradient, or selection fights training.
     let phase_weights = if config.phase_balance {
         build_phase_weights(&records, config.phase_balance_cap, config.phase_target.as_deref())
     } else {
@@ -428,10 +421,8 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
     train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, &ctx)
 }
 
-/// Sampled FNV fingerprint of the dataset: entry count plus every strided
-/// entry's packed fields, hashed before the shuffle so it identifies the
-/// loaded contents, not a permutation. A checkpoint's seed replays the same
-/// train/val split only over the same entries.
+/// Hashed before shuffle: identifies loaded contents, not a permutation.
+/// A checkpoint's seed replays the same split only over the same entries.
 fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
     let mut fnv = Fnv1a::new();
     fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
@@ -447,13 +438,10 @@ fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
     fnv.digest()
 }
 
-/// Per-sample phase-balancing weights for `records`, normalized to mean 1.
-///
-/// Reweights each position toward a `target` phase distribution, clamped to
-/// `[1/cap, cap]`. `None` is uniform: inverse bucket frequency, lifting sparse
-/// phases toward even representation. `Some(t)` is an importance weight,
-/// `target[phase] / observed[phase]`, toward the density `t`. Mean-1
-/// normalization keeps the overall gradient scale equal to an unweighted run.
+/// Reweights toward `target` phase distribution, clamped to `[1/cap, cap]`.
+/// `None` is uniform: inverse bucket frequency, lifting sparse phases toward
+/// even representation. `Some(t)` is `target[phase] / observed[phase]`, toward
+/// the density `t`. Mean-1 keeps gradient scale equal to unweighted.
 fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64]>) -> Vec<f64> {
     let cap = cap.max(1.0);
     let params = eval_params::collect_parameters();
@@ -513,10 +501,8 @@ fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64
     weights
 }
 
-/// Startup diagnostic for phase balancing: the phase-population sparkline, the
-/// imbalance the cap is up against, and the resulting weight spread. Set
-/// `phase_balance_cap` toward the printed imbalance to fully correct it, or lower
-/// to spare the sparse buckets their variance.
+/// Set `phase_balance_cap` toward the printed imbalance to fully correct it,
+/// or lower to spare the sparse buckets their variance.
 fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize) {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -573,9 +559,7 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
     println!("  {lab}Draws:{RESET}      {c}{dr}{RESET}");
 }
 
-/// Validation-loss trajectory as a colored block sparkline, each cell ranked
-/// within the window's own min–max; lowest loss is shortest and greenest,
-/// highest is tallest and reddest, so a descending run cools to a green floor.
+/// Loss history as a sparkline: lower loss → shorter block.
 fn loss_sparkline(history: &[f64]) -> String {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -636,12 +620,14 @@ fn train_loop(
     let lab = palette::fg(palette::LABEL);
     let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
+
     println!("{lab}K Factor:{RESET}   {v}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
     println!("{lab}K Mode:{RESET}     {}", match config.k_mode {
         KMode::Fixed { value } => format!("{v}Fixed{RESET} ({value})"),
         KMode::Learned { lr_mult } => format!("{v}Learned{RESET} ({lr_mult})"),
         KMode::Sweep { interval } => format!("{v}Sweep{RESET} ({interval})"),
     });
+
     let seed_label = if resume.is_some() {
         " (checkpoint)"
     } else if config.seed.is_some() {
@@ -660,9 +646,7 @@ fn train_loop(
     let beta2_mask = build_beta2_mask(&all_params, config.beta2);
     let lr_mask = build_lr_mask(&all_params, config);
 
-    // Zero init: the 0.99-per-batch EMA decay extinguishes any seed value long
-    // before freeze_start_epoch, so auto-freeze sees only real gradient history.
-    // A non-zero seed only delays detection of genuinely dead parameters.
+    // Zero init: 0.99 EMA decay washes out any seed within a few batches.
     let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
     let mut stagnant_epochs = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
 
@@ -719,16 +703,13 @@ fn train_loop(
     let mut ema_values = resume.as_ref().map_or_else(|| values.clone(), |d| d.ema.clone());
     let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
 
-    // Tail-only EMA doesn't apply to constant schedules,
-    // there is no "tail" phase. Fall back to uniform Polyak averaging.
+    // Constant schedule has no tail → uniform Polyak instead of tail EMA.
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
     let warmup_end = (config.epochs as f64 * 0.1).max(1.0) as usize;
     let mut best_val_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_val_loss);
     let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
 
-    // Validation-loss trajectory for the milestone sparkline, and the previous
-    // epoch's loss for the per-line trend arrow.
     let mut val_history: Vec<f64> = Vec::new();
     let mut prev_val_loss = f64::NAN;
 
@@ -737,11 +718,9 @@ fn train_loop(
     let mob_start = psqt::LAYOUT.mobility_open_offset;
     let mob_end = psqt::LAYOUT.weight_offset;
 
-    // ── Progressive unfreeze: material-only warmup
-    // Freeze all non-psqt/mat parameters for the first unfreeze_epoch epochs,
-    // so PSQT + material settle before the refinements join.
-    // A resume restores the saved mask instead: it already encodes this gate,
-    // plus whatever auto-freeze had claimed by the checkpoint.
+    // ── Progressive unfreeze
+    // Freeze non-psqt/mat for the first unfreeze_epoch epochs.
+    // Resume restores the saved mask. It encodes this gate plus any auto-freeze.
     if let Some(d) = &resume {
         fixed_mask.copy_from_slice(&d.frozen);
     } else if config.unfreeze_epoch > 0 {
@@ -774,14 +753,9 @@ fn train_loop(
 
         let is_restart = epoch > 1 && {
             let prev_scheduled_lr = lr_scheduler.rate(epoch - 1, config.epochs) * lr_scale;
-            // A ≥50% jump in LR indicates a scheduler restart (e.g. cosine SGDR cycle boundary).
-            // This threshold is intentionally generous: normal LR decay is monotone, so a
-            // 50% increase can only mean a deliberate reset point.
-            //
-            // Correct for cosine-with-cycles, but would false-fire on any scheduler that
-            // legitimately increases LR during training (e.g. warmup phases).
-            // If a new scheduler with a genuine LR increase is added,
-            // gate this on scheduler type or add an LrScheduler::is_restart_boundary method to the trait.
+            // ≥50% LR jump = scheduler restart (cosine SGDR cycle boundary).
+            // Correct for cosine-with-cycles. Would false-fire on warmup.
+            // TODO: gate on scheduler type or add LrScheduler::is_restart_boundary.
             scheduled_lr > prev_scheduled_lr * 1.5
         };
 
@@ -810,7 +784,7 @@ fn train_loop(
             grad_stats.update(avg_norm);
 
             // ── Dynamic Gradient Clipping
-            // Clips outliers based on the distribution of recent batch norms.
+            // Clips outliers based on distribution of recent batch norms.
             let clip_thresh = grad_stats.clip_threshold(config.grad_clip);
             let threshold = clip_thresh * n;
 
