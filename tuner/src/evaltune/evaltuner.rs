@@ -301,41 +301,46 @@ impl TrainerContext<'_> {
     }
 }
 
-/// K line search via golden-section search.
+/// Golden-section search for K.
 ///
-/// At each step the interval `[lo, hi]` is narrowed by the golden ratio `C ≈ 0.618`.
-/// Two interior probes `a` and `b` are maintained; whichever probe loses becomes the
-/// new boundary, and only one new probe is evaluated per iteration.
+/// Maintains two interior probes `a` and `b`; the losing probe becomes the new
+/// boundary, requiring only one fresh eval per iteration. The probe offset is
+/// `C · range` (not `range`) because the surviving probe already sits at `C²`
+/// of the old width, placing the new probe at `C` of the new width.
 ///
-/// `range` tracks the current interval width. The probe offset from each boundary is
-/// `C · range` (not `range`) because after shrinking, the reused probe already sits
-/// at `C²` of the old width from the surviving boundary, placing the fresh probe
-/// at `C` of the new width mirrors it correctly.
+/// Assumes `eval` is unimodal on `[lo, hi]`; otherwise the result is not
+/// guaranteed to be a global minimum.
 pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
+    debug_assert!(lo < hi, "golden_search_k: lo ({lo}) must be < hi ({hi})");
+    debug_assert!(tol > 0.0, "golden_search_k: tol ({tol}) must be positive");
+
+    if hi - lo <= tol {
+        return (lo + hi) / 2.0;
+    }
+
     const C: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
 
     let mut lo = lo;
     let mut hi = hi;
-    let mut range = hi - lo;
-    let mut a = hi - C * range;
-    let mut b = lo + C * range;
+    let mut width = hi - lo;
+    let mut a = hi - C * width;
+    let mut b = lo + C * width;
     let mut fa = eval(a);
     let mut fb = eval(b);
 
-    while range > tol {
+    while width > tol {
+        width *= C;
         if fa < fb {
             hi = b;
-            range *= C;
             b = a;
             fb = fa;
-            a = hi - C * range;
+            a = hi - C * width;
             fa = eval(a);
         } else {
             lo = a;
-            range *= C;
             a = b;
             fa = fb;
-            b = lo + C * range;
+            b = lo + C * width;
             fb = eval(b);
         }
     }
@@ -670,20 +675,26 @@ fn train_loop(
     println!("{lab}Mode:{RESET}       {v}{mode_label}{RESET}");
     {
         let d = lr_scheduler.describe();
-        let d = d.find('(').map_or_else(|| format!("{v}{d}{RESET}"), |op| {
-            let name = &d[..op].trim_end();
-            let inner = &d[op + 1..d.len() - 1];
-            format!("{v}{name}{RESET} ({inner})")
-        });
+        let d = d.find('(').map_or_else(
+            || format!("{v}{d}{RESET}"),
+            |op| {
+                let name = &d[..op].trim_end();
+                let inner = &d[op + 1..d.len() - 1];
+                format!("{v}{name}{RESET} ({inner})")
+            },
+        );
         println!("{lab}LR Sched:{RESET}   {d}");
     }
     {
         let d = wdl_scheduler.describe();
-        let d = d.find('(').map_or_else(|| format!("{v}{d}{RESET}"), |op| {
-            let name = &d[..op].trim_end();
-            let inner = &d[op + 1..d.len() - 1];
-            format!("{v}{name}{RESET} ({inner})")
-        });
+        let d = d.find('(').map_or_else(
+            || format!("{v}{d}{RESET}"),
+            |op| {
+                let name = &d[..op].trim_end();
+                let inner = &d[op + 1..d.len() - 1];
+                format!("{v}{name}{RESET} ({inner})")
+            },
+        );
         println!("{lab}WDL Sched:{RESET}  {d}");
     }
     println!("{lab}Optimizer:{RESET}  {v}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
