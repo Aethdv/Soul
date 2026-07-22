@@ -3,7 +3,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use soul::cli::Help;
 use tuner::{
-    core::config::{DEFAULT_WDL_END, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
+    core::config::{DEFAULT_WDL_END, KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
     evaltune::{ablation, correlation, loader},
 };
@@ -18,49 +18,36 @@ use tuner::{
 struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
-
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     dataset: Option<Vec<String>>,
-
     #[arg(short, long, default_value = "tuner/tuner_config.toml")]
     config: String,
-
     #[arg(short, long)]
     epochs: Option<usize>,
-
     #[arg(short, long)]
     blend: Option<f64>,
-
     #[arg(short, long)]
     resume: Option<String>,
-
     #[arg(long)]
     lr: Option<f64>,
-
     #[arg(long)]
     min_lr: Option<f64>,
-
     #[arg(long)]
     warmup: Option<f64>,
-
     #[arg(long)]
     cycles: Option<usize>,
-
     #[arg(long)]
     lr_schedule: Option<String>,
-
     #[arg(long)]
     wdl_start: Option<f64>,
-
     #[arg(long)]
     wdl_end: Option<f64>,
-
     #[arg(long)]
     wdl_schedule: Option<String>,
-
     #[arg(long)]
     seed: Option<u64>,
-
+    #[arg(long)]
+    lr_mult: Option<f64>,
     #[arg(long, action = clap::ArgAction::SetTrue)]
     help: bool,
 }
@@ -79,6 +66,26 @@ enum Commands {
     },
     #[command(name = "correlation")]
     Correlation,
+    #[command(name = "sweep-lr-mult")]
+    SweepLrMult {
+        #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+        values: Option<Vec<f64>>,
+        #[arg(long, default_value_t = 0.001)]
+        min: f64,
+        #[arg(long, default_value_t = 0.3)]
+        max: f64,
+        #[arg(long, default_value_t = 6)]
+        count: usize,
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        #[arg(short, long)]
+        epochs: Option<usize>,
+        #[arg(long, default_value_t = 1)]
+        refine_rounds: usize,
+        #[arg(long)]
+        seed: Option<u64>,
+        dataset: String,
+    },
     Help,
 }
 
@@ -104,6 +111,58 @@ fn main() {
         Some(Commands::Correlation) => {
             correlation::run_correlation();
         },
+        Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
+            let base_epochs = epochs.unwrap_or(100);
+
+            let mut grid: Vec<f64> = match values {
+                Some(v) if !v.is_empty() => v,
+                _ => log_space(min, max, count),
+            };
+
+            let mut all_results: Vec<(f64, f64, f32)> = Vec::new();
+            let mut best = (f64::MAX, grid[0]);
+
+            for round in 0..=refine_rounds {
+                let ep = base_epochs * (1 << round);
+                let lstep = if grid.len() > 1 { (grid[grid.len() - 1].ln() - grid[0].ln()) / (grid.len() - 1) as f64 } else { 0.5 };
+
+                println!("── Round {round}: {ep} epochs");
+                println!("  lr_mult    Best L_val    Time");
+                println!("  -------    ----------    ----");
+
+                for &lr_mult in &grid {
+                    let (val, t) = run_sweep_trial(lr_mult, &dataset, &config_path, ep, seed);
+                    let label = if val == f64::MAX { "FAILED".to_string() } else { format!("{val:>10.6}") };
+
+                    println!("  {lr_mult:>7.4}    {label}    {t:.1}s");
+                    all_results.push((lr_mult, val, t));
+
+                    if val < best.0 {
+                        best = (val, lr_mult);
+                    }
+                }
+
+                if round < refine_rounds && grid.len() > 1 {
+                    let half = lstep / 2.0;
+                    let b = best.1.ln();
+
+                    grid = vec![(b - half).exp(), b.exp(), (b + half).exp()];
+                }
+            }
+
+            all_results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            println!("\n  Sorted by L_val:");
+            println!("  lr_mult    Best L_val    Time");
+            println!("  -------    ----------    ----");
+
+            for &(lr_mult, val, t) in &all_results {
+                let label = if val == f64::MAX { "FAILED".to_string() } else { format!("{val:>10.6}") };
+
+                println!("  {lr_mult:>7.4}    {label}    {t:.1}s");
+            }
+            println!("\nBest lr_mult = {:.4} (L_val = {:.6})", best.1, best.0);
+        },
         None => {
             let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
                 eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
@@ -118,7 +177,11 @@ fn main() {
                 tuner_config.evaltune.seed = Some(seed);
             }
 
-            // Apply LR schedule overrides
+            if let Some(lr_mult) = args.lr_mult {
+                tuner_config.evaltune.k_mode = KMode::Learned { lr_mult };
+            }
+
+            // LR schedule overrides
             if let Some(stype) = args.lr_schedule {
                 match stype.as_str() {
                     "constant" => tuner_config.evaltune.lr_schedule = LrScheduleConfig::Constant { value: args.lr.unwrap_or(0.1) },
@@ -225,6 +288,7 @@ fn main() {
                 if let Some(blend) = args.blend {
                     tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Constant { value: blend };
                 }
+
                 match tuner_config.evaltune.wdl_schedule {
                     WdlScheduleConfig::Linear { ref mut start, ref mut end }
                     | WdlScheduleConfig::Cosine { ref mut start, ref mut end }
@@ -246,6 +310,59 @@ fn main() {
     }
 }
 
+fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    let e0 = lo.ln();
+    let e1 = hi.ln();
+
+    (0..n)
+        .map(|i| {
+            let t = i as f64 / (n - 1) as f64;
+            (e0 * (1.0 - t) + e1 * t).exp()
+        })
+        .collect()
+}
+
+fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
+    let mut cmd = std::process::Command::new(std::env::args().next().unwrap());
+
+    cmd.arg("--dataset").arg(dataset);
+    cmd.arg("--config").arg(config_path);
+    cmd.arg("--lr-mult").arg(lr_mult.to_string());
+    cmd.arg("--epochs").arg(epochs.to_string());
+
+    if let Some(s) = seed {
+        cmd.arg("--seed").arg(s.to_string());
+    }
+
+    let tmp = std::env::temp_dir().join(format!("sweep_{lr_mult}_{epochs}.txt"));
+    let out = std::fs::File::create(&tmp).unwrap();
+
+    cmd.stdout(out);
+    cmd.stderr(std::process::Stdio::inherit());
+
+    let start = std::time::Instant::now();
+    let status = cmd.status().expect("sweep subprocess failed");
+    let elapsed = start.elapsed().as_secs_f32();
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return (f64::MAX, elapsed);
+    }
+
+    let output = std::fs::read_to_string(&tmp).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp);
+
+    let val = output
+        .lines()
+        .find(|l| l.contains("Best L_val"))
+        .and_then(|l| l.split("L_val: ").nth(1))
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(f64::MAX);
+
+    (val, elapsed)
+}
+
 fn print_help() {
     let h = Help::new(28);
 
@@ -256,11 +373,12 @@ fn print_help() {
     h.command_args("encode", "<in> <out>", "Pre-encode EPD → .soul.zst");
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
+    h.command_args("sweep-lr-mult", "<dataset> [options]", "Sweep lr_mult with auto-grid + refinement");
     h.separator();
 
     h.header("Options");
     h.option("-d, --dataset", "<path,...>", "Paths to .epd or .soul.zst files");
-    h.option_default("-e, --epochs", "<N>", "Number of training epochs", "8000");
+    h.option_default("-e, --epochs", "<N>", "Number of training epochs", "4000");
     h.option_default("-b, --blend", "<ratio>", "Constant WDL blend factor", "0.3");
     h.option("-r, --resume", "<path>", "Resume from a JSON checkpoint");
     h.option("--lr", "<value>", "Base learning rate");
@@ -271,4 +389,5 @@ fn print_help() {
     h.option("--wdl-end", "<ratio>", "WDL blend end (scheduled)");
     h.option("--wdl-schedule", "<type>", "[constant|linear|cosine]");
     h.option("--seed", "<u64>", "Fixed RNG seed for reproducible training");
+    h.option("--lr-mult", "<f64>", "Learning-rate multiplier");
 }

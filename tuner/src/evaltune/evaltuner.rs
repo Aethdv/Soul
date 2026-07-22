@@ -34,7 +34,7 @@ use soul::{
 
 use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
 use crate::core::{
-    config::{EvalTuneConfig, LossFn, LrScheduleConfig},
+    config::{EvalTuneConfig, KMode, LossFn, LrScheduleConfig},
     fnv::Fnv1a,
     logger::JsonLogger,
 };
@@ -42,7 +42,88 @@ use crate::core::{
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 const MOB_CLAMP: f64 = 100.0;
 
-pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>) {
+/// State machine for K (sigmoid scaling factor) in the training loop.
+struct KController {
+    k: f64,
+    k_ref: f64,
+    mode: KMode,
+    k_min: f64,
+    k_max: f64,
+    beta1: f64,
+    beta2: f64,
+    momentum: f64,
+}
+
+impl KController {
+    fn bootstrap(
+        config: &EvalTuneConfig,
+        ctx: &TrainerContext,
+        values: &[f64],
+        init_blend: f64,
+        resume: Option<&CheckpointData>,
+    ) -> Self {
+        let (k, k_ref) = match resume {
+            Some(d) => (d.k, d.k_ref),
+            None => match config.k_mode {
+                KMode::Fixed { value } => (value, value),
+                _ => {
+                    println!("Optimizing K...");
+
+                    let k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
+                        ctx.val_eval(values, kk, init_blend)
+                    });
+
+                    (k, k)
+                },
+            },
+        };
+
+        Self {
+            k,
+            k_ref,
+            mode: config.k_mode,
+            k_min: config.k_min,
+            k_max: config.k_max,
+            beta1: config.beta1,
+            beta2: config.beta2,
+            momentum: 0.0,
+        }
+    }
+
+    fn k(&self) -> f64 {
+        self.k
+    }
+    fn k_ref(&self) -> f64 {
+        self.k_ref
+    }
+
+    fn on_epoch(&mut self, epoch: usize, ctx: &TrainerContext, ema_values: &[f64], blend: f64) -> Option<f64> {
+        let KMode::Sweep { interval } = self.mode else { return None };
+        if epoch % interval != 0 {
+            return None;
+        }
+
+        self.k =
+            golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| ctx.val_eval(ema_values, kk, blend));
+
+        Some(self.k)
+    }
+
+    fn on_batch(&mut self, k_grad: f64, batch_count: usize, lr: f64, scale: f64, weight_decay: f64) {
+        let KMode::Learned { lr_mult } = self.mode else { return };
+
+        let n = batch_count.max(1) as f64;
+        let kg = k_grad / n * scale;
+        let eff_lr = lr * lr_mult;
+        let c = self.beta1.mul_add(self.momentum, (1.0 - self.beta1) * kg);
+
+        self.k -= eff_lr * (c.signum() + weight_decay * self.k);
+        self.momentum = self.beta2.mul_add(self.momentum, (1.0 - self.beta2) * kg);
+        self.k = self.k.clamp(self.k_min, self.k_max);
+    }
+}
+
+pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>) -> f64 {
     let total_start = Instant::now();
 
     // Enable FTZ/DAZ on the MAIN thread immediately.
@@ -63,7 +144,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         .ok();
 
     let paths = resolve_dataset_paths(dataset_path.unwrap_or("default"));
-    let Some(paths) = paths else { return };
+    let Some(paths) = paths else { return f64::MAX };
 
     let mut all_entries = Vec::new();
 
@@ -94,14 +175,14 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
-        return;
+        return f64::MAX;
     }
-    println!("Total positions: {}{}{RESET}", palette::fg(palette::COUNT), all_entries.len());
 
-    train_entries(all_entries, config, resume_path);
+    let best_val = train_entries(all_entries, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
+    best_val
 }
 
 /// Enable Flush-to-Zero and Denormals-are-Zero for performance.
@@ -135,21 +216,23 @@ impl TrainerContext<'_> {
         if self.vol_threshold == 0 || entry.score == i16::MAX {
             return true;
         }
+
         let t = if self.vol_adaptive {
             let short = 10i16.saturating_sub(entry.occupancy.count_ones() as i16);
             self.vol_threshold + short.saturating_mul(2)
         } else {
             self.vol_threshold
         };
+
         (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
     }
 
-    fn batch_grad(&self, batch_indices: &[usize], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, usize) {
+    fn batch_grad(&self, batch_indices: &[usize], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
         batch_indices
             .par_chunks(256)
             .fold(
-                || (vec![0.0; values.len()], 0.0, 0usize),
-                |(mut g, mut loss, mut count), chunk| {
+                || (vec![0.0; values.len()], 0.0f64, 0.0f64, 0usize),
+                |(mut g, mut k_g, mut loss, mut count), chunk| {
                     for &i in chunk {
                         let entry = &self.train[i];
                         let record = &self.records[i];
@@ -159,22 +242,30 @@ impl TrainerContext<'_> {
                         }
 
                         let target = wdl_target(entry, k, blend);
-                        let sig = sigmoid(loader::eval_record(record, values), k);
+                        let score = loader::eval_record(record, values);
+                        let sig = sigmoid(score, k);
                         let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
+                        let gs = self.loss_fn.grad_scale(sig, target, k);
 
                         loss += w * self.loss_fn.loss(sig, target);
-                        loader::accumulate_record_grad(record, values, self.loss_fn.grad_scale(sig, target, k) * w, &mut g);
+                        loader::accumulate_record_grad(record, values, gs * w, &mut g);
+
+                        // gs is ∂L/∂score = K · (sig - target) · dσ/dscore.
+                        // We need ∂L/∂K = score · (sig - target) · dσ/dscore.
+                        // So ∂L/∂K = (gs / K) · score.
+                        k_g += (gs / k) * score * w;
+
                         count += 1;
                     }
 
-                    (g, loss, count)
+                    (g, k_g, loss, count)
                 },
             )
             .reduce(
-                || (vec![0.0; values.len()], 0.0, 0usize),
-                |(g1, l1, c1), (g2, l2, c2)| {
+                || (vec![0.0; values.len()], 0.0f64, 0.0f64, 0usize),
+                |(g1, kg1, l1, c1), (g2, kg2, l2, c2)| {
                     let (g, l) = grad_combine((g1, l1), (g2, l2));
-                    (g, l, c1 + c2)
+                    (g, kg1 + kg2, l, c1 + c2)
                 },
             )
     }
@@ -252,7 +343,7 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
     (lo + hi) / 2.0
 }
 
-fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) {
+fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) -> f64 {
     let dataset_fnv = dataset_fingerprint(&entries);
 
     // A resume must shuffle under the checkpoint's seed, or the train/val
@@ -329,7 +420,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         vol_adaptive: config.volatility_adaptive,
     };
 
-    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, &ctx);
+    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, &ctx)
 }
 
 /// Sampled FNV fingerprint of the dataset: entry count plus every strided
@@ -513,7 +604,7 @@ fn train_loop(
     rng_seed: u64,
     dataset_fnv: u64,
     ctx: &TrainerContext,
-) {
+) -> f64 {
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
 
@@ -533,33 +624,19 @@ fn train_loop(
     let lr_scheduler = config.lr_schedule.clone().into_scheduler();
     let wdl_scheduler = config.wdl_schedule.clone().into_scheduler();
 
-    // ── K line search
-    // the sigmoid scaling constant that best maps
-    // raw centipawn scores to win/draw/loss outcomes.
-    // A resume restores both K's instead: re-deriving k_ref would re-anchor
-    // L_ref and break loss comparability with the original run's log.
-    let (mut k, k_ref) = match &resume {
-        Some(d) => (d.k, d.k_ref),
-        None => {
-            println!("Optimizing K...");
-            let init_blend = wdl_scheduler.blend(1, config.epochs);
-            let k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                ctx.val_eval(&values, kk, init_blend)
-            });
-
-            (k, k)
-        },
-    };
+    let init_blend = wdl_scheduler.blend(1, config.epochs);
+    let mut k_ctrl = KController::bootstrap(config, ctx, &values, init_blend, resume.as_ref());
 
     let v = palette::fg(palette::VALUE);
     let lab = palette::fg(palette::LABEL);
+    let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
     println!("{lab}K Factor:{RESET}   {v}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
-
-    // Frozen reference K - never re-optimized.
-    // L_ref uses this K so that loss numbers are comparable across epochs
-    // and runs regardless of K-reopt drift.
-    println!("{lab}Ref K:{RESET}      {v}{k_ref:.6}{RESET}");
+    println!("{lab}K Mode:{RESET}     {}", match config.k_mode {
+        KMode::Fixed { value } => format!("{v}Fixed{RESET} ({value})"),
+        KMode::Learned { lr_mult } => format!("{v}Learned{RESET} ({lr_mult})"),
+        KMode::Sweep { interval } => format!("{v}Sweep{RESET} ({interval})"),
+    });
     let seed_label = if resume.is_some() {
         " (checkpoint)"
     } else if config.seed.is_some() {
@@ -567,6 +644,7 @@ fn train_loop(
     } else {
         ""
     };
+
     println!("{lab}Seed:{RESET}       {v}{rng_seed}{RESET}{seed_label}");
 
     let initial_values = values.clone();
@@ -590,8 +668,24 @@ fn train_loop(
 
     println!("{lab}Parameters:{RESET} {v}{}{RESET}", all_params.len());
     println!("{lab}Mode:{RESET}       {v}{mode_label}{RESET}");
-    println!("{lab}LR Sched:{RESET}   {v}{}{RESET}", lr_scheduler.describe());
-    println!("{lab}WDL Sched:{RESET}  {v}{}{RESET}", wdl_scheduler.describe());
+    {
+        let d = lr_scheduler.describe();
+        let d = d.find('(').map_or_else(|| format!("{v}{d}{RESET}"), |op| {
+            let name = &d[..op].trim_end();
+            let inner = &d[op + 1..d.len() - 1];
+            format!("{v}{name}{RESET} ({inner})")
+        });
+        println!("{lab}LR Sched:{RESET}   {d}");
+    }
+    {
+        let d = wdl_scheduler.describe();
+        let d = d.find('(').map_or_else(|| format!("{v}{d}{RESET}"), |op| {
+            let name = &d[..op].trim_end();
+            let inner = &d[op + 1..d.len() - 1];
+            format!("{v}{name}{RESET} ({inner})")
+        });
+        println!("{lab}WDL Sched:{RESET}  {d}");
+    }
     println!("{lab}Optimizer:{RESET}  {v}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = File::create("evaltune_log.txt").ok();
@@ -651,16 +745,11 @@ fn train_loop(
         let t0 = Instant::now();
         let blend = wdl_scheduler.blend(epoch, config.epochs);
 
-        // Periodic K factor re-optimization
-        if epoch % 200 == 0 {
-            k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                ctx.val_eval(&ema_values, kk, blend)
-            });
-
-            println!("  Reoptimized K: {k:.6}");
+        if let Some(new_k) = k_ctrl.on_epoch(epoch, ctx, &ema_values, blend) {
+            println!("  Reoptimized K: {new_k:.6}");
 
             if let Some(ref mut w) = logger {
-                writeln!(w, "# K re-opt @ epoch {epoch}: {k:.6}").ok();
+                writeln!(w, "# K re-opt @ epoch {epoch}: {new_k:.6}").ok();
             }
         }
 
@@ -698,7 +787,7 @@ fn train_loop(
         let mut total_grads = vec![0.0; values.len()];
 
         for batch in indices.chunks(config.batch_size) {
-            let (mut grads, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k, blend);
+            let (mut grads, k_grad, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k_ctrl.k(), blend);
 
             train_loss += batch_loss;
             train_count += batch_count;
@@ -726,6 +815,8 @@ fn train_loop(
             for value in &mut values[mob_start..mob_end] {
                 *value = value.clamp(-MOB_CLAMP, MOB_CLAMP);
             }
+
+            k_ctrl.on_batch(k_grad, batch_count, lr, scale, config.weight_decay);
 
             // ── Per-parameter Convergence Tracking
             // Freeze parameters that have statistically converged to reduce noise.
@@ -779,8 +870,8 @@ fn train_loop(
             }
         }
 
-        let val_loss = ctx.val_eval(&ema_values, k, blend);
-        let ref_loss = ctx.val_eval(&ema_values, k_ref, 0.0);
+        let val_loss = ctx.val_eval(&ema_values, k_ctrl.k(), blend);
+        let ref_loss = ctx.val_eval(&ema_values, k_ctrl.k_ref(), 0.0);
         let train_loss = train_loss / train_count.max(1) as f64;
 
         // ── Validation Plateau Detection
@@ -887,8 +978,8 @@ fn train_loop(
             if let Err(e) = save_checkpoint("evaltune_checkpoint.json", &all_params, &TrainerState {
                 epoch: epoch + 1, // resume starts here; the current epoch is already done
                 lr_scale,
-                k,
-                k_ref,
+                k: k_ctrl.k(),
+                k_ref: k_ctrl.k_ref(),
                 best_val_loss,
                 plateau_count,
                 rng_seed,
@@ -912,6 +1003,7 @@ fn train_loop(
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
     print_results(&snapshots, &all_params, &initial_values, &ema_values, config.epochs);
+    best_val_loss
 }
 
 /// Sensitivity Analysis: writes `sensitivity-report.txt`.

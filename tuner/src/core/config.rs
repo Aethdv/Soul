@@ -3,21 +3,27 @@
 use std::{error::Error, fs};
 
 use serde::{
-    de::{self, MapAccess, Visitor},
     Deserialize,
+    de::{self, MapAccess, Visitor},
 };
 
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
 pub const DEFAULT_WDL_END: f64 = 0.3;
+pub const DEFAULT_K_LR_MULT: f64 = 0.01;
+pub const DEFAULT_K_SWEEP_INTERVAL: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LossFn {
     #[default]
     CrossEntropy,
     MeanSquaredError,
-    Focal { gamma: f64 },
-    SmoothedCE { epsilon: f64 },
+    Focal {
+        gamma: f64,
+    },
+    SmoothedCE {
+        epsilon: f64,
+    },
 }
 
 struct LossFnVisitor;
@@ -112,8 +118,7 @@ impl LossFn {
                 let diff = prob - target;
                 let base = diff.abs();
                 let ce_grad = base.powf(gamma) * diff * k;
-                let focal_grad = gamma * base.powf(gamma - 1.0)
-                    * diff.signum() * k * prob * (1.0 - prob) * ce;
+                let focal_grad = gamma * base.powf(gamma - 1.0) * diff.signum() * k * prob * (1.0 - prob) * ce;
 
                 ce_grad + focal_grad
             },
@@ -122,6 +127,46 @@ impl LossFn {
                 let t = target * (1.0 - epsilon) + 0.5 * epsilon;
                 Self::CrossEntropy.grad_scale(sig, t, k)
             },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum KMode {
+    Sweep {
+        #[serde(default = "default_k_sweep_interval")]
+        interval: usize,
+    },
+    Learned {
+        #[serde(default = "default_k_lr_mult")]
+        lr_mult: f64,
+    },
+    Fixed {
+        value: f64,
+    },
+}
+
+fn default_k_sweep_interval() -> usize {
+    DEFAULT_K_SWEEP_INTERVAL
+}
+
+fn default_k_lr_mult() -> f64 {
+    DEFAULT_K_LR_MULT
+}
+
+impl Default for KMode {
+    fn default() -> Self {
+        Self::Sweep { interval: DEFAULT_K_SWEEP_INTERVAL }
+    }
+}
+
+impl std::fmt::Display for KMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KMode::Sweep { interval } => write!(f, "Sweep ({interval})"),
+            KMode::Learned { lr_mult } => write!(f, "Learned ({lr_mult})"),
+            KMode::Fixed { value } => write!(f, "Fixed ({value})"),
         }
     }
 }
@@ -239,6 +284,8 @@ pub struct EvalTuneConfig {
     pub grad_clip: f64,
     pub k_min: f64,
     pub k_max: f64,
+    #[serde(default)]
+    pub k_mode: KMode,
     /// Plateau patience epochs before halving lr_scale. Default: 100.
     #[serde(default = "default_patience")]
     pub patience: usize,
@@ -323,19 +370,15 @@ fn default_freeze_threshold() -> f64 {
 fn default_freeze_consecutive() -> usize {
     2
 }
-
 fn default_one() -> f64 {
     1.0
 }
-
 fn default_lr_material() -> f64 {
     0.3
 }
-
 fn default_lr_mobility() -> f64 {
     0.5
 }
-
 fn default_phase_balance_cap() -> f64 {
     8.0
 }
@@ -401,7 +444,6 @@ fn default_bounds_alarm_floor() -> f64 {
 fn default_bounds_report_path() -> String {
     "bounds_report.txt".to_string()
 }
-
 fn default_smoothing_radius() -> f64 {
     0.1
 }
@@ -422,10 +464,12 @@ impl TunerConfig {
             eprintln!("\x1b[31m[!] Failed to read config file '{}': {}\x1b[0m", path, e);
             e
         })?;
+
         let config: Self = toml::from_str(&contents).map_err(|e| {
             eprintln!("\x1b[31m[!] Failed to parse TOML from '{}': {}\x1b[0m", path, e);
             e
         })?;
+
         Ok(config)
     }
 }
@@ -445,6 +489,7 @@ impl Default for TunerConfig {
                 grad_clip: 1.0,
                 k_min: 0.003,
                 k_max: 0.010,
+                k_mode: KMode::Sweep { interval: DEFAULT_K_SWEEP_INTERVAL },
                 patience: 100,
                 ema_decay: 0.999,
                 unfreeze_epoch: 0,
