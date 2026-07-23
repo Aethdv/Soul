@@ -1,9 +1,9 @@
 //! Forward-mode AD evaluation using dual numbers.
 //!
-//! Instead of building a tape and running backward(), we carry partial
-//! derivatives for all 35 non-linear inputs alongside each value.
-//! PSQT gradients are recovered by multiplying the 8 accumulator-lane
-//! gradients by each piece's ±1 contribution.
+//! Instead of building a tape and running `backward()`, we carry `DUAL_N`
+//! partial derivatives alongside each value. PSQT gradients are recovered
+//! by multiplying the 8 accumulator-lane gradients by each piece's ±1
+//! contribution.
 
 use soul::{
     core::{
@@ -51,7 +51,7 @@ macro_rules! impl_scatter {
         paste::paste! {
             impl DualEvalResult {
                 pub fn scatter_dynamic(&self, outer_deriv: f64, param_grads: &mut [f64]) {
-                    let mut slot = 2; // Mg=0, Eg=1
+                    let mut slot = 2; // MG=0, EG=1
                     $(
                         scatter::[<scatter_ $ty:lower>](
                             &self.grad,
@@ -69,28 +69,21 @@ macro_rules! impl_scatter {
 
 soul::define_tunables!(impl_scatter);
 
-/// Gradient snapshot from the dual forward pass: the raw partial derivatives,
-/// consumed by `scatter_dynamic` once the outer loss derivative is known.
+/// Consumed by `scatter_dynamic` once the outer loss derivative is known.
 pub struct DualEvalResult {
-    /// Raw partial derivatives from the dual pass: one slot per dual-tracked
-    /// input (`DUAL_SLOTS`), zero-padded to `DUAL_N`.
+    /// One slot per dual-tracked input (`DUAL_SLOTS`), zero-padded to `DUAL_N`.
     pub grad: [f32; DUAL_N],
 }
 
-/// Fully fused eval + gradient scatter via forward-mode AD.
+/// Eval + gradient scatter via forward-mode AD.
 ///
-/// Single-pass: computes eval with dual numbers, sigmoid, loss derivative,
-/// and scatters all gradients: no intermediate storage. PSQT gradients
-/// are recovered by re-iterating piece bitboards (still hot in L1).
-///
-/// In the production training loop, `eval_linear_grad` handles gradients directly.
-/// This function serves as the correctness oracle, run both and compare to verify
-/// hand-derived gradient formulas.
+/// Correctness oracle over `eval_linear_grad`: comparing loss and gradients
+/// across the same inputs verifies the hand-derived formulas.
 ///
 /// Returns the squared error for loss tracking.
 #[inline]
 pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    // PSQT + Material accumulator (plain f64 sums, no piece tracking)
+    // PSQT + material in plain f64 (no dual, just lane sums and piece counts)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
@@ -108,7 +101,6 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 
     let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
 
-    // Seed DualNode values
     let mut dual_acc = DualVec8::zero();
     dual_acc.0[0] = DualNode::seed(lane_vals[0], 0);
     dual_acc.0[1] = DualNode::seed(lane_vals[1], 1);
@@ -129,11 +121,11 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let err = sig - target;
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
 
-    // EvalParams gradients (slots 2..29)
+    // Non-PSQT gradients
     let dummy = DualEvalResult { grad: result.grad };
     dummy.scatter_dynamic(outer_deriv, param_grads);
 
-    // PSQT gradients: re-iterate board pieces (still hot in L1)
+    // Re-iterate piece bitboards for PSQT gradients
     let d_mg = outer_deriv * f64::from(result.grad[0]);
     let d_eg = outer_deriv * f64::from(result.grad[1]);
 
@@ -184,18 +176,19 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     err * err
 }
 
-/// Direct gradient extraction for the linear HCE.
+/// Because every parameter is linear (`param · feature`), the gradient w.r.t.
+/// each one is just its feature coefficient on the board. Computing these
+/// directly is cheaper than the dual path:
 ///
-/// Since the eval is fully linear in its parameters (every param appears as
-/// `param · board_feature`), gradients are just the feature coefficients
-/// computable from board state + phase + openness in ~90 f64 ops, vs ~2500
-/// f32 ops for the dual number path.
+/// - Linear: one f64 write per slot.
+/// - Dual:   DUAL_N f32 ops per arithmetic op.
+///           DUAL_N = (DUAL_SLOTS + 7) & !7, DUAL_SLOTS = 2 + ∑slot_width(tunables).
 ///
-/// Returns squared error for loss tracking.
+/// Returns the squared error for loss tracking.
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
     // ── PSQT + Material accumulator
-    // (for lane values + PSQT scatter)
+    // For lane values + PSQT scatter
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
@@ -203,9 +196,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     let phase_raw = compute_phase(&piece_counts, values);
 
-    // NOTE: dJ/dPhaseWeight is intentionally omitted from the gradient
-    // scattering process below because the tuner architecture requires
-    // the game phase thresholds to be strictly fixed constants.
+    // dJ/dPhaseWeight is deliberately omitted: phase weights must stay at their
+    // engineered values for the MG/EG interpolation to be meaningful.
     let phase = phase_raw.clamp(0.0, 24.0).trunc();
     let score = eval_f64(board, values);
 
@@ -232,10 +224,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // the rest via `scatter_all_terms`.
     let upstreams = LinearCombiner::backward(phase, d, param_grads);
 
-    // ── PSQT + material (out-of-band, not a term)
-    // Stays in the tape because it lives in the accumulator, not the
-    // per-term parameter block. One board sweep writes both PSQT
-    // and material gradients for every active piece.
+    // ── PSQT + material (accumulator-level, not a LinearTerm)
+    // One board sweep writes both gradients for every active piece.
     let d_mg = upstreams.mg_eg.d_mg;
     let d_eg = upstreams.mg_eg.d_eg;
 
@@ -281,19 +271,14 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     err * err
 }
 
-/// Score-only evaluation using `evaluate_generic::<f64>`.
-///
-/// No gradient tracking: used for K-factor line search, validation loss,
-/// and as the score source in `eval_linear_grad`.
-/// Mirrors the engine's integer eval exactly, substituting f64 for i32.
+/// Substitutes f64 for i32 in the engine eval path.
 #[inline(always)]
 pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
     eval_f64_with_acc(board, values).0
 }
 
-/// Score-only evaluation that also returns the trace accumulator and piece counts.
-///
-/// Used by `eval_linear_grad` to avoid redundant board iterations.
+/// Returns the eval score and the lane-sum accumulator + piece counts,
+/// so `eval_linear_grad` can reuse them instead of re-iterating the board.
 pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
     let mut trace_acc = <f64 as EvalMath>::Vec8::zero();
     let mut piece_counts = [0.0f64; 6];
@@ -310,7 +295,6 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }
 
-/// Compute raw game phase as the dot product of piece counts and phase weights.
 #[inline(always)]
 fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
     let mut phase_raw = 0.0;
@@ -325,7 +309,6 @@ fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
     phase_raw
 }
 
-/// Walk the board accumulating PSQT and material into MG/EG lane sums.
 #[inline(always)]
 fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
     debug_assert!(
@@ -344,7 +327,6 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
         let mat_mg = values[psqt::LAYOUT.material_offset + pt];
         let mat_eg = values[psqt::LAYOUT.material_offset + 6 + pt];
 
-        // White pieces
         let mut bb_w = board.pieces(piece, Color::White);
         let count_w = bb_w.popcount() as f64;
         lane_vals[0] += count_w * mat_mg;
@@ -358,7 +340,6 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
             lane_vals[1] += values[pt * 64 + 32 + mirror_idx];
         }
 
-        // Black pieces
         let mut bb_b = board.pieces(piece, Color::Black);
         let count_b = bb_b.popcount() as f64;
 
@@ -423,9 +404,7 @@ mod tests {
     const TARGET: f64 = 0.5;
     const K: f64 = 0.005;
 
-    /// Return the eval layer (`LinearTerm` impl or accumulator-level scatter)
-    /// that owns a given param slot. Used to name term-level gradient drift
-    /// in oracle failure messages.
+    // Names the owning eval layer for drift-localized oracle failures.
     fn term_for(slot: usize) -> &'static str {
         if slot < LAYOUT.mobility_open_offset {
             "PSQT/material (accumulator-level)"
@@ -462,8 +441,7 @@ mod tests {
         }
     }
 
-    /// Compare `eval_linear_grad` against `eval_dual_fused` on every test FEN
-    /// under the given `values` vector. Identifies drift by term name.
+    // Compares eval vs gradients across both paths, identifies drift by term name.
     fn assert_oracle_matches(context: &str, values: &[f64]) {
         for fen in FENS {
             let pos = Position::from_fen(fen);
@@ -498,10 +476,7 @@ mod tests {
         values
     }
 
-    /// Populate only a contiguous slice of `values`; everything else stays zero.
-    /// Used to isolate a single `LinearTerm`: only its param range drives the
-    /// score, so `eval_linear_grad`'s scatter on that range is the only thing
-    /// being verified against the `DualNode` oracle.
+    // Isolates one LinearTerm: nonzero values in `range`, zero elsewhere.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len];
 
@@ -511,8 +486,6 @@ mod tests {
         values
     }
 
-    /// Pipeline-sum oracle: every term active, every bucket contributing.
-    /// Failure names the owning term, so drift localizes without bisection.
     #[test]
     fn test_linear_oracle_verification() {
         assert_oracle_matches("pipeline", &full_values());
