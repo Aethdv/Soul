@@ -12,19 +12,17 @@ const RANKS: usize = 8;
 const FILES: usize = 4; // half-board, mirrored
 const HALF: usize = RANKS * FILES; // 32
 
-/// Outlier threshold: any adjacent pair whose absolute difference exceeds
-/// 1.5× the piece-phase mean (floored at 5 cp) is flagged.
+// Outlier threshold: adjacent pairs whose difference exceeds
+// 1.5× the piece-phase mean (floored at 5 cp) are flagged.
 const OUTLIER_MULT: f64 = 1.5;
 const OUTLIER_FLOOR: f64 = 5.0;
 
-/// A pair of adjacent squares on the half-board and their value gap.
 struct Pair {
     a: usize,
     b: usize,
     diff: i32,
 }
 
-/// Stats for one piece-phase slice.
 struct SliceStats {
     piece: &'static str,
     phase: &'static str,
@@ -75,12 +73,10 @@ fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceSt
         for file in 0..FILES {
             let idx = rank * FILES + file;
 
-            // right neighbour
             if file + 1 < FILES {
                 let nb = idx + 1;
                 pairs.push(make_pair(v, idx, nb));
             }
-            // down neighbour
             if rank + 1 < RANKS {
                 let nb = idx + FILES;
                 pairs.push(make_pair(v, idx, nb));
@@ -134,7 +130,7 @@ fn write_report(slices: &[SliceStats]) -> io::Result<()> {
     w.flush()
 }
 
-/// Convert half-board index (0..31) → human square name (A1..D8).
+// Convert (0..31) → (A1..D8).
 fn sq_name(idx: usize) -> String {
     let file = (b'A' + (idx % FILES) as u8) as char;
     let rank = idx / FILES + 1;
