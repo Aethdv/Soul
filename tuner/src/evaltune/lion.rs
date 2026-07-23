@@ -1,8 +1,9 @@
 //! Lion: "Evolved Sign Momentum".
 //!
-//! Unlike Adam, which carefully tracks variance and bias,
-//! Lion just goes "is the gradient positive?"
-//! and shoves the parameter one step in that direction.
+//! Unlike Adam, which carefully tracks variance to scale every step,
+//! Lion asks a simpler question: "Where do momentum and gradient agree?"
+//! It takes the sign of their blend to step parameters at a uniform rate,
+//! damping noise whenever the signals clash.
 //!
 //! *Ref: Xiangning Chen, Chen Liang, Da Huang, Esteban Real, Kaiyuan Wang,
 //! Yao Liu, Hieu Pham, Xuanyi Dong, Thang Luong, Cho-Jui Hsieh, Yifeng Lu, Quoc V. Le*
@@ -55,7 +56,6 @@ impl Lion {
         self.lr = lr;
     }
 
-    /// Performs a single optimization step
     pub fn update(
         &self,
         params: &mut [f64],
@@ -91,7 +91,7 @@ impl Lion {
             //
             // When |c| is negligible the sign step is skipped, but weight decay
             // still fires: a converged parameter without gradient signal should
-            // not lose its regularisation pressure.
+            // not lose its regularization pressure.
             //
             // Per-parameter disagreement gate (m · g ≤ 0) catches local oscillation:
             // if momentum and gradient disagree, the sign update is skipped for this
@@ -134,10 +134,8 @@ mod tests {
 
     #[test]
     fn lion_clipping_works() {
-        let mut params = vec![1.5]; // Within range
-        let _momentum = vec![0.5]; // Strong existing momentum
-        let _grads = vec![1.0]; // Strong gradient (opposite direction)
-        let decay_mask = vec![0.0]; // No weight decay
+        let mut params = vec![1.5];
+        let decay_mask = vec![0.0];
         let fixed_mask = vec![false];
 
         let grads_neg = vec![-1.0];
@@ -159,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn lion_absent_gradient_skips_both_momentum_signs() {
+    fn lion_zero_gradient_does_not_step() {
         // g = 0 must not step either momentum sign.
         let decay_mask = vec![0.0];
         let fixed_mask = vec![false];
@@ -193,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn lion_dead_zone_still_applies_weight_decay() {
+    fn lion_zero_gradient_still_applies_weight_decay() {
         // c ≈ 0, g ≈ 0: no sign update, but weight decay must still fire.
         let mut params = vec![10.0];
         let mut momentum = vec![0.0];
