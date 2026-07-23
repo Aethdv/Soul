@@ -12,16 +12,14 @@ use crate::{
     evaltune::palette,
 };
 
-pub const CHECKPOINT_VERSION: u32 = 4;
+pub const CHECKPOINT_VERSION: u32 = 5;
 
-/// Serialisable training checkpoint: everything needed to resume a run.
+/// A resume that reconstructs K, the EMA trail, or the freeze mask from
+/// defaults trains a subtly different run wearing the old one's epoch counter.
 ///
-/// A resume that reconstructs K, the EMA trail, the freeze mask, or the
-/// snapshot hall from defaults trains a subtly different run wearing the old
-/// one's epoch counter.
-///
-/// Parameters are keyed by name to ensure robustness against layout changes
-/// (e.g. adding or reordering evaluation terms).
+/// Parameters are keyed by name so adding or reordering evaluation terms
+/// doesn't corrupt the load. The flat best-* vectors share the same ordering
+/// as `param_names` and are remapped by name on resume.
 #[derive(Serialize, Deserialize)]
 pub struct Checkpoint {
     pub version: u32,
@@ -30,13 +28,17 @@ pub struct Checkpoint {
     pub k: f64,
     pub k_ref: f64,
     pub best_val_loss: f64,
+    pub best_val_epoch: usize,
     pub best_train_loss: f64,
+    pub best_train_epoch: usize,
     pub plateau_count: usize,
     pub params: BTreeMap<String, ParamState>,
-    pub snapshots: Vec<Snapshot>,
     pub hash: u64,
     pub rng_seed: u64,
     pub dataset: u64,
+    pub param_names: Vec<String>,
+    pub best_val_params: Vec<f64>,
+    pub best_train_params: Vec<f64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,14 +51,6 @@ pub struct ParamState {
     pub frozen: bool,
 }
 
-/// A frozen parameter snapshot at a specific epoch.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub epoch: usize,
-    pub params: BTreeMap<String, f64>,
-    pub error: f64,
-}
-
 /// The trainer's live state, borrowed by [`save_checkpoint`]. Per-parameter
 /// slices are indexed by `Tunable::idx`; the save maps them to names.
 pub struct TrainerState<'a> {
@@ -65,7 +59,9 @@ pub struct TrainerState<'a> {
     pub k: f64,
     pub k_ref: f64,
     pub best_val_loss: f64,
+    pub best_val_epoch: usize,
     pub best_train_loss: f64,
+    pub best_train_epoch: usize,
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
@@ -75,7 +71,8 @@ pub struct TrainerState<'a> {
     pub grad_ema: &'a [f64],
     pub stagnant: &'a [usize],
     pub frozen: &'a [bool],
-    pub snapshots: &'a [Snapshot],
+    pub best_val_params: &'a [f64],
+    pub best_train_params: &'a [f64],
 }
 
 /// Save training state to a JSON checkpoint file.
@@ -96,6 +93,12 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         });
     }
 
+    let mut param_names = vec![String::new(); tunables.len()];
+
+    for t in tunables {
+        param_names[t.idx] = t.name.clone();
+    }
+
     let cp = Checkpoint {
         version: CHECKPOINT_VERSION,
         epoch: state.epoch,
@@ -103,13 +106,17 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         k: state.k,
         k_ref: state.k_ref,
         best_val_loss: state.best_val_loss,
+        best_val_epoch: state.best_val_epoch,
         best_train_loss: state.best_train_loss,
+        best_train_epoch: state.best_train_epoch,
         plateau_count: state.plateau_count,
         params,
-        snapshots: state.snapshots.to_vec(),
         hash: compute_layout_hash(tunables),
         rng_seed: state.rng_seed,
         dataset: state.dataset,
+        param_names,
+        best_val_params: state.best_val_params.to_vec(),
+        best_train_params: state.best_train_params.to_vec(),
     };
 
     let tmp = format!("{path}.tmp");
@@ -128,7 +135,9 @@ pub struct CheckpointData {
     pub k: f64,
     pub k_ref: f64,
     pub best_val_loss: f64,
+    pub best_val_epoch: usize,
     pub best_train_loss: f64,
+    pub best_train_epoch: usize,
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
@@ -138,7 +147,22 @@ pub struct CheckpointData {
     pub grad_ema: Vec<f64>,
     pub stagnant: Vec<usize>,
     pub frozen: Vec<bool>,
-    pub snapshots: Vec<Snapshot>,
+    pub best_val_params: Vec<f64>,
+    pub best_train_params: Vec<f64>,
+}
+
+fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunables: &[Tunable], fallback: &[f64]) -> Vec<f64> {
+    let saved: BTreeMap<&str, f64> = checkpoint_names.iter().zip(checkpoint_vals).map(|(n, &v)| (n.as_str(), v)).collect();
+
+    let mut out = fallback.to_vec();
+
+    for t in tunables {
+        if let Some(&v) = saved.get(t.name.as_str()) {
+            out[t.idx] = v;
+        }
+    }
+
+    out
 }
 
 /// Load training state from a JSON checkpoint file.
@@ -193,11 +217,12 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
             ema[t.idx] = p.ema;
             grad_ema[t.idx] = p.grad_ema;
             stagnant[t.idx] = p.stagnant;
-            // A param the code now declares fixed stays fixed, whatever
-            // the checkpoint remembers.
             frozen[t.idx] = p.frozen || t.is_fixed;
         }
     }
+
+    let best_val_params = remap_flat_params(&cp.param_names, &cp.best_val_params, tunables, &values);
+    let best_train_params = remap_flat_params(&cp.param_names, &cp.best_train_params, tunables, &values);
 
     Ok(CheckpointData {
         epoch: cp.epoch,
@@ -205,7 +230,9 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         k: cp.k,
         k_ref: cp.k_ref,
         best_val_loss: cp.best_val_loss,
+        best_val_epoch: cp.best_val_epoch,
         best_train_loss: cp.best_train_loss,
+        best_train_epoch: cp.best_train_epoch,
         plateau_count: cp.plateau_count,
         rng_seed: cp.rng_seed,
         dataset: cp.dataset,
@@ -215,7 +242,8 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         grad_ema,
         stagnant,
         frozen,
-        snapshots: cp.snapshots,
+        best_val_params,
+        best_train_params,
     })
 }
 
@@ -246,48 +274,6 @@ pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
     fnv.digest()
 }
 
-/// Snapshot hall of fame: keep the N best checkpoints by validation loss.
-///
-/// Returns whether `error` beats the previous best, not whether the snapshot
-/// was admitted: while the hall is still filling, every epoch is admitted, and
-/// reporting those as best would mark the whole warmup tail ✦.
-pub fn update_snapshots(
-    snapshots: &mut Vec<Snapshot>,
-    epoch: usize,
-    values: &[f64],
-    tunables: &[Tunable],
-    error: f64,
-    limit: usize,
-) -> bool {
-    let mut params = BTreeMap::new();
-
-    for t in tunables {
-        params.insert(t.name.clone(), values[t.idx]);
-    }
-
-    let snap = Snapshot { epoch, params, error };
-    let is_best = snapshots.first().is_none_or(|s| error < s.error);
-
-    let admitted = if snapshots.len() < limit {
-        snapshots.push(snap);
-        true
-    } else if error < snapshots.last().unwrap().error {
-        *snapshots.last_mut().unwrap() = snap; // replace worst in-place
-        true
-    } else {
-        false
-    };
-
-    if admitted {
-        let last_idx = snapshots.len() - 1;
-        let new_err = snapshots[last_idx].error;
-        let pos = snapshots[..last_idx].partition_point(|s| s.error <= new_err);
-        snapshots[pos..].rotate_right(1);
-    }
-
-    is_best
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,7 +285,6 @@ mod tests {
     #[test]
     fn checkpoint_roundtrip_preserves_trainer_state() {
         let tunables = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true)];
-        let snapshots = vec![Snapshot { epoch: 7, params: BTreeMap::from([("alpha".into(), 1.5)]), error: 0.25 }];
 
         let state = TrainerState {
             epoch: 42,
@@ -307,7 +292,9 @@ mod tests {
             k: 1.23,
             k_ref: 1.11,
             best_val_loss: 0.2,
+            best_val_epoch: 18,
             best_train_loss: 0.3,
+            best_train_epoch: 37,
             plateau_count: 3,
             rng_seed: 999,
             dataset: 777,
@@ -317,7 +304,8 @@ mod tests {
             grad_ema: &[0.01, 0.02],
             stagnant: &[4, 5],
             frozen: &[true, true],
-            snapshots: &snapshots,
+            best_val_params: &[1.5, 2.5],
+            best_train_params: &[3.5, 4.5],
         };
 
         let path = std::env::temp_dir().join(format!("soul_ckpt_test_{}.json", std::process::id()));
@@ -331,7 +319,10 @@ mod tests {
         std::fs::remove_file(path).ok();
 
         assert_eq!((d.epoch, d.lr_scale, d.k, d.k_ref), (42, 0.5, 1.23, 1.11));
-        assert_eq!((d.best_val_loss, d.best_train_loss, d.plateau_count), (0.2, 0.3, 3));
+        assert_eq!(
+            (d.best_val_loss, d.best_val_epoch, d.best_train_loss, d.best_train_epoch, d.plateau_count),
+            (0.2, 18, 0.3, 37, 3)
+        );
         assert_eq!((d.rng_seed, d.dataset), (999, 777));
         assert_eq!(d.values, [10.0, 20.0, 30.0]);
         assert_eq!(d.momentum, [0.1, 0.2, 0.0]);
@@ -339,7 +330,7 @@ mod tests {
         assert_eq!(d.grad_ema, [0.01, 0.02, 0.0]);
         assert_eq!(d.stagnant, [4, 5, 0]);
         assert_eq!(d.frozen, [true, true, false]);
-        assert_eq!(d.snapshots.len(), 1);
-        assert_eq!(d.snapshots[0].epoch, 7);
+        assert_eq!(d.best_val_params, [1.5, 2.5, 30.0]);
+        assert_eq!(d.best_train_params, [3.5, 4.5, 30.0]);
     }
 }

@@ -1,20 +1,16 @@
-//! Eval-tuner training driver: gradient descent on the HCE weights against a
-//! WDL-labeled dataset.
+//! HCE training: gradient descent on Soul's weights against WDL-labeled positions.
 //!
-//! Features are extracted to `FeatureRecord`s once at startup, so every epoch reads
-//! them straight through: shuffle, then batched Lion steps over the cached SoA path
-//! (`eval_record` + `accumulate_record_grad`, not the dual-number oracle). A one-time
-//! K line-search fixes the sigmoid's centipawn→win-rate scale before the loop.
+//! Features are extracted to `FeatureRecord`s once at startup; epochs are sequential
+//! reads over the cached SoA path (`eval_record` + `accumulate_record_grad`, not the
+//! dual-number oracle the tuner tests use). An initial golden-section search fixes
+//! the sigmoid's centipawn→winrate scale; `k_ref` stays frozen so the reference loss
+//! is comparable across runs.
 //!
-//! The rest is convergence machinery: per-group masks give PSQT, material, and
-//! mobility their own learning rate, decay, and momentum, and tail-EMA, plateau
-//! halving, and progressive/auto freeze each damp a different late-training noise.
-//! Snapshots track the validation split; the frozen `k_ref` loss stays comparable
-//! across runs.
+//! Targeted best-loss captures track the validation split; separate records
+//! let you inspect both the best-validating and best-training parameters.
 
 use std::{
     fs,
-    fs::File,
     io::{self, BufWriter, Write},
     path,
     time::Instant,
@@ -178,7 +174,8 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         return f64::MAX;
     }
 
-    let best_val = train_entries(all_entries, config, resume_path);
+    let dataset_label = paths.join(", ");
+    let best_val = train_entries(all_entries, &dataset_label, config, resume_path);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
@@ -330,6 +327,7 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
 
     while width > tol {
         width *= C;
+
         if fa < fb {
             hi = b;
             b = a;
@@ -348,7 +346,12 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
     (lo + hi) / 2.0
 }
 
-fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, resume_path: Option<&str>) -> f64 {
+fn train_entries(
+    mut entries: Vec<loader::SoulEntry>,
+    dataset_label: &str,
+    config: &EvalTuneConfig,
+    resume_path: Option<&str>,
+) -> f64 {
     let dataset_fnv = dataset_fingerprint(&entries);
 
     // A resume must shuffle under the checkpoint's seed, or the train/val
@@ -418,7 +421,7 @@ fn train_entries(mut entries: Vec<loader::SoulEntry>, config: &EvalTuneConfig, r
         vol_adaptive: config.volatility_adaptive,
     };
 
-    train_loop(train.len(), "SoulEntry", config, resume_path, rng_seed, dataset_fnv, &ctx)
+    train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, rng_seed, dataset_fnv, &ctx)
 }
 
 /// Hashed before shuffle: identifies loaded contents, not a permutation.
@@ -588,6 +591,7 @@ fn loss_sparkline(history: &[f64]) -> String {
 fn train_loop(
     train_len: usize,
     mode_label: &str,
+    dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     rng_seed: u64,
@@ -650,11 +654,6 @@ fn train_loop(
     let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
     let mut stagnant_epochs = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
 
-    let snapshot_limit = (config.epochs / 10).max(1);
-    let mut snapshots: Vec<Snapshot> = resume
-        .as_ref()
-        .map_or_else(|| Vec::with_capacity(snapshot_limit), |d| d.snapshots.clone());
-
     println!("{lab}Parameters:{RESET} {v}{}{RESET}", all_params.len());
     println!("{lab}Mode:{RESET}       {v}{mode_label}{RESET}");
     {
@@ -683,13 +682,28 @@ fn train_loop(
     }
     println!("{lab}Optimizer:{RESET}  {v}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
-    let log_file = File::create("evaltune_log.txt").ok();
+    let log_file = fs::OpenOptions::new().create(true).append(true).open("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
 
     if let Some(ref mut w) = logger {
-        writeln!(w, "# Seed: {rng_seed}").unwrap();
-        writeln!(w).unwrap();
-        writeln!(w, "epoch   L_train     L_val       L_ref       LR").unwrap();
+        writeln!(w).ok();
+        writeln!(w, "Seed:      {rng_seed}").ok();
+        writeln!(w, "Mode:      {mode_label}").ok();
+        writeln!(w, "Dataset:   {dataset_label}").ok();
+        writeln!(w, "K:         {k:.6} (100cp → {:.1}%)", win_rate_100cp * 100.0).ok();
+        writeln!(w, "K mode:    {}", match config.k_mode {
+            KMode::Fixed { value } => format!("Fixed ({value})"),
+            KMode::Learned { lr_mult } => format!("Learned ({lr_mult})"),
+            KMode::Sweep { interval } => format!("Sweep ({interval})"),
+        })
+        .ok();
+        writeln!(w, "Epochs:    {}", config.epochs).ok();
+        writeln!(w, "Params:    {}", all_params.len()).ok();
+        writeln!(w, "LR:        {}", lr_scheduler.describe()).ok();
+        writeln!(w, "WDL:       {}", wdl_scheduler.describe()).ok();
+        writeln!(w, "Optimizer: Lion (batch: {}, WD: {})", config.batch_size, config.weight_decay).ok();
+        writeln!(w).ok();
+        writeln!(w, "{:>5}  {:>11}  {:>11}  {:>11}  {:>8}", "epoch", "L_train", "L_val", "L_ref", "LR").ok();
     }
 
     let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
@@ -706,12 +720,20 @@ fn train_loop(
     // Constant schedule has no tail → uniform Polyak instead of tail EMA.
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
-    let warmup_end = (config.epochs as f64 * 0.1).max(1.0) as usize;
+
     let mut best_val_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_val_loss);
+    let mut best_val_epoch = resume.as_ref().map_or(0, |d| d.best_val_epoch);
     let mut best_train_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_train_loss);
+    let mut best_train_epoch = resume.as_ref().map_or(0, |d| d.best_train_epoch);
     let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
 
+    let np = all_params.len();
+    let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; np], |d| d.best_val_params.clone());
+    let mut best_train_params = resume.as_ref().map_or_else(|| vec![0.0; np], |d| d.best_train_params.clone());
+
+    // Not restored on resume: sparklines are a display artifact, not state.
     let mut val_history: Vec<f64> = Vec::new();
+    let mut train_history: Vec<f64> = Vec::new();
     let mut prev_val_loss = f64::NAN;
 
     let psqt_end = psqt::LAYOUT.material_offset;
@@ -862,12 +884,18 @@ fn train_loop(
 
         if train_loss < best_train_loss - 1e-6 {
             best_train_loss = train_loss;
+            best_train_epoch = epoch;
+            best_train_params.copy_from_slice(&ema_values);
         }
 
         // ── Validation Plateau Detection
         // Reduce LR if validation loss stalls for Constant schedule.
-        if val_loss < best_val_loss - 1e-6 {
+        let improved_val = val_loss < best_val_loss - 1e-6;
+
+        if improved_val {
             best_val_loss = val_loss;
+            best_val_epoch = epoch;
+            best_val_params.copy_from_slice(&ema_values);
             plateau_count = 0;
         } else {
             plateau_count += 1;
@@ -881,13 +909,8 @@ fn train_loop(
             }
         }
 
+        let is_best = improved_val;
         let overfit = train_loss <= best_train_loss + 1e-6 && val_loss > best_val_loss + 1e-6;
-
-        let is_best = if epoch > warmup_end {
-            update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit)
-        } else {
-            false
-        };
 
         // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
@@ -931,8 +954,7 @@ fn train_loop(
         let elapsed = t0.elapsed().as_secs_f32();
 
         // Loss has no absolute scale, so color the live value by its per-epoch
-        // trend; dropped from last epoch → green ▼, rose → red ▲. The number and
-        // the arrow share that one trend color.
+        // trend; dropped from last epoch → green ▼, rose → red ▲.
         let (arrow, trend) = if !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
             ('·', palette::fg(palette::LABEL))
         } else if val_loss < prev_val_loss {
@@ -943,6 +965,7 @@ fn train_loop(
 
         let lab = palette::fg(palette::LABEL);
         let dim = palette::fg(palette::DIM);
+
         let (mark, epoch_c) = if is_best { ("✦ ", palette::fg(palette::BRAND)) } else { ("  ", dim.clone()) };
         let warn = if overfit { format!("  {}⚠ overfit{RESET}", palette::fg(color::advantage(-1.0))) } else { String::new() };
 
@@ -958,12 +981,19 @@ fn train_loop(
         );
 
         val_history.push(val_loss);
+        train_history.push(train_loss);
         prev_val_loss = val_loss;
 
         if epoch % 20 == 0 || epoch == config.epochs {
-            let tail = &val_history[val_history.len().saturating_sub(40)..];
-            println!("\n  {lab}L_val{RESET}  {}", loss_sparkline(tail));
-            print_params(&all_params, &initial_values, &ema_values);
+            let val_tail = &val_history[val_history.len().saturating_sub(40)..];
+            let train_tail = &train_history[train_history.len().saturating_sub(40)..];
+
+            println!("\n  {lab}L_val{RESET}    {}", loss_sparkline(val_tail));
+            println!("\n  {lab}L_train{RESET}  {}", loss_sparkline(train_tail));
+
+            if epoch != config.epochs {
+                print_params(&all_params, &initial_values, &ema_values);
+            }
 
             if let Err(e) = save_checkpoint("evaltune_checkpoint.json", &all_params, &TrainerState {
                 epoch: epoch + 1, // resume starts here; the current epoch is already done
@@ -971,7 +1001,9 @@ fn train_loop(
                 k: k_ctrl.k(),
                 k_ref: k_ctrl.k_ref(),
                 best_val_loss,
+                best_val_epoch,
                 best_train_loss,
+                best_train_epoch,
                 plateau_count,
                 rng_seed,
                 dataset: dataset_fnv,
@@ -981,7 +1013,8 @@ fn train_loop(
                 grad_ema: &grad_ema_per_param,
                 stagnant: &stagnant_epochs,
                 frozen: &fixed_mask,
-                snapshots: &snapshots,
+                best_val_params: &best_val_params,
+                best_train_params: &best_train_params,
             }) {
                 eprintln!("Failed to save checkpoint: {e}");
             }
@@ -993,7 +1026,25 @@ fn train_loop(
     drop(logger);
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
-    print_results(&snapshots, &all_params, &initial_values, &ema_values, config.epochs);
+    let last_val = val_history.last().copied().unwrap_or(0.0);
+    let last_train = train_history.last().copied().unwrap_or(0.0);
+    print_results(
+        &all_params,
+        &initial_values,
+        &ema_values,
+        &BestEpochs {
+            best_val_params: &best_val_params,
+            best_val_loss,
+            best_val_epoch,
+            best_train_params: &best_train_params,
+            best_train_loss,
+            best_train_epoch,
+            last_val,
+            last_train,
+        },
+        config.epochs,
+    );
+
     best_val_loss
 }
 

@@ -1,13 +1,11 @@
 use std::{
-    fs,
     fs::File,
-    io,
-    io::{BufWriter, Write},
+    io::{self, BufWriter, Write},
 };
 
 use soul::{color, core::psqt, engine::eval_params::Tunable};
 
-use crate::evaltune::{palette, storage::Snapshot};
+use crate::evaltune::palette;
 
 /// The `define_weight_params!` paste block: `(name, offset, count, comment)`
 /// per band, in layout order. A hand-maintained mirror of `LAYOUT`, like
@@ -54,52 +52,47 @@ const _: () = {
     assert!(expected == psqt::LAYOUT.total, "WEIGHT_BANDS stops short of LAYOUT's end");
 };
 
-pub fn print_results(snapshots: &[Snapshot], all_params: &[Tunable], initial_values: &[f64], values: &[f64], final_epoch: usize) {
-    let count = snapshots.len();
+pub struct BestEpochs<'a> {
+    pub best_val_params: &'a [f64],
+    pub best_val_loss: f64,
+    pub best_val_epoch: usize,
+    pub best_train_params: &'a [f64],
+    pub best_train_loss: f64,
+    pub best_train_epoch: usize,
+    pub last_val: f64,
+    pub last_train: f64,
+}
 
-    if count == 0 {
-        return;
-    }
-
-    let best_snap = snapshots.first().unwrap();
-    let best_epoch = best_snap.epoch;
+pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: &[f64], best: &BestEpochs, final_epoch: usize) {
+    let gold = color::ansi_fg((218, 165, 32));
 
     println!();
-    println!("Best Snapshot (Epoch {best_epoch}):");
+    println!("{gold}Best L_val: {:.6} (Epoch {}){}", best.best_val_loss, best.best_val_epoch, palette::RESET);
+    print_params(all_params, initial_values, best.best_val_params);
 
-    let mut best_values = vec![0.0; values.len()];
+    println!();
+    println!("{gold}Best L_train: {:.6} (Epoch {}){}", best.best_train_loss, best.best_train_epoch, palette::RESET);
+    print_params(all_params, initial_values, best.best_train_params);
 
-    for t in all_params {
-        if let Some(&v) = best_snap.params.get(&t.name) {
-            best_values[t.idx] = v;
-        } else {
-            best_values[t.idx] = values[t.idx];
-        }
-    }
+    println!();
+    println!(
+        "{gold}Final epoch {final_epoch}:  L_val {:.6}  L_train {:.6}{}",
+        best.last_val,
+        best.last_train,
+        palette::RESET
+    );
+    print_params(all_params, initial_values, final_ema);
 
-    let best = best_snap.error;
-    print_params(all_params, initial_values, &best_values);
-
-    if let Ok(mut f) = File::create("top-snapshots.txt") {
+    if let Ok(mut f) = File::create("evaltune_best.txt") {
         let mut w = BufWriter::new(&mut f);
-        writeln!(w, "Top {count} snapshots (sorted by L_val):").ok();
 
-        for (i, snap) in snapshots.iter().enumerate() {
-            writeln!(w, "  {:>2}. Epoch {:>3} | L_val: {:.6}", i + 1, snap.epoch, snap.error).ok();
-        }
+        writeln!(w, "Best L_val: {:.6} (Epoch {})", best.best_val_loss, best.best_val_epoch).ok();
+        write_params(&mut w, all_params, best.best_val_params, None);
+        writeln!(w, "\nBest L_train: {:.6} (Epoch {})", best.best_train_loss, best.best_train_epoch).ok();
+        write_params(&mut w, all_params, best.best_train_params, None);
+        writeln!(w, "\nFinal epoch {final_epoch}:  L_val {:.6}  L_train {:.6}", best.last_val, best.last_train).ok();
+        write_params(&mut w, all_params, final_ema, None);
     }
-
-    if let Ok(log_file) = fs::OpenOptions::new().append(true).open("evaltune_log.txt") {
-        let mut w = BufWriter::new(log_file);
-
-        writeln!(w, "\n{0} Final EMA Parameters (Epoch {final_epoch}) {0}", "──").ok();
-        write_params(&mut w, all_params, values, None);
-
-        writeln!(w, "\n{0} Best Snapshot Parameters (Epoch {best_epoch}) {0}", "──").ok();
-        write_params(&mut w, all_params, &best_values, None);
-    }
-
-    println!("{}Best L_val: {best:.6} (Epoch {best_epoch}){}", color::ansi_fg((218, 165, 32)), palette::RESET);
 }
 
 /// Prints parameters to stdout with ANSI green highlighting for changed values.
@@ -116,7 +109,9 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     if colored {
         writeln!(w, "\n// --- Tuned Parameters (paste into eval_params.rs) ---").ok();
     }
+
     writeln!(w, "define_psqt_params! {{").ok();
+
     if colored {
         writeln!(w, "    // Files A-D (mirrored to E-H) × 8 ranks").ok();
     }
@@ -149,8 +144,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
                 let changed =
                     initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
-                // Pad between columns, not after the last: trailing pad would
-                // ride along on copy-paste.
+
                 let cell = if col < 3 { format!("{s: <16}") } else { s };
                 write!(w, "{}", highlight(&cell, changed, initial)).ok();
             }
@@ -227,7 +221,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
                 writeln!(w, "],{comment}").ok();
             }
         }
-
         writeln!(w, "}}").ok();
     }
 
