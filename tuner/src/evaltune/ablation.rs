@@ -8,8 +8,6 @@ use crate::evaltune::{
     training::{self, TunableData},
 };
 
-/// Run the ablation report over `dataset_paths`.
-/// Supports .soul/.soul.zst and .epd/.txt, auto-detected.
 pub fn run_ablation(dataset_paths: &[String]) {
     let values: Vec<f64> = eval_params::collect_parameters().iter().map(|p| p.value).collect();
 
@@ -55,7 +53,6 @@ pub fn run_ablation(dataset_paths: &[String]) {
     }
 }
 
-/// A named parameter group to ablate as a unit.
 struct Group {
     name: &'static str,
     range: Range<usize>,
@@ -66,7 +63,6 @@ struct AblationResult {
     delta: f64,
 }
 
-/// Run ablation on a loaded dataset; find K, baseline, zero each group.
 fn run_generic<T: TunableData>(entries: &[T], values: &[f64]) {
     let groups = build_groups();
 
@@ -117,7 +113,6 @@ fn print_report(results: &[AblationResult]) {
     }
 }
 
-/// Define the parameter groups from LAYOUT constants.
 fn build_groups() -> Vec<Group> {
     let l = &psqt::LAYOUT;
 
