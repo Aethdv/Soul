@@ -6,11 +6,11 @@
 
 use soul::color::Rgb;
 
-pub const LABEL: Rgb = (150, 140, 128); // field labels
-pub const VALUE: Rgb = (122, 205, 196); // config / telemetry values
-pub const COUNT: Rgb = (176, 196, 222); // dataset counts
-pub const BRAND: Rgb = (218, 165, 32); // new-best marker
-pub const DIM: Rgb = (118, 112, 104); // incidental (train/ref/time)
+pub const LABEL: Rgb = (150, 140, 128); // field labels             (muted taupe)
+pub const VALUE: Rgb = (122, 205, 196); // config / telemetry       (teal)
+pub const COUNT: Rgb = (176, 196, 222); // dataset counts           (light steel blue)
+pub const BRAND: Rgb = (218, 165, 32); // best-epoch marker         (goldenrod)
+pub const DIM: Rgb = (118, 112, 104); // incidental (train/ref/lr)  (darker taupe)
 
 /// ANSI reset.
 pub const RESET: &str = "\x1b[0m";
