@@ -708,6 +708,7 @@ fn train_loop(
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
     let warmup_end = (config.epochs as f64 * 0.1).max(1.0) as usize;
     let mut best_val_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_val_loss);
+    let mut best_train_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_train_loss);
     let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
 
     let mut val_history: Vec<f64> = Vec::new();
@@ -859,6 +860,10 @@ fn train_loop(
         let ref_loss = ctx.val_eval(&ema_values, k_ctrl.k_ref(), 0.0);
         let train_loss = train_loss / train_count.max(1) as f64;
 
+        if train_loss < best_train_loss - 1e-6 {
+            best_train_loss = train_loss;
+        }
+
         // ── Validation Plateau Detection
         // Reduce LR if validation loss stalls for Constant schedule.
         if val_loss < best_val_loss - 1e-6 {
@@ -876,7 +881,7 @@ fn train_loop(
             }
         }
 
-        let overfit = val_loss > best_val_loss * 1.02;
+        let overfit = train_loss <= best_train_loss + 1e-6 && val_loss > best_val_loss + 1e-6;
 
         let is_best = if epoch > warmup_end {
             update_snapshots(&mut snapshots, epoch, &ema_values, &all_params, val_loss, snapshot_limit)
@@ -966,6 +971,7 @@ fn train_loop(
                 k: k_ctrl.k(),
                 k_ref: k_ctrl.k_ref(),
                 best_val_loss,
+                best_train_loss,
                 plateau_count,
                 rng_seed,
                 dataset: dataset_fnv,

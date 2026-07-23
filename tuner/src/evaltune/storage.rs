@@ -12,7 +12,7 @@ use crate::{
     evaltune::palette,
 };
 
-pub const CHECKPOINT_VERSION: u32 = 3;
+pub const CHECKPOINT_VERSION: u32 = 4;
 
 /// Serialisable training checkpoint: everything needed to resume a run.
 ///
@@ -30,6 +30,7 @@ pub struct Checkpoint {
     pub k: f64,
     pub k_ref: f64,
     pub best_val_loss: f64,
+    pub best_train_loss: f64,
     pub plateau_count: usize,
     pub params: BTreeMap<String, ParamState>,
     pub snapshots: Vec<Snapshot>,
@@ -64,6 +65,7 @@ pub struct TrainerState<'a> {
     pub k: f64,
     pub k_ref: f64,
     pub best_val_loss: f64,
+    pub best_train_loss: f64,
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
@@ -101,6 +103,7 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         k: state.k,
         k_ref: state.k_ref,
         best_val_loss: state.best_val_loss,
+        best_train_loss: state.best_train_loss,
         plateau_count: state.plateau_count,
         params,
         snapshots: state.snapshots.to_vec(),
@@ -125,6 +128,7 @@ pub struct CheckpointData {
     pub k: f64,
     pub k_ref: f64,
     pub best_val_loss: f64,
+    pub best_train_loss: f64,
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
@@ -201,6 +205,7 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         k: cp.k,
         k_ref: cp.k_ref,
         best_val_loss: cp.best_val_loss,
+        best_train_loss: cp.best_train_loss,
         plateau_count: cp.plateau_count,
         rng_seed: cp.rng_seed,
         dataset: cp.dataset,
@@ -302,6 +307,7 @@ mod tests {
             k: 1.23,
             k_ref: 1.11,
             best_val_loss: 0.2,
+            best_train_loss: 0.3,
             plateau_count: 3,
             rng_seed: 999,
             dataset: 777,
@@ -325,7 +331,7 @@ mod tests {
         std::fs::remove_file(path).ok();
 
         assert_eq!((d.epoch, d.lr_scale, d.k, d.k_ref), (42, 0.5, 1.23, 1.11));
-        assert_eq!((d.best_val_loss, d.plateau_count), (0.2, 3));
+        assert_eq!((d.best_val_loss, d.best_train_loss, d.plateau_count), (0.2, 0.3, 3));
         assert_eq!((d.rng_seed, d.dataset), (999, 777));
         assert_eq!(d.values, [10.0, 20.0, 30.0]);
         assert_eq!(d.momentum, [0.1, 0.2, 0.0]);
