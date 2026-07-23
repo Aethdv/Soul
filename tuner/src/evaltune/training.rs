@@ -28,7 +28,7 @@ impl GradientStats {
 
         // ── Online 95th percentile estimation.
         // We move up by (1-p) when norm > p95, and down by p when norm < p95.
-        // Balancing: 0.05 * 0.95 (up) + 0.95 * -0.05 (down) = 0.
+        // Balancing: 0.05 · 0.95 (up) + 0.95 · -0.05 (down) = 0.
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
 
         // Update in log-space. Stays positive regardless of how
@@ -71,13 +71,10 @@ pub trait TunableData: Sync + Send {
     fn result(&self) -> f64;
 }
 
-/// Training target for an encoded entry: the game result, blended toward the
-/// search eval by instance-confidence WDL.
-///
-/// Near-zero search scores (low engine confidence) fall back to the game result;
-/// high-magnitude scores trust the eval fully. `wdl_blend >= 1.0` bypasses the
-/// instance scaling: the target is pure `sigmoid(score)`, for random-restart
-/// data with no game outcome. 400 cp is the empirical confidence saturation point.
+/// WDL-blended training target. Near-zero search scores (low engine confidence)
+/// fall back to the game result; high-magnitude scores trust the eval fully.
+/// `wdl_blend >= 1.0` bypasses instance scaling for random-restart data: the
+/// target is pure `sigmoid(score)`. 400 cp is the empirical saturation point.
 pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
     const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
