@@ -7,9 +7,6 @@ use soul::{color, core::psqt, engine::eval_params::Tunable};
 
 use crate::evaltune::palette;
 
-/// The `define_weight_params!` paste block: `(name, offset, count, comment)`
-/// per band, in layout order. A hand-maintained mirror of `LAYOUT`, like
-/// `gradient.rs` and `register_terms!`.
 #[rustfmt::skip]
 const WEIGHT_BANDS: &[(&str, usize, usize, &str)] = {
     let l = psqt::LAYOUT;
@@ -101,8 +98,7 @@ pub fn print_params(params: &[Tunable], initial: &[f64], values: &[f64]) {
     write_params(&mut out, params, values, Some(initial));
 }
 
-/// Writes all tuned parameters to any `impl Write` sink.
-/// Pass `initial` to highlight changed values, `None` for plain log output.
+/// Pass `initial` to highlight changed values, `None` for plain output.
 pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], initial: Option<&[f64]>) {
     let colored = initial.is_some();
 
@@ -262,11 +258,11 @@ pub fn write_weight_array<W: Write>(
     }
 }
 
-/// Wraps text in the advantage-win green if `changed` is true and `initial` is `Some`.
-fn highlight(s: &str, changed: bool, initial: Option<&[f64]>) -> String {
+/// Green ANSI if `changed` and `initial` is `Some` (terminal context).
+fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
     if initial.is_some() && changed {
-        format!("{}{s}{}", color::ansi_fg((100, 200, 120)), palette::RESET)
+        format!("{}{text}{}", color::ansi_fg((100, 200, 120)), palette::RESET)
     } else {
-        s.to_string()
+        text.to_string()
     }
 }
