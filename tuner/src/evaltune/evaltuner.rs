@@ -38,7 +38,7 @@ use crate::core::{
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 const MOB_CLAMP: f64 = 100.0;
 
-/// State machine for K (sigmoid scaling factor) in the training loop.
+/// State machine for K.
 struct KController {
     k: f64,
     k_ref: f64,
@@ -1048,7 +1048,6 @@ fn train_loop(
     best_val_loss
 }
 
-/// Sensitivity Analysis: writes `sensitivity-report.txt`.
 fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
     let Ok(mut f) = fs::File::create("sensitivity-report.txt") else { return };
     let mut w = io::BufWriter::new(&mut f);
