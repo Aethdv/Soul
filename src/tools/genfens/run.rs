@@ -30,7 +30,7 @@ use super::{
 use crate::{
     cli::Help,
     core::{board::Position, defs::MAX_DEPTH, util::format_comma as format_num},
-    tools::dataset::{MAGIC_V5, MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
+    tools::dataset::{MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
 };
 
 const GREEN: &str = "\x1b[92m";
@@ -546,7 +546,7 @@ fn load_existing_count(path: &str) -> usize {
         return 0;
     }
 
-    if &magic == MAGIC_V5 || &magic == MAGIC_V6 {
+    if &magic == MAGIC_V6 {
         let mut buf = [0u8; 8];
 
         if reader.read_exact(&mut buf).is_ok() {
