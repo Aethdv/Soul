@@ -95,7 +95,7 @@ impl KController {
 
     fn on_epoch(&mut self, epoch: usize, ctx: &TrainerContext, ema_values: &[f64], blend: f64) -> Option<f64> {
         let KMode::Sweep { interval } = self.mode else { return None };
-        if epoch % interval != 0 {
+        if epoch % interval.max(1) != 0 {
             return None;
         }
 
