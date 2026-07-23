@@ -19,8 +19,7 @@ pub struct Entry {
     pub result: f64,
 }
 
-/// Loads a raw EPD dataset into a list of [`Entry`].
-/// Supports both plain text and zstd-compressed EPD files.
+/// Load raw EPD positions, decompressing zstd on the fly.
 pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
     let file = File::open(path)?;
     let reader = open_reader(file, Path::new(path))?;
@@ -37,8 +36,9 @@ pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Encodes an EPD file into a zstd-compressed Soul dataset.
-/// Supports both plain text and zstd-compressed EPD input files.
+/// Encode EPD positions into a zstd-compressed Soul dataset.
+///
+/// Accepts both plain text and zstd-compressed EPD input.
 ///
 /// # Errors
 /// Returns an error if the input file cannot be read or the output cannot be written.
@@ -84,7 +84,7 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Opens a file for buffered line reading, transparently decompressing zstd if needed.
+// Opens a file for buffered line reading, transparently decompressing zstd if needed.
 fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
     if path.extension().is_some_and(|e| e == "zst") {
         Ok(Box::new(BufReader::new(zstd::Decoder::new(file)?)))
