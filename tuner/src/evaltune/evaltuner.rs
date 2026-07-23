@@ -58,10 +58,10 @@ impl KController {
         init_blend: f64,
         resume: Option<&CheckpointData>,
     ) -> Self {
-        let (k, k_ref) = match resume {
-            Some(d) => (d.k, d.k_ref),
+        let (k, k_ref, k_momentum) = match resume {
+            Some(d) => (d.k, d.k_ref, d.k_momentum),
             None => match config.k_mode {
-                KMode::Fixed { value } => (value, value),
+                KMode::Fixed { value } => (value, value, 0.0),
                 _ => {
                     println!("Optimizing K...");
 
@@ -69,7 +69,7 @@ impl KController {
                         ctx.val_eval(values, kk, init_blend)
                     });
 
-                    (k, k)
+                    (k, k, 0.0)
                 },
             },
         };
@@ -82,7 +82,7 @@ impl KController {
             k_max: config.k_max,
             beta1: config.beta1,
             beta2: config.beta2,
-            momentum: 0.0,
+            momentum: k_momentum,
         }
     }
 
@@ -139,7 +139,17 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         .build_global()
         .ok();
 
-    let paths = resolve_dataset_paths(dataset_path.unwrap_or("default"));
+    let effective_dataset: String = match (dataset_path, resume_path) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(rp)) => peek_checkpoint(rp)
+            .ok()
+            .map(|cp| cp.dataset_path)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "default".to_string()),
+        (None, None) => "default".to_string(),
+    };
+
+    let paths = resolve_dataset_paths(&effective_dataset);
     let Some(paths) = paths else { return f64::MAX };
 
     let mut all_entries = Vec::new();
@@ -1000,6 +1010,7 @@ fn train_loop(
                 lr_scale,
                 k: k_ctrl.k(),
                 k_ref: k_ctrl.k_ref(),
+                k_momentum: k_ctrl.momentum,
                 best_val_loss,
                 best_val_epoch,
                 best_train_loss,
@@ -1007,6 +1018,7 @@ fn train_loop(
                 plateau_count,
                 rng_seed,
                 dataset: dataset_fnv,
+                dataset_path: dataset_label,
                 values: &values,
                 momentum: &momentum,
                 ema: &ema_values,

@@ -24,6 +24,8 @@ pub struct Checkpoint {
     pub lr_scale: f64,
     pub k: f64,
     pub k_ref: f64,
+    #[serde(default)]
+    pub k_momentum: f64,
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
     pub best_train_loss: f64,
@@ -33,6 +35,8 @@ pub struct Checkpoint {
     pub hash: u64,
     pub rng_seed: u64,
     pub dataset: u64,
+    #[serde(default)]
+    pub dataset_path: String,
     pub param_names: Vec<String>,
     pub best_val_params: Vec<f64>,
     pub best_train_params: Vec<f64>,
@@ -55,6 +59,7 @@ pub struct TrainerState<'a> {
     pub lr_scale: f64,
     pub k: f64,
     pub k_ref: f64,
+    pub k_momentum: f64,
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
     pub best_train_loss: f64,
@@ -62,6 +67,7 @@ pub struct TrainerState<'a> {
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
+    pub dataset_path: &'a str,
     pub values: &'a [f64],
     pub momentum: &'a [f64],
     pub ema: &'a [f64],
@@ -100,6 +106,7 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         lr_scale: state.lr_scale,
         k: state.k,
         k_ref: state.k_ref,
+        k_momentum: state.k_momentum,
         best_val_loss: state.best_val_loss,
         best_val_epoch: state.best_val_epoch,
         best_train_loss: state.best_train_loss,
@@ -109,6 +116,7 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         hash: compute_layout_hash(tunables),
         rng_seed: state.rng_seed,
         dataset: state.dataset,
+        dataset_path: state.dataset_path.to_string(),
         param_names,
         best_val_params: state.best_val_params.to_vec(),
         best_train_params: state.best_train_params.to_vec(),
@@ -128,6 +136,7 @@ pub struct CheckpointData {
     pub lr_scale: f64,
     pub k: f64,
     pub k_ref: f64,
+    pub k_momentum: f64,
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
     pub best_train_loss: f64,
@@ -135,6 +144,7 @@ pub struct CheckpointData {
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
+    pub dataset_path: String,
     pub values: Vec<f64>,
     pub momentum: Vec<f64>,
     pub ema: Vec<f64>,
@@ -222,6 +232,7 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         lr_scale: cp.lr_scale,
         k: cp.k,
         k_ref: cp.k_ref,
+        k_momentum: cp.k_momentum,
         best_val_loss: cp.best_val_loss,
         best_val_epoch: cp.best_val_epoch,
         best_train_loss: cp.best_train_loss,
@@ -229,6 +240,7 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         plateau_count: cp.plateau_count,
         rng_seed: cp.rng_seed,
         dataset: cp.dataset,
+        dataset_path: cp.dataset_path.clone(),
         values,
         momentum,
         ema,
@@ -282,6 +294,7 @@ mod tests {
             lr_scale: 0.5,
             k: 1.23,
             k_ref: 1.11,
+            k_momentum: 0.42,
             best_val_loss: 0.2,
             best_val_epoch: 18,
             best_train_loss: 0.3,
@@ -289,6 +302,7 @@ mod tests {
             plateau_count: 3,
             rng_seed: 999,
             dataset: 777,
+            dataset_path: "data/test.txt",
             values: &[10.0, 20.0],
             momentum: &[0.1, 0.2],
             ema: &[9.0, 19.0],
@@ -309,12 +323,13 @@ mod tests {
         let d = load_checkpoint(path, &grown, &[1.0, 2.0, 30.0]).unwrap();
         std::fs::remove_file(path).ok();
 
-        assert_eq!((d.epoch, d.lr_scale, d.k, d.k_ref), (42, 0.5, 1.23, 1.11));
+        assert_eq!((d.epoch, d.lr_scale, d.k, d.k_ref, d.k_momentum), (42, 0.5, 1.23, 1.11, 0.42));
         assert_eq!(
             (d.best_val_loss, d.best_val_epoch, d.best_train_loss, d.best_train_epoch, d.plateau_count),
             (0.2, 18, 0.3, 37, 3)
         );
         assert_eq!((d.rng_seed, d.dataset), (999, 777));
+        assert_eq!(d.dataset_path, "data/test.txt");
         assert_eq!(d.values, [10.0, 20.0, 30.0]);
         assert_eq!(d.momentum, [0.1, 0.2, 0.0]);
         assert_eq!(d.ema, [9.0, 19.0, 30.0]);
