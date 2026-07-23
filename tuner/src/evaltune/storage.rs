@@ -14,9 +14,6 @@ use crate::{
 
 pub const CHECKPOINT_VERSION: u32 = 5;
 
-/// A resume that reconstructs K, the EMA trail, or the freeze mask from
-/// defaults trains a subtly different run wearing the old one's epoch counter.
-///
 /// Parameters are keyed by name so adding or reordering evaluation terms
 /// doesn't corrupt the load. The flat best-* vectors share the same ordering
 /// as `param_names` and are remapped by name on resume.
@@ -51,8 +48,8 @@ pub struct ParamState {
     pub frozen: bool,
 }
 
-/// The trainer's live state, borrowed by [`save_checkpoint`]. Per-parameter
-/// slices are indexed by `Tunable::idx`; the save maps them to names.
+/// Borrowed by [`save_checkpoint`]. Per-parameter slices indexed by `Tunable::idx`;
+/// the save maps them to names.
 pub struct TrainerState<'a> {
     pub epoch: usize,
     pub lr_scale: f64,
@@ -75,8 +72,6 @@ pub struct TrainerState<'a> {
     pub best_train_params: &'a [f64],
 }
 
-/// Save training state to a JSON checkpoint file.
-///
 /// # Errors
 /// Returns an error if the file cannot be created or written.
 pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -> Result<(), CheckpointError> {
@@ -127,8 +122,7 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
     Ok(())
 }
 
-/// A loaded checkpoint with per-parameter state mapped back to current
-/// `Tunable::idx` order, ready for the trainer to adopt.
+/// Per-parameter state mapped back to current `Tunable::idx` order, ready for the trainer to adopt.
 pub struct CheckpointData {
     pub epoch: usize,
     pub lr_scale: f64,
@@ -151,6 +145,8 @@ pub struct CheckpointData {
     pub best_train_params: Vec<f64>,
 }
 
+// Missing parameters keep their `fallback` (current code value), so new tunables
+// don't silently zero out on resume.
 fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunables: &[Tunable], fallback: &[f64]) -> Vec<f64> {
     let saved: BTreeMap<&str, f64> = checkpoint_names.iter().zip(checkpoint_vals).map(|(n, &v)| (n.as_str(), v)).collect();
 
@@ -165,10 +161,7 @@ fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunab
     out
 }
 
-/// Load training state from a JSON checkpoint file.
-///
-/// Maps saved parameter names back to their current indices. A parameter
-/// missing from the checkpoint gets a fresh start: current code value, zero
+/// A parameter missing from the checkpoint gets a fresh start: current code value, zero
 /// momentum and gradient history, frozen only if the code says so.
 ///
 /// # Errors
@@ -247,8 +240,6 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     })
 }
 
-/// Parse a checkpoint without mapping it onto the current layout.
-///
 /// The train/val split happens before the full checkpoint load, and resuming
 /// under a different seed reshuffles it: former training positions land in
 /// val and the validation loss goes optimistic. The peek hands the shuffle
