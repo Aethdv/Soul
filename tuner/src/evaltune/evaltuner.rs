@@ -756,7 +756,7 @@ fn train_loop(
     let psqt_end = psqt::LAYOUT.material_offset;
     let base_end = psqt_end + psqt::LAYOUT.material_len;
     let mob_start = psqt::LAYOUT.mobility_open_offset;
-    let mob_end = psqt::LAYOUT.weight_offset;
+    let mob_end = psqt::LAYOUT.mobility_closed_offset + psqt::LAYOUT.mobility_closed_len;
 
     // ── Progressive unfreeze
     // Freeze non-psqt/mat for the first unfreeze_epoch epochs.
@@ -1174,7 +1174,7 @@ fn param_group(i: usize) -> ParamGroup {
         ParamGroup::Psqt
     } else if i < psqt::LAYOUT.mobility_open_offset {
         ParamGroup::Material
-    } else if i < psqt::LAYOUT.weight_offset {
+    } else if i < psqt::LAYOUT.mobility_closed_offset + psqt::LAYOUT.mobility_closed_len {
         ParamGroup::Mobility
     } else {
         ParamGroup::Other
