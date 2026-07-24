@@ -318,8 +318,8 @@ impl TrainerContext<'_> {
 /// Assumes `eval` is unimodal on `[lo, hi]`; otherwise the result is not
 /// guaranteed to be a global minimum.
 pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
-    debug_assert!(lo < hi, "golden_search_k: lo ({lo}) must be < hi ({hi})");
-    debug_assert!(tol > 0.0, "golden_search_k: tol ({tol}) must be positive");
+    assert!(lo < hi, "golden_search_k: lo ({lo}) must be < hi ({hi})");
+    assert!(tol > 0.0, "golden_search_k: tol ({tol}) must be positive");
 
     if hi - lo <= tol {
         return (lo + hi) / 2.0;
