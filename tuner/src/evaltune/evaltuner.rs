@@ -150,7 +150,14 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     };
 
     let paths = resolve_dataset_paths(&effective_dataset);
-    let Some(paths) = paths else { return f64::MAX };
+    let Some(paths) = paths else {
+        eprintln!(
+            "{}[!] Error: No dataset found. Use --dataset <path> or place .soul.zst files in data/.{RESET}",
+            color::ansi_fg((225, 89, 91)),
+        );
+
+        return f64::MAX;
+    };
 
     let mut all_entries = Vec::new();
 

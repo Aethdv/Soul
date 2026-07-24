@@ -305,7 +305,11 @@ fn main() {
             }
 
             let dataset_str = args.dataset.map(|v| v.join(","));
-            evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref());
+            let best_val = evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref());
+
+            if best_val == f64::MAX {
+                process::exit(1);
+            }
         },
     }
 }
