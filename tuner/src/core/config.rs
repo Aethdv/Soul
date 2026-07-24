@@ -116,7 +116,7 @@ impl LossFn {
                 let prob = sig.clamp(1e-7, 1.0 - 1e-7);
                 let ce = Self::CrossEntropy.loss(sig, target);
                 let diff = prob - target;
-                let base = diff.abs();
+                let base = diff.abs().max(1e-12);
                 let ce_grad = base.powf(gamma) * diff * k;
                 let focal_grad = gamma * base.powf(gamma - 1.0) * diff.signum() * k * prob * (1.0 - prob) * ce;
 
