@@ -1,3 +1,9 @@
+//! EPD loading ([`Entry`], [`load_epd`]), viriformat, [`encode_epd`], and
+//! [`load_datasets`] which dispatches by extension.
+//!
+//! Re-exports the tuner's datasource types ([`SoulEntry`], [`FeatureRecord`],
+//! [`eval_record`]) from the engine crate.
+
 use std::{
     fs,
     fs::File,
@@ -91,4 +97,39 @@ fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
     } else {
         Ok(Box::new(BufReader::new(file)))
     }
+}
+
+/// Load all dataset files by format, dispatching on extension.
+///
+/// `.soul` / `.soul.zst` → [`load_encoded`]; `.viri` / `.vf` → [`parse_viri_file`];
+/// anything else → [`load_epd`] + [`SoulEntry::from_board`].
+pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
+    let mut all_entries = Vec::new();
+
+    for path in paths {
+        if path.ends_with(".soul") || path.ends_with(".soul.zst") {
+            println!("Loading encoded dataset: {path}");
+            let mut file_entries = load_encoded(path).expect("Failed to load .soul dataset");
+            all_entries.append(&mut file_entries);
+        } else if path.ends_with(".viri") || path.ends_with(".vf") {
+            println!("Loading viriformat dataset: {path}");
+            match parse_viri_file(path) {
+                Ok(mut viri_entries) => all_entries.append(&mut viri_entries),
+                Err(e) => eprintln!("Error loading {path}: {e}"),
+            }
+        } else {
+            println!("Loading raw dataset: {path}");
+            match load_epd(path) {
+                Ok(epd_entries) => {
+                    for e in &epd_entries {
+                        let stm_result = if e.board.stm == Color::Black { 1.0 - e.result } else { e.result };
+                        all_entries.push(SoulEntry::from_board(&e.board, stm_result, None, Some(i16::MAX as i32)));
+                    }
+                },
+                Err(e) => eprintln!("Error loading {path}: {e}"),
+            }
+        }
+    }
+
+    all_entries
 }

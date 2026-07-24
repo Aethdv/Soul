@@ -20,10 +20,7 @@ use palette::{CLEAR_LINE, RESET};
 use rayon::prelude::*;
 use soul::{
     color,
-    core::{
-        defs::{Color, TOTAL_PHASE},
-        psqt,
-    },
+    core::{defs::TOTAL_PHASE, psqt},
     engine::eval_params::{self, Tunable},
     tools::dataset::FeatureRecord,
 };
@@ -95,7 +92,7 @@ impl KController {
 
     fn on_epoch(&mut self, epoch: usize, ctx: &TrainerContext, ema_values: &[f64], blend: f64) -> Option<f64> {
         let KMode::Sweep { interval } = self.mode else { return None };
-        if epoch % interval.max(1) != 0 {
+        if !epoch.is_multiple_of(interval.max(1)) {
             return None;
         }
 
@@ -159,32 +156,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         return f64::MAX;
     };
 
-    let mut all_entries = Vec::new();
-
-    for path in &paths {
-        if path.ends_with(".soul") || path.ends_with(".soul.zst") {
-            println!("Loading encoded dataset: {path}");
-            let mut file_entries = loader::load_encoded(path).expect("Failed to load .soul dataset");
-            all_entries.append(&mut file_entries);
-        } else if path.ends_with(".viri") || path.ends_with(".vf") {
-            println!("Loading viriformat dataset: {path}");
-            match loader::parse_viri_file(path) {
-                Ok(mut viri_entries) => all_entries.append(&mut viri_entries),
-                Err(e) => eprintln!("Error loading {path}: {e}"),
-            }
-        } else {
-            println!("Loading raw dataset: {path}");
-            match loader::load_epd(path) {
-                Ok(epd_entries) => {
-                    for e in &epd_entries {
-                        let stm_result = if e.board.stm == Color::Black { 1.0 - e.result } else { e.result };
-                        all_entries.push(loader::SoulEntry::from_board(&e.board, stm_result, None, Some(i16::MAX as i32)));
-                    }
-                },
-                Err(e) => eprintln!("Error loading {path}: {e}"),
-            }
-        }
-    }
+    let all_entries = loader::load_datasets(&paths);
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");

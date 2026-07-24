@@ -1,3 +1,6 @@
+//! PSQT adjacency analysis: finds outlier differences between adjacent
+//! squares in the mirrored half-board, written to correlation-report.txt.
+
 use std::{
     fs::File,
     io,

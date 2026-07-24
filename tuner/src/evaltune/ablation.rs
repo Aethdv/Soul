@@ -1,3 +1,9 @@
+//! Term ablation: zeroes each parameter group and measures the MSE delta
+//! against the baseline.
+//!
+//! Groups are defined by layout ranges (PSQT per piece type, then each
+//! eval term). Uses [`TunableData`] to run on both `.soul` and raw EPD.
+
 use std::{mem, ops::Range};
 
 use soul::{core::psqt, engine::eval_params};

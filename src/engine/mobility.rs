@@ -19,7 +19,7 @@ use crate::{
         combiner::Accumulators,
         eval::{EvalParams, SharedFeatures},
         eval_params::ATTACKER_WEIGHTS,
-        term::{LinearTerm, TaperPair},
+        term::{LinearTerm, TaperPair, TermSource},
     },
     weave::Vf64x4,
 };
@@ -36,6 +36,7 @@ pub const RAM_SCALE: i32 = 82; // 0.08 · 1024
 pub const PAWN_SCALE: i32 = 20; // 0.02 · 1024
 /// Fixed-point precision (1.0 ≡ 1024).
 pub const OPEN_UNITY: i32 = 1024;
+const INV_OPEN_UNITY: f64 = 1.0 / 1024.0;
 
 pub struct Mobility;
 pub struct MobilityTerm;
@@ -83,10 +84,25 @@ pub struct SafetyMetrics {
     pub diag_exposure: i32,
 }
 
+/// Extracted mobility features for generic scatter dispatch.
+pub struct MobilityInput {
+    pub diff: Vf64x4,
+    pub openness: i32,
+}
+
+/// Extracted king-safety features for generic scatter dispatch.
+pub struct KingSafetyInput {
+    pub shield_diff: f64,
+    pub ortho_diff: f64,
+    pub diag_diff: f64,
+    pub weak_us: f64,
+    pub weak_them: f64,
+    pub attackers_us: usize,
+    pub attackers_them: usize,
+}
+
 /// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
-///
-/// `us_pawns` and `them_pawns` are the raw u64 bitboards for each side's pawns.
-/// Rams are pawns directly facing the opponent (shifted one rank forward).
+/// Rams are pawns facing the opponent (shifted one rank forward).
 #[inline]
 pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
     let rams = (us_pawns << 8) & them_pawns;
@@ -146,8 +162,6 @@ impl SafetyMetrics {
         shelter - exposure - pressure
     }
 
-    /// Analyzes the king neighborhood
-    /// and records how exposed or defended it is.
     #[inline(always)]
     fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
         let zone = atk_king(ksq);
@@ -234,6 +248,7 @@ impl Mobility {
 
 impl LinearTerm for MobilityTerm {
     type Upstream = TaperPair;
+    type Input = MobilityInput;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
@@ -243,46 +258,52 @@ impl LinearTerm for MobilityTerm {
         );
     }
 
-    /// `evaluate_score_diff` interpolates open/closed weight vectors by
-    /// `openness`, then tapers MG→EG. For lane `j`:
-    ///
     ///   `∂score/∂mg_mob_open[j]   = d_mg · diff[j] · (openness / 1024)`
     ///   `∂score/∂mg_mob_closed[j] = d_mg · diff[j] · (closedness / 1024)`
     ///
-    /// Same pattern for EG weights with `d_eg`. The combiner pre-multiplies
-    /// `d_mg = d · t_mg` and `d_eg = d · t_eg` so scatter skips the reshape.
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: TaperPair, grads: &mut [f64]) {
+    /// The combiner pre-multiplies `d_mg = d · t_mg`, `d_eg = d · t_eg` so scatter skips the taper split.
+    #[inline(always)]
+    fn scatter(input: MobilityInput, upstream: TaperPair, grads: &mut [f64]) {
         let lo = LAYOUT.mobility_open_offset;
         let lc = LAYOUT.mobility_closed_offset;
 
-        let o_frac = features.openness as f64 / f64::from(OPEN_UNITY);
-        let c_frac = (OPEN_UNITY - features.openness) as f64 / f64::from(OPEN_UNITY);
+        assert!(grads.len() >= lc + 8, "MobilityTerm::scatter: grads too short");
 
-        let metrics_us = &features.data.metrics_us;
-        let metrics_them = &features.data.metrics_them;
+        let o_frac = input.openness as f64 * INV_OPEN_UNITY;
+        let c_frac = 1.0 - o_frac;
 
-        let v_diff = Vf64x4::from([
-            (metrics_us.mobility - metrics_them.mobility) as f64,
-            (metrics_us.shadow_mobility - metrics_them.shadow_mobility) as f64,
-            (metrics_us.threats - metrics_them.threats) as f64,
-            (metrics_us.shadow_threats - metrics_them.shadow_threats) as f64,
-        ]);
-
-        let mut scatter = |offset: usize, scale: f64| {
-            // SAFETY: each mobility block is 4 contiguous LAYOUT slots in the tunable
-            // region; the caller guarantees grads.len() >= LAYOUT.xray_offset + 1
-            // (asserted in the tape), which covers them.
+        let mut do_scatter = |offset: usize, scale: f64| {
+            // SAFETY: grads length verified by assert above and layout invariants.
             unsafe {
                 let p = grads.as_mut_ptr().add(offset);
-                (Vf64x4::loadu(p) + v_diff * Vf64x4::splat(scale)).storeu(p);
+                (Vf64x4::loadu(p) + input.diff * Vf64x4::splat(scale)).storeu(p);
             }
         };
 
-        scatter(lo, upstream.d_mg * o_frac);
-        scatter(lo + 4, upstream.d_eg * o_frac);
-        scatter(lc, upstream.d_mg * c_frac);
-        scatter(lc + 4, upstream.d_eg * c_frac);
+        do_scatter(lo, upstream.d_mg * o_frac);
+        do_scatter(lo + 4, upstream.d_eg * o_frac);
+        do_scatter(lc, upstream.d_mg * c_frac);
+        do_scatter(lc + 4, upstream.d_eg * c_frac);
+    }
+}
+
+impl TermSource<MobilityTerm> for SharedFeatures {
+    type Input = MobilityInput;
+
+    #[inline(always)]
+    fn extract(&self) -> MobilityInput {
+        let us = &self.data.metrics_us;
+        let them = &self.data.metrics_them;
+
+        MobilityInput {
+            diff: Vf64x4::from([
+                (us.mobility - them.mobility) as f64,
+                (us.shadow_mobility - them.shadow_mobility) as f64,
+                (us.threats - them.threats) as f64,
+                (us.shadow_threats - them.shadow_threats) as f64,
+            ]),
+            openness: self.openness,
+        }
     }
 }
 
@@ -290,6 +311,7 @@ impl LinearTerm for KingSafetyTerm {
     /// Scalar upstream; combiner's single MG taper already folds in loss
     /// derivative and STM sign. Per-side signs stay inside scatter.
     type Upstream = f64;
+    type Input = KingSafetyInput;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
@@ -303,52 +325,45 @@ impl LinearTerm for KingSafetyTerm {
             .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
     }
 
-    /// `SafetyMetrics::score` is `shelter − exposure − pressure`.
-    /// The combiner tapers the whole `us − them + xray` differential by `phase / 24`,
-    /// and that taper is pre-multiplied into `upstream`.
-    ///
     ///   `∂score/∂w_shield  =  upstream · (shield_us − shield_them)`
     ///   `∂score/∂w_ortho   = −upstream · (ortho_us  − ortho_them)`
     ///   `∂score/∂w_diag    = −upstream · (diag_us   − diag_them)`
+    ///   `∂score/∂atk_weights[idx_side] = ±upstream · (weak_side / 10)`
     ///
-    /// Attacker weights:
-    /// Only the two active indices (per-side attacker counts) receive contribution,
-    /// each proportional to that side's `weak / 10`. Pressure is subtracted from "us"'s score,
-    /// so that `∂score/∂atk_weights[idx_us] = −upstream · (weak_us / 10)`
-    /// (opposite sign for `idx_them`). Shared indices sum.
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
+    /// The combiner pre-multiplies the `MG · phase/24` taper into `upstream`.
+    #[inline(always)]
+    fn scatter(input: KingSafetyInput, upstream: f64, grads: &mut [f64]) {
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
 
-        let safety_us = &features.data.safety_us;
-        let safety_them = &features.data.safety_them;
+        grads[ks] += upstream * input.shield_diff;
+        grads[ks + 1] -= upstream * input.ortho_diff;
+        grads[ks + 2] -= upstream * input.diag_diff;
 
-        let shield_diff = (safety_us.shield - safety_them.shield) as f64;
-        let ortho_diff = (safety_us.ortho_exposure - safety_them.ortho_exposure) as f64;
-        let diag_diff = (safety_us.diag_exposure - safety_them.diag_exposure) as f64;
+        let idx_us = input.attackers_us.min(ATTACKER_WEIGHTS.len() - 1);
+        let idx_them = input.attackers_them.min(ATTACKER_WEIGHTS.len() - 1);
 
-        grads[ks] += upstream * shield_diff;
-        grads[ks + 1] -= upstream * ortho_diff;
-        grads[ks + 2] -= upstream * diag_diff;
+        grads[ao + idx_us] -= upstream * (input.weak_us / 10.0);
+        grads[ao + idx_them] += upstream * (input.weak_them / 10.0);
+    }
+}
 
-        let idx_us = safety_us.attackers.min(ATTACKER_WEIGHTS.len() - 1);
-        let idx_them = safety_them.attackers.min(ATTACKER_WEIGHTS.len() - 1);
+impl TermSource<KingSafetyTerm> for SharedFeatures {
+    type Input = KingSafetyInput;
 
-        for atk_k in 0..ATTACKER_WEIGHTS.len() {
-            let mut atk_deriv = 0.0;
+    #[inline(always)]
+    fn extract(&self) -> KingSafetyInput {
+        let us = &self.data.safety_us;
+        let them = &self.data.safety_them;
 
-            if atk_k == idx_us {
-                atk_deriv -= safety_us.weak as f64 / 10.0;
-            }
-
-            if atk_k == idx_them {
-                atk_deriv += safety_them.weak as f64 / 10.0;
-            }
-
-            if atk_deriv != 0.0 {
-                grads[ao + atk_k] += upstream * atk_deriv;
-            }
+        KingSafetyInput {
+            shield_diff: (us.shield - them.shield) as f64,
+            ortho_diff: (us.ortho_exposure - them.ortho_exposure) as f64,
+            diag_diff: (us.diag_exposure - them.diag_exposure) as f64,
+            weak_us: us.weak as f64,
+            weak_them: them.weak as f64,
+            attackers_us: us.attackers,
+            attackers_them: them.attackers,
         }
     }
 }
@@ -467,16 +482,13 @@ fn score_side(
     enemy_pawn_atk: Bitboard,
     xray_us: Bitboard,
 ) -> SideMetrics {
-    // "Safe" squares are those we control that aren't under enemy pawn fire.
+    // Squares we control that aren't under enemy pawn fire.
     let safe = area_us & !enemy_pawn_atk;
-    // Mobility rewards exclusive territorial control more than shared space.
-    // We count all safe squares, but double count those that they don't reach.
+    // Double count exclusive squares, single count shared ones.
     let mobility = (safe & !area_them).popcount() as i32 + safe.popcount() as i32;
-    // Safe battery squares
-    let shadow_mobility = (xray_us & !enemy_pawn_atk).popcount() as i32;
-    // Direct threats, king excluded
+    // Enemy pieces our direct attacks touch (king excluded from attack map).
     let threats = (atk_us & them).popcount() as i32;
-    // X-ray threats
+    let shadow_mobility = (xray_us & !enemy_pawn_atk).popcount() as i32;
     let shadow_threats = (xray_us & them).popcount() as i32;
 
     SideMetrics { mobility, shadow_mobility, threats, shadow_threats }

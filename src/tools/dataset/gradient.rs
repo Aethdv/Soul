@@ -1,4 +1,9 @@
-//! Gradient computation against dataset entries for evaluation tuning.
+//! Packed tuning record [`FeatureRecord`] and its forward/backward passes.
+//!
+//! [`eval_record`] computes the STM-relative eval from the packed features;
+//! [`accumulate_record_grad`] scatters the gradient back through the same
+//! terms. [`TermSource`] impls bridge each term's generic scatter to the
+//! record's fields.
 
 use std::array;
 
@@ -11,35 +16,38 @@ use crate::{
         psqt,
     },
     engine::{
-        eval::{SharedFeatures, evaluate_fast, extract_phase},
-        mobility::{OPEN_UNITY, SafetyMetrics, SideMetrics, compute_openness_raw},
+        eval::{
+            BackwardPawnTerm, BishopPairTerm, DefendedPawnTerm, DoubledPawnTerm, EnemyKingDistTerm, IsolatedPawnTerm,
+            MinorBehindPawnTerm, PassedPawnTerm, PhalanxTerm, RookOpenTerm, SharedFeatures, TempoTerm, XrayTerm, evaluate_fast,
+            extract_phase, scatter_all_terms,
+        },
+        mobility::{
+            KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, OPEN_UNITY, SafetyMetrics, SideMetrics,
+            compute_openness_raw,
+        },
+        term::{self, TermSource},
     },
     weave::Vf64x4,
 };
 
-/// All tuner-side features for one position, packed into a single contiguous
-/// 132-byte record (about two cache lines) so the hot training loop reads one
-/// record instead of streaming a dozen independent arrays.
+/// All tuner-side features for one position, packed into a 132-byte record
+/// (three cache lines) so the hot loop reads one record instead of streaming
+/// a dozen arrays. Computed once at startup ([`FeatureRecord::from_entry`]);
+/// only `values` changes across epochs. The PSQT gather index is pre-resolved
+/// and the board decode folded in, so the loop never re-walks the nibble array.
 ///
-/// Everything here is static across epochs, only `values` changes during
-/// training, so it is computed once at startup ([`FeatureRecord::from_entry`])
-/// and read straight through on every epoch. The PSQT gather index is
-/// pre-resolved and the board decode is folded in, so the loop never re-walks
-/// the nibble array nor reconstructs a `Position`.
-///
-/// Fields are STM-relative (us − them) to match the training target; the
-/// perspective flip happens once, at pack time.
+/// Fields are STM-relative (us − them); the perspective flip happens once,
+/// at pack time.
 #[repr(C)]
 pub struct FeatureRecord {
-    /// Sign-encoded PSQT gather index per piece, one slot per occupied square.
-    /// Bits 0..14 = the MG PSQT index (≤ 351); the EG index is that `+ 32` (≤ 383).
-    /// Bit 15 = piece sign (set = "them", subtracted from the score).
+    /// Bits 0..14 = MG PSQT index (≤ 351); EG = MG + 32 (≤ 383).
+    /// Bit 15 = piece sign (set = "them", subtracted).
     pub piece_idx: [u16; 32],
     pub passed_pawn: [i8; 6],
     pub enemy_king_dist: [i8; 6],
     pub phalanx: [i8; 6],
     pub defended_pawn: [i8; 6],
-    /// `[us×4, them×4]`: mobility, shadow_mobility, threats, shadow_threats.
+    /// `[us·4, them·4]`: mobility, shadow_mobility, threats, shadow_threats.
     pub mobility: [i8; 8],
     /// `[attackers, weak, shield, ortho<<4 | diag]`, king-safety metrics.
     pub safety_us: [u8; 4],
@@ -51,7 +59,7 @@ pub struct FeatureRecord {
     /// Raw `compute_openness_raw` result; openness = `open_raw / OPEN_UNITY`.
     /// Stored raw (not as a float) to keep the openness math bit-exact.
     pub open_raw: i32,
-    /// Raw static eval, for volatility filtering at training time.
+    /// For volatility filtering at training time.
     pub static_eval: i16,
     pub xray_ortho: i8,
     pub bishop_pair: i8,
@@ -67,13 +75,9 @@ pub struct FeatureRecord {
 const _: () = assert!(size_of::<FeatureRecord>() == 132);
 
 impl FeatureRecord {
-    /// Decode a nibble-encoded entry into the packed training record.
-    ///
-    /// The FEN round-trip (`to_fen` → `from_fen`) plus `SharedFeatures::compute`
-    /// is a one-time startup cost per entry; none of it runs inside the
-    /// training loop. A direct nibble→`Position` decoder would drop the
-    /// intermediate string, but the cost is negligible next to the feature
-    /// computation itself.
+    /// Startup cost per entry: FEN round-trip + `SharedFeatures::compute`.
+    /// A nibble→`Position` decoder would skip the string, but the parse is
+    /// negligible next to the feature work. Neither runs in the hot loop.
     pub fn from_entry(entry: &SoulEntry) -> Self {
         let pos = Position::from_fen(&entry.to_fen());
 
@@ -271,99 +275,15 @@ pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: 
         }
     }
 
-    // King safety: per-attacker-count weight, plus shield and exposure differentials.
-    let us = unpack_safety(record.safety_us);
-    let them = unpack_safety(record.safety_them);
-
-    if us.attackers > 0 {
-        grads[l.attacker_offset + us.attackers.min(5)] += gradient * (-f64::from(us.weak) / 10.0) * mg_w;
-    }
-
-    if them.attackers > 0 {
-        grads[l.attacker_offset + them.attackers.min(5)] += gradient * (f64::from(them.weak) / 10.0) * mg_w;
-    }
-
-    let shield_diff = f64::from(us.shield) - f64::from(them.shield);
-    let ortho_diff = f64::from(us.ortho_exposure) - f64::from(them.ortho_exposure);
-    let diag_diff = f64::from(us.diag_exposure) - f64::from(them.diag_exposure);
-
-    grads[l.king_safety_offset] += gradient * shield_diff * mg_w;
-    grads[l.king_safety_offset + 1] -= gradient * ortho_diff * mg_w;
-    grads[l.king_safety_offset + 2] -= gradient * diag_diff * mg_w;
-    grads[l.xray_offset] += gradient * f64::from(record.xray_ortho) * mg_w;
-
-    taper_grad(record.bishop_pair, gradient, mg_w, eg_w, grads, l.bishop_pair_offset, l.bishop_pair_offset + 1);
-    taper_grad(record.rook_open, gradient, mg_w, eg_w, grads, l.rook_open_offset, l.rook_open_offset + 1);
-
-    for r in 0..6 {
-        taper_grad(record.passed_pawn[r], gradient, mg_w, eg_w, grads, l.passed_pawn_mg_offset + r, l.passed_pawn_eg_offset + r);
-    }
-
-    for d in 0..6 {
-        taper_grad(
-            record.enemy_king_dist[d],
-            gradient,
-            mg_w,
-            eg_w,
-            grads,
-            l.enemy_king_dist_mg_offset + d,
-            l.enemy_king_dist_eg_offset + d,
-        );
-    }
-
-    taper_grad(record.doubled_pawn, gradient, mg_w, eg_w, grads, l.doubled_pawn_offset, l.doubled_pawn_offset + 1);
-    taper_grad(record.isolated_pawn, gradient, mg_w, eg_w, grads, l.isolated_pawn_offset, l.isolated_pawn_offset + 1);
-
-    for r in 0..6 {
-        taper_grad(record.phalanx[r], gradient, mg_w, eg_w, grads, l.phalanx_mg_offset + r, l.phalanx_eg_offset + r);
-    }
-
-    for r in 0..6 {
-        taper_grad(
-            record.defended_pawn[r],
-            gradient,
-            mg_w,
-            eg_w,
-            grads,
-            l.defended_pawn_mg_offset + r,
-            l.defended_pawn_eg_offset + r,
-        );
-    }
-
-    taper_grad(record.backward_pawn, gradient, mg_w, eg_w, grads, l.backward_pawn_offset, l.backward_pawn_offset + 1);
-    taper_grad(record.tempo, gradient, mg_w, eg_w, grads, l.tempo_offset, l.tempo_offset + 1);
-    taper_grad(
-        record.minor_behind_pawn,
-        gradient,
-        mg_w,
-        eg_w,
-        grads,
-        l.minor_behind_pawn_offset,
-        l.minor_behind_pawn_offset + 1,
-    );
-
-    let (openness, closedness) = openness_pair(record.open_raw);
-
-    let g_diff = Vf64x4::from([
-        f64::from(record.mobility[0]) - f64::from(record.mobility[4]),
-        f64::from(record.mobility[1]) - f64::from(record.mobility[5]),
-        f64::from(record.mobility[2]) - f64::from(record.mobility[6]),
-        f64::from(record.mobility[3]) - f64::from(record.mobility[7]),
-    ]) * Vf64x4::splat(gradient);
-
-    let mut scatter = |offset: usize, scale: f64| {
-        // SAFETY: the block is 4 fixed LAYOUT slots inside the parameter region, and
-        // grads spans every parameter (grads.len() == values.len()).
-        unsafe {
-            let p = grads.as_mut_ptr().add(offset);
-            (Vf64x4::loadu(p) + g_diff * Vf64x4::splat(scale)).storeu(p);
-        }
+    let upstreams = term::BucketUpstreams {
+        mg_eg: term::TaperPair { d_mg: gradient * mg_w, d_eg: gradient * eg_w },
+        mobility: term::TaperPair { d_mg: gradient * mg_w, d_eg: gradient * eg_w },
+        bonus: term::TaperPair { d_mg: gradient * mg_w, d_eg: gradient * eg_w },
+        king_safety: gradient * mg_w,
+        xray: gradient * mg_w,
     };
 
-    scatter(l.mobility_open_offset, openness * mg_w);
-    scatter(l.mobility_open_offset + 4, openness * eg_w);
-    scatter(l.mobility_closed_offset, closedness * mg_w);
-    scatter(l.mobility_closed_offset + 4, closedness * eg_w);
+    scatter_all_terms(record, &upstreams, grads);
 }
 
 /// Sign bit of a packed [`FeatureRecord::piece_idx`] slot.
@@ -465,20 +385,11 @@ fn openness_pair(open_raw: i32) -> (f64, f64) {
     (openness, 1.0 - openness)
 }
 
-/// One tapered HCE term: `feature × phase-blended weight`, truncated to whole
+/// One tapered HCE term: `feature · phase-blended weight`, truncated to whole
 /// centipawns to mirror the engine's integer eval.
 #[inline]
 fn taper(feat: i8, mg: f64, eg: f64, mg_w: f64, eg_w: f64) -> f64 {
     (f64::from(feat) * (mg * mg_w + eg * eg_w)).trunc()
-}
-
-/// Scatter one tapered term's gradient into its MG/EG parameter slots.
-/// The `.trunc()` in [`taper`] is the identity on the backward pass (straight-through).
-#[inline]
-fn taper_grad(feat: i8, gradient: f64, mg_w: f64, eg_w: f64, grads: &mut [f64], mg_idx: usize, eg_idx: usize) {
-    let g = gradient * f64::from(feat);
-    grads[mg_idx] += g * mg_w;
-    grads[eg_idx] += g * eg_w;
 }
 
 /// Openness-weighted blend of open/closed mobility weights.
@@ -498,4 +409,79 @@ fn interpolate_weight(
         ((values[open_offset + 4] * openness * 1024.0 + values[closed_offset + 4] * closedness * 1024.0 + 512.0) / 1024.0).floor();
 
     w_mg_val * mg_w + w_eg_val * eg_w
+}
+
+// TermSource impls bridging FeatureRecord → each generic term's scatter.
+macro_rules! impl_fr_sources {
+    ( $( ($term:ty, scalar, $field:ident) ),* ; $( ($arr_term:ty, array, $arr_field:ident, $n:literal) ),* ) => {
+        $(
+            impl term::TermSource<$term> for FeatureRecord {
+                type Input = f64;
+                #[inline(always)]
+                fn extract(&self) -> f64 { f64::from(self.$field) }
+            }
+        )*
+        $(
+            impl term::TermSource<$arr_term> for FeatureRecord {
+                type Input = [f64; $n];
+                #[inline(always)]
+                fn extract(&self) -> [f64; $n] {
+                    std::array::from_fn(|i| f64::from(self.$arr_field[i]))
+                }
+            }
+        )*
+    };
+}
+
+impl_fr_sources! {
+    (BishopPairTerm, scalar, bishop_pair),
+    (RookOpenTerm, scalar, rook_open),
+    (DoubledPawnTerm, scalar, doubled_pawn),
+    (IsolatedPawnTerm, scalar, isolated_pawn),
+    (BackwardPawnTerm, scalar, backward_pawn),
+    (TempoTerm, scalar, tempo),
+    (MinorBehindPawnTerm, scalar, minor_behind_pawn),
+    (XrayTerm, scalar, xray_ortho);
+
+    (PassedPawnTerm, array, passed_pawn, 6),
+    (EnemyKingDistTerm, array, enemy_king_dist, 6),
+    (PhalanxTerm, array, phalanx, 6),
+    (DefendedPawnTerm, array, defended_pawn, 6)
+}
+
+impl TermSource<MobilityTerm> for FeatureRecord {
+    type Input = MobilityInput;
+
+    #[inline(always)]
+    fn extract(&self) -> MobilityInput {
+        MobilityInput {
+            diff: Vf64x4::from([
+                f64::from(self.mobility[0]) - f64::from(self.mobility[4]),
+                f64::from(self.mobility[1]) - f64::from(self.mobility[5]),
+                f64::from(self.mobility[2]) - f64::from(self.mobility[6]),
+                f64::from(self.mobility[3]) - f64::from(self.mobility[7]),
+            ]),
+            openness: self.open_raw,
+        }
+    }
+}
+
+impl TermSource<KingSafetyTerm> for FeatureRecord {
+    type Input = KingSafetyInput;
+
+    #[inline(always)]
+    fn extract(&self) -> KingSafetyInput {
+        let us = unpack_safety(self.safety_us);
+        let them = unpack_safety(self.safety_them);
+
+        KingSafetyInput {
+            shield_diff: f64::from(us.shield - them.shield),
+            ortho_diff: f64::from(us.ortho_exposure - them.ortho_exposure),
+            diag_diff: f64::from(us.diag_exposure - them.diag_exposure),
+            weak_us: f64::from(us.weak),
+            weak_them: f64::from(them.weak),
+            attackers_us: us.attackers,
+            attackers_them: them.attackers,
+        }
+    }
 }

@@ -1,3 +1,9 @@
+//! Checkpoint save/load with name-based parameter remapping.
+//!
+//! Parameters are keyed by name so adding or reordering evaluation terms
+//! doesn't corrupt the load. [`peek_checkpoint`] reads the seed and dataset
+//! fingerprint before the train/val split is set up.
+
 use std::{
     collections::BTreeMap,
     fs::File,

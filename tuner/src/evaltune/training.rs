@@ -1,3 +1,9 @@
+//! Gradient-norm tracking ([`GradientStats`]), sigmoid/WDL helpers, and the
+//! [`TunableData`] trait.
+//!
+//! Shared between the training loop and the ablation tool. No other module
+//! imports from here.
+
 use soul::core::{board::Position, defs::Color};
 
 use crate::evaltune::{loader, tape::eval_f64};

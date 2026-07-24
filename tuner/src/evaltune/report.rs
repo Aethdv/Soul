@@ -1,3 +1,6 @@
+//! Tuner output formatting: final parameter tables, weight arrays, and
+//! the training summary printed at the end of a run.
+
 use std::{
     fs::File,
     io::{self, BufWriter, Write},

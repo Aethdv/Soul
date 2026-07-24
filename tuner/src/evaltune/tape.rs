@@ -181,14 +181,13 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 /// directly is cheaper than the dual path:
 ///
 /// - Linear: one f64 write per slot.
-/// - Dual:   DUAL_N f32 ops per arithmetic op.
-///           DUAL_N = (DUAL_SLOTS + 7) & !7, DUAL_SLOTS = 2 + ∑slot_width(tunables).
+/// - Dual: `DUAL_N` f32 ops per arithmetic op, where `DUAL_N = (DUAL_SLOTS + 7) & !7`
+///   and `DUAL_SLOTS = 2 + ∑slot_width(tunables)`.
 ///
 /// Returns the squared error for loss tracking.
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
     // ── PSQT + Material accumulator
-    // For lane values + PSQT scatter
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
@@ -591,7 +590,7 @@ mod tests {
         );
     }
 
-    /// `accumulate_gradient` shares math with the board-based gradient paths.
+    /// `accumulate_record_grad` shares math with the board-based gradient paths.
     /// A drift here corrupts every `run_encoded` session.
     #[test]
     fn test_encoded_path_oracle() {
