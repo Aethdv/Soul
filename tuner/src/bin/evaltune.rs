@@ -3,7 +3,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use soul::cli::Help;
 use tuner::{
-    core::config::{DEFAULT_WDL_END, KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
+    core::config::{KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
     evaltune::{ablation, correlation, loader},
 };
@@ -164,150 +164,7 @@ fn main() {
             println!("\nBest lr_mult = {:.4} (L_val = {:.6})", best.1, best.0);
         },
         None => {
-            let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
-                TunerConfig::default()
-            });
-
-            if let Some(epochs) = args.epochs {
-                tuner_config.evaltune.epochs = epochs;
-            }
-
-            if let Some(seed) = args.seed {
-                tuner_config.evaltune.seed = Some(seed);
-            }
-
-            if let Some(lr_mult) = args.lr_mult {
-                tuner_config.evaltune.k_mode = KMode::Learned { lr_mult };
-            }
-
-            // LR schedule overrides
-            if let Some(stype) = args.lr_schedule {
-                match stype.as_str() {
-                    "constant" => tuner_config.evaltune.lr_schedule = LrScheduleConfig::Constant { value: args.lr.unwrap_or(0.1) },
-                    "linear" => {
-                        tuner_config.evaltune.lr_schedule =
-                            LrScheduleConfig::Linear { start: args.lr.unwrap_or(0.1), end: args.min_lr.unwrap_or(0.0) }
-                    },
-                    "cosine" => {
-                        tuner_config.evaltune.lr_schedule = LrScheduleConfig::Cosine {
-                            base: args.lr.unwrap_or(0.1),
-                            min: args.min_lr.unwrap_or(0.0001),
-                            warmup_ratio: args.warmup.unwrap_or(0.1),
-                            cycles: args.cycles.unwrap_or(1),
-                        }
-                    },
-                    "wsd" => {
-                        tuner_config.evaltune.lr_schedule = LrScheduleConfig::WarmupStableDecay {
-                            base: args.lr.unwrap_or(0.1),
-                            min: args.min_lr.unwrap_or(0.0),
-                            warmup_ratio: args.warmup.unwrap_or(0.1),
-                            stable_ratio: 0.5,
-                        }
-                    },
-                    "sd" => {
-                        tuner_config.evaltune.lr_schedule = LrScheduleConfig::StableDecay {
-                            base: args.lr.unwrap_or(0.03),
-                            min: args.min_lr.unwrap_or(0.0001),
-                            stable_ratio: 0.5,
-                        }
-                    },
-                    _ => eprintln!("Warning: Unknown LR schedule '{}', ignoring.", stype),
-                }
-            } else if let LrScheduleConfig::Cosine { ref mut base, ref mut min, ref mut warmup_ratio, ref mut cycles } =
-                tuner_config.evaltune.lr_schedule
-            {
-                if let Some(v) = args.lr {
-                    *base = v;
-                }
-                if let Some(v) = args.min_lr {
-                    *min = v;
-                }
-                if let Some(v) = args.warmup {
-                    *warmup_ratio = v;
-                }
-                if let Some(v) = args.cycles {
-                    *cycles = v;
-                }
-            } else if let LrScheduleConfig::WarmupStableDecay { ref mut base, ref mut min, ref mut warmup_ratio, .. } =
-                tuner_config.evaltune.lr_schedule
-            {
-                if let Some(v) = args.lr {
-                    *base = v;
-                }
-                if let Some(v) = args.min_lr {
-                    *min = v;
-                }
-                if let Some(v) = args.warmup {
-                    *warmup_ratio = v;
-                }
-            } else if let LrScheduleConfig::StableDecay { ref mut base, ref mut min, .. } = tuner_config.evaltune.lr_schedule {
-                if let Some(v) = args.lr {
-                    *base = v;
-                }
-                if let Some(v) = args.min_lr {
-                    *min = v;
-                }
-            }
-
-            // Apply WDL schedule overrides
-            let (def_start, def_end) = match tuner_config.evaltune.wdl_schedule {
-                WdlScheduleConfig::Cosine { start, end }
-                | WdlScheduleConfig::Linear { start, end }
-                | WdlScheduleConfig::StableDecay { start, end, .. } => (start, end),
-                WdlScheduleConfig::Constant { value } => (value, DEFAULT_WDL_END),
-            };
-
-            if let Some(stype) = args.wdl_schedule {
-                match stype.as_str() {
-                    "constant" => {
-                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Constant { value: args.blend.unwrap_or(def_start) }
-                    },
-                    "linear" => {
-                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Linear {
-                            start: args.wdl_start.unwrap_or(def_start),
-                            end: args.wdl_end.unwrap_or(def_end),
-                        }
-                    },
-                    "cosine" => {
-                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Cosine {
-                            start: args.wdl_start.unwrap_or(def_start),
-                            end: args.wdl_end.unwrap_or(def_end),
-                        }
-                    },
-                    "stable-decay" => {
-                        tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::StableDecay {
-                            start: args.wdl_start.unwrap_or(def_start),
-                            end: args.wdl_end.unwrap_or(def_end),
-                            stable_ratio: 0.35,
-                        }
-                    },
-                    _ => eprintln!("Warning: Unknown WDL schedule '{}', ignoring.", stype),
-                }
-            } else {
-                if let Some(blend) = args.blend {
-                    tuner_config.evaltune.wdl_schedule = WdlScheduleConfig::Constant { value: blend };
-                }
-
-                match tuner_config.evaltune.wdl_schedule {
-                    WdlScheduleConfig::Linear { ref mut start, ref mut end }
-                    | WdlScheduleConfig::Cosine { ref mut start, ref mut end }
-                    | WdlScheduleConfig::StableDecay { ref mut start, ref mut end, .. } => {
-                        if let Some(v) = args.wdl_start {
-                            *start = v;
-                        }
-                        if let Some(v) = args.wdl_end {
-                            *end = v;
-                        }
-                    },
-                    _ => {},
-                }
-            }
-
-            let dataset_str = args.dataset.map(|v| v.join(","));
-            let best_val = evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref());
-
-            if best_val == f64::MAX {
+            if !run_evaltune(args) {
                 process::exit(1);
             }
         },
@@ -365,6 +222,105 @@ fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize
         .unwrap_or(f64::MAX);
 
     (val, elapsed)
+}
+
+fn run_evaltune(args: Args) -> bool {
+    let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
+        eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
+        TunerConfig::default()
+    });
+
+    if let Some(epochs) = args.epochs {
+        tuner_config.evaltune.epochs = epochs;
+    }
+
+    if let Some(seed) = args.seed {
+        tuner_config.evaltune.seed = Some(seed);
+    }
+
+    if let Some(lr_mult) = args.lr_mult {
+        tuner_config.evaltune.k_mode = KMode::Learned { lr_mult };
+    }
+
+    // LR schedule: type override or field overrides
+    if let Some(stype) = args.lr_schedule {
+        let s = match stype.as_str() {
+            "constant" => Some(LrScheduleConfig::Constant { value: args.lr.unwrap_or(0.1) }),
+            "linear" => Some(LrScheduleConfig::Linear { start: args.lr.unwrap_or(0.1), end: args.min_lr.unwrap_or(0.0) }),
+            "cosine" => Some(LrScheduleConfig::Cosine {
+                base: args.lr.unwrap_or(0.1),
+                min: args.min_lr.unwrap_or(0.0001),
+                warmup_ratio: args.warmup.unwrap_or(0.1),
+                cycles: args.cycles.unwrap_or(1),
+            }),
+            "wsd" => Some(LrScheduleConfig::WarmupStableDecay {
+                base: args.lr.unwrap_or(0.1),
+                min: args.min_lr.unwrap_or(0.0),
+                warmup_ratio: args.warmup.unwrap_or(0.1),
+                stable_ratio: 0.5,
+            }),
+            "sd" => Some(LrScheduleConfig::StableDecay {
+                base: args.lr.unwrap_or(0.03),
+                min: args.min_lr.unwrap_or(0.0001),
+                stable_ratio: 0.5,
+            }),
+            _ => {
+                eprintln!("Warning: Unknown LR schedule '{}', ignoring.", stype);
+                None
+            },
+        };
+
+        if let Some(s) = s {
+            tuner_config.evaltune.lr_schedule = s;
+        }
+    } else {
+        tuner_config
+            .evaltune
+            .lr_schedule
+            .apply_overrides(args.lr, args.min_lr, args.warmup, args.cycles);
+    }
+
+    // WDL schedule: type override or field overrides
+    let (def_start, def_end) = tuner_config.evaltune.wdl_schedule.defaults();
+
+    if let Some(stype) = args.wdl_schedule {
+        let s = match stype.as_str() {
+            "constant" => Some(WdlScheduleConfig::Constant { value: args.blend.unwrap_or(def_start) }),
+            "linear" => {
+                Some(WdlScheduleConfig::Linear { start: args.wdl_start.unwrap_or(def_start), end: args.wdl_end.unwrap_or(def_end) })
+            },
+            "cosine" => {
+                Some(WdlScheduleConfig::Cosine { start: args.wdl_start.unwrap_or(def_start), end: args.wdl_end.unwrap_or(def_end) })
+            },
+            "stable-decay" => Some(WdlScheduleConfig::StableDecay {
+                start: args.wdl_start.unwrap_or(def_start),
+                end: args.wdl_end.unwrap_or(def_end),
+                stable_ratio: 0.35,
+            }),
+            _ => {
+                eprintln!("Warning: Unknown WDL schedule '{}', ignoring.", stype);
+                None
+            },
+        };
+
+        if let Some(s) = s {
+            tuner_config.evaltune.wdl_schedule = s;
+        }
+    } else {
+        tuner_config
+            .evaltune
+            .wdl_schedule
+            .apply_overrides(args.blend, args.wdl_start, args.wdl_end);
+    }
+
+    let dataset_str = args.dataset.map(|v| v.join(","));
+    let best_val = evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref());
+
+    if best_val == f64::MAX {
+        return false;
+    }
+
+    true
 }
 
 fn print_help() {

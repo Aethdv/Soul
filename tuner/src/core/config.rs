@@ -227,6 +227,71 @@ impl LrScheduleConfig {
             Self::StableDecay { base, min, stable_ratio } => Box::new(schedule::StableDecay::new(base, min, stable_ratio)),
         }
     }
+
+    /// Apply CLI overrides to the schedule's numeric fields without changing its type.
+    pub fn apply_overrides(&mut self, lr: Option<f64>, min_lr: Option<f64>, warmup: Option<f64>, cycles: Option<usize>) {
+        match self {
+            Self::Constant { value } => {
+                if let Some(v) = lr {
+                    *value = v;
+                }
+            },
+            Self::Linear { start, end } => {
+                if let Some(v) = lr {
+                    *start = v;
+                }
+                if let Some(v) = min_lr {
+                    *end = v;
+                }
+            },
+            Self::Cosine { base, min, warmup_ratio, cycles: cycle_count, .. } => {
+                if let Some(v) = lr {
+                    *base = v;
+                }
+                if let Some(v) = min_lr {
+                    *min = v;
+                }
+                if let Some(v) = warmup {
+                    *warmup_ratio = v;
+                }
+                if let Some(v) = cycles {
+                    *cycle_count = v;
+                }
+            },
+            Self::WarmupStableDecay { base, min, warmup_ratio, .. } => {
+                if let Some(v) = lr {
+                    *base = v;
+                }
+                if let Some(v) = min_lr {
+                    *min = v;
+                }
+                if let Some(v) = warmup {
+                    *warmup_ratio = v;
+                }
+            },
+            Self::StableDecay { base, min, .. } => {
+                if let Some(v) = lr {
+                    *base = v;
+                }
+                if let Some(v) = min_lr {
+                    *min = v;
+                }
+            },
+            Self::Exponential { start, .. } => {
+                if let Some(v) = lr {
+                    *start = v;
+                }
+            },
+            Self::StepDecay { start, step_epochs, .. } => {
+                if let Some(v) = lr {
+                    *start = v;
+                }
+                if let Some(v) = cycles {
+                    *step_epochs = v;
+                }
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -254,6 +319,37 @@ impl WdlScheduleConfig {
             Self::Linear { start, end } => Box::new(schedule::LinearWdl::new(start, end)),
             Self::Cosine { start, end } => Box::new(schedule::CosineWdl::new(start, end)),
             Self::StableDecay { start, end, stable_ratio } => Box::new(schedule::StableDecayWdl::new(start, end, stable_ratio)),
+        }
+    }
+
+    /// Extract default start/end values regardless of variant.
+    pub fn defaults(&self) -> (f64, f64) {
+        match self {
+            Self::Cosine { start, end } | Self::Linear { start, end } | Self::StableDecay { start, end, .. } => (*start, *end),
+            Self::Constant { value } => (*value, DEFAULT_WDL_END),
+        }
+    }
+
+    /// Apply CLI overrides: `blend` replaces the entire schedule with a constant;
+    /// `start`/`end` update the current type's fields in place.
+    pub fn apply_overrides(&mut self, blend: Option<f64>, start: Option<f64>, end: Option<f64>) {
+        if let Some(v) = blend {
+            *self = Self::Constant { value: v };
+            return;
+        }
+
+        match self {
+            Self::Linear { start: start_val, end: end_val }
+            | Self::Cosine { start: start_val, end: end_val }
+            | Self::StableDecay { start: start_val, end: end_val, .. } => {
+                if let Some(v) = start {
+                    *start_val = v;
+                }
+                if let Some(v) = end {
+                    *end_val = v;
+                }
+            },
+            _ => {},
         }
     }
 }
