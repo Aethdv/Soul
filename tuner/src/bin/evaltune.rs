@@ -146,7 +146,11 @@ fn main() {
                     let half = lstep / 2.0;
                     let b = best.1.ln();
 
-                    grid = vec![(b - half).exp(), b.exp(), (b + half).exp()];
+                    grid = vec![
+                        (b - half).exp().clamp(min, max),
+                        b.exp().clamp(min, max),
+                        (b + half).exp().clamp(min, max),
+                    ];
                 }
             }
 
