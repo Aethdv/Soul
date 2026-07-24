@@ -93,11 +93,18 @@ impl Lion {
             // still fires: a converged parameter without gradient signal should
             // not lose its regularization pressure.
             //
-            // Per-parameter disagreement gate (m · g ≤ 0) catches local oscillation:
-            // if momentum and gradient disagree, the sign update is skipped for this
+            // Per-parameter disagreement gate (c · g ≤ 0) catches local oscillation:
+            // if `c` and gradient disagree, the sign update is skipped for this
             // parameter. An absent gradient (g = 0) is disagreement; a signum test
             // would let one momentum sign coast.
             //
+            // The Cautious mask (Liang et al. 2024) checks the blend direction c
+            // rather than stale momentum m, so a strong fresh gradient that has already
+            // reoriented c does not get blocked by residual m.
+            //
+            // Ref: Kaizhao Liang, Lizhang Chen, Bo Liu & Qiang Liu (2024).
+            // Cautious Optimizers: Improving Training with One Line of Code.
+            // <https://arxiv.org/abs/2411.16085v4>
             //
             // Ref: Taejong Joo, Wenhan Xia, Cheolmin Kim, Ming Zhang & Eugene Ie (2026).
             // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.
@@ -107,11 +114,11 @@ impl Lion {
             // with PSQT being 384 of the params, which dominated the global cossim.
             // Validated neutral-ish at SPRT (−0.67 ± 5.39 Elo, 8240 games).
             // <https://asylum.red/test/4378/>
-            // Probably revisit at NNUE scale.
+            // TODO: Probably revisit at NNUE scale.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
             // Skip the Lion sign step when the correlation gate is open (c≈0) or the
             // gradient is absent or disagrees with momentum: either way, decay only.
-            let updated = if c.abs() < 1e-9 || (m * g <= 0.0 && m.abs() > 1e-6) { decayed } else { decayed - eff_lr * c.signum() };
+            let updated = if c.abs() < 1e-9 || c * g <= 0.0 { decayed } else { decayed - eff_lr * c.signum() };
 
             // 3. Optional weight clipping
             params[i] = match self.clip {
