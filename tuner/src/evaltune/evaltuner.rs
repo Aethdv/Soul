@@ -35,6 +35,25 @@ use crate::core::{
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 const MOB_CLAMP: f64 = 100.0;
 
+// EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
+// since a trend read before that span has filled is reading its own seed.
+const TREND_FAST: usize = 10;
+const TREND_SLOW: usize = 40;
+
+const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
+const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
+
+/// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
+///
+/// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
+/// the smoothed difference rather than a raw value: both trails smooth the same input, so their
+/// covariance leaves sd(fast − slow) at 0.21σ, well under the 0.47σ that summing their
+/// deviations suggests. It is tested against the noise estimate E|Δval| = 2σ/√π ≈ 1.13σ, so one
+/// unit of that is a 5.3σ bar on a 0.21σ quantity. A flat plateau stays quiet under it, and
+/// drift twenty times under the epoch wobble still trips it. Raw-value intuition suggests 2 or
+/// 3, which lands at 11σ here and never fires at all.
+const TREND_NOISE_K: f64 = 1.0;
+
 /// State machine for K.
 struct KController {
     k: f64,
@@ -113,6 +132,51 @@ impl KController {
         self.k -= eff_lr * (c.signum() + weight_decay * self.k);
         self.momentum = self.beta2.mul_add(self.momentum, (1.0 - self.beta2) * kg);
         self.k = self.k.clamp(self.k_min, self.k_max);
+    }
+}
+
+/// Overfitting detector: fit still improving while generalization degrades.
+///
+/// Neither loss is compared to its own running minimum. A running minimum over a noisy series
+/// settles at the deepest trough it has seen and never recovers, so it sits below the true mean
+/// by roughly the noise amplitude and every ordinary epoch afterward reads as a regression
+/// against it. A trend carries no such bias, and it needs no special case at an LR restart:
+/// a restart lifts both losses at once, and divergence needs train falling. Clearing the
+/// trails there would only blind the detector for a slow span, so nothing clears them.
+struct DivergenceMonitor {
+    train_fast: f64,
+    train_slow: f64,
+    val_fast: f64,
+    val_slow: f64,
+    noise: f64,
+    prev_val: f64,
+    seen: usize,
+}
+
+impl DivergenceMonitor {
+    const fn new() -> Self {
+        Self { train_fast: 0.0, train_slow: 0.0, val_fast: 0.0, val_slow: 0.0, noise: 0.0, prev_val: 0.0, seen: 0 }
+    }
+
+    /// Feeds one epoch, reporting whether the run is diverging.
+    fn update(&mut self, train_loss: f64, val_loss: f64) -> bool {
+        if self.seen == 0 {
+            self.train_fast = train_loss;
+            self.train_slow = train_loss;
+            self.val_fast = val_loss;
+            self.val_slow = val_loss;
+        } else {
+            self.train_fast += A_FAST * (train_loss - self.train_fast);
+            self.train_slow += A_SLOW * (train_loss - self.train_slow);
+            self.val_fast += A_FAST * (val_loss - self.val_fast);
+            self.val_slow += A_SLOW * (val_loss - self.val_slow);
+            self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
+        }
+
+        self.prev_val = val_loss;
+        self.seen += 1;
+
+        self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
     }
 }
 
@@ -712,8 +776,12 @@ fn train_loop(
 
     let mut best_val_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_val_loss);
     let mut best_val_epoch = resume.as_ref().map_or(0, |d| d.best_val_epoch);
+    let mut val_smooth = resume.as_ref().map_or(f64::NAN, |d| d.val_smooth);
+    let mut best_val_smooth = resume.as_ref().map_or(f64::MAX, |d| d.best_val_smooth);
     let mut best_train_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_train_loss);
     let mut best_train_epoch = resume.as_ref().map_or(0, |d| d.best_train_epoch);
+    let mut train_smooth = resume.as_ref().map_or(f64::NAN, |d| d.train_smooth);
+    let mut best_train_smooth = resume.as_ref().map_or(f64::MAX, |d| d.best_train_smooth);
     let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
 
     let np = all_params.len();
@@ -724,6 +792,10 @@ fn train_loop(
     let mut val_history: Vec<f64> = Vec::new();
     let mut train_history: Vec<f64> = Vec::new();
     let mut prev_val_loss = f64::NAN;
+
+    // Also not restored: the detector re-warms within a slow span, and a warning does not
+    // justify more checkpoint surface.
+    let mut divergence = DivergenceMonitor::new();
 
     let psqt_end = psqt::LAYOUT.material_offset;
     let base_end = psqt_end + psqt::LAYOUT.material_len;
@@ -871,7 +943,15 @@ fn train_loop(
         let ref_loss = ctx.val_eval(&ema_values, k_ctrl.k_ref(), 0.0);
         let train_loss = train_loss / train_count.max(1) as f64;
 
-        if train_loss < best_train_loss - 1e-6 {
+        // Both records select on a smoothed trail. A running minimum over the raw series carries
+        // the bias described on DivergenceMonitor, and here it decides which epoch's parameters
+        // get saved, so it saves whichever epoch the noise dug deepest. The training series gets
+        // no exemption: a fixed-magnitude sign step orbits a minimum rather than settling into
+        // it, so train loss stays as noisy as val until the schedule decays.
+        train_smooth = if train_smooth.is_finite() { train_smooth + A_FAST * (train_loss - train_smooth) } else { train_loss };
+
+        if train_smooth < best_train_smooth {
+            best_train_smooth = train_smooth;
             best_train_loss = train_loss;
             best_train_epoch = epoch;
             best_train_params.copy_from_slice(&ema_values);
@@ -879,9 +959,12 @@ fn train_loop(
 
         // ── Validation Plateau Detection
         // Reduce LR if validation loss stalls for Constant schedule.
-        let improved_val = val_loss < best_val_loss - 1e-6;
+        val_smooth = if val_smooth.is_finite() { val_smooth + A_FAST * (val_loss - val_smooth) } else { val_loss };
+
+        let improved_val = val_smooth < best_val_smooth;
 
         if improved_val {
+            best_val_smooth = val_smooth;
             best_val_loss = val_loss;
             best_val_epoch = epoch;
             best_val_params.copy_from_slice(&ema_values);
@@ -899,7 +982,7 @@ fn train_loop(
         }
 
         let is_best = improved_val;
-        let overfit = train_loss <= best_train_loss + 1e-6 && val_loss > best_val_loss + 1e-6;
+        let overfit = divergence.update(train_loss, val_loss);
 
         // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
@@ -992,8 +1075,12 @@ fn train_loop(
                 k_momentum: k_ctrl.momentum,
                 best_val_loss,
                 best_val_epoch,
+                val_smooth,
+                best_val_smooth,
                 best_train_loss,
                 best_train_epoch,
+                train_smooth,
+                best_train_smooth,
                 plateau_count,
                 rng_seed,
                 dataset: dataset_fnv,
@@ -1205,4 +1292,89 @@ fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
             ParamGroup::Other => config.lr_other,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic stand-in for epoch noise, so the assertions below cannot flake.
+    fn wobble(i: usize, amp: f64) -> f64 {
+        let x = (i as f64 * 12.9898).sin() * 43758.545_312;
+        (x - x.floor()).mul_add(2.0, -1.0) * amp
+    }
+
+    #[test]
+    fn divergence_quiet_on_a_noisy_plateau() {
+        // Both losses flat with val wobbling 20e-6 an epoch: the shape a running-minimum
+        // comparison flags on roughly every other epoch.
+        let mut d = DivergenceMonitor::new();
+        let mut fired = 0;
+
+        for e in 0..600 {
+            let train = 0.4041 + wobble(e, 4e-6);
+            let val = 0.4053 + wobble(e + 977, 20e-6);
+
+            if d.update(train, val) {
+                fired += 1;
+            }
+        }
+
+        assert_eq!(fired, 0, "flat plateau must not read as divergence");
+    }
+
+    #[test]
+    fn divergence_fires_on_a_real_split() {
+        // Train descending, val climbing, both under the same noise as the plateau case.
+        let mut d = DivergenceMonitor::new();
+        let mut fired = 0;
+
+        for e in 0..600 {
+            let t = e as f64;
+            let train = 0.4041 - t * 2e-6 + wobble(e, 4e-6);
+            let val = 0.4053 + t * 2e-6 + wobble(e + 977, 20e-6);
+
+            if d.update(train, val) {
+                fired += 1;
+            }
+        }
+
+        assert!(fired > 400, "sustained divergence must flag, fired {fired} of 600");
+    }
+
+    #[test]
+    fn divergence_stays_quiet_through_a_restart() {
+        // Nothing clears the trails at an LR restart, so this test carries the whole guarantee:
+        // neither the jump nor the recovery that follows it may read as divergence.
+        let mut d = DivergenceMonitor::new();
+
+        for e in 0..200 {
+            d.update(0.4041 + wobble(e, 4e-6), 0.4053 + wobble(e + 977, 20e-6));
+        }
+
+        let mut fired = 0;
+
+        for e in 0..160 {
+            let bump = 0.0012 * (-f64::from(i32::try_from(e).unwrap()) / 25.0).exp();
+
+            if d.update(0.4041 + bump + wobble(e, 4e-6), 0.4053 + bump + wobble(e + 977, 20e-6)) {
+                fired += 1;
+            }
+        }
+
+        assert_eq!(fired, 0, "a restart cycle must not read as divergence");
+    }
+
+    #[test]
+    fn divergence_warms_up_before_reporting() {
+        let mut d = DivergenceMonitor::new();
+
+        // Maximally divergent input, so warmup is the only thing holding the flag down.
+        for e in 0..TREND_SLOW {
+            let t = e as f64;
+            assert!(!d.update(0.5 - t * 1e-3, 0.5 + t * 1e-3), "reported at epoch {e}, inside the warmup span");
+        }
+
+        assert!(d.update(0.5 - 0.04, 0.5 + 0.04), "must report once the slow span has filled");
+    }
 }

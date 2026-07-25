@@ -34,8 +34,16 @@ pub struct Checkpoint {
     pub k_momentum: f64,
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
+    #[serde(default = "unset_smooth")]
+    pub val_smooth: f64,
+    #[serde(default = "unset_best")]
+    pub best_val_smooth: f64,
     pub best_train_loss: f64,
     pub best_train_epoch: usize,
+    #[serde(default = "unset_smooth")]
+    pub train_smooth: f64,
+    #[serde(default = "unset_best")]
+    pub best_train_smooth: f64,
     pub plateau_count: usize,
     pub params: BTreeMap<String, ParamState>,
     pub hash: u64,
@@ -46,6 +54,18 @@ pub struct Checkpoint {
     pub param_names: Vec<String>,
     pub best_val_params: Vec<f64>,
     pub best_train_params: Vec<f64>,
+}
+
+/// A checkpoint written before smoothed selection carries no trail; it re-seeds from the
+/// first epoch after resume.
+fn unset_smooth() -> f64 {
+    f64::NAN
+}
+
+/// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
+/// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
+fn unset_best() -> f64 {
+    f64::MAX
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,8 +88,12 @@ pub struct TrainerState<'a> {
     pub k_momentum: f64,
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
+    pub val_smooth: f64,
+    pub best_val_smooth: f64,
     pub best_train_loss: f64,
     pub best_train_epoch: usize,
+    pub train_smooth: f64,
+    pub best_train_smooth: f64,
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
@@ -115,8 +139,12 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         k_momentum: state.k_momentum,
         best_val_loss: state.best_val_loss,
         best_val_epoch: state.best_val_epoch,
+        val_smooth: state.val_smooth,
+        best_val_smooth: state.best_val_smooth,
         best_train_loss: state.best_train_loss,
         best_train_epoch: state.best_train_epoch,
+        train_smooth: state.train_smooth,
+        best_train_smooth: state.best_train_smooth,
         plateau_count: state.plateau_count,
         params,
         hash: compute_layout_hash(tunables),
@@ -145,8 +173,12 @@ pub struct CheckpointData {
     pub k_momentum: f64,
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
+    pub val_smooth: f64,
+    pub best_val_smooth: f64,
     pub best_train_loss: f64,
     pub best_train_epoch: usize,
+    pub train_smooth: f64,
+    pub best_train_smooth: f64,
     pub plateau_count: usize,
     pub rng_seed: u64,
     pub dataset: u64,
@@ -241,8 +273,12 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         k_momentum: cp.k_momentum,
         best_val_loss: cp.best_val_loss,
         best_val_epoch: cp.best_val_epoch,
+        val_smooth: cp.val_smooth,
+        best_val_smooth: cp.best_val_smooth,
         best_train_loss: cp.best_train_loss,
         best_train_epoch: cp.best_train_epoch,
+        train_smooth: cp.train_smooth,
+        best_train_smooth: cp.best_train_smooth,
         plateau_count: cp.plateau_count,
         rng_seed: cp.rng_seed,
         dataset: cp.dataset,
@@ -303,8 +339,12 @@ mod tests {
             k_momentum: 0.42,
             best_val_loss: 0.2,
             best_val_epoch: 18,
+            val_smooth: 0.21,
+            best_val_smooth: 0.205,
             best_train_loss: 0.3,
             best_train_epoch: 37,
+            train_smooth: 0.31,
+            best_train_smooth: 0.305,
             plateau_count: 3,
             rng_seed: 999,
             dataset: 777,
@@ -334,6 +374,8 @@ mod tests {
             (d.best_val_loss, d.best_val_epoch, d.best_train_loss, d.best_train_epoch, d.plateau_count),
             (0.2, 18, 0.3, 37, 3)
         );
+        assert_eq!((d.val_smooth, d.best_val_smooth), (0.21, 0.205));
+        assert_eq!((d.train_smooth, d.best_train_smooth), (0.31, 0.305));
         assert_eq!((d.rng_seed, d.dataset), (999, 777));
         assert_eq!(d.dataset_path, "data/test.txt");
         assert_eq!(d.values, [10.0, 20.0, 30.0]);
@@ -344,5 +386,60 @@ mod tests {
         assert_eq!(d.frozen, [true, true, false]);
         assert_eq!(d.best_val_params, [1.5, 2.5, 30.0]);
         assert_eq!(d.best_train_params, [3.5, 4.5, 30.0]);
+    }
+
+    #[test]
+    fn checkpoint_without_smoothing_resumes_with_an_open_record() {
+        // Round-trips through a written file with the four fields stripped: the serde defaults
+        // are the whole subject, and building a Checkpoint directly would step over them.
+        let tunables = [tunable("alpha", 0, 1.0, false)];
+
+        let state = TrainerState {
+            epoch: 7,
+            lr_scale: 1.0,
+            k: 1.0,
+            k_ref: 1.0,
+            k_momentum: 0.0,
+            best_val_loss: 0.2,
+            best_val_epoch: 3,
+            val_smooth: 0.21,
+            best_val_smooth: 0.205,
+            best_train_loss: 0.3,
+            best_train_epoch: 5,
+            train_smooth: 0.31,
+            best_train_smooth: 0.305,
+            plateau_count: 0,
+            rng_seed: 1,
+            dataset: 2,
+            dataset_path: "data/test.txt",
+            values: &[10.0],
+            momentum: &[0.0],
+            ema: &[10.0],
+            grad_ema: &[0.0],
+            stagnant: &[0],
+            frozen: &[false],
+            best_val_params: &[1.5],
+            best_train_params: &[3.5],
+        };
+
+        let path = std::env::temp_dir().join(format!("soul_ckpt_legacy_test_{}.json", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_checkpoint(path, &tunables, &state).unwrap();
+
+        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let obj = raw.as_object_mut().unwrap();
+        for key in ["val_smooth", "best_val_smooth", "train_smooth", "best_train_smooth"] {
+            obj.remove(key);
+        }
+
+        std::fs::write(path, serde_json::to_string(&raw).unwrap()).unwrap();
+
+        let d = load_checkpoint(path, &tunables, &[1.0]).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert!(d.val_smooth.is_nan(), "an absent val trail must re-seed, got {}", d.val_smooth);
+        assert!(d.train_smooth.is_nan(), "an absent train trail must re-seed, got {}", d.train_smooth);
+        assert_eq!((d.best_val_smooth, d.best_train_smooth), (f64::MAX, f64::MAX));
+        assert_eq!(d.best_val_loss, 0.2, "the rest of the checkpoint must survive the older format");
     }
 }
