@@ -5,6 +5,7 @@ pub mod lion;
 pub mod loader;
 pub mod palette;
 pub mod report;
+pub mod seeds;
 pub mod storage;
 pub mod tape;
 pub mod training;

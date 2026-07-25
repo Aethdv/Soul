@@ -5,7 +5,7 @@ use soul::cli::Help;
 use tuner::{
     core::config::{KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
-    evaltune::{ablation, correlation, loader},
+    evaltune::{ablation, correlation, loader, seeds},
 };
 
 #[derive(Parser)]
@@ -66,6 +66,18 @@ enum Commands {
     },
     #[command(name = "correlation")]
     Correlation,
+    #[command(name = "seed-spread")]
+    SeedSpread {
+        #[arg(long, default_value_t = 8)]
+        count: usize,
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        #[arg(short, long, default_value_t = 100)]
+        epochs: usize,
+        #[arg(long, default_value = "evaltune.jsonl")]
+        log: String,
+        dataset: String,
+    },
     #[command(name = "sweep-lr-mult")]
     SweepLrMult {
         #[arg(short, long, value_delimiter = ',', num_args = 0..)]
@@ -110,6 +122,9 @@ fn main() {
         },
         Some(Commands::Correlation) => {
             correlation::run_correlation();
+        },
+        Some(Commands::SeedSpread { count, config: config_path, epochs, log, dataset }) => {
+            seeds::run_seed_spread(&dataset, &config_path, epochs, count, &log);
         },
         Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
             let base_epochs = epochs.unwrap_or(100);

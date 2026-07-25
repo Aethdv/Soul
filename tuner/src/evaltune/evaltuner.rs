@@ -1162,6 +1162,7 @@ fn train_loop(
                 "best_val_loss": best_val_loss,
                 "best_val_epoch": best_val_epoch,
                 "params": quantized,
+                "sensitivity": grad_ema_per_param,
             }),
         );
     }
