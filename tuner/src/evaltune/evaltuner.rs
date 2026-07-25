@@ -803,6 +803,11 @@ fn train_loop(
     // justify more checkpoint surface.
     let mut divergence = DivergenceMonitor::new();
 
+    // Not restored on resume: re-seeding from the resumed EMA is the right baseline anyway.
+    let mut prev_quantized = vec![0i32; np];
+    let mut quantized = vec![0i32; np];
+    quantize(&ema_values, &mut prev_quantized);
+
     let mut epochs_run = 0usize;
     let mut epoch_seconds = 0.0f64;
     let mut grad_seconds = 0.0f64;
@@ -1006,6 +1011,12 @@ fn train_loop(
         let is_best = improved_val;
         let overfit = divergence.update(train_loss, val_loss);
 
+        // Parameters that crossed an integer boundary this epoch. Zero from here on means the
+        // run is still descending in f64 and shipping nothing, which is where a budget ends.
+        quantize(&ema_values, &mut quantized);
+        let moved = quantized.iter().zip(&prev_quantized).filter(|(q, p)| q != p).count();
+        prev_quantized.copy_from_slice(&quantized);
+
         // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
         let mob_norm = total_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
@@ -1040,7 +1051,8 @@ fn train_loop(
                     "is_best": is_best,
                     "psqt_norm": psqt_norm,
                     "mob_norm": mob_norm,
-                    "overfit": overfit
+                    "overfit": overfit,
+                    "moved": moved
                 }),
             );
         }
@@ -1080,7 +1092,8 @@ fn train_loop(
              {lab}val{RESET} {trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}  \
              {lab}train{RESET} {dim}{train_loss:.6}{RESET}  \
              {lab}ref{RESET} {dim}{ref_loss:.6}{RESET}  \
-             {lab}lr{RESET} {}{lr:.4}{RESET}  {dim}{elapsed:.2}s{RESET}  {dim}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
+             {lab}lr{RESET} {}{lr:.4}{RESET}  {lab}Δp{RESET} {dim}{moved:>3}{RESET}  \
+             {dim}{elapsed:.2}s{RESET}  {dim}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
             config.epochs,
             palette::fg(palette::VALUE),
         );
@@ -1135,6 +1148,23 @@ fn train_loop(
     // Flush the log before writing final reports,
     // since print_results opens its own handle to the same file.
     drop(logger);
+
+    // The JSON log opens in append mode, so a seed sweep writes every run's final params into
+    // one file for reading the spread directly.
+    if let Some(ref l) = json_logger {
+        quantize(&best_val_params, &mut quantized);
+
+        l.log(
+            "final",
+            &serde_json::json!({
+                "seed": rng_seed,
+                "epochs": epochs_run,
+                "best_val_loss": best_val_loss,
+                "best_val_epoch": best_val_epoch,
+                "params": quantized,
+            }),
+        );
+    }
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
     let last_val = val_history.last().copied().unwrap_or(0.0);

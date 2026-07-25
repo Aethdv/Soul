@@ -101,6 +101,16 @@ pub fn print_params(params: &[Tunable], initial: &[f64], values: &[f64]) {
     write_params(&mut out, params, values, Some(initial));
 }
 
+/// Rounds parameters onto the integer grid the engine runs on.
+///
+/// `write_params` emits `round() as i32`, so two parameter vectors that agree here are the same
+/// engine however far apart they sit in f64.
+pub fn quantize(values: &[f64], out: &mut [i32]) {
+    for (q, v) in out.iter_mut().zip(values) {
+        *q = v.round() as i32;
+    }
+}
+
 /// Pass `initial` to highlight changed values, `None` for plain output.
 pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], initial: Option<&[f64]>) {
     let colored = initial.is_some();
