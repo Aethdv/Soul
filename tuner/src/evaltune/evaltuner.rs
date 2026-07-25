@@ -30,6 +30,7 @@ use crate::core::{
     config::{EvalTuneConfig, KMode, LossFn, LrScheduleConfig},
     fnv::Fnv1a,
     logger::JsonLogger,
+    shuffle::Shuffler,
 };
 
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
@@ -769,8 +770,8 @@ fn train_loop(
 
     // u32 halves the working set of the per-epoch shuffle and of the index stream through the
     // batch loop, worth 12% of epoch time at 32.8M positions.
-    let train_len32 = u32::try_from(train_len).expect("train split exceeds u32 indexing");
-    let mut indices: Vec<u32> = (0..train_len32).collect();
+    let mut indices = vec![0u32; train_len];
+    let mut shuffler = Shuffler::new(train_len);
 
     let mut ema_values = resume.as_ref().map_or_else(|| values.clone(), |d| d.ema.clone());
     let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
@@ -862,7 +863,7 @@ fn train_loop(
         }
 
         let t_shuffle = Instant::now();
-        rng.shuffle(&mut indices);
+        shuffler.fill(&mut indices, rng.u64(..));
         let shuffle_secs = t_shuffle.elapsed().as_secs_f32();
 
         let mut train_loss = 0.0;
