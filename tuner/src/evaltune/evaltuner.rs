@@ -797,6 +797,13 @@ fn train_loop(
     // justify more checkpoint surface.
     let mut divergence = DivergenceMonitor::new();
 
+    let mut epochs_run = 0usize;
+    let mut epoch_seconds = 0.0f64;
+    let mut grad_seconds = 0.0f64;
+    let mut shuffle_seconds = 0.0f64;
+    let mut val_seconds = 0.0f64;
+    let mut epoch_positions = 0u64;
+
     let psqt_end = psqt::LAYOUT.material_offset;
     let base_end = psqt_end + psqt::LAYOUT.material_len;
     let mob_start = psqt::LAYOUT.mobility_open_offset;
@@ -849,11 +856,15 @@ fn train_loop(
             plateau_count = 0;
         }
 
+        let t_shuffle = Instant::now();
         rng.shuffle(&mut indices);
+        let shuffle_secs = t_shuffle.elapsed().as_secs_f32();
 
         let mut train_loss = 0.0;
         let mut train_count = 0usize;
         let mut total_grads = vec![0.0; values.len()];
+
+        let t_grad = Instant::now();
 
         for batch in indices.chunks(config.batch_size) {
             let (mut grads, k_grad, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k_ctrl.k(), blend);
@@ -908,6 +919,8 @@ fn train_loop(
             }
         }
 
+        let grad_secs = t_grad.elapsed().as_secs_f32();
+
         // Progressive unfreeze; lift the material-only gate.
         if config.unfreeze_epoch > 0 && epoch == config.unfreeze_epoch {
             for (i, p) in all_params.iter().enumerate() {
@@ -939,8 +952,11 @@ fn train_loop(
             }
         }
 
+        let t_val = Instant::now();
         let val_loss = ctx.val_eval(&ema_values, k_ctrl.k(), blend);
         let ref_loss = ctx.val_eval(&ema_values, k_ctrl.k_ref(), 0.0);
+        let val_secs = t_val.elapsed().as_secs_f32();
+
         let train_loss = train_loss / train_count.max(1) as f64;
 
         // Both records select on a smoothed trail. A running minimum over the raw series carries
@@ -1025,6 +1041,17 @@ fn train_loop(
 
         let elapsed = t0.elapsed().as_secs_f32();
 
+        // Denominator is the gradient pass, not the epoch: every epoch trains the same
+        // position count, so an epoch-timed rate would only restate the timer.
+        let mpos = train_count as f32 / grad_secs.max(1e-6) / 1e6;
+
+        epochs_run += 1;
+        epoch_seconds += f64::from(elapsed);
+        grad_seconds += f64::from(grad_secs);
+        shuffle_seconds += f64::from(shuffle_secs);
+        val_seconds += f64::from(val_secs);
+        epoch_positions += train_count as u64;
+
         // Loss has no absolute scale, so color the live value by its per-epoch
         // trend; dropped from last epoch → green ▼, rose → red ▲.
         let (arrow, trend) = if !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
@@ -1047,7 +1074,7 @@ fn train_loop(
              {lab}val{RESET} {trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}  \
              {lab}train{RESET} {dim}{train_loss:.6}{RESET}  \
              {lab}ref{RESET} {dim}{ref_loss:.6}{RESET}  \
-             {lab}lr{RESET} {}{lr:.4}{RESET}  {dim}{elapsed:.2}s{RESET}{warn}{CLEAR_LINE}",
+             {lab}lr{RESET} {}{lr:.4}{RESET}  {dim}{elapsed:.2}s{RESET}  {dim}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
             config.epochs,
             palette::fg(palette::VALUE),
         );
@@ -1122,6 +1149,21 @@ fn train_loop(
         },
         config.epochs,
     );
+
+    if epochs_run > 0 {
+        // Epoch timers stop before the checkpoint write, so these totals fall short of the
+        // process wall clock by that plus feature extraction.
+        let avg_mpos = epoch_positions as f64 / grad_seconds.max(1e-6) / 1e6;
+        let rest_seconds = epoch_seconds - grad_seconds - shuffle_seconds - val_seconds;
+        let lab = palette::fg(palette::LABEL);
+        let dim = palette::fg(palette::DIM);
+
+        println!(
+            "\n{lab}Trained{RESET} {epochs_run} epochs in {epoch_seconds:.2}s  \
+             {dim}grad {grad_seconds:.2}s · shuffle {shuffle_seconds:.2}s · val {val_seconds:.2}s · rest {rest_seconds:.2}s{RESET}  \
+             {avg_mpos:.1}M pos/s"
+        );
+    }
 
     best_val_loss
 }
