@@ -93,32 +93,58 @@ impl Lion {
             // still fires: a converged parameter without gradient signal should
             // not lose its regularization pressure.
             //
-            // Per-parameter disagreement gate (c · g ≤ 0) catches local oscillation:
-            // if `c` and gradient disagree, the sign update is skipped for this
+            // Per-parameter disagreement gate (m · g ≤ 0) catches local oscillation:
+            // if momentum and gradient disagree, the sign update is skipped for this
             // parameter. An absent gradient (g = 0) is disagreement; a signum test
             // would let one momentum sign coast.
-            //
-            // The Cautious mask (Liang et al. 2024) checks the blend direction c
-            // rather than stale momentum m, so a strong fresh gradient that has already
-            // reoriented c does not get blocked by residual m.
             //
             // Ref: Kaizhao Liang, Lizhang Chen, Bo Liu & Qiang Liu (2024).
             // Cautious Optimizers: Improving Training with One Line of Code.
             // <https://arxiv.org/abs/2411.16085v4>
             //
+            // Liang's canonical mask skips on c·g ≤ 0, which at β₁ = 0.9 reads m·g ≤ -g²/9:
+            // a strict subset of ours, so it steps on reversals we hold. Attempted at
+            // 490 HCE parameters, two retunes on separate seeds:
+            //
+            //   Elo   | -6.24 ± 6.43 (95%)
+            //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
+            //   LLR   | -2.54 (-2.47, 2.91) [0.00, 5.00]
+            //   Games | N: 5286 W: 1492 L: 1587 D: 2207
+            //   <https://asylum.red/test/5761/>
+            //
+            //   Elo   | -1.53 ± 4.13 (95%)
+            //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
+            //   LLR   | -2.50 (-2.47, 2.91) [0.00, 5.00]
+            //   Games | N: 12734 W: 3658 L: 3714 D: 5362
+            //   <https://asylum.red/test/5762/>
+            //
+            // Liang pairs the mask with a φ/mean(φ) rescale, which we skip: it would set the
+            // surviving step to lr·dim/nnz, forfeiting the uniform magnitude Lion is built on
+            // and pricing every coordinate off a global statistic. Skipping it is not free.
+            // Gate width sets ‖Δθ‖₁ directly, so a wider gate is also a longer step, and the
+            // two runs above differ in step length as well as in mask shape. Any retry pins
+            // one of the two, or it buys another confounded result.
+            //
             // Ref: Taejong Joo, Wenhan Xia, Cheolmin Kim, Ming Zhang & Eugene Ie (2026).
             // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.
             // <https://arxiv.org/abs/2602.15322v1>
             //
-            // MAGMA (global cossim gate) was tested at 430 HCE parameters,
-            // with PSQT being 384 of the params, which dominated the global cossim.
-            // Validated neutral-ish at SPRT (−0.67 ± 5.39 Elo, 8240 games).
-            // <https://asylum.red/test/4378/>
-            // TODO: Probably revisit at NNUE scale.
+            // Magma scores per parameter block. Ours collapsed that to one global cossim over
+            // 430 HCE parameters, 384 of them PSQT, which set the gate for everything else.
+            // However, I do admit that I was a bit too impatient that day.
+            //
+            //   Elo   | -0.67 ± 5.39 (95%)
+            //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
+            //   LLR   | -1.17 (-2.47, 2.91) [0.00, 5.00]
+            //   Games | N: 8240 W: 2499 L: 2515 D: 3226
+            //   <https://asylum.red/test/4378/>
+            //
+            // TODO: Revisit per-group, with more HCE terms or at NNUE scale.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
-            // Skip the Lion sign step when the correlation gate is open (c≈0) or the
-            // gradient is absent or disagrees with momentum: either way, decay only.
-            let updated = if c.abs() < 1e-9 || c * g <= 0.0 { decayed } else { decayed - eff_lr * c.signum() };
+            // Skip the Lion sign step when the correlation gate is open (c≈0)
+            // or momentum and gradient disagree: either way, decay only.
+            // The m.abs() guard prevents zero-momentum from deferring every parameter's first step.
+            let updated = if c.abs() < 1e-9 || (m * g <= 0.0 && m.abs() > 1e-6) { decayed } else { decayed - eff_lr * c.signum() };
 
             // 3. Optional weight clipping
             params[i] = match self.clip {
