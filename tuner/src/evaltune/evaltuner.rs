@@ -865,6 +865,8 @@ fn train_loop(
 
         if is_restart {
             plateau_count = 0;
+            // A latched EMA would average the new cycle's peak-LR weights.
+            ema_active = is_constant_schedule;
         }
 
         let t_shuffle = Instant::now();
