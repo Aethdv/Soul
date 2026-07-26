@@ -386,6 +386,11 @@ pub struct EvalTuneConfig {
     #[serde(default = "default_patience")]
     pub patience: usize,
     /// Decay rate for Polyak averaging (Chronological EMA). Default: 0.999.
+    ///
+    /// Applied once per batch, so the window is 1000 updates rather than 1000 epochs: about ten
+    /// epochs of a 7.1M-position set at batch 65536, about two of a 32.8M one. Updates are the
+    /// right unit, since one Lion step displaces `eff_lr` whatever the epoch length, but it does
+    /// mean the tail average that decides what ships covers fewer epochs as a dataset grows.
     #[serde(default = "default_ema_decay")]
     pub ema_decay: f64,
     /// Epoch at which to unfreeze non-material parameters (mobility, king safety, etc.).
