@@ -197,7 +197,20 @@ impl DivergenceMonitor {
     }
 }
 
-pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>) -> f64 {
+/// What a loaded dataset is for.
+///
+/// Both arms want every step up to `TrainerContext`, feature extraction included, so the choice
+/// rides through the loader rather than growing a second copy of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Task {
+    Train,
+    /// Time the gradient pass over shuffled indices against sequential ones. Identical arithmetic
+    /// over identical records, so the difference is the cost of the random gathers, which is the
+    /// measurement that says whether the epoch loop is bound by memory or by math.
+    GatherCost,
+}
+
+pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
     let total_start = Instant::now();
 
     // Enable FTZ/DAZ on the MAIN thread immediately.
@@ -245,7 +258,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     }
 
     let dataset_label = paths.join(", ");
-    let best_val = train_entries(all_entries, &dataset_label, config, resume_path);
+    let best_val = train_entries(all_entries, &dataset_label, config, resume_path, task);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
@@ -448,6 +461,7 @@ fn train_entries(
     dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
+    task: Task,
 ) -> f64 {
     let dataset_fnv = dataset_fingerprint(&entries);
 
@@ -518,9 +532,60 @@ fn train_entries(
         vol_adaptive: config.volatility_adaptive,
     };
 
+    if task == Task::GatherCost {
+        gather_cost(&ctx, config);
+        return 0.0;
+    }
+
     let seeds = Seeds { rng_seed, split_seed };
 
     train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
+}
+
+/// Gradient throughput over sequential batches against shuffled ones.
+///
+/// `grad` is 90% of an epoch and the open question is what binds it. This holds the arithmetic and
+/// the records fixed and varies only the order they are visited in, so the gap is the whole cost of
+/// gathering `FeatureRecord`s at random: a wide gap points at latency and the TLB, and names the
+/// record layout and hugepages as the levers, while a narrow one says the math is the wall and
+/// none of that pays.
+fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
+    const BATCHES: usize = 200;
+
+    let params = eval_params::collect_parameters();
+    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+    let k = 0.5 * (config.k_min + config.k_max);
+
+    let batches = (ctx.train_count / config.batch_size).clamp(1, BATCHES);
+    let positions = (batches * config.batch_size) as f64;
+
+    let mut indices: Vec<u32> = (0..ctx.train_count as u32).collect();
+
+    let time_pass = |order: &[u32]| {
+        let start = Instant::now();
+
+        for batch in order.chunks(config.batch_size).take(batches) {
+            // Discarded: only the read pattern is under measurement.
+            let _ = ctx.batch_grad(batch, &values, k, 0.0);
+        }
+
+        start.elapsed().as_secs_f64()
+    };
+
+    // Sequential first, so the shuffled arm cannot be the one paying for a cold page cache.
+    let sequential = time_pass(&indices);
+
+    Shuffler::new(ctx.train_count).fill(&mut indices, 0xC0FFEE);
+    let shuffled = time_pass(&indices);
+
+    let lab = palette::fg(palette::LABEL);
+    let v = palette::fg(palette::VALUE);
+    let dim = palette::fg(palette::DIM);
+
+    println!("\n{lab}Gather cost{RESET} {dim}({batches} batches of {}){RESET}", config.batch_size);
+    println!("  {lab}sequential{RESET}  {v}{sequential:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / sequential / 1e6);
+    println!("  {lab}shuffled{RESET}    {v}{shuffled:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / shuffled / 1e6);
+    println!("  {lab}ratio{RESET}       {v}{:6.2}×{RESET}", shuffled / sequential);
 }
 
 /// Hashed before shuffle: identifies loaded contents, not a permutation.

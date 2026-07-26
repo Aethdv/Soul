@@ -5,7 +5,7 @@ use soul::cli::Help;
 use tuner::{
     core::config::{KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
-    evaltune::{ablation, correlation, loader, seeds},
+    evaltune::{ablation, correlation, evaltuner::Task, loader, seeds},
 };
 
 #[derive(Parser)]
@@ -80,6 +80,12 @@ enum Commands {
         log: String,
         dataset: String,
     },
+    #[command(name = "gather-cost")]
+    GatherCost {
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        dataset: String,
+    },
     #[command(name = "sweep-lr-mult")]
     SweepLrMult {
         #[arg(short, long, value_delimiter = ',', num_args = 0..)]
@@ -127,6 +133,14 @@ fn main() {
         },
         Some(Commands::SeedSpread { count, config: config_path, epochs, log, dataset }) => {
             seeds::run_seed_spread(&dataset, &config_path, epochs, count, &log);
+        },
+        Some(Commands::GatherCost { config: config_path, dataset }) => {
+            let cfg = TunerConfig::from_file(&config_path).unwrap_or_else(|e| {
+                eprintln!("Warning: Failed to load config '{config_path}': {e}. Using defaults.");
+                TunerConfig::default()
+            });
+
+            evaltune::run(Some(&dataset), &cfg.evaltune, None, Task::GatherCost);
         },
         Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
             let base_epochs = epochs.unwrap_or(100);
@@ -335,7 +349,7 @@ fn run_evaltune(args: Args) -> bool {
     }
 
     let dataset_str = args.dataset.map(|v| v.join(","));
-    let best_val = evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref());
+    let best_val = evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref(), Task::Train);
 
     if best_val == f64::MAX {
         return false;
