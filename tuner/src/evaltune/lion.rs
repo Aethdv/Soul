@@ -38,6 +38,32 @@ pub struct Lion {
     wd: f64,
 }
 
+/// Why the coordinates of one `update` call did or did not take their sign step.
+///
+/// Counted over parameter-updates, not parameters: a 500-batch epoch votes 500 times per
+/// parameter. The counts are also the step length, since `‖Δθ‖₁ = eff_lr · (total − skipped −
+/// dead)` and every stepping coordinate moves the same distance, so any gate that skips less
+/// also steps further. That coupling is what made the cautious-mask retunes unreadable, and
+/// these counts are what price a correction for it.
+#[derive(Clone, Copy, Default)]
+pub struct GateCensus {
+    pub total: u64,
+    /// Skipped: the gradient disagrees with momentum that clears the epsilon.
+    pub skipped: u64,
+    /// Skipped: `|c|` under the dead zone, no direction to take.
+    pub dead: u64,
+    /// Stepped only because `|m|` sat under the gate's epsilon, gradient disagreeing.
+    pub epsilon_waived: u64,
+    /// Liang's canonical mask would skip here, whatever ours did.
+    pub canonical: u64,
+    /// Ours skips and Liang's does not.
+    pub band: u64,
+    /// Liang's skips and ours steps, the other and larger direction of the same difference.
+    pub canonical_only: u64,
+    /// No gradient reached this parameter in this batch.
+    pub absent: u64,
+}
+
 impl Lion {
     #[must_use]
     pub const fn new(interp: f64, lr: f64, wd: f64) -> Self {
@@ -47,6 +73,45 @@ impl Lion {
     #[inline]
     pub const fn set_lr(&mut self, lr: f64) {
         self.lr = lr;
+    }
+
+    /// Tallies what [`Lion::update`] is about to decide, over the same momentum and gradients.
+    ///
+    /// Call it before the update, while `momentum` still holds the values the gate will read.
+    /// Groups are contiguous in the parameter layout, so a per-group tally is this over a
+    /// subslice.
+    #[must_use]
+    pub fn census(&self, momentum: &[f64], gradients: &[f64], fixed_mask: &[bool]) -> GateCensus {
+        debug_assert_eq!(momentum.len(), gradients.len());
+        debug_assert_eq!(momentum.len(), fixed_mask.len());
+
+        let mut census = GateCensus::default();
+
+        for i in 0..momentum.len() {
+            if fixed_mask[i] {
+                continue;
+            }
+
+            let (m, g) = (momentum[i], gradients[i]);
+            let c = self.interp.mul_add(m, (1.0 - self.interp) * g);
+            let disagrees = m * g <= 0.0;
+
+            census.total += 1;
+            census.absent += u64::from(g.abs() < 1e-9);
+            census.canonical += u64::from(c * g <= 0.0);
+
+            if c.abs() < 1e-9 {
+                census.dead += 1;
+            } else if disagrees && m.abs() > 1e-6 {
+                census.skipped += 1;
+                census.band += u64::from(c * g > 0.0);
+            } else {
+                census.epsilon_waived += u64::from(disagrees);
+                census.canonical_only += u64::from(c * g <= 0.0);
+            }
+        }
+
+        census
     }
 
     pub fn update(
@@ -154,12 +219,52 @@ impl Lion {
     }
 }
 
+impl GateCensus {
+    pub fn absorb(&mut self, other: Self) {
+        self.total += other.total;
+        self.skipped += other.skipped;
+        self.dead += other.dead;
+        self.epsilon_waived += other.epsilon_waived;
+        self.canonical += other.canonical;
+        self.band += other.band;
+        self.canonical_only += other.canonical_only;
+        self.absent += other.absent;
+    }
+
+    /// Fraction of a count against the parameter-updates counted, zero on an empty census.
+    #[must_use]
+    pub fn share(&self, count: u64) -> f64 {
+        if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// One unbounded parameter, for every test whose subject is not the clamp.
     const OPEN: [(f64, f64); 1] = [(f64::NEG_INFINITY, f64::INFINITY)];
+
+    #[test]
+    fn census_separates_every_gate_outcome() {
+        // One parameter per outcome, in order: agreeing step, gated skip, skip inside the band
+        // where Liang would have stepped, epsilon waiver, dead zone, an epsilon waiver Liang
+        // would have caught, and a fixed parameter that must not be counted at all.
+        let momentum = [0.5, 0.5, 0.001, 1e-9, 0.0, -1e-6, 0.5];
+        let gradients = [1.0, -1.0, -1.0, -1.0, 0.0, 1e-6, -1.0];
+        let fixed_mask = [false, false, false, false, false, false, true];
+
+        let c = Lion::new(0.9, 1.0, 0.0).census(&momentum, &gradients, &fixed_mask);
+
+        assert_eq!(c.total, 6, "the fixed parameter must not be counted");
+        assert_eq!(c.skipped, 2, "gated: momentum over the epsilon disagreeing with the gradient");
+        assert_eq!(c.band, 1, "of those, one has c·g > 0 and would have stepped under Liang's mask");
+        assert_eq!(c.epsilon_waived, 2, "momentum under 1e-6 steps against a disagreeing gradient");
+        assert_eq!(c.canonical_only, 1, "one of those waivers has c·g ≤ 0 and Liang's mask would hold it");
+        assert_eq!(c.dead, 1);
+        assert_eq!(c.absent, 1);
+        assert_eq!(c.canonical, 3, "the out-of-band skip, the dead zone, and the caught waiver");
+    }
 
     #[test]
     fn lion_clipping_works() {

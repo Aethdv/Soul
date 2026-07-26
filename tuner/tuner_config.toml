@@ -54,6 +54,14 @@ lr_material = 1.0
 lr_mobility = 1.0
 lr_other = 1.0
 
+# ── Diagnostics
+
+# How Lion's disagreement gate voted, over those same groups.
+# Per epoch, what the gate skipped, what its |m| epsilon waived through unjudged,
+# and the band where the canonical c·g mask would have ruled the other way.
+# Costs a line per epoch and a pass over the parameters per batch.
+gate_census = true
+
 [evaltune.lr_schedule]
 type = "sd"
 base = 0.03

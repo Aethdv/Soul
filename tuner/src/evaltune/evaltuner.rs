@@ -12,6 +12,7 @@
 use std::{
     fs,
     io::{self, BufWriter, Write},
+    ops::Range,
     path,
     time::Instant,
 };
@@ -25,7 +26,13 @@ use soul::{
     tools::dataset::FeatureRecord,
 };
 
-use super::{lion::Lion, loader, palette, report::*, storage::*, training::*};
+use super::{
+    lion::{GateCensus, Lion},
+    loader, palette,
+    report::*,
+    storage::*,
+    training::*,
+};
 use crate::core::{
     config::{EvalTuneConfig, KMode, LossFn, LrScheduleConfig},
     fnv::Fnv1a,
@@ -35,6 +42,9 @@ use crate::core::{
 
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 const MOB_CLAMP: f64 = 100.0;
+
+/// Lion's parameter groups in layout order, for anything reported per group.
+const GROUP_NAMES: [&str; 4] = ["psqt", "material", "mobility", "other"];
 
 /// Fixes which tenth of a dataset is held out, so two runs over one dataset are scored on the
 /// same positions. The value is arbitrary and permanent: changing it renumbers every
@@ -621,6 +631,32 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
     );
 }
 
+/// Whole-run gate census, per parameter group.
+///
+/// `band` is the column the cautious-mask question turns on, since it is where our gate and
+/// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
+fn print_gate_census(groups: &[GateCensus]) {
+    let lab = palette::fg(palette::LABEL);
+    let v = palette::fg(palette::VALUE);
+    let dim = palette::fg(palette::DIM);
+
+    println!("\n{lab}Gate census{RESET} {dim}(share of parameter-updates){RESET}");
+    println!("  {lab}group       skip  canonical    band   c-only   waived     dead  no grad{RESET}");
+
+    for (name, c) in GROUP_NAMES.iter().zip(groups) {
+        println!(
+            "  {name:<9} {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
+            100.0 * c.share(c.skipped),
+            100.0 * c.share(c.canonical),
+            100.0 * c.share(c.band),
+            100.0 * c.share(c.canonical_only),
+            100.0 * c.share(c.epsilon_waived),
+            100.0 * c.share(c.dead),
+            100.0 * c.share(c.absent),
+        );
+    }
+}
+
 fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
     for (a, b) in g1.iter_mut().zip(g2) {
         *a += b;
@@ -649,6 +685,16 @@ fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize
     println!("  {lab}White wins:{RESET} {c}{ww}{RESET}");
     println!("  {lab}Black wins:{RESET} {c}{bw}{RESET}");
     println!("  {lab}Draws:{RESET}      {c}{dr}{RESET}");
+
+    // A datagen run that never filled the result field looks exactly like a set of drawn games.
+    // The outcome target is then 0.5 everywhere and only a score-weighted blend can learn.
+    if ww + bw == 0 {
+        eprintln!(
+            "{}[!] Warning: no decisive results. Every outcome target is 0.5, so a wdl_schedule\n\
+             [!] near 0.0 trains on a constant.{RESET}",
+            color::ansi_fg((225, 89, 91)),
+        );
+    }
 }
 
 /// Loss history as a sparkline: lower loss → shorter block.
@@ -866,6 +912,9 @@ fn train_loop(
     let mob_start = psqt::LAYOUT.mobility_open_offset;
     let mob_end = psqt::LAYOUT.mobility_closed_offset + psqt::LAYOUT.mobility_closed_len;
 
+    let group_ranges = group_ranges(np);
+    let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
+
     // ── Progressive unfreeze
     // Freeze non-psqt/mat for the first unfreeze_epoch epochs.
     // Resume restores the saved mask. It encodes this gate plus any auto-freeze.
@@ -882,6 +931,7 @@ fn train_loop(
     for epoch in start_epoch..=config.epochs {
         let t0 = Instant::now();
         let blend = wdl_scheduler.blend(epoch, config.epochs);
+        let mut epoch_census = [GateCensus::default(); GROUP_NAMES.len()];
 
         if let Some(new_k) = k_ctrl.on_epoch(epoch, ctx, &ema_values, blend) {
             println!("  Reoptimized K: {new_k:.6}");
@@ -947,6 +997,13 @@ fn train_loop(
             for (i, g) in grads.iter_mut().enumerate() {
                 *g = *g / n * scale;
                 total_grads[i] += *g;
+            }
+
+            // Before the update, while momentum still holds what the gate is about to read.
+            if config.gate_census {
+                for (census, range) in epoch_census.iter_mut().zip(&group_ranges) {
+                    census.absorb(optimizer.census(&momentum[range.clone()], &grads[range.clone()], &fixed_mask[range.clone()]));
+                }
             }
 
             optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask, &clip_mask);
@@ -1144,6 +1201,27 @@ fn train_loop(
             palette::fg(palette::VALUE),
         );
 
+        if config.gate_census {
+            let mut all = GateCensus::default();
+
+            for (total, epoch) in run_census.iter_mut().zip(&epoch_census) {
+                total.absorb(*epoch);
+                all.absorb(*epoch);
+            }
+
+            println!(
+                "  {lab}gate{RESET} skip {v}{:.1}%{RESET}  canonical {v}{:.1}%{RESET}  band {v}{:.2}%{RESET}  \
+                 c-only {v}{:.1}%{RESET}  waived {v}{:.1}%{RESET}  dead {v}{:.1}%{RESET}  no grad {v}{:.1}%{RESET}",
+                100.0 * all.share(all.skipped),
+                100.0 * all.share(all.canonical),
+                100.0 * all.share(all.band),
+                100.0 * all.share(all.canonical_only),
+                100.0 * all.share(all.epsilon_waived),
+                100.0 * all.share(all.dead),
+                100.0 * all.share(all.absent),
+            );
+        }
+
         val_history.push(val_loss);
         train_history.push(train_loss);
         prev_val_loss = val_loss;
@@ -1213,6 +1291,10 @@ fn train_loop(
                 "sensitivity": grad_ema_per_param,
             }),
         );
+    }
+
+    if config.gate_census {
+        print_gate_census(&run_census);
     }
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
@@ -1365,6 +1447,45 @@ fn param_group(i: usize) -> ParamGroup {
     } else {
         ParamGroup::Other
     }
+}
+
+/// Index of a group in [`GROUP_NAMES`] and in anything else reported per group.
+const fn group_index(group: &ParamGroup) -> usize {
+    match group {
+        ParamGroup::Psqt => 0,
+        ParamGroup::Material => 1,
+        ParamGroup::Mobility => 2,
+        ParamGroup::Other => 3,
+    }
+}
+
+/// Each group as an index range, read back off [`param_group`] rather than restated.
+///
+/// Restating the cuts is how a per-group report drifts into reporting the wrong parameters
+/// after a layout change, silently, since every number it prints stays plausible.
+/// The contiguity the ranges assume is asserted here rather than assumed.
+fn group_ranges(np: usize) -> [Range<usize>; GROUP_NAMES.len()] {
+    let mut span = [(usize::MAX, 0usize); GROUP_NAMES.len()];
+    let mut counts = [0usize; GROUP_NAMES.len()];
+
+    for i in 0..np {
+        let g = group_index(&param_group(i));
+
+        span[g].0 = span[g].0.min(i);
+        span[g].1 = i + 1;
+        counts[g] += 1;
+    }
+
+    std::array::from_fn(|g| {
+        if counts[g] == 0 {
+            return 0..0;
+        }
+
+        let (lo, hi) = span[g];
+        assert_eq!(hi - lo, counts[g], "{} does not occupy a contiguous range of the layout", GROUP_NAMES[g]);
+
+        lo..hi
+    })
 }
 
 /// Weight decay mask: not all parameters deserve equal punishment.

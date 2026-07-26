@@ -417,6 +417,10 @@ pub struct EvalTuneConfig {
     /// losses comparable. Set it to measure how much a result owes to which tenth got held out.
     #[serde(default)]
     pub split_seed: Option<u64>,
+    /// Report how Lion's disagreement gate votes, per epoch and per parameter group. Costs a
+    /// pass over the parameters per batch, so it is off outside a diagnostic run. Default: false.
+    #[serde(default)]
+    pub gate_census: bool,
     /// Enable auto-freeze of stagnant parameters. Default: true.
     #[serde(default = "default_true")]
     pub auto_freeze: bool,
@@ -601,6 +605,7 @@ impl Default for TunerConfig {
                 unfreeze_epoch: 0,
                 seed: None,
                 split_seed: None,
+                gate_census: false,
                 auto_freeze: true,
                 freeze_start_epoch: 500,
                 freeze_cadence: 100,
