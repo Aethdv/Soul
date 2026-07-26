@@ -407,6 +407,11 @@ pub struct EvalTuneConfig {
     /// is randomly generated at startup. Set to any u64 for reproducible training runs.
     #[serde(default)]
     pub seed: Option<u64>,
+    /// Seed for the shuffle that carves out the validation slice. When None (default), a fixed
+    /// seed holds out the same positions in every run, which is what makes two runs' validation
+    /// losses comparable. Set it to measure how much a result owes to which tenth got held out.
+    #[serde(default)]
+    pub split_seed: Option<u64>,
     /// Enable auto-freeze of stagnant parameters. Default: true.
     #[serde(default = "default_true")]
     pub auto_freeze: bool,
@@ -590,6 +595,7 @@ impl Default for TunerConfig {
                 ema_decay: 0.999,
                 unfreeze_epoch: 0,
                 seed: None,
+                split_seed: None,
                 auto_freeze: true,
                 freeze_start_epoch: 500,
                 freeze_cadence: 100,

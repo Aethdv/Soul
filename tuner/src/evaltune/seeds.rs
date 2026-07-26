@@ -24,6 +24,9 @@ const LOAD_BEARING: usize = 50;
 #[derive(Deserialize)]
 struct Final {
     seed: u64,
+    /// Absent in a record written while the training seed still carved out the val slice.
+    #[serde(default)]
+    split_seed: Option<u64>,
     best_val_loss: f64,
     best_val_epoch: usize,
     params: Vec<i32>,
@@ -45,8 +48,6 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
         let ok = run_one(dataset, config_path, epochs, seed);
         let elapsed = start.elapsed().as_secs_f32();
 
-        // Every run writes the same evaltune_best.txt, so keep a copy per seed. Pasting two of
-        // them into eval_params.rs is what turns this sweep into an SPRT.
         let kept = if ok { fs::copy("evaltune_best.txt", format!("seed_{seed}_best.txt")).is_ok() } else { false };
 
         let status = if ok { "done" } else { "FAILED" };
@@ -123,6 +124,12 @@ fn collect(log_path: &str, seeds: &[u64]) -> Vec<Final> {
 fn report(runs: &[Final]) {
     let lab = palette::fg(palette::LABEL);
     let val = palette::fg(palette::VALUE);
+
+    // On big3, which tenth got held out moves best_val_loss by 1.6e-3 at identical parameters,
+    // eighty times what 4000 epochs buy. A table mixing holdouts therefore ranks the holdouts.
+    if runs.iter().any(|r| r.split_seed != runs[0].split_seed) {
+        eprintln!("  Runs held out different validation slices; the L_val column below ranks that, not the seed.");
+    }
 
     let lo = runs.iter().map(|r| r.best_val_loss).fold(f64::MAX, f64::min);
     let hi = runs.iter().map(|r| r.best_val_loss).fold(f64::MIN, f64::max);

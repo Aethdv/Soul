@@ -36,6 +36,11 @@ use crate::core::{
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 const MOB_CLAMP: f64 = 100.0;
 
+/// Fixes which tenth of a dataset is held out, so two runs over one dataset are scored on the
+/// same positions. The value is arbitrary and permanent: changing it renumbers every
+/// `best_val_loss` ever recorded on every dataset.
+const VAL_SPLIT_SEED: u64 = 0x5350_4C49_5432_3736;
+
 // EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
 // since a trend read before that span has filled is reading its own seed.
 const TREND_FAST: usize = 10;
@@ -401,6 +406,14 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
     (lo + hi) / 2.0
 }
 
+/// Batch order and the validation holdout draw from separate seeds,
+/// so a retune moves one without moving the other.
+#[derive(Clone, Copy)]
+struct Seeds {
+    rng_seed: u64,
+    split_seed: u64,
+}
+
 fn train_entries(
     mut entries: Vec<loader::SoulEntry>,
     dataset_label: &str,
@@ -409,9 +422,7 @@ fn train_entries(
 ) -> f64 {
     let dataset_fnv = dataset_fingerprint(&entries);
 
-    // A resume must shuffle under the checkpoint's seed, or the train/val
-    // split moves and old training positions leak into val.
-    let rng_seed = match resume_path {
+    let (rng_seed, split_seed) = match resume_path {
         Some(path) => {
             let cp = peek_checkpoint(path).unwrap_or_else(|e| {
                 eprintln!("Failed to read checkpoint: {e}");
@@ -421,10 +432,10 @@ fn train_entries(
             if let Some(s) = config.seed
                 && s != cp.rng_seed
             {
-                println!("--seed {s} ignored: resume reuses the checkpoint's shuffle seed {}", cp.rng_seed);
+                println!("--seed {s} ignored: resume reuses the checkpoint's batch-order seed {}", cp.rng_seed);
             }
 
-            // The seed replays the same shuffle only over the same entries.
+            // The split seed replays its shuffle only over the same entries.
             if cp.dataset != dataset_fnv {
                 eprintln!(
                     "{}[!] Warning: dataset does not match the checkpoint's fingerprint.\n\
@@ -434,14 +445,16 @@ fn train_entries(
                 );
             }
 
-            cp.rng_seed
+            (cp.rng_seed, cp.split_seed.unwrap_or(cp.rng_seed))
         },
 
-        None => config.seed.unwrap_or_else(|| fastrand::u64(..)),
+        None => (config.seed.unwrap_or_else(|| fastrand::u64(..)), config.split_seed.unwrap_or(VAL_SPLIT_SEED)),
     };
 
-    let mut rng = fastrand::Rng::with_seed(rng_seed);
-    rng.shuffle(&mut entries);
+    // Games sit contiguously in the file, so the split needs a shuffle rather than a cut, and the
+    // shuffle needs a seed of its own: under the training seed, each run holds out a different
+    // tenth and no two validation losses compare.
+    fastrand::Rng::with_seed(split_seed).shuffle(&mut entries);
 
     // One-time cost: training reads FeatureRecords straight through.
     // Parallel because entries are independent.
@@ -476,11 +489,13 @@ fn train_entries(
         vol_adaptive: config.volatility_adaptive,
     };
 
-    train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, rng_seed, dataset_fnv, &ctx)
+    let seeds = Seeds { rng_seed, split_seed };
+
+    train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
 }
 
 /// Hashed before shuffle: identifies loaded contents, not a permutation.
-/// A checkpoint's seed replays the same split only over the same entries.
+/// A checkpoint's split seed replays the same split only over the same entries.
 fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
     let mut fnv = Fnv1a::new();
     fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
@@ -649,10 +664,12 @@ fn train_loop(
     dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
-    rng_seed: u64,
+    seeds: Seeds,
     dataset_fnv: u64,
     ctx: &TrainerContext,
 ) -> f64 {
+    let Seeds { rng_seed, split_seed } = seeds;
+
     let all_params = eval_params::collect_parameters();
     let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
 
@@ -696,6 +713,10 @@ fn train_loop(
     };
 
     println!("{lab}Seed:{RESET}       {v}{rng_seed}{RESET}{seed_label}");
+
+    if split_seed != VAL_SPLIT_SEED {
+        println!("{lab}Split seed:{RESET} {v}{split_seed}{RESET} (L_val does not compare to default-split runs)");
+    }
 
     let initial_values = values.clone();
 
@@ -743,6 +764,11 @@ fn train_loop(
     if let Some(ref mut w) = logger {
         writeln!(w).ok();
         writeln!(w, "Seed:      {rng_seed}").ok();
+
+        if split_seed != VAL_SPLIT_SEED {
+            writeln!(w, "Split:     {split_seed}").ok();
+        }
+
         writeln!(w, "Mode:      {mode_label}").ok();
         writeln!(w, "Dataset:   {dataset_label}").ok();
         writeln!(w, "K:         {k:.6} (100cp → {:.1}%)", win_rate_100cp * 100.0).ok();
@@ -1131,6 +1157,7 @@ fn train_loop(
                 best_train_smooth,
                 plateau_count,
                 rng_seed,
+                split_seed,
                 dataset: dataset_fnv,
                 dataset_path: dataset_label,
                 values: &values,
@@ -1160,6 +1187,7 @@ fn train_loop(
             "final",
             &serde_json::json!({
                 "seed": rng_seed,
+                "split_seed": split_seed,
                 "epochs": epochs_run,
                 "best_val_loss": best_val_loss,
                 "best_val_epoch": best_val_epoch,

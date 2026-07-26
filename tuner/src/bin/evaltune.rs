@@ -47,6 +47,8 @@ struct Args {
     #[arg(long)]
     seed: Option<u64>,
     #[arg(long)]
+    split_seed: Option<u64>,
+    #[arg(long)]
     lr_mult: Option<f64>,
     #[arg(long, action = clap::ArgAction::SetTrue)]
     help: bool,
@@ -253,6 +255,10 @@ fn run_evaltune(args: Args) -> bool {
         tuner_config.evaltune.seed = Some(seed);
     }
 
+    if let Some(seed) = args.split_seed {
+        tuner_config.evaltune.split_seed = Some(seed);
+    }
+
     if let Some(lr_mult) = args.lr_mult {
         tuner_config.evaltune.k_mode = KMode::Learned { lr_mult };
     }
@@ -364,5 +370,6 @@ fn print_help() {
     h.option("--wdl-end", "<ratio>", "WDL blend end (scheduled)");
     h.option("--wdl-schedule", "<type>", "[constant|linear|cosine]");
     h.option("--seed", "<u64>", "Fixed RNG seed for reproducible training");
+    h.option("--split-seed", "<u64>", "Reseed the validation holdout, fixed by default");
     h.option("--lr-mult", "<f64>", "Learning-rate multiplier");
 }

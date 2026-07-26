@@ -48,6 +48,10 @@ pub struct Checkpoint {
     pub params: BTreeMap<String, ParamState>,
     pub hash: u64,
     pub rng_seed: u64,
+    /// None in a checkpoint from when `rng_seed` drew the val slice as well. A resume reads it as
+    /// `rng_seed` there, or it validates on positions the checkpoint trained on.
+    #[serde(default)]
+    pub split_seed: Option<u64>,
     pub dataset: u64,
     #[serde(default)]
     pub dataset_path: String,
@@ -96,6 +100,7 @@ pub struct TrainerState<'a> {
     pub best_train_smooth: f64,
     pub plateau_count: usize,
     pub rng_seed: u64,
+    pub split_seed: u64,
     pub dataset: u64,
     pub dataset_path: &'a str,
     pub values: &'a [f64],
@@ -149,6 +154,7 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         params,
         hash: compute_layout_hash(tunables),
         rng_seed: state.rng_seed,
+        split_seed: Some(state.split_seed),
         dataset: state.dataset,
         dataset_path: state.dataset_path.to_string(),
         param_names,
@@ -295,8 +301,8 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 }
 
 /// The train/val split happens before the full checkpoint load, and resuming
-/// under a different seed reshuffles it: former training positions land in
-/// val and the validation loss goes optimistic. The peek hands the shuffle
+/// under a different split seed reshuffles it: former training positions land
+/// in val and the validation loss goes optimistic. The peek hands the shuffle
 /// its seed, and the dataset fingerprint, before any of that runs.
 ///
 /// # Errors
@@ -347,6 +353,7 @@ mod tests {
             best_train_smooth: 0.305,
             plateau_count: 3,
             rng_seed: 999,
+            split_seed: 888,
             dataset: 777,
             dataset_path: "data/test.txt",
             values: &[10.0, 20.0],
@@ -410,6 +417,7 @@ mod tests {
             best_train_smooth: 0.305,
             plateau_count: 0,
             rng_seed: 1,
+            split_seed: 3,
             dataset: 2,
             dataset_path: "data/test.txt",
             values: &[10.0],
@@ -441,5 +449,55 @@ mod tests {
         assert!(d.train_smooth.is_nan(), "an absent train trail must re-seed, got {}", d.train_smooth);
         assert_eq!((d.best_val_smooth, d.best_train_smooth), (f64::MAX, f64::MAX));
         assert_eq!(d.best_val_loss, 0.2, "the rest of the checkpoint must survive the older format");
+    }
+
+    #[test]
+    fn a_checkpoint_without_a_split_seed_reads_as_none() {
+        // A bare u64 would default to 0, a split no older checkpoint ever drew.
+        // Option is what lets a resume recognize the absence and fall back to rng_seed.
+        let tunables = [tunable("alpha", 0, 1.0, false)];
+
+        let state = TrainerState {
+            epoch: 7,
+            lr_scale: 1.0,
+            k: 1.0,
+            k_ref: 1.0,
+            k_momentum: 0.0,
+            best_val_loss: 0.2,
+            best_val_epoch: 3,
+            val_smooth: 0.21,
+            best_val_smooth: 0.205,
+            best_train_loss: 0.3,
+            best_train_epoch: 5,
+            train_smooth: 0.31,
+            best_train_smooth: 0.305,
+            plateau_count: 0,
+            rng_seed: 12345,
+            split_seed: 3,
+            dataset: 2,
+            dataset_path: "data/test.txt",
+            values: &[10.0],
+            momentum: &[0.0],
+            ema: &[10.0],
+            grad_ema: &[0.0],
+            stagnant: &[0],
+            frozen: &[false],
+            best_val_params: &[1.5],
+            best_train_params: &[3.5],
+        };
+
+        let path = std::env::temp_dir().join(format!("soul_ckpt_split_test_{}.json", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_checkpoint(path, &tunables, &state).unwrap();
+
+        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        raw.as_object_mut().unwrap().remove("split_seed");
+        std::fs::write(path, serde_json::to_string(&raw).unwrap()).unwrap();
+
+        let cp = peek_checkpoint(path).unwrap();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(cp.split_seed, None);
+        assert_eq!(cp.rng_seed, 12345, "the fallback the resume uses must survive the older format");
     }
 }
