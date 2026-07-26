@@ -186,9 +186,6 @@ pub struct CheckpointData {
     pub train_smooth: f64,
     pub best_train_smooth: f64,
     pub plateau_count: usize,
-    pub rng_seed: u64,
-    pub dataset: u64,
-    pub dataset_path: String,
     pub values: Vec<f64>,
     pub momentum: Vec<f64>,
     pub ema: Vec<f64>,
@@ -286,9 +283,6 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         train_smooth: cp.train_smooth,
         best_train_smooth: cp.best_train_smooth,
         plateau_count: cp.plateau_count,
-        rng_seed: cp.rng_seed,
-        dataset: cp.dataset,
-        dataset_path: cp.dataset_path.clone(),
         values,
         momentum,
         ema,
@@ -374,7 +368,14 @@ mod tests {
         let grown = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true), tunable("gamma", 2, 30.0, false)];
 
         let d = load_checkpoint(path, &grown, &[1.0, 2.0, 30.0]).unwrap();
+
+        // The seeds and the dataset identity are read off `Checkpoint` by `peek_checkpoint`, ahead
+        // of the split and therefore ahead of this load, so that is where they are checked.
+        let cp = peek_checkpoint(path).unwrap();
         std::fs::remove_file(path).ok();
+
+        assert_eq!((cp.rng_seed, cp.split_seed, cp.dataset), (999, Some(888), 777));
+        assert_eq!(cp.dataset_path, "data/test.txt");
 
         assert_eq!((d.epoch, d.lr_scale, d.k, d.k_ref, d.k_momentum), (42, 0.5, 1.23, 1.11, 0.42));
         assert_eq!(
@@ -383,8 +384,6 @@ mod tests {
         );
         assert_eq!((d.val_smooth, d.best_val_smooth), (0.21, 0.205));
         assert_eq!((d.train_smooth, d.best_train_smooth), (0.31, 0.305));
-        assert_eq!((d.rng_seed, d.dataset), (999, 777));
-        assert_eq!(d.dataset_path, "data/test.txt");
         assert_eq!(d.values, [10.0, 20.0, 30.0]);
         assert_eq!(d.momentum, [0.1, 0.2, 0.0]);
         assert_eq!(d.ema, [9.0, 19.0, 30.0]);
