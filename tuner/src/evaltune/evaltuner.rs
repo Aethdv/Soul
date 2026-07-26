@@ -88,7 +88,7 @@ impl KController {
                     println!("Optimizing K...");
 
                     let k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                        ctx.val_eval(values, kk, init_blend)
+                        ctx.val_eval(values, [(kk, init_blend)])[0]
                     });
 
                     (k, k, 0.0)
@@ -121,8 +121,9 @@ impl KController {
             return None;
         }
 
-        self.k =
-            golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| ctx.val_eval(ema_values, kk, blend));
+        self.k = golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| {
+            ctx.val_eval(ema_values, [(kk, blend)])[0]
+        });
 
         Some(self.k)
     }
@@ -327,13 +328,18 @@ impl TrainerContext<'_> {
             )
     }
 
-    fn val_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
+    /// Validation loss at each `(k, blend)` probe, over one pass of the split.
+    ///
+    /// The eval is the whole cost of that pass and depends on neither, so a second probe rides
+    /// along for a sigmoid and a target more. The epoch report wants two, its live loss and the
+    /// frozen-`k_ref` reference; the K search wants one per probe.
+    fn val_eval<const N: usize>(&self, values: &[f64], probes: [(f64, f64); N]) -> [f64; N] {
         let (wsum, weight) = self
             .val
             .par_iter()
             .enumerate()
             .fold(
-                || (0.0_f64, 0.0_f64),
+                || ([0.0_f64; N], 0.0_f64),
                 |(mut wsum, mut weight), (idx, entry)| {
                     let record = &self.records[self.train_count + idx];
 
@@ -342,19 +348,32 @@ impl TrainerContext<'_> {
                     }
 
                     let score = loader::eval_record(record, values);
-                    let sig = sigmoid(score, k);
-                    let target = wdl_target(entry, k, blend);
                     let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[self.train_count + idx] };
 
-                    wsum += w * self.loss_fn.loss(sig, target);
+                    for (sum, &(k, blend)) in wsum.iter_mut().zip(&probes) {
+                        let sig = sigmoid(score, k);
+                        let target = wdl_target(entry, k, blend);
+
+                        *sum += w * self.loss_fn.loss(sig, target);
+                    }
+
                     weight += w;
 
                     (wsum, weight)
                 },
             )
-            .reduce(|| (0.0_f64, 0.0_f64), |(s1, w1), (s2, w2)| (s1 + s2, w1 + w2));
+            .reduce(
+                || ([0.0_f64; N], 0.0_f64),
+                |(mut sums, w1), (rhs, w2)| {
+                    for (sum, add) in sums.iter_mut().zip(&rhs) {
+                        *sum += add;
+                    }
 
-        if weight > 0.0 { wsum / weight } else { 0.0 }
+                    (sums, w1 + w2)
+                },
+            );
+
+        if weight > 0.0 { wsum.map(|sum| sum / weight) } else { [0.0; N] }
     }
 }
 
@@ -989,8 +1008,10 @@ fn train_loop(
         }
 
         let t_val = Instant::now();
-        let val_loss = ctx.val_eval(&ema_values, k_ctrl.k(), blend);
-        let ref_loss = ctx.val_eval(&ema_values, k_ctrl.k_ref(), 0.0);
+
+        // ref_loss reads the same scores at frozen k_ref against the pure outcome,
+        // which is what makes one run's number comparable to another's.
+        let [val_loss, ref_loss] = ctx.val_eval(&ema_values, [(k_ctrl.k(), blend), (k_ctrl.k_ref(), 0.0)]);
         let val_secs = t_val.elapsed().as_secs_f32();
 
         let train_loss = train_loss / train_count.max(1) as f64;
