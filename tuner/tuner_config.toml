@@ -2,7 +2,10 @@
 beta1 = 0.9
 beta2 = 0.99
 grad_clip = 1.0
-k_min = 0.003
+# A bracket for the search, not a target. Both the sweep and the learned mode clamp into it,
+# so a run whose final K lands on either bound reported a constraint rather than an optimum:
+# 32.8M sat at the old floor of 0.003 and settles at 0.001350 once given the room.
+k_min = 0.001
 k_max = 0.010
 k_mode = { type="learned", lr_mult=0.001 }
 #   { type = "sweep", interval=200 }
@@ -60,7 +63,7 @@ lr_other = 1.0
 # Per epoch, what the gate skipped, what its |m| epsilon waived through unjudged,
 # and the band where the canonical c·g mask would have ruled the other way.
 # Costs a line per epoch and a pass over the parameters per batch.
-gate_census = true
+gate_census = false
 
 [evaltune.lr_schedule]
 type = "sd"

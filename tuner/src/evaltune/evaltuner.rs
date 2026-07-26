@@ -540,27 +540,34 @@ fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
     fnv.digest()
 }
 
+/// The eval's own `PHASE_WEIGHTS`, in piece-type order.
+fn phase_weights() -> [f64; 6] {
+    let params = eval_params::collect_parameters();
+    let woff = psqt::LAYOUT.weight_offset;
+
+    std::array::from_fn(|pt| params[woff + pt].value)
+}
+
+/// Game phase of a record, `0..=TOTAL_PHASE`. Fixed for the life of a run, since `PHASE_WEIGHTS`
+/// are constants rather than tunables.
+fn phase_of(rec: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
+    let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();
+
+    raw.clamp(0.0, f64::from(TOTAL_PHASE)).trunc() as usize
+}
+
 /// Reweights toward `target` phase distribution, clamped to `[1/cap, cap]`.
 /// `None` is uniform: inverse bucket frequency, lifting sparse phases toward
 /// even representation. `Some(t)` is `target[phase] / observed[phase]`, toward
 /// the density `t`. Mean-1 keeps gradient scale equal to unweighted.
 fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64]>) -> Vec<f64> {
     let cap = cap.max(1.0);
-    let params = eval_params::collect_parameters();
-    let woff = psqt::LAYOUT.weight_offset;
-    let phase_w: [f64; 6] = std::array::from_fn(|pt| params[woff + pt].value);
-    let total = f64::from(TOTAL_PHASE);
-
-    // Phase is fixed (PHASE_WEIGHTS are constant), so a single startup pass suffices.
-    let phase_of = |rec: &FeatureRecord| -> usize {
-        let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();
-        raw.clamp(0.0, total).trunc() as usize
-    };
+    let phase_w = phase_weights();
 
     let mut hist = vec![0u64; TOTAL_PHASE as usize + 1];
 
     for rec in records {
-        hist[phase_of(rec)] += 1;
+        hist[phase_of(rec, &phase_w)] += 1;
     }
 
     let used = hist.iter().filter(|&&c| c > 0).count().max(1);
@@ -573,7 +580,7 @@ fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64
     let mut weights: Vec<f64> = records
         .iter()
         .map(|rec| {
-            let p = phase_of(rec);
+            let p = phase_of(rec, &phase_w);
             let raw = match target {
                 // Uniform: inverse frequency, lifting sparse phases toward even weight.
                 None => avg / hist[p] as f64,
@@ -629,6 +636,156 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
         "  {lab}imbalance{RESET} {v}{imbalance:.0}×{RESET} {lab}vs cap{RESET} {v}{cap:.0}×{RESET}  \
          {lab}weights{RESET} {v}{wmin:.2}–{wmax:.2}×{RESET}  {lab}clamped{RESET} {v}{clamp_pct:.1}%{RESET}"
     );
+}
+
+/// Warns when the run's K finished against `k_min` or `k_max`.
+///
+/// Both live modes clamp: the golden search never leaves its bracket and `on_batch` clamps the
+/// learned K every batch. A K on a bound is therefore the bracket's answer rather than the data's,
+/// and it is silent otherwise. The 32.8M set spent a run pinned to a `k_min` of 0.003 and settled
+/// at 0.001350 once the floor moved.
+fn warn_on_clamped_k(config: &EvalTuneConfig, k: f64) {
+    // Fixed K is the configured value by definition, bound or not.
+    if matches!(config.k_mode, KMode::Fixed { .. }) {
+        return;
+    }
+
+    let margin = 0.01 * (config.k_max - config.k_min);
+
+    if k - config.k_min < margin || config.k_max - k < margin {
+        eprintln!(
+            "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
+             [!] this run reported a clamp rather than an optimum.{RESET}",
+            color::ansi_fg((225, 89, 91)),
+            config.k_min,
+            config.k_max,
+        );
+    }
+}
+
+/// Predicted against realized win rate on the validation split, by game phase.
+///
+/// One global K asserts that a centipawn buys the same win probability in a rook ending as it
+/// does at full material. Whether it does is measurable rather than arguable, and this is the
+/// measurement: a residual that walks monotonically with phase is a material-conditioned target
+/// earning its keep, and noise around zero is that idea deflating before it costs a single game.
+///
+/// The second table splits each band by eval, because K is a slope and the first table reads an
+/// offset. A band whose K is too flat under-predicts the winning side and over-predicts the
+/// losing side, netting a mean residual of zero, so the split has to keep the sign: bucketed by
+/// `|eval|` those two errors would cancel inside the bucket and hide exactly what is sought.
+///
+/// Realized rate comes from the label, so it means the same thing the loss means: on outcome data
+/// it is the game result, and on score-target data it is whatever the blend made of it.
+fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) {
+    const BAND_WIDTH: usize = 4;
+    const BANDS: usize = TOTAL_PHASE as usize / BAND_WIDTH;
+
+    /// Centipawn cuts of the signed-eval buckets each phase band splits into.
+    const EDGES: [f64; 2] = [-50.0, 50.0];
+    const CELLS: usize = EDGES.len() + 1;
+
+    let phase_w = phase_weights();
+
+    let (counts, predicted, realized) = ctx
+        .val
+        .par_iter()
+        .enumerate()
+        .fold(
+            || ([0u64; BANDS * CELLS], [0.0_f64; BANDS * CELLS], [0.0_f64; BANDS * CELLS]),
+            |(mut counts, mut predicted, mut realized), (idx, entry)| {
+                let record = &ctx.records[ctx.train_count + idx];
+
+                if !ctx.passes_vol_filter(entry, record.static_eval) {
+                    return (counts, predicted, realized);
+                }
+
+                // Full material divides into the top band rather than owning one of its own.
+                let b = (phase_of(record, &phase_w) / BAND_WIDTH).min(BANDS - 1);
+                let eval = loader::eval_record(record, values);
+                let cell = b * CELLS + EDGES.iter().filter(|&&edge| eval >= edge).count();
+
+                counts[cell] += 1;
+                predicted[cell] += sigmoid(eval, k);
+                realized[cell] += f64::from(entry.result) / 2.0;
+
+                (counts, predicted, realized)
+            },
+        )
+        .reduce(
+            || ([0u64; BANDS * CELLS], [0.0_f64; BANDS * CELLS], [0.0_f64; BANDS * CELLS]),
+            |(mut c1, mut p1, mut r1), (c2, p2, r2)| {
+                for i in 0..BANDS * CELLS {
+                    c1[i] += c2[i];
+                    p1[i] += p2[i];
+                    r1[i] += r2[i];
+                }
+
+                (c1, p1, r1)
+            },
+        );
+
+    let lab = palette::fg(palette::LABEL);
+    let v = palette::fg(palette::VALUE);
+    let dim = palette::fg(palette::DIM);
+
+    let band_label = |b: usize| {
+        let lo = b * BAND_WIDTH;
+        let hi = if b + 1 == BANDS { TOTAL_PHASE as usize } else { lo + BAND_WIDTH - 1 };
+
+        format!("{lo}-{hi}")
+    };
+
+    let rate = |sum: f64, n: u64| 100.0 * sum / n as f64;
+
+    println!("\n{lab}Calibration{RESET} {dim}(validation split at K = {k:.6}){RESET}");
+    println!("  {lab}phase           n   predicted   realized  residual{RESET}");
+
+    for b in 0..BANDS {
+        let cells = b * CELLS..(b + 1) * CELLS;
+        let n: u64 = counts[cells.clone()].iter().sum();
+
+        if n == 0 {
+            continue;
+        }
+
+        let p = rate(predicted[cells.clone()].iter().sum(), n);
+        let r = rate(realized[cells].iter().sum(), n);
+        let band = band_label(b);
+
+        println!("  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}", p - r);
+    }
+
+    println!("\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
+    println!("  {lab}{:<7} {:<13} {:<13} {}{RESET}", "phase", "eval < -50", "-50..+50", "eval > +50");
+
+    for b in 0..BANDS {
+        let row: Vec<String> = (0..CELLS)
+            .map(|c| {
+                let i = b * CELLS + c;
+
+                match counts[i] {
+                    0 => "-".to_string(),
+                    n => format!("{:+.1} ({})", rate(predicted[i], n) - rate(realized[i], n), compact(n)),
+                }
+            })
+            .collect();
+
+        if row.iter().all(|cell| cell == "-") {
+            continue;
+        }
+
+        println!("  {:<7} {:<13} {:<13} {}", band_label(b), row[0], row[1], row[2]);
+    }
+}
+
+/// Counts wide enough to crowd a table, shortened to three significant characters.
+fn compact(n: u64) -> String {
+    match n {
+        0..10_000 => n.to_string(),
+        10_000..10_000_000 => format!("{}k", n / 1000),
+        _ => format!("{}M", n / 1_000_000),
+    }
 }
 
 /// Whole-run gate census, per parameter group.
@@ -1292,6 +1449,9 @@ fn train_loop(
             }),
         );
     }
+
+    warn_on_clamped_k(config, k_ctrl.k());
+    calibration_report(ctx, &best_val_params, k_ctrl.k());
 
     if config.gate_census {
         print_gate_census(&run_census);
