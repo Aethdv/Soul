@@ -725,6 +725,7 @@ fn train_loop(
     let decay_mask = build_decay_mask(&all_params);
     let beta2_mask = build_beta2_mask(&all_params, config.beta2);
     let lr_mask = build_lr_mask(&all_params, config);
+    let clip_mask = build_clip_mask(&all_params);
 
     // Zero init: 0.99 EMA decay washes out any seed within a few batches.
     let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
@@ -929,11 +930,7 @@ fn train_loop(
                 total_grads[i] += *g;
             }
 
-            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask);
-
-            for value in &mut values[mob_start..mob_end] {
-                *value = value.clamp(-MOB_CLAMP, MOB_CLAMP);
-            }
+            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask, &clip_mask);
 
             k_ctrl.on_batch(k_grad, batch_count, lr, scale, config.weight_decay);
 
@@ -1399,6 +1396,16 @@ fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
             ParamGroup::Material => config.lr_material,
             ParamGroup::Mobility => config.lr_mobility,
             ParamGroup::Other => config.lr_other,
+        })
+        .collect()
+}
+
+/// Per-parameter range the sign step may not leave, unbounded outside mobility.
+fn build_clip_mask(params: &[Tunable]) -> Vec<(f64, f64)> {
+    (0..params.len())
+        .map(|i| match param_group(i) {
+            ParamGroup::Mobility => (-MOB_CLAMP, MOB_CLAMP),
+            ParamGroup::Psqt | ParamGroup::Material | ParamGroup::Other => (f64::NEG_INFINITY, f64::INFINITY),
         })
         .collect()
 }
