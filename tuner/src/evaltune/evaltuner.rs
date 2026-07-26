@@ -23,10 +23,11 @@ use soul::{
     color,
     core::{defs::TOTAL_PHASE, psqt},
     engine::eval_params::{self, Tunable},
-    tools::dataset::FeatureRecord,
+    tools::dataset::{FeatureRecord, accumulate_record_grad},
 };
 
 use super::{
+    curvature::Curvature,
     lion::{GateCensus, Lion},
     loader, palette,
     report::*,
@@ -208,6 +209,9 @@ pub enum Task {
     /// over identical records, so the difference is the cost of the random gathers, which is the
     /// measurement that says whether the epoch loop is bound by memory or by math.
     GatherCost,
+    /// Build the objective's exact Hessian at the shipped parameters and report what the data
+    /// constrains, what it leaves free, and which parameters merely restate each other.
+    Curvature,
 }
 
 pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
@@ -532,14 +536,94 @@ fn train_entries(
         vol_adaptive: config.volatility_adaptive,
     };
 
-    if task == Task::GatherCost {
-        gather_cost(&ctx, config);
-        return 0.0;
+    match task {
+        Task::GatherCost => {
+            gather_cost(&ctx, config);
+            return 0.0;
+        },
+
+        Task::Curvature => {
+            curvature_report(&ctx, config);
+            return 0.0;
+        },
+
+        Task::Train => {},
     }
 
     let seeds = Seeds { rng_seed, split_seed };
 
     train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
+}
+
+/// Curvature of the loss at the shipped parameters, over the training split.
+///
+/// The Hessian needs the eval's raw coefficient vector per position, and `accumulate_record_grad`
+/// already produces exactly that: its `gradient` argument is a scalar multiplier, so passing 1.0
+/// leaves the coefficients themselves in the scratch buffer. Nothing about the training path has
+/// to change to read them.
+fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
+    let params = eval_params::collect_parameters();
+    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+
+    let blend = config.wdl_schedule.clone().into_scheduler().blend(1, config.epochs);
+    let k = KController::bootstrap(config, ctx, &values, blend, None).k();
+
+    let free: Vec<usize> = params.iter().filter(|p| !p.is_fixed).map(|p| p.idx).collect();
+    let n = params.len();
+    let trainable: Vec<bool> = {
+        let mut mask = vec![false; n];
+
+        for &i in &free {
+            mask[i] = true;
+        }
+
+        mask
+    };
+
+    let curvature = (0..ctx.train_count)
+        .into_par_iter()
+        .fold(
+            || (Curvature::zeros(n), vec![0.0; n], Vec::with_capacity(64)),
+            |(mut acc, mut scratch, mut nonzeros), i| {
+                let (entry, record) = (&ctx.train[i], &ctx.records[i]);
+
+                if ctx.passes_vol_filter(entry, record.static_eval) {
+                    let p = sigmoid(loader::eval_record(record, &values), k);
+                    let w = if ctx.phase_weights.is_empty() { 1.0 } else { ctx.phase_weights[i] };
+
+                    accumulate_record_grad(record, &values, 1.0, &mut scratch);
+
+                    // One walk drains the buffer and collects it, so the next position starts from
+                    // zero without paying to clear all 490 slots again.
+                    nonzeros.clear();
+
+                    for (j, coefficient) in scratch.iter_mut().enumerate() {
+                        if *coefficient != 0.0 {
+                            if trainable[j] {
+                                nonzeros.push((j, *coefficient));
+                            }
+
+                            *coefficient = 0.0;
+                        }
+                    }
+
+                    acc.add_outer(k * k * w * p * (1.0 - p), &nonzeros);
+                }
+
+                (acc, scratch, nonzeros)
+            },
+        )
+        .map(|(acc, ..)| acc)
+        .reduce(
+            || Curvature::zeros(n),
+            |mut acc, other| {
+                acc.merge(&other);
+                acc
+            },
+        )
+        .symmetrized();
+
+    curvature.spectrum(&free).report(&params, ctx.train_count, k);
 }
 
 /// Gradient throughput over sequential batches against shuffled ones.
@@ -822,7 +906,7 @@ fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) {
     }
 
     println!("\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
-    println!("  {lab}{:<7} {:<13} {:<13} {}{RESET}", "phase", "eval < -50", "-50..+50", "eval > +50");
+    println!("  {lab}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
 
     for b in 0..BANDS {
         let row: Vec<String> = (0..CELLS)

@@ -86,6 +86,12 @@ enum Commands {
         config: String,
         dataset: String,
     },
+    #[command(name = "curvature")]
+    Curvature {
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        dataset: String,
+    },
     #[command(name = "sweep-lr-mult")]
     SweepLrMult {
         #[arg(short, long, value_delimiter = ',', num_args = 0..)]
@@ -135,12 +141,10 @@ fn main() {
             seeds::run_seed_spread(&dataset, &config_path, epochs, count, &log);
         },
         Some(Commands::GatherCost { config: config_path, dataset }) => {
-            let cfg = TunerConfig::from_file(&config_path).unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to load config '{config_path}': {e}. Using defaults.");
-                TunerConfig::default()
-            });
-
-            evaltune::run(Some(&dataset), &cfg.evaltune, None, Task::GatherCost);
+            probe(&config_path, &dataset, Task::GatherCost);
+        },
+        Some(Commands::Curvature { config: config_path, dataset }) => {
+            probe(&config_path, &dataset, Task::Curvature);
         },
         Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
             let base_epochs = epochs.unwrap_or(100);
@@ -200,6 +204,16 @@ fn main() {
             }
         },
     }
+}
+
+/// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
+fn probe(config_path: &str, dataset: &str, task: Task) {
+    let cfg = TunerConfig::from_file(config_path).unwrap_or_else(|e| {
+        eprintln!("Warning: Failed to load config '{config_path}': {e}. Using defaults.");
+        TunerConfig::default()
+    });
+
+    evaltune::run(Some(dataset), &cfg.evaltune, None, task);
 }
 
 fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
@@ -359,7 +373,7 @@ fn run_evaltune(args: Args) -> bool {
 }
 
 fn print_help() {
-    let h = Help::new(28);
+    let h = Help::new(36);
 
     h.header("Evaluation Parameter Tuning via Evolved Sign Momentum");
     h.separator();
@@ -368,13 +382,16 @@ fn print_help() {
     h.command_args("encode", "<in> <out>", "Pre-encode EPD → .soul.zst");
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
+    h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
+    h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs shuffled");
+    h.command_args("seed-spread", "<dataset> [options]", "Run N seeds of one config, report where they land");
     h.command_args("sweep-lr-mult", "<dataset> [options]", "Sweep lr_mult with auto-grid + refinement");
     h.separator();
 
     h.header("Options");
     h.option("-d, --dataset", "<path,...>", "Paths to .epd or .soul.zst files");
     h.option_default("-e, --epochs", "<N>", "Number of training epochs", "4000");
-    h.option_default("-b, --blend", "<ratio>", "Constant WDL blend factor", "0.3");
+    h.option_default("-b, --blend", "<ratio>", "Target: 0 = game result, 1 = search score", "0.3");
     h.option("-r, --resume", "<path>", "Resume from a JSON checkpoint");
     h.option("--lr", "<value>", "Base learning rate");
     h.option("--min-lr", "<value>", "Minimum learning rate (cosine/linear)");

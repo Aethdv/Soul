@@ -1,5 +1,6 @@
 pub mod ablation;
 pub mod correlation;
+pub mod curvature;
 pub mod evaltuner;
 pub mod lion;
 pub mod loader;
