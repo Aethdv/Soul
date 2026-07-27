@@ -75,7 +75,7 @@ const fn CV(v: i32) -> Param {
 
 fn collect_params_from_arrays<const N: usize>(name: &str, arr: &[Param; N]) -> Vec<Tunable> {
     let mut params = Vec::new();
-    let freeze_resistant = name.starts_with("ATTACKER_WEIGHTS");
+    let freeze_resistant = name.starts_with("ATTACKER");
 
     for (i, param) in arr.iter().enumerate() {
         let (val, is_fixed) = match param {
@@ -122,6 +122,9 @@ macro_rules! define_psqt_params {
                 ];
             )*
 
+            // The six tables are one block; every square carries an MG and an EG slot.
+            const PSQT_BLOCKS: &[(&str, usize)] = &[("psqt", (0 $( + $name.len() )*) * 2)];
+
             fn collect_psqt_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
 
@@ -166,10 +169,10 @@ macro_rules! define_psqt_params {
 }
 
 macro_rules! define_simple_params {
-    ($($name:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
+    ($($block:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
         paste::paste! {
             $(
-                pub const $name: [PhaseScore; { [$($val),*].len() }] = [
+                pub const [<$block:upper>]: [PhaseScore; { [$($val),*].len() }] = [
                     $(
                         match $val {
                             Param::S(mg, eg) | Param::CS(mg, eg) => PhaseScore::new(mg, eg),
@@ -178,7 +181,7 @@ macro_rules! define_simple_params {
                     ),*
                 ];
 
-                pub const [<MG_ $name>]: [i32; { [$($val),*].len() }] = [
+                pub const [<MG_ $block:upper>]: [i32; { [$($val),*].len() }] = [
                     $(
                         match $val {
                             Param::S(mg, _) | Param::CS(mg, _) => mg,
@@ -187,7 +190,7 @@ macro_rules! define_simple_params {
                     ),*
                 ];
 
-                pub const [<EG_ $name>]: [i32; { [$($val),*].len() }] = [
+                pub const [<EG_ $block:upper>]: [i32; { [$($val),*].len() }] = [
                     $(
                         match $val {
                             Param::S(_, eg) | Param::CS(_, eg) => eg,
@@ -197,27 +200,29 @@ macro_rules! define_simple_params {
                 ];
             )*
 
+            const SIMPLE_BLOCKS: &[(&str, usize)] = &[$( (stringify!($block), [<$block:upper>].len() * 2) ),*];
+
             fn collect_simple_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
                 $(
-                    for (i, param) in $name.iter().enumerate() {
+                    for (i, param) in [<$block:upper>].iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
 
                         params.push(Tunable {
                             value: param.mg as f64,
-                            name: format!("MG_{}[{i}]", stringify!($name)),
+                            name: format!("MG_{}[{i}]", stringify!([<$block:upper>])),
                             idx: 0,
                             is_fixed,
                             freeze_resistant: false,
                         });
                     }
 
-                    for (i, param) in $name.iter().enumerate() {
+                    for (i, param) in [<$block:upper>].iter().enumerate() {
                         let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
 
                         params.push(Tunable {
                             value: param.eg as f64,
-                            name: format!("EG_{}[{i}]", stringify!($name)),
+                            name: format!("EG_{}[{i}]", stringify!([<$block:upper>])),
                             idx: 0,
                             is_fixed,
                             freeze_resistant: false,
@@ -232,47 +237,71 @@ macro_rules! define_simple_params {
 }
 
 macro_rules! define_simd_params {
-    ($($name:ident = [$($val:expr),*]),* $(,)?) => {
-        $(pub const $name: Vi32x4 = Vi32x4::new([
+    ($($block:ident { mg = [$($mg:expr),* $(,)?], eg = [$($eg:expr),* $(,)?] $(,)? }),* $(,)?) => {
+        paste::paste! {
             $(
-                match $val {
-                    Param::Val(v) | Param::Const(v) => v,
-                    _ => 0,
-                }
-            ),*
-          ]);)*
+                pub const [<MG_ $block:upper>]: Vi32x4 = Vi32x4::new([
+                    $(
+                        match $mg {
+                            Param::Val(v) | Param::Const(v) => v,
+                            _ => 0,
+                        }
+                    ),*
+                ]);
 
-        fn collect_simd_params() -> Vec<Tunable> {
-            let mut params = Vec::new();
-            $(
-                let arr = [$($val),*];
-                params.append(&mut collect_params_from_arrays(stringify!($name), &arr));
+                pub const [<EG_ $block:upper>]: Vi32x4 = Vi32x4::new([
+                    $(
+                        match $eg {
+                            Param::Val(v) | Param::Const(v) => v,
+                            _ => 0,
+                        }
+                    ),*
+                ]);
             )*
 
-            params
+            const SIMD_BLOCKS: &[(&str, usize)] = &[
+                $( (stringify!($block), [$($mg),*].len() + [$($eg),*].len()) ),*
+            ];
+
+            fn collect_simd_params() -> Vec<Tunable> {
+                let mut params = Vec::new();
+                $(
+                    let mg = [$($mg),*];
+                    let eg = [$($eg),*];
+
+                    params.append(&mut collect_params_from_arrays(stringify!([<MG_ $block:upper>]), &mg));
+                    params.append(&mut collect_params_from_arrays(stringify!([<EG_ $block:upper>]), &eg));
+                )*
+
+                params
+            }
         }
     };
 }
 
 macro_rules! define_weight_params {
-    ($($name:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
-        $(pub const $name: [i32; { [$($val),*].len() }] = [
-            $(
-                match $val {
-                    Param::Val(v) | Param::Const(v) => v,
-                    _ => 0,
-                }
-            ),*
-        ];)*
+    ($($block:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
+        paste::paste! {
+            $(pub const [<$block:upper>]: [i32; { [$($val),*].len() }] = [
+                $(
+                    match $val {
+                        Param::Val(v) | Param::Const(v) => v,
+                        _ => 0,
+                    }
+                ),*
+            ];)*
 
-        fn collect_weight_params() -> Vec<Tunable> {
-            let mut params = Vec::new();
-            $(
-                let arr = [$($val),*];
-                params.append(&mut collect_params_from_arrays(stringify!($name), &arr));
-            )*
+            const WEIGHT_BLOCKS: &[(&str, usize)] = &[$( (stringify!($block), [<$block:upper>].len()) ),*];
 
-            params
+            fn collect_weight_params() -> Vec<Tunable> {
+                let mut params = Vec::new();
+                $(
+                    let arr = [$($val),*];
+                    params.append(&mut collect_params_from_arrays(stringify!([<$block:upper>]), &arr));
+                )*
+
+                params
+            }
         }
     };
 }
@@ -316,12 +345,124 @@ macro_rules! define_tunables {
     };
 }
 
-/// One ordered row per parameter block: name and slot width.
-/// Generates the `Layout` struct (`<name>_offset` / `<name>_len`) and the `LAYOUT` prefix-sum.
-/// The order is the slot map; it must match `collect_parameters`'s collection
-/// order, or every gradient indexes the wrong slot.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Psqt,
+    Simple,
+    Simd,
+    Weight,
+}
+
+/// One parameter block: a named, contiguous run of slots in the tunable vector.
+#[derive(Clone, Copy)]
+pub struct Block {
+    pub name: &'static str,
+    pub group: Group,
+    pub offset: usize,
+    pub len: usize,
+}
+
+/// The declaration groups in slot order, each with the collector that emits it.
+/// `BLOCKS`, the layout accessors and the parameter vector all derive from the
+/// four tables named here.
+macro_rules! param_groups {
+    ($macro:ident) => {
+        $macro! {
+            (Psqt,   PSQT_BLOCKS,   collect_psqt_params),
+            (Simple, SIMPLE_BLOCKS, collect_simple_params),
+            (Simd,   SIMD_BLOCKS,   collect_simd_params),
+            (Weight, WEIGHT_BLOCKS, collect_weight_params),
+        }
+    };
+}
+
+macro_rules! block_sources {
+    ($( ($group:ident, $blocks:ident, $collect:ident) ),* $(,)?) => { &[$( (Group::$group, $blocks) ),*] };
+}
+
+const BLOCK_SOURCES: &[(Group, &[(&str, usize)])] = param_groups!(block_sources);
+
+const BLOCK_COUNT: usize = {
+    let mut count = 0;
+    let mut i = 0;
+
+    while i < BLOCK_SOURCES.len() {
+        count += BLOCK_SOURCES[i].1.len();
+
+        i += 1;
+    }
+
+    count
+};
+
+const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
+    let mut table = [Block { name: "", group: Group::Psqt, offset: 0, len: 0 }; BLOCK_COUNT];
+    let mut offset = 0;
+    let mut next = 0;
+    let mut s = 0;
+
+    while s < BLOCK_SOURCES.len() {
+        let (group, source) = BLOCK_SOURCES[s];
+        let mut i = 0;
+
+        while i < source.len() {
+            let (name, len) = source[i];
+            table[next] = Block { name, group, offset, len };
+            offset += len;
+
+            next += 1;
+            i += 1;
+        }
+
+        s += 1;
+    }
+
+    table
+};
+
+/// Every parameter block in slot order, offsets prefix-summed over the groups.
+/// `LAYOUT` is the same table under named accessors.
+pub const BLOCKS: &[Block] = &BLOCK_TABLE;
+
+const fn block_slots(blocks: &[(&str, usize)]) -> usize {
+    let mut slots = 0;
+    let mut i = 0;
+
+    while i < blocks.len() {
+        slots += blocks[i].1;
+
+        i += 1;
+    }
+
+    slots
+}
+
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let mut i = 0;
+
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+
+        i += 1;
+    }
+
+    true
+}
+
+/// The named view of `BLOCKS`: generates the `Layout` struct
+/// (`<name>_offset` / `<name>_len`) and takes each block's extent by position.
+/// A name out of order against the declarations fails the build at the first
+/// one that disagrees.
 macro_rules! define_layout {
-    ($( $name:ident = $len:expr ),* $(,)?) => {
+    ($( $name:ident ),* $(,)?) => {
         paste::paste! {
             pub struct Layout {
                 $(
@@ -333,13 +474,27 @@ macro_rules! define_layout {
             }
 
             pub const LAYOUT: Layout = {
-                $( let [<$name _len>]: usize = $len; )*
                 let mut acc = 0usize;
+                let mut idx = 0usize;
 
                 $(
-                    let [<$name _offset>] = acc;
+                    assert!(
+                        idx < BLOCKS.len(),
+                        concat!("define_layout! runs past the declared blocks at `", stringify!($name), "`")
+                    );
+                    assert!(
+                        str_eq(BLOCKS[idx].name, stringify!($name)),
+                        concat!("define_layout! disagrees with the parameter declarations at `", stringify!($name), "`")
+                    );
+
+                    let [<$name _offset>] = BLOCKS[idx].offset;
+                    let [<$name _len>] = BLOCKS[idx].len;
+
                     acc += [<$name _len>];
+                    idx += 1;
                 )*
+
+                assert!(idx == BLOCKS.len(), "define_layout! is missing blocks that the parameter declarations emit");
 
                 Layout { $( [<$name _offset>], [<$name _len>], )* total: acc }
             };
@@ -348,67 +503,62 @@ macro_rules! define_layout {
 }
 
 define_layout! {
-    psqt               = (PAWN.len() + KNIGHT.len() + BISHOP.len() + ROOK.len() + QUEEN.len() + KING.len()) * 2,
-    material           = MATERIAL.len() * 2,
-    mobility_open      = 4 * 2, // MG + EG
-    mobility_closed    = 4 * 2,
-    weight             = PHASE_WEIGHTS.len(),
-    attacker           = ATTACKER_WEIGHTS.len(),
-    king_safety        = KING_SAFETY_WEIGHTS.len(),
-    xray               = XRAY_WEIGHTS.len(),
-    bishop_pair        = BISHOP_PAIR_WEIGHTS.len(),
-    rook_open          = ROOK_OPEN_WEIGHTS.len(),
-    passed_pawn_mg     = PASSED_PAWN_MG.len(),
-    passed_pawn_eg     = PASSED_PAWN_EG.len(),
-    enemy_king_dist_mg = ENEMY_KING_DIST_MG.len(),
-    enemy_king_dist_eg = ENEMY_KING_DIST_EG.len(),
-    doubled_pawn       = DOUBLED_PAWN_WEIGHTS.len(),
-    isolated_pawn      = ISOLATED_PAWN_WEIGHTS.len(),
-    phalanx_mg         = PHALANX_MG.len(),
-    phalanx_eg         = PHALANX_EG.len(),
-    defended_pawn_mg   = DEFENDED_PAWN_MG.len(),
-    defended_pawn_eg   = DEFENDED_PAWN_EG.len(),
-    backward_pawn      = BACKWARD_PAWN_WEIGHTS.len(),
-    tempo              = TEMPO_WEIGHTS.len(),
-    minor_behind_pawn  = MINOR_BEHIND_PAWN_WEIGHTS.len(),
+    psqt,
+    material,
+    mobility_open,
+    mobility_closed,
+    phase,
+    attacker,
+    king_safety,
+    xray,
+    bishop_pair,
+    rook_open,
+    passed_pawn_mg,
+    passed_pawn_eg,
+    enemy_king_dist_mg,
+    enemy_king_dist_eg,
+    doubled_pawn,
+    isolated_pawn,
+    phalanx_mg,
+    phalanx_eg,
+    defended_pawn_mg,
+    defended_pawn_eg,
+    backward_pawn,
+    tempo,
+    minor_behind_pawn,
+}
+
+/// Concatenates the groups into the parameter vector `LAYOUT` describes. A
+/// collector that emits a different count than its own block table declares
+/// would shift every slot after it, so each group is checked as it lands.
+macro_rules! collect_groups {
+    ($( ($group:ident, $blocks:ident, $collect:ident) ),* $(,)?) => {{
+        let mut all = Vec::new();
+
+        $(
+            let group = $collect();
+            assert_eq!(
+                group.len(),
+                block_slots($blocks),
+                concat!(stringify!($collect), " and ", stringify!($blocks), " disagree on slot count")
+            );
+
+            for mut p in group {
+                if p.name.starts_with("PHASE") {
+                    assert!(p.is_fixed, "PHASE must be constant (CV); tuning phase is not supported.");
+                }
+
+                p.idx = all.len();
+                all.push(p);
+            }
+        )*
+
+        all
+    }};
 }
 
 pub fn collect_parameters() -> Vec<Tunable> {
-    let mut all = Vec::new();
-
-    let psqts = collect_psqt_params();
-
-    for mut p in psqts {
-        p.idx = all.len();
-        all.push(p);
-    }
-
-    let simples = collect_simple_params();
-
-    for mut p in simples {
-        p.idx = all.len();
-        all.push(p);
-    }
-
-    let simds = collect_simd_params();
-
-    for mut p in simds {
-        p.idx = all.len();
-        all.push(p);
-    }
-
-    let weights = collect_weight_params();
-
-    for mut p in weights {
-        if p.name.starts_with("PHASE_WEIGHTS") {
-            assert!(p.is_fixed, "PHASE_WEIGHTS must be constant (CV); tuning phase is not supported.");
-        }
-
-        p.idx = all.len();
-        all.push(p);
-    }
-
-    all
+    param_groups!(collect_groups)
 }
 
 define_psqt_params! {
@@ -481,7 +631,7 @@ define_psqt_params! {
 }
 
 define_simple_params! {
-    MATERIAL = [
+    material = [
          CS(  92,  124), // Pawn
          CS( 373,  419), // Knight
          CS( 372,  462), // Bishop
@@ -492,34 +642,34 @@ define_simple_params! {
 }
 
 define_simd_params! {
-    MG_MOBILITY_OPEN = [
-        V(5), V(-7), V(5), V(5)], // [mobility, battery, threats, xray threats]
-    EG_MOBILITY_OPEN = [
-        V(-6), V(-9), V(7), V(-8)],
-    MG_MOBILITY_CLOSED = [
-        V(0), V(8), V(-20), V(-5)],
-    EG_MOBILITY_CLOSED = [
-        V(27), V(12), V(43), V(-29)],
+    mobility_open {
+        mg = [V(5), V(-7), V(5), V(5)], // [mobility, battery, threats, xray threats]
+        eg = [V(-6), V(-9), V(7), V(-8)],
+    },
+    mobility_closed {
+        mg = [V(0), V(8), V(-20), V(-5)],
+        eg = [V(27), V(12), V(43), V(-29)],
+    },
 }
 
 define_weight_params! {
-    PHASE_WEIGHTS             = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    ATTACKER_WEIGHTS          = [CV(0), V(190), V(280), V(474), V(558), V(582)], // [0, 1, 2, 3, 4, 5] attackers × weak
-    KING_SAFETY_WEIGHTS       = [V(23), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    XRAY_WEIGHTS              = [V(10)], // [Ortho King]
-    BISHOP_PAIR_WEIGHTS       = [V(39), V(74)], // [MG, EG]
-    ROOK_OPEN_WEIGHTS         = [V(44), V(1)], // [MG, EG]
-    PASSED_PAWN_MG            = [V(-19), V(-32), V(-36), V(-13), V(-15), V(-68)], // by relative rank 1-6
-    PASSED_PAWN_EG            = [V(-49), V(-26), V(24), V(78), V(173), V(130)], // by relative rank 1-6
-    ENEMY_KING_DIST_MG        = [V(-101), V(35), V(20), V(17), V(14), V(9)], // enemy king→passer dist, 7 clamps to 6
-    ENEMY_KING_DIST_EG        = [V(-49), V(2), V(43), V(55), V(68), V(75)], // enemy king→passer dist, 7 clamps to 6
-    DOUBLED_PAWN_WEIGHTS      = [V(2), V(-46)], // [MG, EG]
-    ISOLATED_PAWN_WEIGHTS     = [V(-9), V(-12)], // [MG, EG]
-    PHALANX_MG                = [V(7), V(16), V(27), V(62), V(146), V(-319)], // by relative rank 2-7
-    PHALANX_EG                = [V(-7), V(1), V(24), V(90), V(202), V(563)], // by relative rank 2-7
-    DEFENDED_PAWN_MG          = [CV(0), V(32), V(21), V(19), V(28), V(234)], // by relative rank 2-7 (rank 2 unreachable)
-    DEFENDED_PAWN_EG          = [CV(0), V(16), V(14), V(29), V(63), V(-6)], // by relative rank 2-7 (rank 2 unreachable)
-    BACKWARD_PAWN_WEIGHTS     = [V(-8), V(-17)], // [MG, EG]
-    TEMPO_WEIGHTS             = [V(33), V(37)], // [MG, EG], side-to-move initiative
-    MINOR_BEHIND_PAWN_WEIGHTS = [V(14), V(32)], // [MG, EG]
+    phase              = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
+    attacker           = [CV(0), V(190), V(280), V(474), V(558), V(582)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    king_safety        = [V(23), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    xray               = [V(10)], // [Ortho King]
+    bishop_pair        = [V(39), V(74)], // [MG, EG]
+    rook_open          = [V(44), V(1)], // [MG, EG]
+    passed_pawn_mg     = [V(-19), V(-32), V(-36), V(-13), V(-15), V(-68)], // by relative rank 1-6
+    passed_pawn_eg     = [V(-49), V(-26), V(24), V(78), V(173), V(130)], // by relative rank 1-6
+    enemy_king_dist_mg = [V(-101), V(35), V(20), V(17), V(14), V(9)], // enemy king→passer dist, 7 clamps to 6
+    enemy_king_dist_eg = [V(-49), V(2), V(43), V(55), V(68), V(75)], // enemy king→passer dist, 7 clamps to 6
+    doubled_pawn       = [V(2), V(-46)], // [MG, EG]
+    isolated_pawn      = [V(-9), V(-12)], // [MG, EG]
+    phalanx_mg         = [V(7), V(16), V(27), V(62), V(146), V(-319)], // by relative rank 2-7
+    phalanx_eg         = [V(-7), V(1), V(24), V(90), V(202), V(563)], // by relative rank 2-7
+    defended_pawn_mg   = [CV(0), V(32), V(21), V(19), V(28), V(234)], // by relative rank 2-7 (rank 2 unreachable)
+    defended_pawn_eg   = [CV(0), V(16), V(14), V(29), V(63), V(-6)], // by relative rank 2-7 (rank 2 unreachable)
+    backward_pawn      = [V(-8), V(-17)], // [MG, EG]
+    tempo              = [V(33), V(37)], // [MG, EG], side-to-move initiative
+    minor_behind_pawn  = [V(14), V(32)], // [MG, EG]
 }

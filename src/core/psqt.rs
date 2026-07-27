@@ -10,7 +10,7 @@ use crate::{
     core::defs::{Color, PieceType, Square},
     engine::eval_params::{
         EG_BISHOP, EG_KING, EG_KNIGHT, EG_MATERIAL, EG_PAWN, EG_QUEEN, EG_ROOK, MG_BISHOP, MG_KING, MG_KNIGHT, MG_MATERIAL,
-        MG_PAWN, MG_QUEEN, MG_ROOK, PHASE_WEIGHTS,
+        MG_PAWN, MG_QUEEN, MG_ROOK, PHASE,
     },
     weave::Vi16x8,
 };
@@ -61,7 +61,7 @@ const fn init_psqt() -> [AlignedTable; 14] {
     while pt < 6 {
         let mg_w = MG_MATERIAL[pt];
         let eg_w = EG_MATERIAL[pt];
-        let ph_w = PHASE_WEIGHTS[pt];
+        let ph_w = PHASE[pt];
 
         let mut sq = 0;
 

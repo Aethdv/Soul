@@ -12,7 +12,7 @@ pub fn compute_phase_weights_f64(piece_counts: &[f64; 6], values: &[f64]) -> (f6
     let mut phase_raw = 0.0;
 
     for (pt, &count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.weight_offset + pt;
+        let phase_idx = psqt::LAYOUT.phase_offset + pt;
 
         if phase_idx < values.len() {
             phase_raw += count * values[phase_idx];

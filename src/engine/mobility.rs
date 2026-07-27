@@ -18,7 +18,7 @@ use crate::{
         autograd::traits::{EnvVec4, EnvVec8, EvalMath},
         combiner::Accumulators,
         eval::{EvalParams, SharedFeatures},
-        eval_params::ATTACKER_WEIGHTS,
+        eval_params::ATTACKER,
         term::{LinearTerm, TaperPair, TermSource},
     },
     weave::Vf64x4,
@@ -167,7 +167,7 @@ impl SafetyMetrics {
         let zone = atk_king(ksq);
         Self {
             // Clamp to weight-table bounds: five-plus attackers all map to the maximum danger entry.
-            attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER_WEIGHTS.len() - 1),
+            attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER.len() - 1),
             weak: (zone & atk_them & !atk_us).popcount() as i32,
             shield: (zone & our_pawns).popcount() as i32,
             ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
@@ -315,8 +315,8 @@ impl LinearTerm for KingSafetyTerm {
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-        let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(ATTACKER_WEIGHTS.len() - 1)];
-        let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(ATTACKER_WEIGHTS.len() - 1)];
+        let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(ATTACKER.len() - 1)];
+        let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(ATTACKER.len() - 1)];
 
         acc.safety_us = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
         acc.safety_them = features
@@ -340,8 +340,8 @@ impl LinearTerm for KingSafetyTerm {
         grads[ks + 1] -= upstream * input.ortho_diff;
         grads[ks + 2] -= upstream * input.diag_diff;
 
-        let idx_us = input.attackers_us.min(ATTACKER_WEIGHTS.len() - 1);
-        let idx_them = input.attackers_them.min(ATTACKER_WEIGHTS.len() - 1);
+        let idx_us = input.attackers_us.min(ATTACKER.len() - 1);
+        let idx_them = input.attackers_them.min(ATTACKER.len() - 1);
 
         grads[ao + idx_us] -= upstream * (input.weak_us / 10.0);
         grads[ao + idx_them] += upstream * (input.weak_them / 10.0);

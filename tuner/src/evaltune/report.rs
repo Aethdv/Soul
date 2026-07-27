@@ -6,51 +6,39 @@ use std::{
     io::{self, BufWriter, Write},
 };
 
-use soul::{color, core::psqt, engine::eval_params::Tunable};
+use soul::{
+    color,
+    engine::eval_params::{BLOCKS, Block, Group, Tunable},
+};
 
 use crate::evaltune::palette;
 
+/// Trailing comments for the paste block, by block name. Cosmetic: offsets,
+/// widths and order come from `BLOCKS`, so a missing entry costs a comment and
+/// a stale one cannot move a number.
 #[rustfmt::skip]
-const WEIGHT_BANDS: &[(&str, usize, usize, &str)] = {
-    let l = psqt::LAYOUT;
-    &[
-        ("PHASE_WEIGHTS",             l.weight_offset,             6, " // [P, N, B, R, Q, K]"),
-        ("ATTACKER_WEIGHTS",          l.attacker_offset,           6, " // [0, 1, 2, 3, 4, 5] attackers × weak"),
-        ("KING_SAFETY_WEIGHTS",       l.king_safety_offset,        3, " // [Pawn Shield, Ortho Exp, Diag Exp]"),
-        ("XRAY_WEIGHTS",              l.xray_offset,               1, " // [Ortho King]"),
-        ("BISHOP_PAIR_WEIGHTS",       l.bishop_pair_offset,        2, " // [MG, EG]"),
-        ("ROOK_OPEN_WEIGHTS",         l.rook_open_offset,          2, " // [MG, EG]"),
-        ("PASSED_PAWN_MG",            l.passed_pawn_mg_offset,     6, " // by relative rank 1-6"),
-        ("PASSED_PAWN_EG",            l.passed_pawn_eg_offset,     6, " // by relative rank 1-6"),
-        ("ENEMY_KING_DIST_MG",        l.enemy_king_dist_mg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
-        ("ENEMY_KING_DIST_EG",        l.enemy_king_dist_eg_offset, 6, " // enemy king→passer dist, 7 clamps to 6"),
-        ("DOUBLED_PAWN_WEIGHTS",      l.doubled_pawn_offset,       2, " // [MG, EG]"),
-        ("ISOLATED_PAWN_WEIGHTS",     l.isolated_pawn_offset,      2, " // [MG, EG]"),
-        ("PHALANX_MG",                l.phalanx_mg_offset,         6, " // by relative rank 2-7"),
-        ("PHALANX_EG",                l.phalanx_eg_offset,         6, " // by relative rank 2-7"),
-        ("DEFENDED_PAWN_MG",          l.defended_pawn_mg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
-        ("DEFENDED_PAWN_EG",          l.defended_pawn_eg_offset,   6, " // by relative rank 2-7 (rank 2 unreachable)"),
-        ("BACKWARD_PAWN_WEIGHTS",     l.backward_pawn_offset,      2, " // [MG, EG]"),
-        ("TEMPO_WEIGHTS",             l.tempo_offset,              2, " // [MG, EG], side-to-move initiative"),
-        ("MINOR_BEHIND_PAWN_WEIGHTS", l.minor_behind_pawn_offset,  2, " // [MG, EG]"),
-    ]
-};
-
-// The bands must tile weight_offset..total exactly, or a new LAYOUT field
-// would silently vanish from the paste block until someone diffed it.
-const _: () = {
-    let mut expected = psqt::LAYOUT.weight_offset;
-    let mut i = 0;
-
-    while i < WEIGHT_BANDS.len() {
-        assert!(WEIGHT_BANDS[i].1 == expected, "gap or overlap in WEIGHT_BANDS");
-        expected = WEIGHT_BANDS[i].1 + WEIGHT_BANDS[i].2;
-
-        i += 1;
-    }
-
-    assert!(expected == psqt::LAYOUT.total, "WEIGHT_BANDS stops short of LAYOUT's end");
-};
+const ANNOTATIONS: &[(&str, &str)] = &[
+    ("mobility_open",      "[mobility, battery, threats, xray threats]"),
+    ("phase",              "[P, N, B, R, Q, K]"),
+    ("attacker",           "[0, 1, 2, 3, 4, 5] attackers × weak"),
+    ("king_safety",        "[Pawn Shield, Ortho Exp, Diag Exp]"),
+    ("xray",               "[Ortho King]"),
+    ("bishop_pair",        "[MG, EG]"),
+    ("rook_open",          "[MG, EG]"),
+    ("passed_pawn_mg",     "by relative rank 1-6"),
+    ("passed_pawn_eg",     "by relative rank 1-6"),
+    ("enemy_king_dist_mg", "enemy king→passer dist, 7 clamps to 6"),
+    ("enemy_king_dist_eg", "enemy king→passer dist, 7 clamps to 6"),
+    ("doubled_pawn",       "[MG, EG]"),
+    ("isolated_pawn",      "[MG, EG]"),
+    ("phalanx_mg",         "by relative rank 2-7"),
+    ("phalanx_eg",         "by relative rank 2-7"),
+    ("defended_pawn_mg",   "by relative rank 2-7 (rank 2 unreachable)"),
+    ("defended_pawn_eg",   "by relative rank 2-7 (rank 2 unreachable)"),
+    ("backward_pawn",      "[MG, EG]"),
+    ("tempo",              "[MG, EG], side-to-move initiative"),
+    ("minor_behind_pawn",  "[MG, EG]"),
+];
 
 pub struct BestEpochs<'a> {
     pub best_val_params: &'a [f64],
@@ -168,16 +156,21 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
         }
     }
 
-    let mat = psqt::LAYOUT.material_offset;
+    let simple = present_blocks(Group::Simple, params);
 
-    if params.len() > mat {
+    if !simple.is_empty() {
         writeln!(w, "}}\n\ndefine_simple_params! {{").ok();
-        let pieces = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
-        writeln!(w, "    MATERIAL = [").ok();
+    }
 
-        for (pt, name) in pieces.iter().enumerate() {
-            let mg_idx = mat + pt;
-            let eg_idx = mat + 6 + pt;
+    for block in simple {
+        let half = block.len / 2;
+        let pieces = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
+
+        writeln!(w, "    {} = [", block.name).ok();
+
+        for i in 0..half {
+            let mg_idx = block.offset + i;
+            let eg_idx = block.offset + half + i;
 
             if eg_idx >= params.len() {
                 break;
@@ -188,7 +181,8 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             let fixed = params[mg_idx].is_fixed;
 
             let tag = if fixed { "CS" } else { "S" };
-            let s = format!("{tag}({mg_val:>4}, {eg_val:>4}), // {name}");
+            let label = pieces.get(i).map_or(String::new(), |name| format!(" // {name}"));
+            let s = format!("{tag}({mg_val:>4}, {eg_val:>4}),{label}");
 
             let changed = initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
             writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
@@ -199,37 +193,40 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
     writeln!(w, "}}").ok();
 
-    if params.len() > psqt::LAYOUT.mobility_open_offset {
+    let simd = present_blocks(Group::Simd, params);
+
+    if !simd.is_empty() {
         writeln!(w, "\ndefine_simd_params! {{").ok();
 
-        #[rustfmt::skip]
-        let mobility_bands = [
-            ("MG_MOBILITY_OPEN",   psqt::LAYOUT.mobility_open_offset,       " // [mobility, battery, threats, xray threats]"),
-            ("EG_MOBILITY_OPEN",   psqt::LAYOUT.mobility_open_offset + 4,   ""),
-            ("MG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset,     ""),
-            ("EG_MOBILITY_CLOSED", psqt::LAYOUT.mobility_closed_offset + 4, ""),
-        ];
+        for block in simd {
+            let half = block.len / 2;
 
-        for (name, offset, comment) in &mobility_bands {
-            writeln!(w, "    {name} = [").ok();
-            write!(w, "        ").ok();
-            write_weight_array(w, *offset, 4, values, params, initial);
-            writeln!(w, "],{comment}").ok();
+            writeln!(w, "    {} {{", block.name).ok();
+            write!(w, "        mg = [").ok();
+            write_weight_array(w, block.offset, half, values, params, initial);
+            writeln!(w, "],{}", annotation(block.name)).ok();
+
+            write!(w, "        eg = [").ok();
+            write_weight_array(w, block.offset + half, half, values, params, initial);
+            writeln!(w, "],").ok();
+            writeln!(w, "    }},").ok();
         }
 
         writeln!(w, "}}").ok();
     }
 
-    if params.len() > psqt::LAYOUT.weight_offset {
+    let weights = present_blocks(Group::Weight, params);
+
+    if !weights.is_empty() {
+        let width = weights.iter().map(|b| b.name.len()).max().unwrap_or(0);
         writeln!(w, "\ndefine_weight_params! {{").ok();
 
-        for &(name, offset, count, comment) in WEIGHT_BANDS {
-            if params.len() > offset {
-                write!(w, "    {name:<26}= [").ok();
-                write_weight_array(w, offset, count, values, params, initial);
-                writeln!(w, "],{comment}").ok();
-            }
+        for block in weights {
+            write!(w, "    {:<width$} = [", block.name).ok();
+            write_weight_array(w, block.offset, block.len, values, params, initial);
+            writeln!(w, "],{}", annotation(block.name)).ok();
         }
+
         writeln!(w, "}}").ok();
     }
 
@@ -268,6 +265,17 @@ pub fn write_weight_array<W: Write>(
 
         let changed = initial.is_some_and(|ini| val != ini[idx].round() as i32);
         write!(w, "{}", highlight(&s, changed, initial)).ok();
+    }
+}
+
+fn present_blocks(group: Group, params: &[Tunable]) -> Vec<&'static Block> {
+    BLOCKS.iter().filter(|b| b.group == group && params.len() > b.offset).collect()
+}
+
+fn annotation(block: &str) -> String {
+    match ANNOTATIONS.iter().find(|(name, _)| *name == block) {
+        Some((_, text)) => format!(" // {text}"),
+        None => String::new(),
     }
 }
 

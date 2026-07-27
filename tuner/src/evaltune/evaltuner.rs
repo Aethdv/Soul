@@ -743,15 +743,15 @@ fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
     fnv.digest()
 }
 
-/// The eval's own `PHASE_WEIGHTS`, in piece-type order.
+/// The eval's own `PHASE`, in piece-type order.
 fn phase_weights() -> [f64; 6] {
     let params = eval_params::collect_parameters();
-    let woff = psqt::LAYOUT.weight_offset;
+    let woff = psqt::LAYOUT.phase_offset;
 
     std::array::from_fn(|pt| params[woff + pt].value)
 }
 
-/// Game phase of a record, `0..=TOTAL_PHASE`. Fixed for the life of a run, since `PHASE_WEIGHTS`
+/// Game phase of a record, `0..=TOTAL_PHASE`. Fixed for the life of a run, since `PHASE`
 /// are constants rather than tunables.
 fn phase_of(rec: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
     let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();

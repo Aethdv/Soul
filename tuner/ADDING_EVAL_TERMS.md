@@ -74,16 +74,16 @@ impl SharedFeatures {
 All in `eval_params.rs`, one line each:
 
 ```rust
-// defaults
+// defaults; the block name generates the const, bishop_pair → BISHOP_PAIR
 define_weight_params! {
     // ...
-    BISHOP_PAIR_WEIGHTS = [V(33), V(85)], // [MG, EG]
+    bishop_pair = [V(33), V(85)], // [MG, EG]
 }
 
-// slot map: the Layout struct and prefix-sum offsets are generated; order IS the map
+// slot map: same names in the same order, or the build fails naming the first mismatch
 define_layout! {
     // ...
-    bishop_pair = BISHOP_PAIR_WEIGHTS.len(),
+    bishop_pair,
 }
 
 // typed EvalParams fields: one row feeds engine i32, tuner f64, and oracle DualNode
@@ -99,9 +99,11 @@ macro_rules! define_tunables {
 Then the compile-time defaults in `EvalParams::<i32>::from_const()` (`eval.rs`):
 
 ```rust
-w_bp_mg: BISHOP_PAIR_WEIGHTS[0],
-w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
+w_bp_mg: BISHOP_PAIR[0],
+w_bp_eg: BISHOP_PAIR[1],
 ```
+
+The tuner's paste block takes names, offsets and widths from these declarations. Its trailing comment is the one part that isn't derived: add a row to `ANNOTATIONS` (`report.rs`), keyed by block name, or the pasted-back table comes home bare.
 
 ### 3. The term: one macro row
 

@@ -133,7 +133,7 @@ fn build_groups() -> Vec<Group> {
         ("Material",         l.material_offset,           12),
         ("Mobility Open",    l.mobility_open_offset,       8),
         ("Mobility Closed",  l.mobility_closed_offset,     8),
-        ("Phase Weights",    l.weight_offset,              6),
+        ("Phase Weights",    l.phase_offset,               6),
         ("Attacker Weights", l.attacker_offset,            6),
         ("King Safety",      l.king_safety_offset,         3),
         ("Xray",             l.xray_offset,                1),

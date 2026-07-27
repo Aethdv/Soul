@@ -365,13 +365,13 @@ fn startpos_piece_layout() {
 
 #[test]
 fn eval_startpos_tempo_only() {
-    use crate::engine::{eval::evaluate, eval_params::TEMPO_WEIGHTS};
+    use crate::engine::{eval::evaluate, eval_params::TEMPO};
 
     let pos = Position::from_fen(STARTPOS);
     let acc = pos.get_initial_accumulator();
     let score = evaluate(&pos, &acc);
 
-    assert_eq!(score, TEMPO_WEIGHTS[0], "got {score}");
+    assert_eq!(score, TEMPO[0], "got {score}");
 }
 
 #[test]
