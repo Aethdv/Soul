@@ -61,8 +61,9 @@ pub trait Combiner {
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T) -> T;
 
     /// Returns per-bucket upstream gradients given the loss derivative and game phase.
-    /// Non-linear combiners also write their own param gradients into `grads`.
-    fn backward(phase: f64, d_loss: f64, grads: &mut [f64]) -> BucketUpstreams;
+    /// Non-linear combiners also write their own param gradients into `grads`, and
+    /// read `buckets`, since their partials depend on the values they collapse.
+    fn backward(buckets: &Accumulators<f64>, phase: f64, d_loss: f64, grads: &mut [f64]) -> BucketUpstreams;
 }
 
 pub struct LinearCombiner;
@@ -78,7 +79,7 @@ impl Combiner for LinearCombiner {
     }
 
     #[inline]
-    fn backward(phase: f64, d_loss: f64, _grads: &mut [f64]) -> BucketUpstreams {
+    fn backward(_buckets: &Accumulators<f64>, phase: f64, d_loss: f64, _grads: &mut [f64]) -> BucketUpstreams {
         let t_mg = phase / f64::from(TOTAL_PHASE);
         let t_eg = 1.0 - t_mg;
         let taper = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };

@@ -298,18 +298,18 @@ impl TrainerContext<'_> {
                         }
 
                         let target = wdl_target(entry, k, blend);
-                        let score = loader::eval_record(record, values);
-                        let sig = sigmoid(score, k);
+                        let eval = loader::eval_record_full(record, values);
+                        let sig = sigmoid(eval.score, k);
                         let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
                         let gs = self.loss_fn.grad_scale(sig, target, k);
 
                         loss += w * self.loss_fn.loss(sig, target);
-                        loader::accumulate_record_grad(record, values, gs * w, &mut g);
+                        loader::accumulate_record_grad(record, &eval, gs * w, &mut g);
 
                         // gs is ∂L/∂score = K · (sig - target) · dσ/dscore.
                         // We need ∂L/∂K = score · (sig - target) · dσ/dscore.
                         // So ∂L/∂K = (gs / K) · score.
-                        k_g += (gs / k) * score * w;
+                        k_g += (gs / k) * eval.score * w;
 
                         count += 1;
                     }
@@ -564,10 +564,11 @@ fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
                 let (entry, record) = (&ctx.train[i], &ctx.records[i]);
 
                 if ctx.passes_vol_filter(entry, record.static_eval) {
-                    let p = sigmoid(loader::eval_record(record, &values), k);
+                    let eval = loader::eval_record_full(record, &values);
+                    let p = sigmoid(eval.score, k);
                     let w = if ctx.phase_weights.is_empty() { 1.0 } else { ctx.phase_weights[i] };
 
-                    accumulate_record_grad(record, &values, 1.0, &mut scratch);
+                    accumulate_record_grad(record, &eval, 1.0, &mut scratch);
 
                     // One walk drains the buffer and collects it, so the next position starts from
                     // zero without paying to clear all 490 slots again.

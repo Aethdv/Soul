@@ -17,7 +17,7 @@ use soul::{
             dual::{DUAL_N, DualNode, DualVec8},
         },
         combiner::{Combiner, LinearCombiner},
-        eval::{EvalParams, SharedFeatures, evaluate_generic, scatter_all_terms},
+        eval::{EvalParams, SharedFeatures, evaluate_generic, fill_accumulators, scatter_all_terms},
         eval_params::LAYOUT,
     },
 };
@@ -198,7 +198,16 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // dJ/dPhaseWeight is deliberately omitted: phase weights must stay at their
     // engineered values for the MG/EG interpolation to be meaningful.
     let phase = phase_raw.clamp(0.0, 24.0).trunc();
-    let score = eval_f64(board, values);
+
+    let params = EvalParams::<f64>::load_tunable(values);
+    let features = SharedFeatures::compute(board);
+    let mut acc = <f64 as EvalMath>::Vec8::zero();
+    acc.0 = lane_vals;
+
+    let buckets = fill_accumulators::<f64>(&acc, phase, &features, &params);
+    let white_score = LinearCombiner::forward(&buckets, phase);
+    let stm_sign: f64 = if board.stm == Color::White { 1.0 } else { -1.0 };
+    let score = white_score * stm_sign;
 
     // ── Sigmoid + loss derivative
     // `d` folds the STM sign into the outer derivative once,
@@ -206,10 +215,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
     let err = sig - target;
     let outer = 2.0 * err * sig * (1.0 - sig) * k;
-    let stm_sign: f64 = if board.stm == Color::White { 1.0 } else { -1.0 };
     let d = outer * stm_sign;
-
-    let features = SharedFeatures::compute(board);
 
     debug_assert!(
         param_grads.len() >= psqt::LAYOUT.mobility_open_offset,
@@ -221,7 +227,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // Combiner owns every upstream derivative. PSQT / material scatter
     // (out-of-band, accumulator-level) pulls `mg_eg`; term scatter reads
     // the rest via `scatter_all_terms`.
-    let upstreams = LinearCombiner::backward(phase, d, param_grads);
+    let upstreams = LinearCombiner::backward(&buckets, phase, d, param_grads);
 
     // ── PSQT + material (accumulator-level, not a LinearTerm)
     // One board sweep writes both gradients for every active piece.
@@ -362,7 +368,7 @@ mod tests {
     use soul::{
         core::{board::Position, psqt::LAYOUT},
         engine::eval_params::{BLOCKS, PHASE, collect_parameters},
-        tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record},
+        tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
 
     use super::*;
@@ -624,9 +630,10 @@ mod tests {
             );
 
             let record = FeatureRecord::from_entry(&entry);
+            let record_eval = eval_record_full(&record, &values);
 
             let board_score = eval_f64(&pos, &values);
-            let entry_score = eval_record(&record, &values);
+            let entry_score = record_eval.score;
             assert!(
                 (board_score - entry_score).abs() < 1e-4,
                 "Score mismatch on '{fen}': board={board_score} encoded={entry_score}",
@@ -640,7 +647,7 @@ mod tests {
             let outer = 2.0 * err * sig * (1.0 - sig) * K;
 
             let mut encoded_grads = vec![0.0f64; n_params];
-            accumulate_record_grad(&record, &values, outer, &mut encoded_grads);
+            accumulate_record_grad(&record, &record_eval, outer, &mut encoded_grads);
 
             let enc_loss = err * err;
             assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}");

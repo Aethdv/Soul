@@ -16,7 +16,8 @@ use std::{
 
 use soul::core::{board::Position as Board, defs::Color};
 pub use soul::tools::dataset::{
-    FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, load_encoded, parse_epd_str, parse_viri_file, save_encoded,
+    FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str, parse_viri_file,
+    save_encoded,
 };
 
 /// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).

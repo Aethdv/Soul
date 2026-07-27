@@ -13,7 +13,7 @@ mod io;
 mod quant;
 pub mod viri_format;
 
-pub use gradient::{FeatureRecord, accumulate_record_grad, eval_record};
+pub use gradient::{FeatureRecord, RecordEval, accumulate_record_grad, eval_record, eval_record_full};
 pub use io::{MAGIC_V6, append_encoded, load_encoded, parse_epd_entry, parse_epd_str, save_encoded};
 pub use viri_format::parse_viri_file;
 

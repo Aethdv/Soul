@@ -11,8 +11,8 @@ use super::SoulEntry;
 use crate::{
     core::{
         board::Position,
-        defs::{Color, Square},
-        phase::{compute_phase_f64, compute_phase_weights_f64},
+        defs::{Color, Square, TOTAL_PHASE},
+        phase::compute_phase_f64,
         psqt,
     },
     engine::{
@@ -132,12 +132,25 @@ impl FeatureRecord {
     }
 }
 
+/// A forward pass, kept whole: [`accumulate_record_grad`] reads the buckets a
+/// non-linear combiner differentiates, and the phase both halves taper by.
+pub struct RecordEval {
+    pub score: f64,
+    pub phase: f64,
+    pub buckets: Accumulators<f64>,
+}
+
+#[inline]
+pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
+    eval_record_full(record, values).score
+}
+
 /// Compute the STM-relative eval for `record` under the parameter vector `values`.
 ///
 /// Fills the same buckets `fill_accumulators` fills from a board, through the
 /// same registered terms, so [`LinearCombiner`] owns every rounding site.
 #[inline]
-pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
+pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     let l = &psqt::LAYOUT;
     let phase_counts: [f64; 6] = array::from_fn(|i| f64::from(record.phase_counts[i]));
     let phase = compute_phase_f64(&phase_counts, values);
@@ -176,14 +189,15 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
     };
 
     apply_all_inputs(record, values, phase, &mut buckets);
-    LinearCombiner::forward(&buckets, phase)
+
+    RecordEval { score: LinearCombiner::forward(&buckets, phase), phase, buckets }
 }
 
 /// Accumulate parameter gradients for `record` into `grads`,
 /// scaled by the upstream `gradient` (∂loss/∂score).
-pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: f64, grads: &mut [f64]) {
-    let phase_counts: [f64; 6] = array::from_fn(|i| f64::from(record.phase_counts[i]));
-    let (mg_w, eg_w) = compute_phase_weights_f64(&phase_counts, values);
+pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradient: f64, grads: &mut [f64]) {
+    let mg_w = eval.phase / f64::from(TOTAL_PHASE);
+    let eg_w = 1.0 - mg_w;
 
     let l = &psqt::LAYOUT;
 
@@ -208,13 +222,7 @@ pub fn accumulate_record_grad(record: &FeatureRecord, values: &[f64], gradient: 
         }
     }
 
-    let upstreams = term::BucketUpstreams {
-        mg_eg: term::TaperPair { d_mg: gradient * mg_w, d_eg: gradient * eg_w },
-        mobility: term::TaperPair { d_mg: gradient * mg_w, d_eg: gradient * eg_w },
-        bonus: term::TaperPair { d_mg: gradient * mg_w, d_eg: gradient * eg_w },
-        king_safety: gradient * mg_w,
-        xray: gradient * mg_w,
-    };
+    let upstreams = LinearCombiner::backward(&eval.buckets, eval.phase, gradient, grads);
 
     scatter_all_terms(record, &upstreams, grads);
 }

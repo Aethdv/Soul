@@ -534,7 +534,7 @@ impl SharedFeatures {
 /// Zero all buckets, seed PSQT from the SIMD accumulator, then `apply_all_terms`.
 /// Isolated so both `compute_macro_eval` and `detailed_eval` produce identical values.
 #[inline]
-fn fill_accumulators<T: EvalMath<Scalar = T>>(
+pub fn fill_accumulators<T: EvalMath<Scalar = T>>(
     acc: &T::Vec8,
     phase: T,
     features: &SharedFeatures,
