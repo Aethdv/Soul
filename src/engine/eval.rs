@@ -565,6 +565,11 @@ impl term::LinearTerm for XrayTerm {
     }
 
     #[inline(always)]
+    fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+        acc.xray = values[eval_params::LAYOUT.xray_offset] * feature;
+    }
+
+    #[inline(always)]
     fn scatter(feature: f64, upstream: f64, grads: &mut [f64]) {
         let off = eval_params::LAYOUT.xray_offset;
         grads[off] += upstream * feature;
@@ -601,6 +606,13 @@ macro_rules! tapered_bonus_term {
             }
 
             #[inline(always)]
+            fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+                let off = eval_params::LAYOUT.$off;
+                acc.bonus_mg += values[off] * feature;
+                acc.bonus_eg += values[off + 1] * feature;
+            }
+
+            #[inline(always)]
             fn scatter(feature: f64, upstream: term::TaperPair, grads: &mut [f64]) {
                 let off = eval_params::LAYOUT.$off;
                 grads[off] += upstream.d_mg * feature;
@@ -627,6 +639,17 @@ macro_rules! tapered_bonus_term {
                     let feature = T::from_i32(features.$sf_field[i]);
                     acc.bonus_mg += params.$mg[i] * feature;
                     acc.bonus_eg += params.$eg[i] * feature;
+                }
+            }
+
+            #[inline(always)]
+            fn apply_input(features: [f64; $n], values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+                let mg = eval_params::LAYOUT.$mg_off;
+                let eg = eval_params::LAYOUT.$eg_off;
+
+                for i in 0..$n {
+                    acc.bonus_mg += values[mg + i] * features[i];
+                    acc.bonus_eg += values[eg + i] * features[i];
                 }
             }
 

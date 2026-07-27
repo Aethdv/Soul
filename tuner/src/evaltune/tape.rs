@@ -645,11 +645,9 @@ mod tests {
         }
     }
 
-    /// `eval_record` is written out by hand, term by term, while the layout and
-    /// the scatter are generated. A term that reaches both and misses the cached
-    /// forward is absent from every encoded epoch, and the drift asserts above
-    /// stay quiet because both sides of them agree on the wrong score. Bump each
-    /// block and watch the score move.
+    /// A term reaches the cached eval through `from_entry`'s packing, and nothing
+    /// checks that: a field left unpacked stays zero, the score never moves, and
+    /// the drift asserts above stay quiet because both paths agree on it.
     #[test]
     fn test_encoded_block_coverage_oracle() {
         let base: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
@@ -668,7 +666,25 @@ mod tests {
 
             let moved = records.iter().any(|r| (eval_record(r, &base) - eval_record(r, &bumped)).abs() > 1e-9);
 
-            assert!(moved, "block `{}` never moves the cached eval: missing from eval_record, or no FEN reaches it", block.name);
+            assert!(moved, "block `{}` never moves the cached eval: unpacked in from_entry, or no FEN reaches it", block.name);
+        }
+    }
+
+    /// Runs at the shipped defaults, not `full_values`: those junk parameters put
+    /// the phase on a boundary where every truncation is a no-op, so every test
+    /// built on them agrees with the board path wherever it rounds.
+    #[test]
+    fn test_encoded_matches_board_at_defaults_oracle() {
+        let values: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+
+        for fen in FENS {
+            let pos = Position::from_fen(fen);
+            let record = FeatureRecord::from_entry(&SoulEntry::from_board(&pos, TARGET, None, Some(20)));
+
+            let board = eval_f64(&pos, &values);
+            let cached = eval_record(&record, &values);
+
+            assert!((board - cached).abs() < 1e-9, "board {board} vs cached {cached} on '{fen}'");
         }
     }
 }

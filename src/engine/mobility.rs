@@ -90,15 +90,11 @@ pub struct MobilityInput {
     pub openness: i32,
 }
 
-/// Extracted king-safety features for generic scatter dispatch.
+/// Extracted king-safety features for generic dispatch. Per-side rather than
+/// differenced, because the forward scores each side into its own bucket.
 pub struct KingSafetyInput {
-    pub shield_diff: f64,
-    pub ortho_diff: f64,
-    pub diag_diff: f64,
-    pub weak_us: f64,
-    pub weak_them: f64,
-    pub attackers_us: usize,
-    pub attackers_them: usize,
+    pub us: SafetyMetrics,
+    pub them: SafetyMetrics,
 }
 
 /// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
@@ -258,6 +254,33 @@ impl LinearTerm for MobilityTerm {
         );
     }
 
+    /// Scalar mirror of the SIMD blend above: open/closed weights round to whole
+    /// centipawns per lane, before the taper.
+    #[inline(always)]
+    fn apply_input(input: MobilityInput, values: &[f64], phase: f64, acc: &mut Accumulators<f64>) {
+        let lo = LAYOUT.mobility_open_offset;
+        let lc = LAYOUT.mobility_closed_offset;
+        let o_frac = f64::from(input.openness) * INV_OPEN_UNITY;
+        let c_frac = 1.0 - o_frac;
+        let mg_w = phase / f64::from(TOTAL_PHASE);
+        let eg_w = 1.0 - mg_w;
+
+        let mut diff = [0.0f64; 4];
+
+        // SAFETY: `diff` is exactly the 4 lanes `storeu` writes.
+        unsafe { input.diff.storeu(diff.as_mut_ptr()) };
+
+        let blend = |open: usize, closed: usize| {
+            ((values[open] * o_frac * 1024.0 + values[closed] * c_frac * 1024.0 + 512.0) / 1024.0).floor()
+        };
+
+        acc.mobility = 0.0;
+
+        for (i, d) in diff.iter().enumerate() {
+            acc.mobility += d * (blend(lo + i, lc + i) * mg_w + blend(lo + 4 + i, lc + 4 + i) * eg_w);
+        }
+    }
+
     ///   `∂score/∂mg_mob_open[j]   = d_mg · diff[j] · (openness / 1024)`
     ///   `∂score/∂mg_mob_closed[j] = d_mg · diff[j] · (closedness / 1024)`
     ///
@@ -332,19 +355,30 @@ impl LinearTerm for KingSafetyTerm {
     ///
     /// The combiner pre-multiplies the `MG · phase/24` taper into `upstream`.
     #[inline(always)]
+    fn apply_input(input: KingSafetyInput, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+        let ks = LAYOUT.king_safety_offset;
+        let ao = LAYOUT.attacker_offset;
+        let w_atk_us = values[ao + input.us.attackers.min(ATTACKER.len() - 1)];
+        let w_atk_them = values[ao + input.them.attackers.min(ATTACKER.len() - 1)];
+
+        acc.safety_us = input.us.score(values[ks], values[ks + 1], values[ks + 2], w_atk_us);
+        acc.safety_them = input.them.score(values[ks], values[ks + 1], values[ks + 2], w_atk_them);
+    }
+
+    #[inline(always)]
     fn scatter(input: KingSafetyInput, upstream: f64, grads: &mut [f64]) {
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
 
-        grads[ks] += upstream * input.shield_diff;
-        grads[ks + 1] -= upstream * input.ortho_diff;
-        grads[ks + 2] -= upstream * input.diag_diff;
+        grads[ks] += upstream * f64::from(input.us.shield - input.them.shield);
+        grads[ks + 1] -= upstream * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
+        grads[ks + 2] -= upstream * f64::from(input.us.diag_exposure - input.them.diag_exposure);
 
-        let idx_us = input.attackers_us.min(ATTACKER.len() - 1);
-        let idx_them = input.attackers_them.min(ATTACKER.len() - 1);
+        let idx_us = input.us.attackers.min(ATTACKER.len() - 1);
+        let idx_them = input.them.attackers.min(ATTACKER.len() - 1);
 
-        grads[ao + idx_us] -= upstream * (input.weak_us / 10.0);
-        grads[ao + idx_them] += upstream * (input.weak_them / 10.0);
+        grads[ao + idx_us] -= upstream * (f64::from(input.us.weak) / 10.0);
+        grads[ao + idx_them] += upstream * (f64::from(input.them.weak) / 10.0);
     }
 }
 
@@ -356,15 +390,7 @@ impl TermSource<KingSafetyTerm> for SharedFeatures {
         let us = &self.data.safety_us;
         let them = &self.data.safety_them;
 
-        KingSafetyInput {
-            shield_diff: (us.shield - them.shield) as f64,
-            ortho_diff: (us.ortho_exposure - them.ortho_exposure) as f64,
-            diag_diff: (us.diag_exposure - them.diag_exposure) as f64,
-            weak_us: us.weak as f64,
-            weak_them: them.weak as f64,
-            attackers_us: us.attackers,
-            attackers_them: them.attackers,
-        }
+        KingSafetyInput { us: *us, them: *them }
     }
 }
 

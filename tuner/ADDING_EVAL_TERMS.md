@@ -9,20 +9,21 @@ Architecture lives in [`EVAL_TUNER.md`](EVAL_TUNER.md).
 
 A zero-sized type implementing `LinearTerm`:
 
-- `apply<T: EvalMath>`: forward. Read features and params, write the contribution into `Accumulators`.
+- `apply<T: EvalMath>`: forward from a board. Read features and params, write the contribution into `Accumulators`.
+- `apply_input`: the same buckets from extracted features, for the packed record, which has no board and no `EvalParams`.
 - `scatter`: backward. Take the combiner's upstream for the bucket, write `∂loss/∂param` into the term's slots.
 - `type Upstream`: `TaperPair` for pre-tapered buckets (`bonus`, `mobility`), `f64` for the scalar ones (`king_safety`, `xray`).
 
-`register_terms!` in `eval.rs` stitches every term into `apply_all_terms` / `scatter_all_terms`, which feed both the engine and the board-based tuner gradient off the same impl.
+`register_terms!` in `eval.rs` stitches every term into `apply_all_terms` / `apply_all_inputs` / `scatter_all_terms`, so the engine, the board gradient and the cached epoch loop all run off the same impl.
 
 Most terms are a **tapered bonus**: a feature dotted with an `(mg, eg)` weight pair, summed into the `bonus` bucket.
 Those never get a hand-written impl; they're one row of `tapered_bonus_term!`.
 You hand-write a `LinearTerm` only for a **"novel shape"**: own bucket, own combiner activation, MG-only taper, multi-bucket output. Those are below.
 
-The macros stop at the engine and the board path.
-They do not reach the **cached SoA path** (`src/tools/dataset/gradient.rs`): a hand-rolled mirror that packs features into `i8` so the epoch loop over `.soul.zst` data skips recomputing the spatial tensor.
-It doesn't go through `LinearTerm`, so you mirror the term there yourself (Step 5).
-Forget it and the term is right on raw EPD and silently wrong on encoded data: the exact bug the bishop-pair gap once hid.
+They reach the **cached SoA path** too (`src/tools/dataset/gradient.rs`), which packs features into `i8` so the epoch loop over `.soul.zst` data skips recomputing the spatial tensor.
+Its forward and backward both dispatch through `LinearTerm`, so the term's math is written once and the rounding belongs to the combiner.
+What it cannot derive is the packing: a record field and the row that feeds your term its input (Step 5).
+Miss the row and the build fails; miss the packing and `test_encoded_block_coverage_oracle` fails naming your block. That is the bishop-pair gap, closed from both sides.
 
 ---
 
@@ -137,13 +138,14 @@ The right side is the `BucketUpstreams` field that feeds this term's `scatter`. 
 
 ### 5. Mirror the cached path
 
-`gradient.rs` packs features into a per-position `FeatureRecord` and runs its own forward/backward over it; it never calls your `LinearTerm`, so mirror it or `.soul.zst` training is wrong:
+`gradient.rs` packs features into a per-position `FeatureRecord`, then dispatches both directions through your `LinearTerm`. Neither `eval_record` nor `accumulate_record_grad` wants a per-term edit; the packing does:
 
 - `FeatureRecord`: add a `pub bishop_pair: i8` field on the packed record.
 - `from_entry`: pack from the `SharedFeatures` value with the STM flip, `bishop_pair: (sf.bishop_pair_diff * sign) as i8`.
                 A white-minus-black diff negates for Black; a side-symmetric metric swaps halves.
-- `eval_record`: the forward contribution, `taper(record.bishop_pair, mg, eg, mg_w, eg_w)` (= `bp · (mg·mg_w + eg·eg_w)`).
-- `accumulate_record_grad`: the scatter, `taper_grad(record.bishop_pair, ...)` (= `grads[bp_offset] += gradient · bp · mg_w`, `+1` for eg).
+- `impl_fr_sources!`: one row, `(BishopPairTerm, scalar, bishop_pair)`, so `TermSource` can hand your term its input.
+
+A novel shape brings its own `TermSource` impl instead of a row, and its `apply_input` alongside `apply`: same buckets, read from the flat vector at the offsets `scatter` writes.
 
 ### 6. Oracle test, then run it
 

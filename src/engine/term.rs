@@ -47,6 +47,10 @@ pub trait LinearTerm {
     /// Write one or more buckets on [`Accumulators`] from features and params.
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>);
 
+    /// The same buckets from extracted features, for sources with no board.
+    /// Reads the flat vector at the layout offsets [`Self::scatter`] writes.
+    fn apply_input(input: Self::Input, values: &[f64], phase: f64, acc: &mut Accumulators<f64>);
+
     /// Write parameter gradients from extracted features.
     fn scatter(input: Self::Input, upstream: Self::Upstream, grads: &mut [f64]);
 }
@@ -66,6 +70,26 @@ macro_rules! register_terms {
             acc: &mut $crate::engine::combiner::Accumulators<T>,
         ) {
             $( <$term as $crate::engine::term::LinearTerm>::apply::<T>(features, params, phase, acc); )*
+        }
+
+        /// Forward pass for a source that isn't a board, same terms in the same order.
+        #[inline(always)]
+        pub fn apply_all_inputs<S>(
+            source: &S,
+            values: &[f64],
+            phase: f64,
+            acc: &mut $crate::engine::combiner::Accumulators<f64>,
+        ) where
+            $( S: $crate::engine::term::TermSource<$term, Input = <$term as $crate::engine::term::LinearTerm>::Input> ),*
+        {
+            $(
+                <$term as $crate::engine::term::LinearTerm>::apply_input(
+                    $crate::engine::term::TermSource::<$term>::extract(source),
+                    values,
+                    phase,
+                    acc,
+                );
+            )*
         }
 
         /// Input type inferred from each term's [`LinearTerm::Input`].
