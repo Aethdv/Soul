@@ -355,6 +355,7 @@ impl WdlScheduleConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TunerConfig {
     pub evaltune: EvalTuneConfig,
     pub searchtune: SearchTuneConfig,
@@ -362,6 +363,7 @@ pub struct TunerConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EvalTuneConfig {
     pub lr_schedule: LrScheduleConfig,
     pub wdl_schedule: WdlScheduleConfig,
@@ -494,6 +496,7 @@ fn default_phase_balance_cap() -> f64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SearchTuneConfig {
     pub population_scale: f64,
     pub sigma_init: f64,
@@ -559,6 +562,7 @@ fn default_smoothing_radius() -> f64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GeneralConfig {
     pub checkpoint_interval: usize,
     pub log_level: String,
@@ -655,5 +659,26 @@ impl Default for TunerConfig {
                 tensorboard_dir: "runs".into(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TunerConfig;
+
+    #[test]
+    fn the_shipped_config_parses() {
+        TunerConfig::from_file("tuner_config.toml").expect("tuner_config.toml must parse");
+    }
+
+    #[test]
+    fn a_misspelled_key_is_refused() {
+        // The key must go in the root table. Adding a section instead redeclares
+        // a table, which TOML refuses on its own, and this passes with the
+        // attribute gone.
+        let doc = format!("log_levle = \"info\"\n{}", std::fs::read_to_string("tuner_config.toml").unwrap());
+        let error = toml::from_str::<TunerConfig>(&doc).expect_err("an unknown key must fail the load");
+
+        assert!(error.to_string().contains("log_levle"), "the error must name the offending key: {error}");
     }
 }

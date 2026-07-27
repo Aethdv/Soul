@@ -18,6 +18,14 @@ flamegraph.svg
 profdir/*
 *.log
 
+# Tuner run artifacts
+evaltune.jsonl
+evaltune_best.txt
+evaltune_log.txt
+sensitivity-report.txt
+correlation-report.txt
+bounds_report.txt
+
 # Neovim
 .nvim/
 .nvimrc
