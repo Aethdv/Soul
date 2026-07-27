@@ -24,8 +24,17 @@ pub struct BucketUpstreams {
     pub mg_eg: TaperPair,
     pub mobility: TaperPair,
     pub bonus: TaperPair,
-    pub king_safety: f64,
+    pub king_safety: KingSafetyUpstream,
     pub xray: f64,
+}
+
+/// The danger halves are per side because the combiner curves each one before
+/// differencing them, so `∂block/∂danger` depends on which king it belongs to.
+#[derive(Clone, Copy)]
+pub struct KingSafetyUpstream {
+    pub shelter: f64,
+    pub danger_us: f64,
+    pub danger_them: f64,
 }
 
 /// Provides [`LinearTerm::Input`] for a term.

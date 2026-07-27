@@ -547,6 +547,8 @@ pub fn fill_accumulators<T: EvalMath<Scalar = T>>(
         bonus_eg: T::zero(),
         safety_us: T::zero(),
         safety_them: T::zero(),
+        danger_us: T::zero(),
+        danger_them: T::zero(),
         xray: T::zero(),
     };
 

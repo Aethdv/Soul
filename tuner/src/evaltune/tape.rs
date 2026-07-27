@@ -366,8 +366,12 @@ mod tests {
     use std::ops::Range;
 
     use soul::{
-        core::{board::Position, psqt::LAYOUT},
-        engine::eval_params::{BLOCKS, PHASE, collect_parameters},
+        core::{board::Position, defs::TOTAL_PHASE, psqt::LAYOUT},
+        engine::{
+            combiner::Accumulators,
+            eval::evaluate,
+            eval_params::{BLOCKS, PHASE, collect_parameters},
+        },
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
 
@@ -501,6 +505,64 @@ mod tests {
             values[i] = (i % 17) as f64 - 8.0;
         }
         with_phase(values)
+    }
+
+    /// No fen in the set has a king pressured enough to check this: `weak` peaks
+    /// at 2, which moves the gradient by a few percent of a value already under
+    /// the comparison tolerance. So difference the slope directly.
+    #[test]
+    fn test_king_danger_slope_oracle() {
+        let bucket = |danger_us: f64| Accumulators::<f64> {
+            mg_eg: 0.0,
+            mobility: 0.0,
+            bonus_mg: 0.0,
+            bonus_eg: 0.0,
+            safety_us: 0.0,
+            safety_them: 0.0,
+            danger_us,
+            danger_them: 0.0,
+            xray: 0.0,
+        };
+
+        let phase = f64::from(TOTAL_PHASE);
+        let h = 32.0;
+
+        for p in [0.0, 64.0, 150.0, 300.0, 465.0] {
+            let analytic = LinearCombiner::backward(&bucket(p), phase, 1.0, &mut []).king_safety.danger_us;
+
+            let (hi, lo) = (bucket(p + h), bucket((p - h).max(0.0)));
+            let rise = LinearCombiner::forward(&hi, phase) - LinearCombiner::forward(&lo, phase);
+            let measured = rise / (hi.danger_us - lo.danger_us);
+
+            assert!((analytic - measured).abs() < 0.05, "danger slope at {p}: analytic {analytic}, finite difference {measured}",);
+        }
+    }
+
+    /// The engine plays the `i32` monomorphization and the tuner fits the `f64`
+    /// one, which is only sound if they are the same function. They diverge
+    /// wherever one truncates and the other does not, and nothing else here
+    /// compares across the two.
+    #[test]
+    fn test_i32_matches_f64_oracle() {
+        let values: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+
+        for fen in FENS {
+            let pos = Position::from_fen(fen);
+            let engine = f64::from(evaluate(&pos, &pos.get_initial_accumulator()));
+            let tuner = eval_f64(&pos, &values);
+
+            assert!((engine - tuner).abs() < 1e-9, "engine {engine} vs tuner {tuner} on '{fen}'");
+        }
+    }
+
+    /// Every other test here runs at junk magnitudes, one to two orders of
+    /// magnitude under the shipped weights. Harmless for a linear term, and no
+    /// basis at all for anything whose shape depends on scale.
+    #[test]
+    fn test_shipped_values_oracle() {
+        let values: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+
+        assert_oracle_matches("shipped defaults", &values);
     }
 
     #[test]

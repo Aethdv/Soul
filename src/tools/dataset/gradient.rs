@@ -185,6 +185,8 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
         bonus_eg: 0.0,
         safety_us: 0.0,
         safety_them: 0.0,
+        danger_us: 0.0,
+        danger_them: 0.0,
         xray: 0.0,
     };
 

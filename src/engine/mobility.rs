@@ -19,7 +19,7 @@ use crate::{
         combiner::Accumulators,
         eval::{EvalParams, SharedFeatures},
         eval_params::ATTACKER,
-        term::{LinearTerm, TaperPair, TermSource},
+        term::{KingSafetyUpstream, LinearTerm, TaperPair, TermSource},
     },
     weave::Vf64x4,
 };
@@ -69,7 +69,7 @@ pub struct SideMetrics {
 /// Raw king-zone features for one side.
 ///
 /// Kept separate so the tuner can regress independent gradients against each component.
-/// The engine folds them into a single score via [`Self::score()`].
+/// The engine folds them into shelter and pressure, which the combiner collapses.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SafetyMetrics {
     /// Enemy pieces hitting the king ring (capped to weight-table bounds).
@@ -142,20 +142,24 @@ struct EvalCtx {
 }
 
 impl SafetyMetrics {
-    /// Collapses raw features into a single weighted score.
-    /// Positive → well-sheltered king, negative → under fire.
+    /// Shelter minus exposure. Positive → well-sheltered king.
     #[inline]
-    pub fn score<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T, w_atk: T) -> T {
+    pub fn shelter<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T) -> T {
         let shelter = T::from_i32(self.shield) * w_shield;
         let exposure = T::from_i32(self.ortho_exposure) * w_ortho + T::from_i32(self.diag_exposure) * w_diag;
 
-        // Attackers scale non-linearly: a second attacker is more than twice as
-        // dangerous. w_atk is indexed by attacker count; weak / 10 keeps resolution
-        // high for the tuner (0.1 cp increments) while staying integer in eval.
-        // DualNode passes gradient through .trunc() unmodified (straight-through).
-        let pressure = ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc();
+        shelter - exposure
+    }
 
-        shelter - exposure - pressure
+    /// What the attackers are worth against this king, before the combiner curves it.
+    ///
+    /// `w_atk` is indexed by attacker count, so escalation with the *number* of
+    /// attackers lives in the weight table; `weak / 10` keeps resolution high for
+    /// the tuner (0.1 cp increments) while staying integer in eval. DualNode
+    /// passes gradient through `.trunc()` unmodified (straight-through).
+    #[inline]
+    pub fn pressure<T: EvalMath<Scalar = T>>(&self, w_atk: T) -> T {
+        ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc()
     }
 
     #[inline(always)]
@@ -177,8 +181,7 @@ impl Mobility {
     pub fn compute_all(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> MobilityData {
         let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
 
-        // King safety: computed once per side, then both the raw features
-        // and the derived score feed into the final metrics.
+        // King safety: analyzed once per side, stored raw for both consumers.
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
 
@@ -226,7 +229,8 @@ impl Mobility {
         let t_total_phase = T::from_i32(TOTAL_PHASE);
         let t_eg_phase = t_total_phase - phase;
 
-        (mg_sum * phase + eg_sum * t_eg_phase) / t_total_phase
+        // Integer division truncates for the engine; the tuner's f64 has to be told.
+        ((mg_sum * phase + eg_sum * t_eg_phase) / t_total_phase).trunc()
     }
 
     /// Position openness in fixed-point [0, 1024].
@@ -262,8 +266,6 @@ impl LinearTerm for MobilityTerm {
         let lc = LAYOUT.mobility_closed_offset;
         let o_frac = f64::from(input.openness) * INV_OPEN_UNITY;
         let c_frac = 1.0 - o_frac;
-        let mg_w = phase / f64::from(TOTAL_PHASE);
-        let eg_w = 1.0 - mg_w;
 
         let mut diff = [0.0f64; 4];
 
@@ -274,11 +276,17 @@ impl LinearTerm for MobilityTerm {
             ((values[open] * o_frac * 1024.0 + values[closed] * c_frac * 1024.0 + 512.0) / 1024.0).floor()
         };
 
-        acc.mobility = 0.0;
+        let mut mg_sum = 0.0;
+        let mut eg_sum = 0.0;
 
         for (i, d) in diff.iter().enumerate() {
-            acc.mobility += d * (blend(lo + i, lc + i) * mg_w + blend(lo + 4 + i, lc + 4 + i) * eg_w);
+            mg_sum += d * blend(lo + i, lc + i);
+            eg_sum += d * blend(lo + 4 + i, lc + 4 + i);
         }
+
+        // Both halves sum before the taper, exactly as the madd above does.
+        let total = f64::from(TOTAL_PHASE);
+        acc.mobility = ((mg_sum * phase + eg_sum * (total - phase)) / total).trunc();
     }
 
     ///   `∂score/∂mg_mob_open[j]   = d_mg · diff[j] · (openness / 1024)`
@@ -331,21 +339,21 @@ impl TermSource<MobilityTerm> for SharedFeatures {
 }
 
 impl LinearTerm for KingSafetyTerm {
-    /// Scalar upstream; combiner's single MG taper already folds in loss
-    /// derivative and STM sign. Per-side signs stay inside scatter.
-    type Upstream = f64;
+    /// The combiner's MG taper is folded into every field, and the danger halves
+    /// arrive already signed, which is why scatter adds both of them.
+    type Upstream = KingSafetyUpstream;
     type Input = KingSafetyInput;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-        let w_atk_us = params.atk_weights[features.data.safety_us.attackers.min(ATTACKER.len() - 1)];
-        let w_atk_them = params.atk_weights[features.data.safety_them.attackers.min(ATTACKER.len() - 1)];
+        let (us, them) = (&features.data.safety_us, &features.data.safety_them);
+        let w_atk_us = params.atk_weights[us.attackers.min(ATTACKER.len() - 1)];
+        let w_atk_them = params.atk_weights[them.attackers.min(ATTACKER.len() - 1)];
 
-        acc.safety_us = features.data.safety_us.score(params.w_shield, params.w_ortho, params.w_diag, w_atk_us);
-        acc.safety_them = features
-            .data
-            .safety_them
-            .score(params.w_shield, params.w_ortho, params.w_diag, w_atk_them);
+        acc.safety_us = us.shelter(params.w_shield, params.w_ortho, params.w_diag);
+        acc.safety_them = them.shelter(params.w_shield, params.w_ortho, params.w_diag);
+        acc.danger_us = us.pressure(w_atk_us);
+        acc.danger_them = them.pressure(w_atk_them);
     }
 
     ///   `∂score/∂w_shield  =  upstream · (shield_us − shield_them)`
@@ -361,24 +369,26 @@ impl LinearTerm for KingSafetyTerm {
         let w_atk_us = values[ao + input.us.attackers.min(ATTACKER.len() - 1)];
         let w_atk_them = values[ao + input.them.attackers.min(ATTACKER.len() - 1)];
 
-        acc.safety_us = input.us.score(values[ks], values[ks + 1], values[ks + 2], w_atk_us);
-        acc.safety_them = input.them.score(values[ks], values[ks + 1], values[ks + 2], w_atk_them);
+        acc.safety_us = input.us.shelter(values[ks], values[ks + 1], values[ks + 2]);
+        acc.safety_them = input.them.shelter(values[ks], values[ks + 1], values[ks + 2]);
+        acc.danger_us = input.us.pressure(w_atk_us);
+        acc.danger_them = input.them.pressure(w_atk_them);
     }
 
     #[inline(always)]
-    fn scatter(input: KingSafetyInput, upstream: f64, grads: &mut [f64]) {
+    fn scatter(input: KingSafetyInput, upstream: KingSafetyUpstream, grads: &mut [f64]) {
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
 
-        grads[ks] += upstream * f64::from(input.us.shield - input.them.shield);
-        grads[ks + 1] -= upstream * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
-        grads[ks + 2] -= upstream * f64::from(input.us.diag_exposure - input.them.diag_exposure);
+        grads[ks] += upstream.shelter * f64::from(input.us.shield - input.them.shield);
+        grads[ks + 1] -= upstream.shelter * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
+        grads[ks + 2] -= upstream.shelter * f64::from(input.us.diag_exposure - input.them.diag_exposure);
 
         let idx_us = input.us.attackers.min(ATTACKER.len() - 1);
         let idx_them = input.them.attackers.min(ATTACKER.len() - 1);
 
-        grads[ao + idx_us] -= upstream * (f64::from(input.us.weak) / 10.0);
-        grads[ao + idx_them] += upstream * (f64::from(input.them.weak) / 10.0);
+        grads[ao + idx_us] += upstream.danger_us * (f64::from(input.us.weak) / 10.0);
+        grads[ao + idx_them] += upstream.danger_them * (f64::from(input.them.weak) / 10.0);
     }
 }
 

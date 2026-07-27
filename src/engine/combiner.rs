@@ -15,7 +15,7 @@ use crate::{
     core::defs::TOTAL_PHASE,
     engine::{
         autograd::EvalMath,
-        term::{BucketUpstreams, TaperPair},
+        term::{BucketUpstreams, KingSafetyUpstream, TaperPair},
     },
 };
 
@@ -35,12 +35,29 @@ pub struct Accumulators<T: EvalMath> {
     /// `eg · feature`, and the combiner tapers the summed pair once.
     pub bonus_mg: T,
     pub bonus_eg: T,
-    /// Raw king-safety score for the side to move.
+    /// Shelter minus exposure for the side to move.
     pub safety_us: T,
-    /// Raw king-safety score for the opponent.
+    /// Shelter minus exposure for the opponent.
     pub safety_them: T,
+    /// Attacker pressure on our king, kept apart from shelter so the combiner
+    /// can curve it. Non-negative.
+    pub danger_us: T,
+    /// Attacker pressure on theirs.
+    pub danger_them: T,
     /// Raw x-ray king-ring differential; separate bucket so it can be rerouted independently.
     pub xray: T,
+}
+
+/// Pressure ceilings at 465 (`weak` maxes at 8, `ATTACKER[5]` at 582) and an
+/// ordinary attack sits at 50 to 150, so this divisor is worth ~10% there and
+/// ~45% at the ceiling: near-nothing until a king is genuinely under siege.
+const KING_DANGER_DIVISOR: i32 = 1024;
+
+/// The one non-linearity in the eval: pressure accelerates instead of scaling
+/// with the weight table alone.
+#[inline(always)]
+fn king_danger<T: EvalMath<Scalar = T>>(pressure: T) -> T {
+    pressure + ((pressure * pressure) / T::from_i32(KING_DANGER_DIVISOR)).trunc()
 }
 
 /// The tapered mg/eg blend: weight by phase, divide back to centipawns, truncate.
@@ -71,7 +88,8 @@ pub struct LinearCombiner;
 impl Combiner for LinearCombiner {
     #[inline(always)]
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T) -> T {
-        let safety_diff = buckets.safety_us - buckets.safety_them + buckets.xray;
+        let danger = king_danger(buckets.danger_us) - king_danger(buckets.danger_them);
+        let safety_diff = buckets.safety_us - buckets.safety_them - danger + buckets.xray;
         let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
         let safety = taper(safety_diff, T::zero(), phase);
 
@@ -79,12 +97,20 @@ impl Combiner for LinearCombiner {
     }
 
     #[inline]
-    fn backward(_buckets: &Accumulators<f64>, phase: f64, d_loss: f64, _grads: &mut [f64]) -> BucketUpstreams {
+    fn backward(buckets: &Accumulators<f64>, phase: f64, d_loss: f64, _grads: &mut [f64]) -> BucketUpstreams {
         let t_mg = phase / f64::from(TOTAL_PHASE);
         let t_eg = 1.0 - t_mg;
         let taper = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };
         let safety_block = d_loss * t_mg;
 
-        BucketUpstreams { mg_eg: taper, mobility: taper, bonus: taper, king_safety: safety_block, xray: safety_block }
+        // d/dp of `p + p²/D`, and the block subtracts our danger and adds theirs.
+        let slope = |p: f64| 1.0 + 2.0 * p / f64::from(KING_DANGER_DIVISOR);
+        let king_safety = KingSafetyUpstream {
+            shelter: safety_block,
+            danger_us: -safety_block * slope(buckets.danger_us),
+            danger_them: safety_block * slope(buckets.danger_them),
+        };
+
+        BucketUpstreams { mg_eg: taper, mobility: taper, bonus: taper, king_safety, xray: safety_block }
     }
 }
