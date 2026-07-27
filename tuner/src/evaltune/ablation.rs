@@ -6,7 +6,8 @@
 
 use std::{mem, ops::Range};
 
-use soul::{core::psqt, engine::eval_params};
+use rayon::prelude::*;
+use soul::engine::eval_params::{self, BLOCKS, Group as BlockGroup};
 
 use super::evaltuner::golden_search_k;
 use crate::evaltune::{
@@ -60,12 +61,12 @@ pub fn run_ablation(dataset_paths: &[String]) {
 }
 
 struct Group {
-    name: &'static str,
+    name: String,
     range: Range<usize>,
 }
 
 struct AblationResult {
-    name: &'static str,
+    name: String,
     delta: f64,
 }
 
@@ -90,7 +91,7 @@ fn run_generic<T: TunableData>(entries: &[T], values: &[f64]) {
             params[i] = v;
         }
 
-        results.push(AblationResult { name: group.name, delta });
+        results.push(AblationResult { name: group.name.clone(), delta });
     }
 
     results.sort_by(|a, b| b.delta.total_cmp(&a.delta));
@@ -120,42 +121,72 @@ fn print_report(results: &[AblationResult]) {
 }
 
 fn build_groups() -> Vec<Group> {
-    let l = &psqt::LAYOUT;
-
+    // The psqt block is one 384-slot range; ablation wants it a piece table at a time.
     let mut groups: Vec<Group> = ["Pawn PSQT", "Knight PSQT", "Bishop PSQT", "Rook PSQT", "Queen PSQT", "King PSQT"]
         .iter()
         .enumerate()
-        .map(|(i, &name)| Group { name, range: i * 64..(i + 1) * 64 })
+        .map(|(i, &name)| Group { name: name.to_string(), range: i * 64..(i + 1) * 64 })
         .collect();
 
-    #[rustfmt::skip]
-    let terms: &[(&str, usize, usize)] = &[
-        ("Material",         l.material_offset,           12),
-        ("Mobility Open",    l.mobility_open_offset,       8),
-        ("Mobility Closed",  l.mobility_closed_offset,     8),
-        ("Phase Weights",    l.phase_offset,               6),
-        ("Attacker Weights", l.attacker_offset,            6),
-        ("King Safety",      l.king_safety_offset,         3),
-        ("Xray",             l.xray_offset,                1),
-        ("Bishop Pair",      l.bishop_pair_offset,         2),
-        ("Rook Open",        l.rook_open_offset,           2),
-        ("Passed Pawn",      l.passed_pawn_mg_offset,     12),
-        ("Enemy King Dist",  l.enemy_king_dist_mg_offset, 12),
-    ];
+    groups.extend(
+        BLOCKS
+            .iter()
+            .filter(|b| b.group != BlockGroup::Psqt)
+            .map(|b| Group { name: title_case(b.name), range: b.offset..b.offset + b.len }),
+    );
 
-    groups.extend(terms.iter().map(|&(name, off, len)| Group { name, range: off..off + len }));
     groups
+}
+
+fn title_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+
+    for word in name.split('_') {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+
+        let mut chars = word.chars();
+
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+
+    out
 }
 
 /// MSE over the dataset for a given parameter set and K.
 fn compute_loss<T: TunableData>(entries: &[T], values: &[f64], k: f64) -> f64 {
     let n = entries.len() as f64;
     entries
-        .iter()
+        .par_iter()
         .map(|e| {
             let err = training::sigmoid(e.eval(values), k) - e.result();
             err * err
         })
         .sum::<f64>()
         / n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_tile_the_parameter_vector() {
+        let mut covered = vec![false; eval_params::LAYOUT.total];
+
+        for g in build_groups() {
+            for i in g.range {
+                assert!(!covered[i], "slot {i} sits in two ablation groups");
+                covered[i] = true;
+            }
+        }
+
+        if let Some(i) = covered.iter().position(|&c| !c) {
+            panic!("slot {i} sits in no ablation group, so its term never appears in the report");
+        }
+    }
 }

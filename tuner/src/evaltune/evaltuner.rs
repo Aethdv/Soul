@@ -220,23 +220,6 @@ pub enum Task {
 pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
     let total_start = Instant::now();
 
-    // Enable FTZ/DAZ on the MAIN thread immediately.
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        // SAFETY: MXCSR manipulation has no memory precondition; the call is always sound.
-        enable_ftz_daz();
-    }
-
-    // Configure the Rayon thread pool (catches new worker threads).
-    rayon::ThreadPoolBuilder::new()
-        .start_handler(|_| unsafe {
-            // SAFETY: MXCSR manipulation has no memory precondition; the call is always sound.
-            #[cfg(target_arch = "x86_64")]
-            enable_ftz_daz();
-        })
-        .build_global()
-        .ok();
-
     let effective_dataset: String = match (dataset_path, resume_path) {
         (Some(p), _) => p.to_string(),
         (None, Some(rp)) => peek_checkpoint(rp)
@@ -270,21 +253,6 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
     best_val
-}
-
-/// Enable Flush-to-Zero and Denormals-are-Zero for performance.
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn enable_ftz_daz() {
-    use std::arch::asm;
-    let mut mxcsr: u32 = 0;
-    // SAFETY: stmxcsr/ldmxcsr read and write the 4-byte MXCSR to/from mxcsr, a valid
-    // aligned local u32; the ops only toggle FP denormal handling, never memory.
-    unsafe {
-        asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack, preserves_flags));
-        mxcsr |= 0x8040; // FTZ | DAZ
-        asm!("ldmxcsr [{}]", in(reg) &mxcsr, options(nostack, preserves_flags));
-    }
 }
 
 struct TrainerContext<'a> {

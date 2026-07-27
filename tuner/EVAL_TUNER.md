@@ -104,8 +104,8 @@ See [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md).
 
 The direct path adds nothing to the eval: it calls `eval_f64` for the score and derives the feature coefficients alongside. The cost is the eval, not the gradient.
 
-FTZ/DAZ (flush-to-zero, denormals-are-zero) are set on every Rayon worker via a `start_handler` in `evaltune.rs`.
-Without them, subnormal floats can drag specific gradient values into a 4–10× slowdown as training converges on small numbers.
+Subnormals are kept out of the hot loop by construction rather than by MXCSR flags. `sigmoid` clamps its exponent to ±700, short of libm's very slow subnormal fallback between −708 and −744, which ignores FTZ/DAZ anyway; Lion hard-zeroes momentum once both it and the gradient fall under 1e-9; and the decaying EMAs start at zero for exactly the parameters whose gradients go quiet.
+Setting FTZ/DAZ instead would be immediate UB: Rust assumes the floating-point environment is in its default state and optimizes on that, whether or not the register is restored afterwards.
 
 ---
 
