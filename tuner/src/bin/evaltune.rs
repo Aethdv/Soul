@@ -92,6 +92,12 @@ enum Commands {
         config: String,
         dataset: String,
     },
+    #[command(name = "val-cost")]
+    ValCost {
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        dataset: String,
+    },
     #[command(name = "sweep-lr-mult")]
     SweepLrMult {
         #[arg(short, long, value_delimiter = ',', num_args = 0..)]
@@ -145,6 +151,9 @@ fn main() {
         },
         Some(Commands::Curvature { config: config_path, dataset }) => {
             probe(&config_path, &dataset, Task::Curvature);
+        },
+        Some(Commands::ValCost { config: config_path, dataset }) => {
+            probe(&config_path, &dataset, Task::ValCost);
         },
         Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
             let base_epochs = epochs.unwrap_or(100);
@@ -384,6 +393,7 @@ fn print_help() {
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
     h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs shuffled");
+    h.command_args("val-cost", "<dataset>", "Time the fused validation pass against two separate ones");
     h.command_args("seed-spread", "<dataset> [options]", "Run N seeds of one config, report where they land");
     h.command_args("sweep-lr-mult", "<dataset> [options]", "Sweep lr_mult with auto-grid + refinement");
     h.separator();

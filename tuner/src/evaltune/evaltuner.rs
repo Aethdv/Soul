@@ -212,6 +212,9 @@ pub enum Task {
     /// Build the objective's exact Hessian at the shipped parameters and report what the data
     /// constrains, what it leaves free, and which parameters merely restate each other.
     Curvature,
+    /// Time one fused validation traversal against the two separate ones it replaced, in a
+    /// single process, since the val column's run-to-run spread swallows the difference.
+    ValCost,
 }
 
 pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
@@ -547,6 +550,11 @@ fn train_entries(
             return 0.0;
         },
 
+        Task::ValCost => {
+            val_cost(&ctx, config);
+            return 0.0;
+        },
+
         Task::Train => {},
     }
 
@@ -670,6 +678,52 @@ fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     println!("  {lab}sequential{RESET}  {v}{sequential:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / sequential / 1e6);
     println!("  {lab}shuffled{RESET}    {v}{shuffled:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / shuffled / 1e6);
     println!("  {lab}ratio{RESET}       {v}{:6.2}×{RESET}", shuffled / sequential);
+}
+
+fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
+    const REPEATS: usize = 7;
+
+    let params = eval_params::collect_parameters();
+    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+    let k = 0.5 * (config.k_min + config.k_max);
+
+    let fused = || {
+        let start = Instant::now();
+        let _ = ctx.val_eval(&values, [(k, 1.0), (k, 0.0)]);
+        start.elapsed().as_secs_f64()
+    };
+
+    let split = || {
+        let start = Instant::now();
+        let _ = ctx.val_eval(&values, [(k, 1.0)]);
+        let _ = ctx.val_eval(&values, [(k, 0.0)]);
+        start.elapsed().as_secs_f64()
+    };
+
+    // Both arms untimed once, or the first one pays to fault in the val slice.
+    let _ = fused();
+    let _ = split();
+
+    // Interleaved, and scored on the minimum: noise only ever adds time.
+    let (mut best_fused, mut best_split) = (f64::INFINITY, f64::INFINITY);
+
+    for _ in 0..REPEATS {
+        best_fused = best_fused.min(fused());
+        best_split = best_split.min(split());
+    }
+
+    let lab = palette::fg(palette::LABEL);
+    let v = palette::fg(palette::VALUE);
+    let dim = palette::fg(palette::DIM);
+
+    println!("\n{lab}Val cost{RESET} {dim}({} positions, best of {REPEATS}){RESET}", ctx.val.len());
+    println!("  {lab}fused{RESET}    {v}{:7.2} ms{RESET}  {dim}one traversal, two probes{RESET}", best_fused * 1e3);
+    println!("  {lab}split{RESET}    {v}{:7.2} ms{RESET}  {dim}two traversals, one probe each{RESET}", best_split * 1e3);
+    println!(
+        "  {lab}saved{RESET}    {v}{:7.2} ms{RESET}  {v}{:.2}×{RESET} {dim}per epoch{RESET}",
+        (best_split - best_fused) * 1e3,
+        best_split / best_fused
+    );
 }
 
 /// Hashed before shuffle: identifies loaded contents, not a permutation.
