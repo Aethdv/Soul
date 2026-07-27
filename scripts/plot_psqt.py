@@ -85,7 +85,6 @@ def _draw_board(
     ax.invert_yaxis()  # origin='upper' equivalent: row 0 at top
 
 
-    # cell grid: internal dividers + outer border, same pipeline
     inner = np.arange(0.5, 7.0)   # 0.5 … 6.5
     outer = np.array([-0.5, 7.5]) # board edges
     all_h = np.concatenate([outer, inner])
@@ -94,7 +93,6 @@ def _draw_board(
     ax.vlines(all_h, ymin=-0.5, ymax=7.5,
               color=sp.LINE, lw=0.5, zorder=2)
 
-    # value annotations
     for r in range(8):
         for f in range(8):
             v = board[r, f]
@@ -110,7 +108,6 @@ def _draw_board(
                 )],
             )
 
-    # file / rank labels
     ax.set_xticks(range(8))
     ax.set_yticks(range(8))
     ax.set_xticklabels(FILE_LABELS, fontsize=7, color=sp.MUTE,
@@ -157,7 +154,6 @@ def plot_psqt(
     if not isinstance(values, dict):
         sys.exit("Error: checkpoint missing 'values' dict.")
 
-    # Resolve piece selection
     piece_name = piece_arg.strip().capitalize()
 
     if piece_name == "All":
@@ -180,7 +176,6 @@ def plot_psqt(
     sp.use_theme()
     cmap = sp.diverging_cmap()
 
-    # adaptive sizing
     board_size = 3.2 if n_rows <= 2 else 2.5
     annot_fs = 7.5 if n_rows <= 2 else 6.0
 
@@ -254,7 +249,6 @@ def plot_psqt(
             im = _draw_board(ax, eg, eg_t, cmap, norm_eg, annot_fs)
             col += 1
 
-        # per-row colorbar
         assert im is not None  # at least one phase always renders
         cax = fig.add_subplot(gs[row, -1])
         cb  = fig.colorbar(im, cax=cax)
@@ -262,7 +256,6 @@ def plot_psqt(
         cb.outline.set_edgecolor(sp.LINE)
         cb.outline.set_linewidth(0.4)
 
-    # title block
     label = PIECES[sel[0]].lower() if single else "all pieces"
     meta_parts = []
 

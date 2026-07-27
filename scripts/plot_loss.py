@@ -23,7 +23,6 @@ Options:
 
 from __future__ import annotations
 
-from os import wait
 import sys
 import argparse
 import numpy as np
@@ -41,13 +40,21 @@ RESTART = "#b79be0"  # plum
 
 
 def parse_log(path: str) -> dict:
-    """Parse Soul's evaltune JSONL into arrays + best/final summary."""
+    """Parse Soul's evaltune JSONL into arrays + best/final summary.
+
+    A sweep appends every seed to one log, so the file usually holds several
+    runs; only the last is kept. A run ends at its `final` record, or wherever
+    the epoch number stops advancing.
+    """
     epochs, train, val, ref = [], [], [], []
     restarts: list[int] = []
     best_idx, best_val = 0, float("inf")
+    final: dict | None = None
 
     for e in sp.iter_log(path):
-        if e.get("event") == "epoch":
+        event = e.get("event")
+
+        if event == "epoch":
             ep, t, v = e.get("epoch"), e.get("train_loss"), e.get("val_loss")
 
             if ep is None or t is None or v is None:
@@ -58,21 +65,24 @@ def parse_log(path: str) -> dict:
             if not (np.isfinite(t) and np.isfinite(v)):
                 continue
 
+            if epochs and int(ep) <= epochs[-1]:
+                epochs, train, val, ref, restarts = [], [], [], [], []
+                best_idx, best_val, final = 0, float("inf"), None
+
             epochs.append(int(ep))
             train.append(t)
             val.append(v)
-
-            if (r := e.get("ref_loss")) is not None:
-                r = float(r)
-
-                if np.isfinite(r):
-                    ref.append(r)
+            # NaN-padded: appending only the finite ones desyncs it from epochs.
+            r = e.get("ref_loss")
+            ref.append(float(r) if r is not None else np.nan)
 
             if e.get("is_best") and v < best_val:
                 best_idx, best_val = len(epochs) - 1, v
-        elif e.get("event") == "restart":
+        elif event == "restart":
             if (ep := e.get("epoch")) is not None:
                 restarts.append(int(ep))
+        elif event == "final":
+            final = e
 
     if not epochs:
         return {}
@@ -90,13 +100,32 @@ def parse_log(path: str) -> dict:
         "train": train,
         "val": val,
         "restarts": restarts,
+        # Provisional; the final record overrides both below when the log has one.
         "best_epoch": int(epochs[best_idx]),
         "best_val": best_val,
         "final_val": float(val[-1]),
     }
 
-    if ref:
-        out["ref"] = np.array(ref, dtype=np.float64)
+    ref = np.array(ref, dtype=np.float64)
+
+    if np.isfinite(ref).any():
+        out["ref"] = np.nan_to_num(ref, nan=float(np.nanmean(ref)))
+
+    train_idx = int(np.argmin(train))
+    out["best_train_epoch"] = int(epochs[train_idx])
+    out["best_train"] = float(train[train_idx])
+
+    if final is not None:
+        out["seed"] = final.get("seed")
+        out["split_seed"] = final.get("split_seed")
+
+        # Authoritative: selection is smoothed, so the epoch that shipped need
+        # not be the raw argmin the loop above settled on.
+        if (be := final.get("best_val_epoch")) is not None:
+            if (hit := np.flatnonzero(epochs == int(be))).size:
+                out["best_epoch"] = int(be)
+                out["best_val"] = float(val[hit[0]])
+
     return out
 
 
@@ -128,19 +157,10 @@ def plot_loss(
     sp.use_theme()
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    # raw traces: the actual per-epoch wobble under the smoothed curve
     if show_raw and n > 1:
         ax.plot(epochs, t_loss, color=TRAIN, alpha=0.42, lw=0.8, ls=(0, (1, 2)), zorder=1)
         ax.plot(epochs, v_loss, color=VAL, alpha=0.42, lw=0.8, ls=(0, (1, 2)), zorder=1)
 
-    # Generalization gap, both directions. Hatched warm where val rides above
-    # train (the overfit gap); a quiet unhatched cool fill where val dips below
-    # train (val set easier, or early-epoch noise), not overfit, so it reads
-    # calmer. The min/max clamps make the two fills complementary, never overlap.
-    sp.band(ax, epochs, t_smooth, np.maximum(t_smooth, v_smooth), VAL, alpha=0.08, hatch="////", zorder=2)
-    sp.band(ax, epochs, np.minimum(t_smooth, v_smooth), t_smooth, TRAIN, alpha=0.06, hatch=None, zorder=2)
-
-    # restart lines, with the first one labeled at the top
     for i, rx in enumerate(restarts):
         ax.axvline(rx, color=RESTART, ls=(0, (1, 2)), lw=1.0, alpha=0.40, zorder=2)
 
@@ -148,11 +168,8 @@ def plot_loss(
             ax.text(rx, 1.0, " restart", transform=ax.get_xaxis_transform(), va="bottom",
                     ha="left", fontsize=7.5, color=RESTART, alpha=0.7)
 
-    # Focus the y-axis on the train/val curves, the data actually under study.
-    # A reference baseline in a far-off magnitude regime (an untuned ref tens of
-    # times the tuned loss) would otherwise own the scale and flatten the curves
-    # to one dead line. So ref votes on the scale only when it's in the same
-    # neighborhood; otherwise it's tagged at the edge, off-scale but acknowledged.
+    # An untuned ref an order of magnitude off would own the scale and flatten
+    # the curves to one line, so it only votes from the same neighborhood.
     core = [t_smooth, v_smooth, np.array([best_val])]
 
     if show_raw and n > 1:
@@ -169,7 +186,6 @@ def plot_loss(
     c_span = (c_hi - c_lo) or 1.0
     y_lo, y_hi = c_lo - c_span * 0.10, c_hi + c_span * 0.10
 
-    # smoothed curves; ref dashed and quiet
     r_end = None
     ref_offscale: tuple[float, bool] | None = None  # (value, is_above) when out of view
 
@@ -186,9 +202,14 @@ def plot_loss(
     ax.plot(epochs, t_smooth, color=TRAIN, lw=2.0, zorder=4)
     ax.plot(epochs, v_smooth, color=VAL, lw=2.5, zorder=5)
 
-    # best-val marker: gold dot + crosshair vline (value in the subtitle)
+    # Placed on the smoothed curve, not the raw minimum they name; the values are
+    # in the subtitle. searchsorted, because a resumed log can skip epochs.
+    def on_curve(smooth: np.ndarray, epoch: int) -> float:
+        return float(smooth[min(int(np.searchsorted(epochs, epoch)), len(smooth) - 1)])
+
     ax.axvline(best_epoch, color=sp.GOLD, ls="--", lw=0.7, alpha=0.35, zorder=2)
-    ax.scatter([best_epoch], [best_val], s=34, color=sp.GOLD, edgecolors="none", zorder=7)
+    sp.dot(ax, [data["best_train_epoch"]], [on_curve(t_smooth, data["best_train_epoch"])], TRAIN, size=46, zorder=6)
+    sp.dot(ax, [best_epoch], [on_curve(v_smooth, best_epoch)], sp.GOLD, size=52, zorder=7)
 
     ax.set_xlabel("epoch", labelpad=8)
     ax.set_ylabel("loss", labelpad=8)
@@ -196,15 +217,13 @@ def plot_loss(
     ax.set_ylim(y_lo, y_hi)
     sp.style_axes(ax)
 
-    # direct end-labels instead of a legend; all dodge each other
     entries = [(float(t_smooth[-1]), "train", TRAIN), (float(v_smooth[-1]), "val", VAL)]
 
     if r_end is not None and ref_offscale is None:
         entries.append((r_end, "ref", REF))
     sp.end_labels(ax, epochs[-1], entries)
 
-    # Off-scale reference: tag it at the edge it ran off, value and direction,
-    # so it's acknowledged without dragging the scale away from the curves.
+    # Tagged at the edge it ran off, rather than dropped without a trace.
     if ref_offscale is not None:
         rv, above = ref_offscale
         ax.text(0.995, 0.985 if above else 0.015,
@@ -212,11 +231,21 @@ def plot_loss(
                 transform=ax.transAxes, ha="right", va="top" if above else "bottom",
                 fontsize=8, color=REF, alpha=0.9)
 
-    sp.title(
-        fig, "training loss",
-        f"{Path(log_path).stem}   ·   {sp.format_count(int(epochs[-1]))} epochs   ·   "
-        f"final {final_val:.6f}   ·   best {best_val:.6f} @ {best_epoch}   ·   ema α={alpha}",
-    )
+    stem = Path(log_path).stem
+    facts = [
+        *([] if stem == "evaltune" else [stem]),
+        f"{sp.format_count(int(epochs[-1]))} epochs",
+        f"final {final_val:.6f}",
+        f"val {best_val:.6f} @{best_epoch}",
+        f"train {data['best_train']:.6f} @{data['best_train_epoch']}",
+        f"ema α={alpha}",
+    ]
+
+    # Twenty digits apiece; on the same row they swamp the numbers above.
+    seeds = [f"{label} {data[key]}" for key, label in (("seed", "seed"), ("split_seed", "split"))
+             if data.get(key) is not None]
+
+    sp.title(fig, "evaltune", "   ·   ".join(facts), "   ·   ".join(seeds) or None)
 
     plt.subplots_adjust(top=0.89, bottom=0.09, left=0.08, right=0.90)
 

@@ -87,7 +87,7 @@ def use_theme(font: str = "monospace") -> None:
         "savefig.facecolor": INK,
         "axes.facecolor": PANEL,
         "font.family": font,
-        "font.weight": "medium",
+        "font.weight": "normal",
         "text.color": TEXT,
         "axes.labelcolor": MUTE,
         "xtick.color": MUTE,
@@ -297,12 +297,15 @@ def band(ax, x, lo, hi, color, *, alpha: float = 0.06, hatch: str | None = "////
     ax.fill_between(x, lo, hi, color=color, alpha=alpha, lw=0, hatch=hatch, zorder=zorder)
 
 
-def title(fig, main: str, sub: str | None = None) -> None:
-    """Centered headline with an optional dim subtitle beneath."""
-    fig.text(0.5, 0.975, main, ha="center", va="top", fontsize=15, fontweight="bold", color=TEXT)
+def title(fig, main: str, sub: str | None = None, sub2: str | None = None) -> None:
+    """Centered headline over one or two dim subtitle lines."""
+    fig.text(0.5, 0.986, main, ha="center", va="top", fontsize=15, fontweight="bold", color=TEXT)
 
     if sub:
-        fig.text(0.5, 0.93, sub, ha="center", va="top", fontsize=9, color=MUTE)
+        fig.text(0.5, 0.944, sub, ha="center", va="top", fontsize=9, color=TEXT, alpha=0.75)
+
+    if sub2:
+        fig.text(0.5, 0.913, sub2, ha="center", va="top", fontsize=8.5, color=MUTE)
 
 
 def save(fig, path: str, *, show: bool = False, dpi: int = 200) -> None:

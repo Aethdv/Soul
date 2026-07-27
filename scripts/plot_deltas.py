@@ -65,7 +65,6 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
     clip = args.max_cp
     bins = np.linspace(-clip, clip, args.bins + 1)
 
-    # top: stacked histogram
     ax_top.hist(
         [score[w_mask], score[d_mask], score[b_mask]],
         bins=bins, stacked=True, zorder=3, alpha=0.9,
@@ -81,7 +80,6 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
     pct_d = 100 * d_mask.sum() / n_total
     pct_b = 100 * b_mask.sum() / n_total
 
-    # bottom: per-bin result fraction, stacked
     counts_w, _ = np.histogram(score[w_mask], bins=bins)
     counts_d, _ = np.histogram(score[d_mask], bins=bins)
     counts_b, _ = np.histogram(score[b_mask], bins=bins)

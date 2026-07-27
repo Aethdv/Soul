@@ -249,24 +249,19 @@ def plot_game(
     ax.fill_between(xs, y1, 0, where=(y1 >= 0), color=WHITE_A, alpha=0.14, interpolate=True, zorder=1)
     ax.fill_between(xs, y1, 0, where=(y1 <= 0), color=BLACK_A, alpha=0.14, interpolate=True, zorder=1)
 
-    # raw ghost trace under the smoothed river
     ax.plot(xs, yr1, color=sp.MUTE, alpha=0.20, lw=0.6, zorder=3)
 
-    # the river: color flows with who's ahead (keyed to the true eval)
     river_c = np.array([sp.advantage(_winprob(v)) for v in sm1])
     sp.gradient_line(ax, xs, y1, river_c, lw=2.0, zorder=4)
 
-    # comparison overlay: single cool hue, dashed, subordinate
     if y2 is not None and yr2 is not None:
         ax.plot(xs, yr2, color=CMP, alpha=0.22, lw=0.7, zorder=3)
         ax.plot(xs, y2, color=CMP, lw=1.5, ls="--", alpha=0.80, zorder=4)
 
-    # zero line
     ax.axhline(0, color=sp.MUTE, lw=0.9, alpha=0.5, zorder=2)
 
     ax.set_xlim(0.5, n_pos + max(n_pos * 0.06, 2))
 
-    # ── swing annotations ──
     # A decisive sequence clusters swings into a tight x-range and their labels
     # overprint. Pack them into vertical lanes: left to right, each label drops to
     # the lowest tier whose previous label clears it, so a crowded run fans out
@@ -320,7 +315,6 @@ def plot_game(
             path_effects=[pe.withStroke(linewidth=2.0, foreground=sp.PANEL)],
         )
 
-    # axes
     step  = 20
     ticks = list(range(step, n_pos + 1, step))
     ax.set_xticks(ticks)
@@ -363,7 +357,6 @@ def plot_game(
                         edgecolor=sp.LINE, labelcolor=sp.TEXT, loc="upper left")
         leg.get_frame().set_alpha(0.9)
 
-    # title block: players headline, engine(s), then metadata
     fig_h = fig.get_size_inches()[1]
     fig.text(0.50, 1.0 - 0.22 / fig_h, f"{white}  vs  {black}",
              ha="center", va="top", fontsize=15, fontweight="bold", color=sp.TEXT)

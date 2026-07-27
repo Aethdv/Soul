@@ -117,7 +117,6 @@ def plot_lr(
     sp.use_theme()
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    # warmup regions: faint band + a marker at the peak
     for i, (ws, we) in enumerate(warmups):
         ax.axvspan(ws, we, color=WARMUP, alpha=0.05, zorder=0)
         ax.axvline(we, color=WARMUP, ls=":", lw=0.7, alpha=0.30, zorder=1)
@@ -126,14 +125,11 @@ def plot_lr(
             ax.text((ws + we) / 2, peak_lr * 0.93, "warmup", ha="center", va="top",
                     fontsize=7.5, color=WARMUP, alpha=0.6)
 
-    # fade under the curve, down to the axis floor
     floor = min_lr * 0.5 if log_scale else 0.0
     sp.gradient_fill(ax, epochs, lrs, LR, base=floor, top_alpha=0.22, zorder=1)
 
-    # the glowing schedule curve
     sp.glow_line(ax, epochs, lrs, LR, lw=2.2, zorder=4)
 
-    # warm-restart lines
     for i, r in enumerate(restarts):
         ax.axvline(r, color=sp.GOLD, ls="--", lw=0.7, alpha=0.35, zorder=2)
 
@@ -141,7 +137,6 @@ def plot_lr(
             ax.text(r + total_ep * 0.005, peak_lr * 0.97, "restart", ha="left", va="top",
                     fontsize=7, color=sp.GOLD, alpha=0.6)
 
-    # peak + final markers
     left = epochs[peak_idx] < (epochs[0] + epochs[-1]) / 2
     ax.scatter([epochs[peak_idx]], [peak_lr], color=LR, s=26, zorder=5, edgecolors="none")
     ax.annotate(f"peak {peak_lr:.2e}", xy=(epochs[peak_idx], peak_lr),

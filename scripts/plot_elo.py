@@ -235,7 +235,6 @@ def plot_sprt(tests: list[dict], out: str, *, initial: float = 0.0,
 
     # ── top; cumulative total inside a 95% cone of uncertainty ──
     ax.axhline(initial, color=sp.MUTE, lw=0.9, alpha=0.5, zorder=2)
-    # 95% cone: a faint hatched fill inside the dashed lo/hi rails.
     sp.band(ax, x, lo, hi, sp.GOLD, alpha=0.06, hatch="////", zorder=1)
     ax.plot(x, lo, color=sp.GOLD, ls=(0, (4, 3)), lw=1.0, alpha=0.5, zorder=3)
     ax.plot(x, hi, color=sp.GOLD, ls=(0, (4, 3)), lw=1.0, alpha=0.5, zorder=3)
@@ -254,7 +253,6 @@ def plot_sprt(tests: list[dict], out: str, *, initial: float = 0.0,
     axd.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:+.0f}"))
     axd.set_ylabel("patch Δ", labelpad=8)
 
-    # thinned date labels on the shared bottom axis
     dates = [t["date"] for t in tests]
 
     if all(d is not None for d in dates):
