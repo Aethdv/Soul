@@ -1100,10 +1100,20 @@ fn train_loop(
 
     let resume = resume_path.map(|path| {
         println!("Resuming from checkpoint: {}{path}{RESET}", palette::fg(palette::VALUE));
-        load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
+        let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
             eprintln!("Failed to load checkpoint: {e}");
             std::process::exit(1);
-        })
+        });
+
+        if data.fresh_params > 0 {
+            println!(
+                "{}{}{RESET} parameter(s) are newer than the checkpoint, starting from code defaults",
+                palette::fg(palette::VALUE),
+                data.fresh_params,
+            );
+        }
+
+        data
     });
 
     let (start_epoch, mut lr_scale) = resume.as_ref().map_or((1, 1.0), |d| (d.epoch, d.lr_scale));

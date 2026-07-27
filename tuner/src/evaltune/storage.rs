@@ -194,6 +194,8 @@ pub struct CheckpointData {
     pub frozen: Vec<bool>,
     pub best_val_params: Vec<f64>,
     pub best_train_params: Vec<f64>,
+    /// Current tunables the checkpoint never held, resuming from code defaults.
+    pub fresh_params: usize,
 }
 
 // Missing parameters keep their `fallback` (current code value), so new tunables
@@ -244,34 +246,23 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 
     let current_hash = compute_layout_hash(tunables);
 
+    let mut fresh_params = 0;
+
     if cp.hash != current_hash {
-        // Names leaving while others arrive is a rename: the trained values sit
-        // unreachable under the old names while the new ones resume at defaults.
         let live: BTreeSet<&str> = tunables.iter().map(|t| t.name.as_str()).collect();
         let saved: BTreeSet<&str> = cp.params.keys().map(String::as_str).collect();
         let dropped: Vec<&str> = saved.difference(&live).copied().collect();
-        let added = live.difference(&saved).count();
 
-        if dropped.is_empty() || added == 0 {
-            eprintln!(
-                "{}Warning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x}){}",
-                color::ansi_fg((218, 165, 32)),
-                cp.hash,
-                current_hash,
-                palette::RESET,
-            );
-            eprintln!("New parameters will use current default values.");
-        } else {
-            eprintln!(
-                "{}[!] Error: {} checkpoint parameter(s) left and {added} arrived, starting with {}{}",
-                color::ansi_fg((225, 89, 91)),
+        fresh_params = live.difference(&saved).count();
+
+        // Names leaving while others arrive is a rename: the trained values sit
+        // unreachable under the old names while the new ones resume at defaults.
+        if !dropped.is_empty() && fresh_params > 0 {
+            return Err(CheckpointError::LayoutRenamed(format!(
+                "{} left and {fresh_params} arrived, starting with {}",
                 dropped.len(),
                 dropped[..dropped.len().min(3)].join(", "),
-                palette::RESET,
-            );
-            eprintln!("A rename resumes the new names at defaults. Start fresh, or check out the layout that wrote it.");
-
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Checkpoint layout renamed parameters").into());
+            )));
         }
     }
 
@@ -312,6 +303,7 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         frozen,
         best_val_params,
         best_train_params,
+        fresh_params,
     })
 }
 
@@ -413,6 +405,7 @@ mod tests {
         assert_eq!(d.frozen, [true, true, false]);
         assert_eq!(d.best_val_params, [1.5, 2.5, 30.0]);
         assert_eq!(d.best_train_params, [3.5, 4.5, 30.0]);
+        assert_eq!(d.fresh_params, 1, "gamma is the one parameter the checkpoint never held");
     }
 
     #[test]
@@ -466,6 +459,7 @@ mod tests {
         let d = resumed.expect("a removed parameter must still resume the rest");
         assert_eq!(d.values, [10.0], "alpha keeps its trained value across the removal");
         assert_eq!(d.momentum, [0.1], "and its momentum");
+        assert_eq!(d.fresh_params, 0, "a removal leaves nothing to start from defaults");
     }
 
     #[test]
