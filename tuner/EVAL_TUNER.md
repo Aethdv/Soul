@@ -22,7 +22,7 @@ If `score = 3·w_shield + 7·w_mobility + …`, then `∂score/∂w_shield = 3`,
 
 **Direct (`eval_linear_grad`): production.** Evaluate the position, read each feature coefficient straight off the board, phase, and openness, scatter `outer_deriv · coefficient` into the gradient vector. ~90 f64 ops on top of the eval itself. This is what runs every epoch.
 
-For encoded `.soul.zst` datasets the direct path has a cached twin in `src/tools/dataset/gradient.rs`: the features are packed into `i8` once at startup, so the epoch loop never recomputes the spatial tensor. Same math, packed storage, and it's a hand-rolled mirror, so a new term has to be wired there by hand or it's silently wrong on encoded data.
+For encoded `.soul.zst` datasets the direct path has a cached twin in `src/tools/dataset/gradient.rs`: the features are packed into `i8` once at startup, so the epoch loop never recomputes the spatial tensor. Same math, packed storage: both directions dispatch through `LinearTerm`, so a new term brings its packing there, not its math. Miss the row and the build fails, miss the pack and `test_encoded_block_coverage_oracle` names the block.
 
 **Dual (`eval_dual_fused`): oracle.** Forward-mode autodiff: every number carries its gradient vector, the product rule fires on each multiply, the chain rule falls out for free.
 It handles any function, linear or not: drop a `sigmoid(w₁·w₂)` into the eval and it still returns the right gradient where the direct path would quietly hand you a wrong one.
