@@ -39,6 +39,7 @@ use crate::{
 /// Fields are STM-relative (us − them); the perspective flip happens once,
 /// at pack time.
 #[repr(C)]
+#[derive(Default)]
 pub struct FeatureRecord {
     /// Bits 0..14 = MG PSQT index (≤ 351); EG = MG + 32 (≤ 383).
     /// Bit 15 = piece sign (set = "them", subtracted).
@@ -113,12 +114,8 @@ impl FeatureRecord {
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
 
-        Self {
+        let mut record = Self {
             piece_idx,
-            passed_pawn: array::from_fn(|i| (sf.passed_pawn[i] * sign) as i8),
-            enemy_king_dist: array::from_fn(|i| (sf.enemy_king_dist[i] * sign) as i8),
-            phalanx: array::from_fn(|i| (sf.phalanx[i] * sign) as i8),
-            defended_pawn: array::from_fn(|i| (sf.defended_pawn[i] * sign) as i8),
             mobility,
             safety_us: pack_safety(saf_us),
             safety_them: pack_safety(saf_them),
@@ -126,16 +123,12 @@ impl FeatureRecord {
             phase_counts,
             open_raw,
             static_eval: evaluate_fast(&pos, &acc, phase) as i16,
-            xray_ortho: (sf.xray_ortho * sign) as i8,
-            bishop_pair: (sf.bishop_pair_diff * sign) as i8,
-            rook_open: (sf.rook_open_diff * sign) as i8,
-            doubled_pawn: (sf.doubled_pawn_diff * sign) as i8,
-            isolated_pawn: (sf.isolated_pawn_diff * sign) as i8,
-            backward_pawn: (sf.backward_pawn_diff * sign) as i8,
-            tempo: (sf.tempo * sign) as i8,
-            minor_behind_pawn: (sf.minor_behind_pawn_diff * sign) as i8,
             piece_count,
-        }
+            ..Default::default()
+        };
+
+        record.pack_terms(&sf, sign);
+        record
     }
 }
 
@@ -319,9 +312,22 @@ fn unpack_safety(raw: [u8; 4]) -> SafetyMetrics {
     }
 }
 
-// TermSource impls bridging FeatureRecord → each generic term's scatter.
-macro_rules! impl_fr_sources {
-    ( $( ($term:ty, scalar, $field:ident) ),* ; $( ($arr_term:ty, array, $arr_field:ident, $n:literal) ),* ) => {
+macro_rules! record_terms {
+    (
+        scalar { $( ($term:ty, $field:ident, $src:ident) ),* $(,)? }
+        array  { $( ($arr_term:ty, $arr_field:ident, $arr_src:ident, $n:literal) ),* $(,)? }
+    ) => {
+        impl FeatureRecord {
+            fn pack_terms(&mut self, sf: &SharedFeatures, sign: i32) {
+                $( self.$field = (sf.$src * sign) as i8; )*
+                $(
+                    for i in 0..$n {
+                        self.$arr_field[i] = (sf.$arr_src[i] * sign) as i8;
+                    }
+                )*
+            }
+        }
+
         $(
             impl term::TermSource<$term> for FeatureRecord {
                 type Input = f64;
@@ -341,20 +347,23 @@ macro_rules! impl_fr_sources {
     };
 }
 
-impl_fr_sources! {
-    (BishopPairTerm, scalar, bishop_pair),
-    (RookOpenTerm, scalar, rook_open),
-    (DoubledPawnTerm, scalar, doubled_pawn),
-    (IsolatedPawnTerm, scalar, isolated_pawn),
-    (BackwardPawnTerm, scalar, backward_pawn),
-    (TempoTerm, scalar, tempo),
-    (MinorBehindPawnTerm, scalar, minor_behind_pawn),
-    (XrayTerm, scalar, xray_ortho);
-
-    (PassedPawnTerm, array, passed_pawn, 6),
-    (EnemyKingDistTerm, array, enemy_king_dist, 6),
-    (PhalanxTerm, array, phalanx, 6),
-    (DefendedPawnTerm, array, defended_pawn, 6)
+record_terms! {
+    scalar {
+        (BishopPairTerm, bishop_pair, bishop_pair_diff),
+        (RookOpenTerm, rook_open, rook_open_diff),
+        (DoubledPawnTerm, doubled_pawn, doubled_pawn_diff),
+        (IsolatedPawnTerm, isolated_pawn, isolated_pawn_diff),
+        (BackwardPawnTerm, backward_pawn, backward_pawn_diff),
+        (TempoTerm, tempo, tempo),
+        (MinorBehindPawnTerm, minor_behind_pawn, minor_behind_pawn_diff),
+        (XrayTerm, xray_ortho, xray_ortho),
+    }
+    array {
+        (PassedPawnTerm, passed_pawn, passed_pawn, 6),
+        (EnemyKingDistTerm, enemy_king_dist, enemy_king_dist, 6),
+        (PhalanxTerm, phalanx, phalanx, 6),
+        (DefendedPawnTerm, defended_pawn, defended_pawn, 6),
+    }
 }
 
 impl TermSource<MobilityTerm> for FeatureRecord {
