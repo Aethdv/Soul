@@ -21,6 +21,7 @@ use crate::{
             MinorBehindPawnTerm, PassedPawnTerm, PhalanxTerm, RookOpenTerm, SharedFeatures, TempoTerm, XrayTerm, evaluate_fast,
             extract_phase, scatter_all_terms,
         },
+        eval_params::ATTACKER,
         mobility::{
             KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, OPEN_UNITY, SafetyMetrics, SideMetrics,
             compute_openness_raw,
@@ -173,8 +174,8 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
     let shield_w = values[l.king_safety_offset];
     let ortho_w = values[l.king_safety_offset + 1];
     let diag_w = values[l.king_safety_offset + 2];
-    let us_attacker_w = values[l.attacker_offset + us.attackers.min(5)];
-    let them_attacker_w = values[l.attacker_offset + them.attackers.min(5)];
+    let us_attacker_w = values[l.attacker_offset + us.attackers.min(ATTACKER.len() - 1)];
+    let them_attacker_w = values[l.attacker_offset + them.attackers.min(ATTACKER.len() - 1)];
     let safety_diff = us.score(shield_w, ortho_w, diag_w, us_attacker_w) - them.score(shield_w, ortho_w, diag_w, them_attacker_w);
     let xray_val = f64::from(record.xray_ortho) * values[l.xray_offset];
 
