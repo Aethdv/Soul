@@ -361,7 +361,7 @@ mod tests {
 
     use soul::{
         core::{board::Position, psqt::LAYOUT},
-        engine::eval_params::{BLOCKS, collect_parameters},
+        engine::eval_params::{BLOCKS, PHASE, collect_parameters},
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record},
     };
 
@@ -467,23 +467,34 @@ mod tests {
         }
     }
 
+    /// The phase block keeps its shipped weights whatever else a test vector holds.
+    /// Junk or zeros there make `phase_raw` negative on any real position, and a
+    /// phase clamped to 0 zeroes `d_mg` and tapers the king-safety block away, so
+    /// half of every gradient gets compared as 0 against 0.
+    fn with_phase(mut values: Vec<f64>) -> Vec<f64> {
+        for (pt, &w) in PHASE.iter().enumerate() {
+            values[LAYOUT.phase_offset + pt] = f64::from(w);
+        }
+        values
+    }
+
     fn full_values() -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.total];
 
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
-        values
+        with_phase(values)
     }
 
-    // Isolates one LinearTerm: nonzero values in `range`, zero elsewhere.
+    // Isolates one LinearTerm: nonzero values in `range`, the phase block, zero elsewhere.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.total];
 
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
-        values
+        with_phase(values)
     }
 
     #[test]
