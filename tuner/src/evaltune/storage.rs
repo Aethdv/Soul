@@ -5,7 +5,7 @@
 //! fingerprint before the train/val split is set up.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{self, BufReader, BufWriter},
 };
@@ -216,7 +216,8 @@ fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunab
 /// momentum and gradient history, frozen only if the code says so.
 ///
 /// # Errors
-/// Returns an error if the file cannot be opened or parsed.
+/// Returns an error if the file cannot be opened or parsed, or if the layout
+/// renamed a parameter it holds.
 pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64]) -> Result<CheckpointData, CheckpointError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -244,14 +245,34 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     let current_hash = compute_layout_hash(tunables);
 
     if cp.hash != current_hash {
-        eprintln!(
-            "{}Warning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x}){}",
-            color::ansi_fg((218, 165, 32)),
-            cp.hash,
-            current_hash,
-            palette::RESET,
-        );
-        eprintln!("New parameters will use current default values.");
+        // Names leaving while others arrive is a rename: the trained values sit
+        // unreachable under the old names while the new ones resume at defaults.
+        let live: BTreeSet<&str> = tunables.iter().map(|t| t.name.as_str()).collect();
+        let saved: BTreeSet<&str> = cp.params.keys().map(String::as_str).collect();
+        let dropped: Vec<&str> = saved.difference(&live).copied().collect();
+        let added = live.difference(&saved).count();
+
+        if dropped.is_empty() || added == 0 {
+            eprintln!(
+                "{}Warning: Checkpoint layout hash mismatch! (Saved: {:x}, Current: {:x}){}",
+                color::ansi_fg((218, 165, 32)),
+                cp.hash,
+                current_hash,
+                palette::RESET,
+            );
+            eprintln!("New parameters will use current default values.");
+        } else {
+            eprintln!(
+                "{}[!] Error: {} checkpoint parameter(s) left and {added} arrived, starting with {}{}",
+                color::ansi_fg((225, 89, 91)),
+                dropped.len(),
+                dropped[..dropped.len().min(3)].join(", "),
+                palette::RESET,
+            );
+            eprintln!("A rename resumes the new names at defaults. Start fresh, or check out the layout that wrote it.");
+
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Checkpoint layout renamed parameters").into());
+        }
     }
 
     for t in tunables {
@@ -392,6 +413,59 @@ mod tests {
         assert_eq!(d.frozen, [true, true, false]);
         assert_eq!(d.best_val_params, [1.5, 2.5, 30.0]);
         assert_eq!(d.best_train_params, [3.5, 4.5, 30.0]);
+    }
+
+    #[test]
+    fn a_rename_refuses_to_resume_but_a_removal_does_not() {
+        let tunables = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true)];
+
+        let state = TrainerState {
+            epoch: 7,
+            lr_scale: 1.0,
+            k: 1.0,
+            k_ref: 1.0,
+            k_momentum: 0.0,
+            best_val_loss: 0.2,
+            best_val_epoch: 1,
+            val_smooth: 0.2,
+            best_val_smooth: 0.2,
+            best_train_loss: 0.3,
+            best_train_epoch: 1,
+            train_smooth: 0.3,
+            best_train_smooth: 0.3,
+            plateau_count: 0,
+            rng_seed: 1,
+            split_seed: 2,
+            dataset: 3,
+            dataset_path: "data/test.txt",
+            values: &[10.0, 20.0],
+            momentum: &[0.1, 0.2],
+            ema: &[9.0, 19.0],
+            grad_ema: &[0.01, 0.02],
+            stagnant: &[0, 0],
+            frozen: &[false, true],
+            best_val_params: &[1.5, 2.5],
+            best_train_params: &[3.5, 4.5],
+        };
+
+        let path = std::env::temp_dir().join(format!("soul_ckpt_renamed_test_{}.json", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_checkpoint(path, &tunables, &state).unwrap();
+
+        let renamed = [tunable("alpha", 0, 1.0, false), tunable("gamma", 1, 30.0, false)];
+        let refused = load_checkpoint(path, &renamed, &[1.0, 30.0]);
+
+        // Nothing left in the layout wants beta's state.
+        let shrunk = [tunable("alpha", 0, 1.0, false)];
+        let resumed = load_checkpoint(path, &shrunk, &[1.0]);
+
+        std::fs::remove_file(path).ok();
+
+        assert!(refused.is_err(), "a renamed parameter must not resume");
+
+        let d = resumed.expect("a removed parameter must still resume the rest");
+        assert_eq!(d.values, [10.0], "alpha keeps its trained value across the removal");
+        assert_eq!(d.momentum, [0.1], "and its momentum");
     }
 
     #[test]
