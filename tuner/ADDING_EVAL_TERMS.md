@@ -148,6 +148,7 @@ The right side is the `BucketUpstreams` field that feeds this term's `scatter`. 
 ### 6. Oracle test, then run it
 
 Add a per-term test in `tape.rs`: a `term_for` arm, a `test_*_term_oracle`, and a fen that imbalances the feature (without one the term is never exercised, which is how the gap stays invisible).
+`test_encoded_block_coverage_oracle` fails naming your block if the fen you added doesn't reach it, or if Step 5 missed `eval_record`.
 Then:
 
 ```sh

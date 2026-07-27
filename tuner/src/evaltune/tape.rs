@@ -361,6 +361,7 @@ mod tests {
 
     use soul::{
         core::{board::Position, psqt::LAYOUT},
+        engine::eval_params::{BLOCKS, collect_parameters},
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record},
     };
 
@@ -467,7 +468,7 @@ mod tests {
     }
 
     fn full_values() -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len];
+        let mut values = vec![0.0f64; LAYOUT.total];
 
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
@@ -477,7 +478,7 @@ mod tests {
 
     // Isolates one LinearTerm: nonzero values in `range`, zero elsewhere.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
-        let mut values = vec![0.0f64; LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len];
+        let mut values = vec![0.0f64; LAYOUT.total];
 
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
@@ -641,6 +642,33 @@ mod tests {
                     term_for(i),
                 );
             }
+        }
+    }
+
+    /// `eval_record` is written out by hand, term by term, while the layout and
+    /// the scatter are generated. A term that reaches both and misses the cached
+    /// forward is absent from every encoded epoch, and the drift asserts above
+    /// stay quiet because both sides of them agree on the wrong score. Bump each
+    /// block and watch the score move.
+    #[test]
+    fn test_encoded_block_coverage_oracle() {
+        let base: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+
+        let records: Vec<FeatureRecord> = FENS
+            .iter()
+            .map(|fen| FeatureRecord::from_entry(&SoulEntry::from_board(&Position::from_fen(fen), TARGET, None, Some(20))))
+            .collect();
+
+        for block in BLOCKS {
+            let mut bumped = base.clone();
+
+            for slot in &mut bumped[block.offset..block.offset + block.len] {
+                *slot += 100.0;
+            }
+
+            let moved = records.iter().any(|r| (eval_record(r, &base) - eval_record(r, &bumped)).abs() > 1e-9);
+
+            assert!(moved, "block `{}` never moves the cached eval: missing from eval_record, or no FEN reaches it", block.name);
         }
     }
 }
