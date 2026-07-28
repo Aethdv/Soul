@@ -1016,6 +1016,25 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
     );
 }
 
+/// The gauge reports how hard it pulled; this reads what the pull achieved.
+///
+/// A run can hold a statistic perfectly and still ship an eval off the scale
+/// `search_params` was written against, which is worth −25 Elo and looks like
+/// nothing in the loss. The tail EMA averages vectors that are individually on
+/// the reference and lands fractionally under it, so the bar sits well clear of
+/// that rather than at the gauge's own 1e-6.
+fn warn_off_scale(shipped: f64) {
+    if (shipped - 1.0).abs() <= 0.01 {
+        return;
+    }
+
+    eprintln!(
+        "{}[!] Warning: the parameters ship at {shipped:.3}× the reference scale.\n\
+         [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}",
+        color::ansi_fg((225, 89, 91)),
+    );
+}
+
 /// Warns when the run's K finished against `k_min` or `k_max`.
 ///
 /// Both live modes clamp: the golden search never leaves its bracket and `on_batch` clamps the
@@ -1894,6 +1913,8 @@ fn train_loop(
     let v = palette::fg(palette::VALUE);
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
     println!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}");
+
+    warn_off_scale(Gauge::measure(&gauge.probe, &best_val_params) / gauge.reference);
 
     warn_on_clamped_k(config, k_ctrl.k());
     calibration_report(ctx, &best_val_params, k_ctrl.k());
