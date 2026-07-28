@@ -1639,6 +1639,8 @@ fn train_loop(
                 "epochs": epochs_run,
                 "best_val_loss": best_val_loss,
                 "best_val_epoch": best_val_epoch,
+                "best_train_loss": best_train_loss,
+                "best_train_epoch": best_train_epoch,
                 "params": quantized,
                 "sensitivity": grad_ema_per_param,
             }),

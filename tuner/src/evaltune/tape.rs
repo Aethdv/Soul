@@ -371,7 +371,7 @@ mod tests {
         engine::{
             combiner::Accumulators,
             eval::evaluate,
-            eval_params::{BLOCKS, KING_DANGER, PHASE, collect_parameters},
+            eval_params::{BLOCKS, PHASE, collect_parameters},
         },
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
@@ -524,6 +524,10 @@ mod tests {
         }
     }
 
+    /// Fixed rather than read from `KING_DANGER`: the derivatives have to hold at
+    /// any curvature, and a shipped zero leaves the slope test verifying no curve.
+    const TEST_CURVE: f64 = 32.0;
+
     fn curvature(c: f64) -> CombinerParams<f64> {
         CombinerParams { king_danger: c }
     }
@@ -534,7 +538,7 @@ mod tests {
     #[test]
     fn test_king_danger_slope_oracle() {
         let phase = f64::from(TOTAL_PHASE);
-        let shipped = curvature(f64::from(KING_DANGER[0]));
+        let shipped = curvature(TEST_CURVE);
         let h = 32.0;
 
         for p in [0.0, 64.0, 150.0, 300.0, 465.0] {
@@ -557,19 +561,20 @@ mod tests {
     #[test]
     fn test_king_danger_curvature_oracle() {
         let phase = f64::from(TOTAL_PHASE);
-        let c = f64::from(KING_DANGER[0]);
-        let h = 8.0;
+        // The curve is linear in its curvature, so the gradient at any point equals
+        // the secant over any interval. Wide, so the trunc inside it averages out.
+        let span = 64.0;
 
         for (us, them) in [(0.0, 0.0), (150.0, 0.0), (0.0, 300.0), (465.0, 150.0)] {
             let buckets = danger_buckets(us, them);
             let mut grads = vec![0.0f64; LAYOUT.total];
 
-            LinearCombiner::backward(&buckets, phase, &curvature(c), 1.0, &mut grads);
+            LinearCombiner::backward(&buckets, phase, &curvature(TEST_CURVE), 1.0, &mut grads);
             let analytic = grads[LAYOUT.king_danger_offset];
 
-            let hi = LinearCombiner::forward(&buckets, phase, &curvature(c + h));
-            let lo = LinearCombiner::forward(&buckets, phase, &curvature(c - h));
-            let measured = (hi - lo) / (2.0 * h);
+            let hi = LinearCombiner::forward(&buckets, phase, &curvature(span));
+            let lo = LinearCombiner::forward(&buckets, phase, &curvature(0.0));
+            let measured = (hi - lo) / span;
 
             assert!(
                 (analytic - measured).abs() < 0.05,

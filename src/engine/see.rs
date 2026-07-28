@@ -15,27 +15,27 @@
 //! the chain stops short: illegal recapture, not a trade. A `us` bool
 //! tracks who owns the trade; when flipped, break-even isn't good enough.
 
-use crate::{
-    core::{
-        board::{
-            Position,
-            attacks::{Pins, all_attackers_to},
-            bitboard::{atk_bishop, atk_rook, line_bb},
-        },
-        defs::{Bitboard, Color, PieceType, Square},
-        moves::Move,
+use crate::core::{
+    board::{
+        Position,
+        attacks::{Pins, all_attackers_to},
+        bitboard::{atk_bishop, atk_rook, line_bb},
     },
-    engine::eval_params::MG_MATERIAL,
+    defs::{Bitboard, Color, PieceType, Square},
+    moves::Move,
 };
 
-/// `King = 0` because the king is never captured.
+/// SEE's own scale, deliberately not the eval's `MG_MATERIAL`. Shifting a constant
+/// from `material[pt]` into every `PSQT[pt][sq]` leaves the eval bit-identical, so
+/// the tuner can move material anywhere at no cost to its loss; the thresholds
+/// callers pass are in these units and need them to hold still.
 const SEE_VALUE: [i32; 8] = {
     let mut v = [0i32; 8];
-    v[PieceType::Pawn.as_usize()] = MG_MATERIAL[0];
-    v[PieceType::Knight.as_usize()] = MG_MATERIAL[1];
-    v[PieceType::Bishop.as_usize()] = MG_MATERIAL[2];
-    v[PieceType::Rook.as_usize()] = MG_MATERIAL[3];
-    v[PieceType::Queen.as_usize()] = MG_MATERIAL[4];
+    v[PieceType::Pawn.as_usize()] = 92;
+    v[PieceType::Knight.as_usize()] = 373;
+    v[PieceType::Bishop.as_usize()] = 372;
+    v[PieceType::Rook.as_usize()] = 568;
+    v[PieceType::Queen.as_usize()] = 1160;
     v
 };
 
@@ -225,14 +225,11 @@ mod tests {
     //! of these cases with a one-line failure.
 
     use super::*;
-    use crate::{
-        core::board::Position,
-        engine::{eval_params::MG_MATERIAL, movegen::gen_legal_moves},
-    };
+    use crate::{core::board::Position, engine::movegen::gen_legal_moves};
 
     macro_rules! pc {
         ($($n:ident = $p:expr;)*) => {
-            $(const fn $n() -> i32 { MG_MATERIAL[$p as usize] })*
+            $(const fn $n() -> i32 { SEE_VALUE[$p as usize] })*
         };
     }
 
@@ -241,6 +238,13 @@ mod tests {
         n = PieceType::Knight;
         r = PieceType::Rook;
         q = PieceType::Queen;
+    }
+
+    /// Every other assertion here is written in these units, so a shifted table
+    /// rescales the whole suite and all of them still pass.
+    #[test]
+    fn the_exchange_scale_holds_still() {
+        assert_eq!(SEE_VALUE[..6], [92, 373, 372, 568, 1160, 0]);
     }
 
     /// Resolve a UCI move string against the legal move list.
