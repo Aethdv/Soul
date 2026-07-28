@@ -94,6 +94,7 @@ impl KController {
         config: &EvalTuneConfig,
         ctx: &TrainerContext,
         values: &[f64],
+        defaults: &[f64],
         init_blend: f64,
         resume: Option<&CheckpointData>,
     ) -> Self {
@@ -104,11 +105,19 @@ impl KController {
                 _ => {
                     println!("Optimizing K...");
 
-                    let k = golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                        ctx.val_eval(values, [(kk, init_blend)])[0]
-                    });
+                    let fit = |v: &[f64]| {
+                        golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
+                            ctx.val_eval(v, [(kk, init_blend)])[0]
+                        })
+                    };
 
-                    (k, k, 0.0)
+                    // k_ref is fitted on the defaults: a cold start begins near a zero eval
+                    // where the loss is flat in K, and one frozen at that bracket edge makes
+                    // ref_loss climb all run as the eval grows a scale.
+                    let k = fit(values);
+                    let k_ref = if values == defaults { k } else { fit(defaults) };
+
+                    (k, k_ref, 0.0)
                 },
             },
         };
@@ -548,7 +557,7 @@ fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
     let values: Vec<f64> = params.iter().map(|p| p.value).collect();
 
     let blend = config.wdl_schedule.clone().into_scheduler().blend(1, config.epochs);
-    let k = KController::bootstrap(config, ctx, &values, blend, None).k();
+    let k = KController::bootstrap(config, ctx, &values, &values, blend, None).k();
 
     let free: Vec<usize> = params.iter().filter(|p| !p.is_fixed).map(|p| p.idx).collect();
     let n = params.len();
@@ -1103,7 +1112,7 @@ fn train_loop(
     let wdl_scheduler = config.wdl_schedule.clone().into_scheduler();
 
     let init_blend = wdl_scheduler.blend(1, config.epochs);
-    let mut k_ctrl = KController::bootstrap(config, ctx, &values, init_blend, resume.as_ref());
+    let mut k_ctrl = KController::bootstrap(config, ctx, &values, &default_values, init_blend, resume.as_ref());
 
     let v = palette::fg(palette::VALUE);
     let lab = palette::fg(palette::LABEL);
