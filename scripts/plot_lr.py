@@ -14,7 +14,7 @@ values called out.
 Options:
     -o, --output PATH   image path (default: <log>_lr.png)
     --log-scale         logarithmic y axis
-    --dpi INT           output DPI (default: 200)
+    --dpi INT           output DPI (default: 300)
     --width / --height  figure size in inches (default: 12 × 5.5)
     --show              open interactively after saving
 """
@@ -92,7 +92,7 @@ def plot_lr(
     log_path: str,
     output: str | None = None,
     log_scale: bool = False,
-    dpi: int = 200,
+    dpi: int = sp.DPI,
     fig_width: float = 12.0,
     fig_height: float = 5.5,
     show: bool = False,
@@ -178,7 +178,7 @@ def main() -> None:
     ap.add_argument("log", help="path to evaltune .jsonl log")
     ap.add_argument("-o", "--output", default=None)
     ap.add_argument("--log-scale", action="store_true", help="logarithmic y axis")
-    ap.add_argument("--dpi", type=int, default=200)
+    ap.add_argument("--dpi", type=int, default=sp.DPI)
     ap.add_argument("--width", type=float, default=12.0)
     ap.add_argument("--height", type=float, default=5.5)
     ap.add_argument("--show", action="store_true")

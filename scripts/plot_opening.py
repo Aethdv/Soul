@@ -19,7 +19,7 @@ Options:
     -H, --hash MB       transposition table size in MB (default: engine default)
     -d, --depth INT     fixed search depth per move
     -o, --output PATH   image path (default: opening_prefs.png)
-    --dpi INT           output DPI (default: 250)
+    --dpi INT           output DPI (default: 300)
     --show              open interactively after saving
 """
 
@@ -193,7 +193,7 @@ def main() -> None:
     ap.add_argument("--hash",     "-H", type=int, default=None)
     ap.add_argument("--depth",    "-d", type=int, default=None)
     ap.add_argument("--output",   "-o", default=None)
-    ap.add_argument("--dpi",            type=int, default=250)
+    ap.add_argument("--dpi",            type=int, default=sp.DPI)
     ap.add_argument("--show",           action="store_true")
     args = ap.parse_args()
 

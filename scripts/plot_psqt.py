@@ -18,7 +18,7 @@ Options:
     --eg-only             Endgame table only
     --material            Show absolute values (default: positional delta)
     --shared-scale        One color scale per phase across all pieces (all view)
-    --dpi INT             Output DPI (default: 200)
+    --dpi INT             Output DPI (default: 300)
     --show                Open interactively after saving
 """
 
@@ -136,7 +136,7 @@ def plot_psqt(
     eg_only:      bool  = False,
     material:     bool  = False,
     shared_scale: bool  = False,
-    dpi:          int   = 200,
+    dpi:          int   = sp.DPI,
     show:         bool  = False,
 ) -> None:
 
@@ -147,12 +147,20 @@ def plot_psqt(
     except FileNotFoundError:
         sys.exit(f"Error: '{cp}' not found.")
     except json.JSONDecodeError as e:
+        # The run log sits beside the checkpoint under a name four characters
+        # away, and json reports a whole file of objects as trailing garbage.
+        if cp.suffix == ".jsonl" or "Extra data" in str(e):
+            sys.exit(f"Error: '{cp}' is a run log. PSQTs come from the checkpoint, e.g. evaltune_checkpoint.json.")
         sys.exit(f"Error: bad JSON ({e})")
 
-    values = data.get("values")
+    # A checkpoint stores per-parameter optimizer state, `{name: {value, momentum,
+    # …}}`; the flat `{name: number}` is what older ones carried.
+    params = data.get("params")
+    values = ({k: v["value"] for k, v in params.items() if isinstance(v, dict) and "value" in v}
+              if isinstance(params, dict) else data.get("values"))
 
-    if not isinstance(values, dict):
-        sys.exit("Error: checkpoint missing 'values' dict.")
+    if not isinstance(values, dict) or not values:
+        sys.exit("Error: checkpoint carries no parameters.")
 
     piece_name = piece_arg.strip().capitalize()
 
@@ -310,7 +318,7 @@ def main() -> None:
                     help="show absolute values (default: positional delta)")
     ap.add_argument("--shared-scale",     action="store_true",
                     help="one color scale per phase across all pieces")
-    ap.add_argument("--dpi",    type=int, default=200)
+    ap.add_argument("--dpi",    type=int, default=sp.DPI)
     ap.add_argument("--show",             action="store_true")
     args = ap.parse_args()
 

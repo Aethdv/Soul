@@ -24,7 +24,7 @@ Options:
         --fresh            clear TT/history between positions (independent evals)
         --clamp INT        fix the y-axis cp range (default: auto from P98)
     -o, --output PATH      image path (default: <pgn>_eval.png)
-        --dpi INT          output DPI (default: 200)
+        --dpi INT          output DPI (default: 300)
         --show             open interactively after saving
     -wr, --white-relative  treat the engine's score as White-relative
 """
@@ -100,8 +100,7 @@ def _evaluate_game(engine: str, fens: list[str], *, nodes: int | None = None,
             if chess.Board(fen).is_checkmate():
                 r = uci.Score(-uci.MATE if fen.split()[1] == "w" else uci.MATE, 0)
             else:
-                # Clear TT/history so each eval stands alone; the default carries
-                # it across the walk, mirroring how the engine sees a real game.
+                # Clear TT/history.
                 if fresh:
                     eng.new_game()
                 r = eng.search(f"fen {fen}", lim)
@@ -181,7 +180,7 @@ def plot_game(
     fresh:    bool       = False,
     clamp:    int | None = None,
     output:   str | None = None,
-    dpi:      int        = 200,
+    dpi:      int        = sp.DPI,
     show:     bool       = False,
     white_relative: bool = False,
     compare_white_relative: bool = False,
@@ -392,7 +391,7 @@ def main() -> None:
     ap.add_argument("--fresh", action="store_true", help="clear TT/history between positions")
     ap.add_argument("--clamp", type=int, default=None, help="fix y-axis cp range (default: auto)")
     ap.add_argument("--output", "-o", default=None)
-    ap.add_argument("--dpi", type=int, default=200)
+    ap.add_argument("--dpi", type=int, default=sp.DPI)
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--white-relative", "-wr", action="store_true", default=False)
     args = ap.parse_args()
