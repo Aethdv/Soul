@@ -52,6 +52,8 @@ struct Args {
     init: Option<String>,
     #[arg(long)]
     lr_mult: Option<f64>,
+    #[arg(long)]
+    log: Option<String>,
     #[arg(long, action = clap::ArgAction::SetTrue)]
     help: bool,
 }
@@ -292,6 +294,10 @@ fn run_evaltune(args: Args) -> bool {
 
     if let Some(seed) = args.seed {
         tuner_config.evaltune.seed = Some(seed);
+    }
+
+    if let Some(ref path) = args.log {
+        tuner_config.evaltune.log_path = path.clone();
     }
 
     if let Some(seed) = args.split_seed {

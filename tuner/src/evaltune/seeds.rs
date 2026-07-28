@@ -45,7 +45,7 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
     println!("\n{lab}Seed spread:{RESET} {val}{count}{RESET} seeds × {val}{epochs}{RESET} epochs on {dataset}\n");
     for (i, &seed) in seeds.iter().enumerate() {
         let start = Instant::now();
-        let ok = run_one(dataset, config_path, epochs, seed);
+        let ok = run_one(dataset, config_path, epochs, seed, log_path);
         let elapsed = start.elapsed().as_secs_f32();
 
         let kept = if ok { fs::copy("evaltune_best.txt", format!("seed_{seed}_best.txt")).is_ok() } else { false };
@@ -67,7 +67,7 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
 }
 
 /// One training run in its own process, so a failure costs one seed rather than the sweep.
-fn run_one(dataset: &str, config_path: &str, epochs: usize, seed: u64) -> bool {
+fn run_one(dataset: &str, config_path: &str, epochs: usize, seed: u64, log_path: &str) -> bool {
     let Ok(exe) = env::current_exe() else {
         eprintln!("Cannot locate the running binary to spawn a trial.");
         return false;
@@ -85,6 +85,10 @@ fn run_one(dataset: &str, config_path: &str, epochs: usize, seed: u64) -> bool {
         .arg(epochs.to_string())
         .arg("--seed")
         .arg(seed.to_string())
+        // The children have to append where `collect` reads, so the caller's path
+        // goes down with them.
+        .arg("--log")
+        .arg(log_path)
         .stdout(sink)
         .stderr(std::process::Stdio::inherit())
         .status();

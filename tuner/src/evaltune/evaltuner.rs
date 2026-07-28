@@ -1414,7 +1414,24 @@ fn train_loop(
         writeln!(w, "{:>5}  {:>11}  {:>11}  {:>11}  {:>8}", "epoch", "L_train", "L_val", "L_ref", "LR").ok();
     }
 
-    let mut json_logger = JsonLogger::new("evaltune.jsonl").ok();
+    let mut json_logger = JsonLogger::new(&config.log_path).ok();
+
+    // Where a run starts. Inferring it from the epoch number going backwards is
+    // wrong for a resume, which continues the count.
+    if let Some(ref l) = json_logger {
+        l.log(
+            "run",
+            &serde_json::json!({
+                "seed": rng_seed,
+                "split_seed": split_seed,
+                "epochs": config.epochs,
+                "start_epoch": start_epoch,
+                "dataset": dataset_label,
+                "init": format!("{:?}", config.init),
+                "params": all_params.len(),
+            }),
+        );
+    }
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
     let mut optimizer = Lion::new(config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);

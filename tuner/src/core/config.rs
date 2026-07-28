@@ -394,6 +394,10 @@ pub struct EvalTuneConfig {
     /// Handwavy; Below 50: overfit. Above 300: diminishing returns.
     pub batch_size: usize,
     pub epochs: usize,
+    /// Where the run appends its JSONL. Two runs pointed at one path land in one
+    /// file, and whatever reads it then has to choose between them.
+    #[serde(default = "default_log_path")]
+    pub log_path: String,
     pub grad_clip: f64,
     pub k_min: f64,
     pub k_max: f64,
@@ -476,6 +480,10 @@ pub struct EvalTuneConfig {
     /// frequency, the default). Applies only when `phase_balance` is on.
     #[serde(default)]
     pub phase_target: Option<Vec<f64>>,
+}
+
+fn default_log_path() -> String {
+    "evaltune.jsonl".into()
 }
 
 fn default_patience() -> usize {
@@ -617,6 +625,7 @@ impl Default for TunerConfig {
                 loss: LossFn::CrossEntropy,
                 batch_size: 65536,
                 epochs: 4000,
+                log_path: default_log_path(),
                 grad_clip: 1.0,
                 k_min: 0.003,
                 k_max: 0.010,

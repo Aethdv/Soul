@@ -583,13 +583,19 @@ mod tests {
         }
     }
 
+    /// Truncation sites one evaluation passes through, each losing under a unit:
+    /// the PSQT lanes, the two mobility tapers, `(w_atk·weak)/10` per side, the
+    /// bonus and safety tapers, and the curvature per side when it is live.
+    const ROUND_SITES: f64 = 9.0;
+
     /// The property the tuner's gauge trades on: scale the weights and K absorbs it.
     ///
     /// Asserted only where the eval has some size to it, since the truncation sites
-    /// round a near-zero score to noise. Their cost measures at 14 centipawns and
-    /// does not grow with the scale, which is where the tolerance comes from. A
-    /// curvature scaled with the rest instead costs several times that, and only a
-    /// nonzero one can be scaled wrongly, so the sweep carries some.
+    /// round a near-zero score to noise. A site's cost does not grow with the scale,
+    /// but `f·eval(θ)` carries `f` times whatever the base evaluation lost, so the
+    /// tolerance has to. A curvature scaled with the rest instead costs several
+    /// times that, and only a nonzero one can be scaled wrongly, so the sweep
+    /// carries some.
     #[test]
     fn test_score_is_homogeneous_in_its_weights_oracle() {
         let base: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
@@ -617,7 +623,9 @@ mod tests {
                     let (want, got) = (f * plain, eval_f64(&pos, &scaled));
                     asserted += 1;
 
-                    assert!((got - want).abs() <= 20.0, "curve {curve}, ×{f} on '{fen}': {got} against {want}");
+                    let bound = ROUND_SITES * (1.0 + f);
+
+                    assert!((got - want).abs() <= bound, "curve {curve}, ×{f} on '{fen}': {got} against {want}");
                 }
             }
         }
