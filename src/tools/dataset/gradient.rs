@@ -41,9 +41,7 @@ use crate::{
 #[repr(C)]
 #[derive(Default)]
 pub struct FeatureRecord {
-    /// Bits 0..14 = MG PSQT index (≤ 351); EG = MG + 32 (≤ 383).
-    /// Bit 15 = piece sign (set = "them", subtracted).
-    pub piece_idx: [u16; 32],
+    pub piece_slot: [PieceSlot; 32],
     pub passed_pawn: [i8; 6],
     pub enemy_king_dist: [i8; 6],
     pub phalanx: [i8; 6],
@@ -57,6 +55,9 @@ pub struct FeatureRecord {
     pub mat_diffs: [i8; 6],
     /// Piece counts per type, for the tapered phase weight.
     pub phase_counts: [u8; 6],
+    /// Bit `i` set means slot `i` is theirs and subtracts. Sits here so its
+    /// alignment costs no padding.
+    pub piece_signs: u32,
     /// Raw `compute_openness_raw` result; openness = `open_raw / OPEN_UNITY`.
     /// Stored raw (not as a float) to keep the openness math bit-exact.
     pub open_raw: i32,
@@ -73,9 +74,18 @@ pub struct FeatureRecord {
     pub piece_count: u8,
 }
 
-const _: () = assert!(size_of::<FeatureRecord>() == 132);
+const _: () = assert!(size_of::<FeatureRecord>() == 104);
 
 impl FeatureRecord {
+    /// `(mg_index, eg_index, sign)` for the `i`th piece of the gather.
+    #[inline(always)]
+    fn piece(&self, i: usize) -> (usize, usize, f64) {
+        let mg = self.piece_slot[i].mg_index();
+        let sign = if self.piece_signs & (1 << i) == 0 { 1.0 } else { -1.0 };
+
+        (mg, mg + 32, sign)
+    }
+
     /// Startup cost per entry: FEN round-trip + `SharedFeatures::compute`.
     /// A nibble→`Position` decoder would skip the string, but the parse is
     /// negligible next to the feature work. Neither runs in the hot loop.
@@ -109,24 +119,18 @@ impl FeatureRecord {
 
         let sign = if black { -1 } else { 1 };
 
-        let (piece_idx, piece_count, mat_diffs, phase_counts, open_raw) = pack_board(entry);
-
         let acc = pos.get_initial_accumulator();
         let phase = extract_phase(&acc);
 
         let mut record = Self {
-            piece_idx,
             mobility,
             safety_us: pack_safety(saf_us),
             safety_them: pack_safety(saf_them),
-            mat_diffs,
-            phase_counts,
-            open_raw,
             static_eval: evaluate_fast(&pos, &acc, phase) as i16,
-            piece_count,
             ..Default::default()
         };
 
+        record.pack_board(entry);
         record.pack_terms(&sf, sign);
         record
     }
@@ -163,9 +167,11 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     // PSQT: a data-dependent gather over the 384-entry table, the one loop whose
     // index can't be proven in bounds and whose body runs up to 32× per position.
     for i in 0..record.piece_count as usize {
-        let (mg_idx, eg_idx, sign) = decode_piece(record.piece_idx[i]);
+        let (mg_idx, eg_idx, sign) = record.piece(i);
 
-        // SAFETY: mg_idx ≤ 351 (5·64+31), eg_idx = mg_idx+32 ≤ 383 < 384. See `decode_piece`.
+        // SAFETY: `PieceSlot::new` is the only way to build a slot and takes a piece
+        // type ≤ 5 with a mirrored square ≤ 31, so `mg_index() ≤ 5·64+31 = 351` and
+        // `eg_idx = mg_idx+32 ≤ 383`, both inside the 384-entry PSQT block.
         unsafe {
             lane_mg += sign * *values.get_unchecked(mg_idx);
             lane_eg += sign * *values.get_unchecked(eg_idx);
@@ -208,9 +214,9 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
     let l = &psqt::LAYOUT;
 
     for i in 0..record.piece_count as usize {
-        let (mg_idx, eg_idx, sign) = decode_piece(record.piece_idx[i]);
+        let (mg_idx, eg_idx, sign) = record.piece(i);
 
-        // SAFETY: mg_idx ≤ 351, eg_idx = mg_idx+32 ≤ 383 < 384. See `decode_piece`.
+        // SAFETY: as in `eval_record_full`, the bound is `PieceSlot`'s to keep.
         unsafe {
             *grads.get_unchecked_mut(mg_idx) += gradient * sign * mg_w;
             *grads.get_unchecked_mut(eg_idx) += gradient * sign * eg_w;
@@ -233,75 +239,99 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
     scatter_all_terms(record, &upstreams, grads);
 }
 
-/// Sign bit of a packed [`FeatureRecord::piece_idx`] slot.
-const PIECE_SIGN: u16 = 0x8000;
-
-/// Decode a packed piece slot into `(mg_idx, eg_idx, sign)` for the PSQT gather.
+/// One piece's PSQT address, as `piece_type · 32 + mirror_sq`.
 ///
-/// `mg_idx` is the MG PSQT index (≤ 351); `eg_idx = mg_idx + 32` (≤ 383); `sign`
-/// is +1.0 for our pieces, −1.0 for theirs.
-#[inline(always)]
-fn decode_piece(packed: u16) -> (usize, usize, f64) {
-    let mg_idx = (packed & !PIECE_SIGN) as usize;
-    let sign = if packed & PIECE_SIGN != 0 { -1.0 } else { 1.0 };
+/// The table is addressed `piece_type · 64 + mirror_sq`, but `mirror_sq` only
+/// ever reaches 31, so half of every 64-block is unreachable and the index fits
+/// a byte with the blocks packed tight. [`PieceSlot::mg_index`] spreads them
+/// back out.
+#[repr(transparent)]
+#[derive(Clone, Copy, Default)]
+pub struct PieceSlot(u8);
 
-    (mg_idx, mg_idx + 32, sign)
-}
+impl PieceSlot {
+    /// The only constructor, which is what makes the bound in `mg_index` a
+    /// property of the type rather than of its call sites.
+    #[inline(always)]
+    fn new(piece_type: usize, mirror_sq: usize) -> Self {
+        debug_assert!(piece_type <= 5 && mirror_sq <= 31, "slot out of range: {piece_type}, {mirror_sq}");
 
-/// Walk the entry's pieces once, producing the PSQT gather indices, material
-/// differentials, phase counts, and raw openness, STM-normalized.
-///
-/// Mirrors the encoder's nibble layout: bits 0-2 = type, bit 3 = color. An
-/// unmoved-rook code (6) folds back to a rook (3).
-fn pack_board(entry: &SoulEntry) -> ([u16; 32], u8, [i8; 6], [u8; 6], i32) {
-    let mut piece_idx = [0u16; 32];
-    let mut count = 0usize;
-    let mut mat_diffs = [0i32; 6];
-    let mut phase_counts = [0u8; 6];
-    let mut white_pawns = 0u64;
-    let mut black_pawns = 0u64;
-
-    let stm_black = (entry.stm_and_ep & 0x80) != 0;
-    let mut occ = entry.occupancy;
-    let mut idx = 0usize;
-
-    while occ != 0 {
-        let sq = Square(occ.trailing_zeros() as u8);
-        occ &= occ - 1;
-
-        let nibble = super::quant::next_nibble(&entry.pieces, &mut idx);
-        let pt_raw = (nibble & 0x07) as usize;
-        let is_black = (nibble & 0x08) != 0;
-        let pt = if pt_raw == 6 { 3 } else { pt_raw }; // unmoved rook → rook
-        debug_assert!(pt <= 5, "malformed nibble: pt={pt}");
-
-        if pt > 5 {
-            continue;
-        }
-
-        let us_piece = is_black == stm_black;
-        let sq_idx = if is_black { usize::from(sq.0) } else { usize::from(sq.0 ^ 0x38) };
-
-        let mg_idx = (pt * 64 + psqt::mirror_sq(sq_idx)) as u16;
-        piece_idx[count] = if us_piece { mg_idx } else { mg_idx | PIECE_SIGN };
-        count += 1;
-
-        mat_diffs[pt] += if us_piece { 1 } else { -1 };
-        phase_counts[pt] += 1;
-
-        if pt == 0 {
-            let bit = 1u64 << sq.0;
-
-            if is_black {
-                black_pawns |= bit;
-            } else {
-                white_pawns |= bit;
-            }
-        }
+        Self((piece_type * 32 + mirror_sq) as u8)
     }
 
-    let mat_diffs = array::from_fn(|i| mat_diffs[i] as i8);
-    (piece_idx, count as u8, mat_diffs, phase_counts, compute_openness_raw(white_pawns, black_pawns))
+    /// The MG index, at most 351.
+    ///
+    /// `pt · 64 + sq` is `(pt · 32 + sq) + pt · 32`, and `pt · 32` is the slot
+    /// with its square masked away, so restoring the wider stride is one AND and
+    /// one add.
+    #[inline(always)]
+    const fn mg_index(self) -> usize {
+        let slot = self.0 as usize;
+
+        slot + (slot & !31)
+    }
+}
+
+impl FeatureRecord {
+    /// Walks the entry's pieces once, filling the gather slots, their signs, the
+    /// material differentials, the phase counts and the raw openness.
+    ///
+    /// Mirrors the encoder's nibble layout: bits 0-2 = type, bit 3 = color. An
+    /// unmoved-rook code (6) folds back to a rook (3).
+    fn pack_board(&mut self, entry: &SoulEntry) {
+        let mut count = 0usize;
+        let mut mat_diffs = [0i32; 6];
+        let mut phase_counts = [0u8; 6];
+        let mut white_pawns = 0u64;
+        let mut black_pawns = 0u64;
+
+        let stm_black = (entry.stm_and_ep & 0x80) != 0;
+        let mut occ = entry.occupancy;
+        let mut idx = 0usize;
+
+        while occ != 0 {
+            let sq = Square(occ.trailing_zeros() as u8);
+            occ &= occ - 1;
+
+            let nibble = super::quant::next_nibble(&entry.pieces, &mut idx);
+            let pt_raw = (nibble & 0x07) as usize;
+            let is_black = (nibble & 0x08) != 0;
+            let pt = if pt_raw == 6 { 3 } else { pt_raw }; // unmoved rook → rook
+            debug_assert!(pt <= 5, "malformed nibble: pt={pt}");
+
+            if pt > 5 {
+                continue;
+            }
+
+            let us_piece = is_black == stm_black;
+            let sq_idx = if is_black { usize::from(sq.0) } else { usize::from(sq.0 ^ 0x38) };
+
+            self.piece_slot[count] = PieceSlot::new(pt, psqt::mirror_sq(sq_idx));
+
+            if !us_piece {
+                self.piece_signs |= 1 << count;
+            }
+            count += 1;
+
+            mat_diffs[pt] += if us_piece { 1 } else { -1 };
+            phase_counts[pt] += 1;
+
+            if pt == 0 {
+                let bit = 1u64 << sq.0;
+
+                if is_black {
+                    black_pawns |= bit;
+                } else {
+                    white_pawns |= bit;
+                }
+            }
+        }
+
+        self.piece_count = count as u8;
+        self.mat_diffs = array::from_fn(|i| mat_diffs[i] as i8);
+        self.phase_counts = phase_counts;
+        self.open_raw = compute_openness_raw(white_pawns, black_pawns);
+    }
 }
 
 /// Byte layout: [attackers, weak (i8→u8), shield (i8→u8), ortho<<4|diag (4‑bit each)].
@@ -403,5 +433,24 @@ impl TermSource<KingSafetyTerm> for FeatureRecord {
     #[inline(always)]
     fn extract(&self) -> KingSafetyInput {
         KingSafetyInput { us: unpack_safety(self.safety_us), them: unpack_safety(self.safety_them) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bound the PSQT gather's `get_unchecked` rests on, over every slot that
+    /// can exist.
+    #[test]
+    fn every_slot_addresses_its_own_psqt_entry() {
+        for pt in 0..6 {
+            for sq in 0..32 {
+                let mg = PieceSlot::new(pt, sq).mg_index();
+
+                assert_eq!(mg, pt * 64 + sq, "slot ({pt}, {sq}) lands on the wrong entry");
+                assert!(mg + 32 < 384, "slot ({pt}, {sq}) reaches past the table");
+            }
+        }
     }
 }
