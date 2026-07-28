@@ -394,6 +394,10 @@ pub struct EvalTuneConfig {
     /// Handwavy; Below 50: overfit. Above 300: diminishing returns.
     pub batch_size: usize,
     pub epochs: usize,
+    /// Records per shuffled block, or 0 for a full permutation. Blocks trade the
+    /// fresh partition an epoch's reshuffle buys for sequential reads.
+    #[serde(default)]
+    pub shuffle_block: usize,
     /// Where the run appends its JSONL. Two runs pointed at one path land in one
     /// file, and whatever reads it then has to choose between them.
     #[serde(default = "default_log_path")]
@@ -625,6 +629,7 @@ impl Default for TunerConfig {
                 loss: LossFn::CrossEntropy,
                 batch_size: 65536,
                 epochs: 4000,
+                shuffle_block: 0,
                 log_path: default_log_path(),
                 grad_clip: 1.0,
                 k_min: 0.003,

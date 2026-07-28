@@ -33,6 +33,36 @@ const TASK: usize = 1 << 16;
 /// the gamma in `mix` does the job.
 const BUCKET_DOMAIN: u64 = 0xD1B5_4A32_D192_ED03;
 
+/// Permutes blocks of `block` consecutive indices instead of the indices themselves.
+///
+/// The entry list is shuffled once at load, before features are extracted, so a run of
+/// consecutive records is already a random sample of games and a batch drawn from whole
+/// blocks is still unbiased. What it gives up is the fresh partition a full permutation
+/// buys every epoch: positions inside a block travel together for the whole run, and the
+/// blocks themselves are the same on every seed, since the load-time shuffle is seeded by
+/// the fixed split.
+///
+/// What it buys is sequential reads. The gather over `FeatureRecord`s is DRAM latency per
+/// record, and a block turns that back into a stream the prefetcher can follow.
+pub fn fill_blocked(out: &mut [u32], seed: u64, block: usize) {
+    let n = out.len();
+    let blocks = n.div_ceil(block.max(1));
+    let mut order = vec![0u32; blocks];
+
+    Shuffler::new(blocks).fill(&mut order, seed);
+
+    let mut w = 0;
+
+    for &b in &order {
+        let start = b as usize * block;
+
+        for i in start..(start + block).min(n) {
+            out[w] = i as u32;
+            w += 1;
+        }
+    }
+}
+
 pub struct Shuffler {
     /// The bucket each position landed in. Materialized rather than replayed, so the counting
     /// pass and the scattering pass cannot disagree about where an element goes.
@@ -167,6 +197,29 @@ mod tests {
 
         assert!(sorted.iter().copied().eq(0..RAGGED as u32), "output is not a permutation of 0..n");
         assert!(out.iter().copied().ne(0..RAGGED as u32), "output is the identity");
+    }
+
+    #[test]
+    fn blocked_fill_is_still_a_permutation() {
+        for (n, block) in [(1000usize, 64usize), (1000, 7), (64, 64), (5, 8), (1, 4)] {
+            let mut out = vec![0u32; n];
+            fill_blocked(&mut out, 0x5EED, block);
+
+            let mut seen = out.clone();
+            seen.sort_unstable();
+
+            assert!(seen.iter().copied().eq(0..n as u32), "n={n} block={block} is not a permutation");
+        }
+    }
+
+    #[test]
+    fn blocked_fill_keeps_each_block_in_order() {
+        let mut out = vec![0u32; 512];
+        fill_blocked(&mut out, 0x5EED, 64);
+
+        for run in out.chunks(64) {
+            assert!(run.windows(2).all(|w| w[1] == w[0] + 1), "a block came apart: {run:?}");
+        }
     }
 
     #[test]

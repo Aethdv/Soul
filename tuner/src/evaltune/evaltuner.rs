@@ -41,7 +41,7 @@ use crate::core::{
     config::{EvalTuneConfig, Init, KMode, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
     fnv::Fnv1a,
     logger::JsonLogger,
-    shuffle::Shuffler,
+    shuffle::{self, Shuffler},
 };
 
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
@@ -1563,7 +1563,11 @@ fn train_loop(
         }
 
         let t_shuffle = Instant::now();
-        shuffler.fill(&mut indices, rng.u64(..));
+        if config.shuffle_block > 0 {
+            shuffle::fill_blocked(&mut indices, rng.u64(..), config.shuffle_block);
+        } else {
+            shuffler.fill(&mut indices, rng.u64(..));
+        }
         let shuffle_secs = t_shuffle.elapsed().as_secs_f32();
 
         let mut train_loss = 0.0;
