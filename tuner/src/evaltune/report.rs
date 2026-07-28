@@ -288,3 +288,36 @@ fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
         text.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use soul::engine::eval_params::collect_parameters;
+
+    use super::*;
+
+    /// The output is text, so neither the compiler nor the oracle reads it.
+    #[test]
+    fn the_paste_block_reproduces_eval_params() {
+        let params = collect_parameters();
+        let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+
+        // The colored form is the one with the header comments; values as their own
+        // baseline mark nothing changed, so no ANSI lands in it.
+        let mut printed = Vec::new();
+        write_params(&mut printed, &params, &values, Some(&values));
+        let printed = String::from_utf8(printed).expect("the paste block is utf-8");
+        let printed = printed
+            .trim_start_matches('\n')
+            .trim_start_matches("// --- Tuned Parameters (paste into eval_params.rs) ---\n")
+            .trim_end()
+            .trim_end_matches("// -------------------------------------")
+            .trim_end();
+
+        let source = include_str!("../../../src/engine/eval_params.rs");
+        let start = source.find("define_psqt_params! {").expect("no psqt block in eval_params.rs");
+        let last = source.find("define_weight_params! {").expect("no weight block in eval_params.rs");
+        let end = last + source[last..].find("\n}").expect("the weight block never closes") + 2;
+
+        assert_eq!(printed, &source[start..end], "the paste block no longer reproduces eval_params.rs");
+    }
+}
