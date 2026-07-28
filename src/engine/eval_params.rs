@@ -634,11 +634,11 @@ define_psqt_params! {
 
 define_simple_params! {
     material = [
-         CS(  92,  124), // Pawn
-         CS( 373,  419), // Knight
-         CS( 372,  462), // Bishop
-         CS( 568,  867), // Rook
-         CS(1160, 1468), // Queen
+         S(  92,  124), // Pawn
+         S( 373,  419), // Knight
+         S( 372,  462), // Bishop
+         S( 568,  867), // Rook
+         S(1160, 1468), // Queen
          CS(   0,    0), // King
     ],
 }

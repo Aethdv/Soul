@@ -35,7 +35,7 @@ use super::{
     training::*,
 };
 use crate::core::{
-    config::{EvalTuneConfig, KMode, LossFn, LrScheduleConfig},
+    config::{EvalTuneConfig, Init, KMode, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
     fnv::Fnv1a,
     logger::JsonLogger,
     shuffle::Shuffler,
@@ -1092,7 +1092,10 @@ fn train_loop(
     });
 
     let (start_epoch, mut lr_scale) = resume.as_ref().map_or((1, 1.0), |d| (d.epoch, d.lr_scale));
-    let mut values = resume.as_ref().map_or_else(|| default_values.clone(), |d| d.values.clone());
+    let mut values = match resume.as_ref() {
+        Some(d) => d.values.clone(),
+        None => seed_values(&all_params, config.init, rng_seed),
+    };
     let mut momentum = resume.as_ref().map_or_else(|| vec![0.0; default_values.len()], |d| d.momentum.clone());
 
     let is_constant_schedule = matches!(config.lr_schedule, LrScheduleConfig::Constant { .. });
@@ -1126,6 +1129,10 @@ fn train_loop(
 
     if split_seed != VAL_SPLIT_SEED {
         println!("{lab}Split seed:{RESET} {v}{split_seed}{RESET} (L_val does not compare to default-split runs)");
+    }
+
+    if config.init != Init::Default && resume.is_none() {
+        println!("{lab}Init:{RESET}       {v}{:?}{RESET} (cold start; K is meaningless until material grows)", config.init);
     }
 
     let initial_values = values.clone();
@@ -1890,6 +1897,22 @@ fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
         .collect()
 }
 
+/// The starting parameter vector for a fresh run; a resume overrides it with the
+/// checkpoint's. Fixed slots hold their declared values under every mode.
+fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
+    let mut rng = fastrand::Rng::with_seed(seed);
+
+    params
+        .iter()
+        .map(|p| match init {
+            _ if p.is_fixed => p.value,
+            Init::Default => p.value,
+            Init::Zero => 0.0,
+            Init::Random => (rng.f64() * 2.0 - 1.0) * RANDOM_INIT_SPREAD,
+        })
+        .collect()
+}
+
 /// Per-parameter range the sign step may not leave, unbounded outside mobility
 /// and the king-danger curvature.
 fn build_clip_mask(params: &[Tunable]) -> Vec<(f64, f64)> {
@@ -1917,6 +1940,29 @@ mod tests {
     fn wobble(i: usize, amp: f64) -> f64 {
         let x = (i as f64 * 12.9898).sin() * 43758.545_312;
         (x - x.floor()).mul_add(2.0, -1.0) * amp
+    }
+
+    /// A cold start that zeroed `phase` would clamp `phase_raw` to 0 on every
+    /// position, tapering the eval to its endgame half without failing anything.
+    #[test]
+    fn a_cold_start_leaves_the_fixed_slots_alone() {
+        let params = eval_params::collect_parameters();
+
+        for init in [Init::Zero, Init::Random] {
+            let values = seed_values(&params, init, 7);
+
+            for (p, v) in params.iter().zip(&values) {
+                if p.is_fixed {
+                    assert_eq!(*v, p.value, "{init:?} moved fixed slot {}", p.name);
+                } else {
+                    assert!(v.abs() <= RANDOM_INIT_SPREAD, "{init:?} left {} at {v}", p.name);
+                }
+            }
+        }
+
+        let phase = psqt::LAYOUT.phase_offset;
+        let zeroed = seed_values(&params, Init::Zero, 7);
+        assert!(zeroed[phase..phase + psqt::LAYOUT.phase_len].iter().any(|w| *w > 0.0), "phase taper zeroed");
     }
 
     #[test]

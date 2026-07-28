@@ -13,6 +13,21 @@ pub const DEFAULT_WDL_END: f64 = 0.3;
 pub const DEFAULT_K_LR_MULT: f64 = 0.01;
 pub const DEFAULT_K_SWEEP_INTERVAL: usize = 200;
 
+/// Half-width of the uniform draw for [`Init::Random`]. Small against every
+/// weight that matters, large enough that two seeds start meaningfully apart.
+pub const RANDOM_INIT_SPREAD: f64 = 16.0;
+
+/// `Zero` whether the data determines a good eval at all.
+/// `Random` whether two seeds arrive at the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Init {
+    #[default]
+    Default,
+    Zero,
+    Random,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LossFn {
     #[default]
@@ -419,6 +434,8 @@ pub struct EvalTuneConfig {
     /// losses comparable. Set it to measure how much a result owes to which tenth got held out.
     #[serde(default)]
     pub split_seed: Option<u64>,
+    #[serde(default)]
+    pub init: Init,
     /// Report how Lion's disagreement gate votes, per epoch and per parameter group. Costs a
     /// pass over the parameters per batch, so it is off outside a diagnostic run. Default: false.
     #[serde(default)]
@@ -609,6 +626,7 @@ impl Default for TunerConfig {
                 unfreeze_epoch: 0,
                 seed: None,
                 split_seed: None,
+                init: Init::Default,
                 gate_census: false,
                 auto_freeze: true,
                 freeze_start_epoch: 500,

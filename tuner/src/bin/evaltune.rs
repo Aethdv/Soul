@@ -3,7 +3,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use soul::cli::Help;
 use tuner::{
-    core::config::{KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
+    core::config::{Init, KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
     evaltune::{ablation, correlation, evaltuner::Task, loader, seeds},
 };
@@ -48,6 +48,8 @@ struct Args {
     seed: Option<u64>,
     #[arg(long)]
     split_seed: Option<u64>,
+    #[arg(long)]
+    init: Option<String>,
     #[arg(long)]
     lr_mult: Option<f64>,
     #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -296,6 +298,18 @@ fn run_evaltune(args: Args) -> bool {
         tuner_config.evaltune.split_seed = Some(seed);
     }
 
+    if let Some(mode) = args.init {
+        tuner_config.evaltune.init = match mode.as_str() {
+            "default" => Init::Default,
+            "zero" => Init::Zero,
+            "random" => Init::Random,
+            other => {
+                eprintln!("Unknown --init '{other}'; expected default, zero or random");
+                return false;
+            },
+        };
+    }
+
     if let Some(lr_mult) = args.lr_mult {
         tuner_config.evaltune.k_mode = KMode::Learned { lr_mult };
     }
@@ -413,4 +427,5 @@ fn print_help() {
     h.option("--seed", "<u64>", "Fixed RNG seed for reproducible training");
     h.option("--split-seed", "<u64>", "Reseed the validation holdout, fixed by default");
     h.option("--lr-mult", "<f64>", "Learning-rate multiplier");
+    h.option_default("--init", "<mode>", "Starting weights [default|zero|random]", "default");
 }
