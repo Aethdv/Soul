@@ -583,6 +583,48 @@ mod tests {
         }
     }
 
+    /// The property the tuner's gauge trades on: scale the weights and K absorbs it.
+    ///
+    /// Asserted only where the eval has some size to it, since the truncation sites
+    /// round a near-zero score to noise. Their cost measures at 14 centipawns and
+    /// does not grow with the scale, which is where the tolerance comes from. A
+    /// curvature scaled with the rest instead costs several times that, and only a
+    /// nonzero one can be scaled wrongly, so the sweep carries some.
+    #[test]
+    fn test_score_is_homogeneous_in_its_weights_oracle() {
+        let base: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+        let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
+        let mut asserted = 0;
+
+        for curve in [0.0f64, 32.0, 96.0] {
+            for f in [2.0f64, 4.0] {
+                let mut one = base.clone();
+                one[LAYOUT.king_danger_offset] = curve;
+
+                let mut scaled = one.clone();
+                for i in (0..scaled.len()).filter(|i| !(lo..hi).contains(i)) {
+                    scaled[i] *= if i == LAYOUT.king_danger_offset { f.recip() } else { f };
+                }
+
+                for fen in FENS {
+                    let pos = Position::from_fen(fen);
+                    let plain = eval_f64(&pos, &one);
+
+                    if plain.abs() < 40.0 {
+                        continue;
+                    }
+
+                    let (want, got) = (f * plain, eval_f64(&pos, &scaled));
+                    asserted += 1;
+
+                    assert!((got - want).abs() <= 20.0, "curve {curve}, ×{f} on '{fen}': {got} against {want}");
+                }
+            }
+        }
+
+        assert!(asserted >= 12, "no position carried enough eval to test: {asserted}");
+    }
+
     /// The engine plays the `i32` monomorphization and the tuner fits the `f64`
     /// one, which is only sound if they are the same function. They diverge
     /// wherever one truncates and the other does not, and nothing else here

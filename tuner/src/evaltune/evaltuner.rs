@@ -166,6 +166,114 @@ impl KController {
         self.momentum = self.beta2.mul_add(self.momentum, (1.0 - self.beta2) * kg);
         self.k = self.k.clamp(self.k_min, self.k_max);
     }
+
+    /// Takes the other half of a [`Gauge`] rescale: parameters just moved by `f`,
+    /// so K moves by `1/f` and the product K·score is where it was. `k_ref` is
+    /// deliberately untouched, which is what leaves `ref_loss` able to see drift
+    /// the gauge could not absorb.
+    fn rescale(&mut self, f: f64) {
+        self.k = (self.k / f).clamp(self.k_min, self.k_max);
+        self.momentum *= f;
+    }
+}
+
+/// Holds the eval's overall scale still.
+///
+/// The score is homogeneous of degree one in every parameter outside the phase
+/// block, so multiplying those by `c` and dividing K by `c` leaves the loss
+/// exactly where it was. Lion walks that direction freely, its step being `±lr`
+/// whatever the gradient says, while K answers at `lr_mult` and cannot keep up.
+/// What the loss cannot price the search pays for: `search_params` is in fixed
+/// centipawns and a drifting eval is not.
+///
+/// The anchor is the shipped scale, so a run's output lands where the search
+/// expects it whatever the run started from.
+struct Gauge {
+    reference: f64,
+    /// Every correction multiplied together, so 1.0 is a run that never pulled on
+    /// the scale and anything else is budget the loss could not price.
+    applied: f64,
+}
+
+impl Gauge {
+    /// Σ|θ| over the slots that take `f`, summed over all of them so no single
+    /// weight's noise moves it. The curvature is excluded because it does not take
+    /// `f`; counting it would leave the statistic inhomogeneous under the rescale
+    /// it sizes, and [`Gauge::restore`] with no fixed point to land on.
+    fn measure(values: &[f64]) -> f64 {
+        values
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Self::slot(*i, 2.0) == 2.0)
+            .map(|(_, v)| v.abs())
+            .sum()
+    }
+
+    fn new(defaults: &[f64]) -> Self {
+        Self { reference: Self::measure(defaults), applied: 1.0 }
+    }
+
+    /// Whether holding the scale during training is meaningful for this run.
+    ///
+    /// Only for a run already standing on the reference. A cold start is learning
+    /// the scale rather than drifting off one, and has none to hold: `Init::Zero`
+    /// begins at Σ|θ| = 0, where the correction is undefined, and `Init::Random`
+    /// an order of magnitude under it. Those get [`Gauge::normalize`] on the way
+    /// out instead.
+    fn holds(&self, values: &[f64]) -> bool {
+        (Self::measure(values) - self.reference).abs() <= 1e-9 * self.reference
+    }
+
+    /// What slot `i` takes when the vector is scaled by `f`.
+    ///
+    /// The phase block sits out, being an interpolation coordinate rather than a
+    /// score term; every other fixed slot is zero, where scaling is a no-op. The
+    /// king-danger curvature moves the other way: it multiplies `pressure²`, so
+    /// `p + c·p²/S` is homogeneous only when `c` takes `1/f` against everything
+    /// else's `f`, and scaling it alike leaves the curve trading unevenly against K.
+    fn slot(i: usize, f: f64) -> f64 {
+        let (lo, hi) = (psqt::LAYOUT.phase_offset, psqt::LAYOUT.phase_offset + psqt::LAYOUT.phase_len);
+
+        if (lo..hi).contains(&i) {
+            1.0
+        } else if i == psqt::LAYOUT.king_danger_offset {
+            f.recip()
+        } else {
+            f
+        }
+    }
+
+    /// Scales `values` back onto the reference, returning the factor applied.
+    fn normalize(&self, values: &mut [f64]) -> f64 {
+        let now = Self::measure(values);
+
+        if !(now.is_finite() && now > 0.0 && self.reference > 0.0) {
+            return 1.0;
+        }
+
+        let f = self.reference / now;
+
+        for (i, v) in values.iter_mut().enumerate() {
+            *v *= Self::slot(i, f);
+        }
+
+        f
+    }
+
+    /// [`Gauge::normalize`] with the rest of the optimizer state carried along.
+    fn restore(&mut self, values: &mut [f64], momentum: &mut [f64], k_ctrl: &mut KController) {
+        let f = self.normalize(values);
+
+        // A slot's gradient scales by the reciprocal of whatever the slot itself
+        // took, and momentum is an EMA of gradients, so it follows or the gate
+        // reads stale signs.
+        for (i, m) in momentum.iter_mut().enumerate() {
+            *m /= Self::slot(i, f);
+        }
+
+        k_ctrl.rescale(f);
+        self.applied *= f;
+    }
 }
 
 /// Overfitting detector: fit still improving while generalization degrades.
@@ -1145,6 +1253,8 @@ fn train_loop(
     }
 
     let initial_values = values.clone();
+    let mut gauge = Gauge::new(&default_values);
+    let hold_scale = gauge.holds(&values);
 
     // Setup optimizer state and convergence tracking
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
@@ -1370,6 +1480,9 @@ fn train_loop(
             optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask, &clip_mask);
 
             k_ctrl.on_batch(k_grad, batch_count, lr, scale, config.weight_decay);
+            if hold_scale {
+                gauge.restore(&mut values, &mut momentum, &mut k_ctrl);
+            }
 
             // ── Per-parameter Convergence Tracking
             // Freeze parameters that have statistically converged to reduce noise.
@@ -1516,7 +1629,8 @@ fn train_loop(
                     "psqt_norm": psqt_norm,
                     "mob_norm": mob_norm,
                     "overfit": overfit,
-                    "moved": moved
+                    "moved": moved,
+                    "gauge": gauge.applied
                 }),
             );
         }
@@ -1655,6 +1769,22 @@ fn train_loop(
             }),
         );
     }
+
+    // A cold start was left to find its own scale, so its output is normalized
+    // here instead: the search reads centipawns, and nothing else would put the
+    // run's eval back on the scale `search_params` was written against.
+    let landed = if hold_scale {
+        1.0 / gauge.applied
+    } else {
+        gauge.normalize(&mut ema_values);
+        gauge.normalize(&mut best_train_params);
+        1.0 / gauge.normalize(&mut best_val_params)
+    };
+
+    let lab = palette::fg(palette::LABEL);
+    let v = palette::fg(palette::VALUE);
+    let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
+    println!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}");
 
     warn_on_clamped_k(config, k_ctrl.k());
     calibration_report(ctx, &best_val_params, k_ctrl.k());
@@ -1955,6 +2085,90 @@ mod tests {
 
     /// A cold start that zeroed `phase` would clamp `phase_raw` to 0 on every
     /// position, tapering the eval to its endgame half without failing anything.
+    /// Both halves of one rescale: the parameters land back on the reference and
+    /// K takes the reciprocal, so `K·score` is where it started.
+    #[test]
+    fn the_gauge_returns_the_scale_and_pays_k_for_it() {
+        let params = eval_params::collect_parameters();
+        let mut values: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let mut momentum = vec![0.5; values.len()];
+        let gauge_ref = Gauge::measure(&values);
+        let (lo, hi) = (psqt::LAYOUT.phase_offset, psqt::LAYOUT.phase_offset + psqt::LAYOUT.phase_len);
+        let phase_before: Vec<f64> = values[lo..hi].to_vec();
+
+        let mut gauge = Gauge::new(&values);
+        assert!(gauge.holds(&values), "a run standing on the reference must gauge");
+        let mut k_ctrl = KController {
+            k: 0.004,
+            k_ref: 0.004,
+            mode: KMode::Learned { lr_mult: 0.001 },
+            k_min: 0.0001,
+            k_max: 1.0,
+            beta1: 0.9,
+            beta2: 0.99,
+            momentum: 0.0,
+        };
+
+        for i in (0..values.len()).filter(|i| !(lo..hi).contains(i)) {
+            values[i] *= 1.23;
+        }
+
+        gauge.restore(&mut values, &mut momentum, &mut k_ctrl);
+
+        assert!((Gauge::measure(&values) - gauge_ref).abs() < 1e-6 * gauge_ref, "scale not restored");
+        assert_eq!(&values[lo..hi], &phase_before[..], "phase is a coordinate, not a score term");
+        assert!((k_ctrl.k() - 0.004 * 1.23).abs() < 1e-9, "K did not take the other half: {}", k_ctrl.k());
+        assert!((momentum[0] - 0.5 * 1.23).abs() < 1e-9, "momentum did not follow the gradient rescale");
+        assert!((gauge.applied - 1.0 / 1.23).abs() < 1e-9, "the pull was not recorded");
+    }
+
+    /// Gauging a cold start would multiply the vector by zero on the first batch.
+    /// The gauge's whole mandate, run with a live curvature: the drift the loss is
+    /// blind to comes back, and nothing else does.
+    #[test]
+    fn the_gauge_restores_a_live_curvature_too() {
+        let params = eval_params::collect_parameters();
+        let defaults: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let curve = psqt::LAYOUT.king_danger_offset;
+
+        let mut want = defaults.clone();
+        want[curve] = 64.0;
+
+        let gauge = Gauge::new(&want);
+        let mut drifted = want.clone();
+        let (lo, hi) = (psqt::LAYOUT.phase_offset, psqt::LAYOUT.phase_offset + psqt::LAYOUT.phase_len);
+
+        // Spelled out rather than routed through `Gauge::slot`, so a wrong rule
+        // there cannot cancel against itself on both sides of the test.
+        for (i, v) in drifted.iter_mut().enumerate() {
+            if (lo..hi).contains(&i) {
+                continue;
+            }
+            *v *= if i == curve { 1.0 / 1.23 } else { 1.23 };
+        }
+
+        gauge.normalize(&mut drifted);
+
+        assert!((Gauge::measure(&drifted) - gauge.reference).abs() < 1e-9 * gauge.reference, "no exact fixed point");
+
+        for (i, (got, expect)) in drifted.iter().zip(&want).enumerate() {
+            assert!((got - expect).abs() < 1e-9 * expect.abs().max(1.0), "slot {i}: {got} against {expect}");
+        }
+    }
+
+    #[test]
+    fn a_cold_start_does_not_gauge() {
+        let params = eval_params::collect_parameters();
+        let defaults: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let gauge = Gauge::new(&defaults);
+
+        for init in [Init::Zero, Init::Random] {
+            assert!(!gauge.holds(&seed_values(&params, init, 7)), "{init:?} must not gauge during training");
+        }
+
+        assert!(gauge.holds(&seed_values(&params, Init::Default, 7)), "a warm start must");
+    }
+
     #[test]
     fn a_cold_start_leaves_the_fixed_slots_alone() {
         let params = eval_params::collect_parameters();
