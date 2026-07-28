@@ -23,6 +23,7 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ("attacker",           "[0, 1, 2, 3, 4, 5] attackers × weak"),
     ("king_safety",        "[Pawn Shield, Ortho Exp, Diag Exp]"),
     ("xray",               "[Ortho King]"),
+    ("king_danger",        "pressure curvature, over DANGER_SCALE"),
     ("bishop_pair",        "[MG, EG]"),
     ("rook_open",          "[MG, EG]"),
     ("passed_pawn_mg",     "by relative rank 1-6"),

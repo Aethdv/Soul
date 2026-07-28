@@ -16,7 +16,7 @@ use soul::{
             EnvVec8, EvalMath,
             dual::{DUAL_N, DualNode, DualVec8},
         },
-        combiner::{Combiner, LinearCombiner},
+        combiner::{Combiner, CombinerParams, LinearCombiner},
         eval::{EvalParams, SharedFeatures, evaluate_generic, fill_accumulators, scatter_all_terms},
         eval_params::LAYOUT,
     },
@@ -205,7 +205,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     acc.0 = lane_vals;
 
     let buckets = fill_accumulators::<f64>(&acc, phase, &features, &params);
-    let white_score = LinearCombiner::forward(&buckets, phase);
+    let combiner = CombinerParams::from_eval(&params);
+    let white_score = LinearCombiner::forward(&buckets, phase, &combiner);
     let stm_sign: f64 = if board.stm == Color::White { 1.0 } else { -1.0 };
     let score = white_score * stm_sign;
 
@@ -227,7 +228,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // Combiner owns every upstream derivative. PSQT / material scatter
     // (out-of-band, accumulator-level) pulls `mg_eg`; term scatter reads
     // the rest via `scatter_all_terms`.
-    let upstreams = LinearCombiner::backward(&buckets, phase, d, param_grads);
+    let upstreams = LinearCombiner::backward(&buckets, phase, &combiner, d, param_grads);
 
     // ── PSQT + material (accumulator-level, not a LinearTerm)
     // One board sweep writes both gradients for every active piece.
@@ -370,7 +371,7 @@ mod tests {
         engine::{
             combiner::Accumulators,
             eval::evaluate,
-            eval_params::{BLOCKS, PHASE, collect_parameters},
+            eval_params::{BLOCKS, KING_DANGER, PHASE, collect_parameters},
         },
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
@@ -507,12 +508,10 @@ mod tests {
         with_phase(values)
     }
 
-    /// No fen in the set has a king pressured enough to check this: `weak` peaks
-    /// at 2, which moves the gradient by a few percent of a value already under
-    /// the comparison tolerance. So difference the slope directly.
-    #[test]
-    fn test_king_danger_slope_oracle() {
-        let bucket = |danger_us: f64| Accumulators::<f64> {
+    /// Pressure on each king, everything else zeroed, so the two tests below read
+    /// the curve alone.
+    fn danger_buckets(danger_us: f64, danger_them: f64) -> Accumulators<f64> {
+        Accumulators::<f64> {
             mg_eg: 0.0,
             mobility: 0.0,
             bonus_mg: 0.0,
@@ -520,21 +519,62 @@ mod tests {
             safety_us: 0.0,
             safety_them: 0.0,
             danger_us,
-            danger_them: 0.0,
+            danger_them,
             xray: 0.0,
-        };
+        }
+    }
 
+    fn curvature(c: f64) -> CombinerParams<f64> {
+        CombinerParams { king_danger: c }
+    }
+
+    /// No fen in the set has a king pressured enough to check this: `weak` peaks
+    /// at 2, which moves the gradient by a few percent of a value already under
+    /// the comparison tolerance. So difference the slope directly.
+    #[test]
+    fn test_king_danger_slope_oracle() {
         let phase = f64::from(TOTAL_PHASE);
+        let shipped = curvature(f64::from(KING_DANGER[0]));
         let h = 32.0;
 
         for p in [0.0, 64.0, 150.0, 300.0, 465.0] {
-            let analytic = LinearCombiner::backward(&bucket(p), phase, 1.0, &mut []).king_safety.danger_us;
+            let mut grads = vec![0.0f64; LAYOUT.total];
+            let analytic = LinearCombiner::backward(&danger_buckets(p, 0.0), phase, &shipped, 1.0, &mut grads)
+                .king_safety
+                .danger_us;
 
-            let (hi, lo) = (bucket(p + h), bucket((p - h).max(0.0)));
-            let rise = LinearCombiner::forward(&hi, phase) - LinearCombiner::forward(&lo, phase);
+            let (hi, lo) = (danger_buckets(p + h, 0.0), danger_buckets((p - h).max(0.0), 0.0));
+            let rise = LinearCombiner::forward(&hi, phase, &shipped) - LinearCombiner::forward(&lo, phase, &shipped);
             let measured = rise / (hi.danger_us - lo.danger_us);
 
             assert!((analytic - measured).abs() < 0.05, "danger slope at {p}: analytic {analytic}, finite difference {measured}",);
+        }
+    }
+
+    /// The curvature is the combiner's own weight, so no term's `scatter` touches
+    /// it and `register_terms!` cannot miss it. Differenced against the forward for
+    /// the same reason as the slope: the fen set has no besieged king in it.
+    #[test]
+    fn test_king_danger_curvature_oracle() {
+        let phase = f64::from(TOTAL_PHASE);
+        let c = f64::from(KING_DANGER[0]);
+        let h = 8.0;
+
+        for (us, them) in [(0.0, 0.0), (150.0, 0.0), (0.0, 300.0), (465.0, 150.0)] {
+            let buckets = danger_buckets(us, them);
+            let mut grads = vec![0.0f64; LAYOUT.total];
+
+            LinearCombiner::backward(&buckets, phase, &curvature(c), 1.0, &mut grads);
+            let analytic = grads[LAYOUT.king_danger_offset];
+
+            let hi = LinearCombiner::forward(&buckets, phase, &curvature(c + h));
+            let lo = LinearCombiner::forward(&buckets, phase, &curvature(c - h));
+            let measured = (hi - lo) / (2.0 * h);
+
+            assert!(
+                (analytic - measured).abs() < 0.05,
+                "curvature grad at ({us}, {them}): analytic {analytic}, finite difference {measured}",
+            );
         }
     }
 

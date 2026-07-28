@@ -16,7 +16,7 @@ use crate::{
         psqt,
     },
     engine::{
-        combiner::{Accumulators, Combiner, LinearCombiner, taper},
+        combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
         eval::{
             BackwardPawnTerm, BishopPairTerm, DefendedPawnTerm, DoubledPawnTerm, EnemyKingDistTerm, IsolatedPawnTerm,
             MinorBehindPawnTerm, PassedPawnTerm, PhalanxTerm, RookOpenTerm, SharedFeatures, TempoTerm, XrayTerm, apply_all_inputs,
@@ -138,6 +138,8 @@ pub struct RecordEval {
     pub score: f64,
     pub phase: f64,
     pub buckets: Accumulators<f64>,
+    /// Carried, since `accumulate_record_grad` is handed this and not `values`.
+    pub combiner: CombinerParams<f64>,
 }
 
 #[inline]
@@ -192,7 +194,9 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
 
     apply_all_inputs(record, values, phase, &mut buckets);
 
-    RecordEval { score: LinearCombiner::forward(&buckets, phase), phase, buckets }
+    let combiner = CombinerParams::from_values(values);
+
+    RecordEval { score: LinearCombiner::forward(&buckets, phase, &combiner), phase, buckets, combiner }
 }
 
 /// Accumulate parameter gradients for `record` into `grads`,
@@ -224,7 +228,7 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
         }
     }
 
-    let upstreams = LinearCombiner::backward(&eval.buckets, eval.phase, gradient, grads);
+    let upstreams = LinearCombiner::backward(&eval.buckets, eval.phase, &eval.combiner, gradient, grads);
 
     scatter_all_terms(record, &upstreams, grads);
 }

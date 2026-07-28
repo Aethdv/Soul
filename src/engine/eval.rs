@@ -16,10 +16,10 @@ use crate::{
     },
     engine::{
         autograd::EvalMath,
-        combiner::{Accumulators, Combiner, LinearCombiner, taper},
+        combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
         eval_params::{
             self, ATTACKER, BACKWARD_PAWN, BISHOP_PAIR, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG, DOUBLED_PAWN, EG_MOBILITY_CLOSED,
-            EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN, KING_SAFETY, MG_MOBILITY_CLOSED,
+            EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED,
             MG_MOBILITY_OPEN, MINOR_BEHIND_PAWN, PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG, ROOK_OPEN, TEMPO, XRAY,
         },
         mobility::{self, Mobility, MobilityData},
@@ -152,7 +152,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     let psqt = buckets.mg_eg;
     let mobility = buckets.mobility;
     let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
-    let total = LinearCombiner::forward(&buckets, phase);
+    let total = LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(&params));
     let safety = total - psqt - mobility - bonus;
 
     let (p, m, b, s, t) = if board.stm == Color::White {
@@ -222,7 +222,7 @@ pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
     params: &EvalParams<T>,
 ) -> T {
     let buckets = fill_accumulators::<T>(acc, phase, features, params);
-    LinearCombiner::forward(&buckets, phase)
+    LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(params))
 }
 
 /// Extracts the game phase directly from the accumulator's dedicated lane.
@@ -245,6 +245,7 @@ impl EvalParams<i32> {
             w_diag: KING_SAFETY[2],
             atk_weights: ATTACKER,
             w_xray_ortho: XRAY[0],
+            w_king_danger: KING_DANGER[0],
             w_bp_mg: BISHOP_PAIR[0],
             w_bp_eg: BISHOP_PAIR[1],
             w_rook_open_mg: ROOK_OPEN[0],

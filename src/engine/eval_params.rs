@@ -319,6 +319,7 @@ macro_rules! define_tunables {
             (w_diag,                 Scalar, king_safety_offset,        2),
             (atk_weights,            Array6, attacker_offset,           0),
             (w_xray_ortho,           Scalar, xray_offset,               0),
+            (w_king_danger,          Scalar, king_danger_offset,        0),
             (w_bp_mg,                Scalar, bishop_pair_offset,        0),
             (w_bp_eg,                Scalar, bishop_pair_offset,        1),
             (w_rook_open_mg,         Scalar, rook_open_offset,          0),
@@ -511,6 +512,7 @@ define_layout! {
     attacker,
     king_safety,
     xray,
+    king_danger,
     bishop_pair,
     rook_open,
     passed_pawn_mg,
@@ -657,6 +659,7 @@ define_weight_params! {
     attacker           = [CV(0), V(190), V(295), V(497), V(585), V(603)], // [0, 1, 2, 3, 4, 5] attackers × weak
     king_safety        = [V(24), V(12), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
     xray               = [V(11)], // [Ortho King]
+    king_danger        = [V(32)], // pressure curvature, over DANGER_SCALE
     bishop_pair        = [V(41), V(76)], // [MG, EG]
     rook_open          = [V(46), V(1)], // [MG, EG]
     passed_pawn_mg     = [V(-11), V(-25), V(-28), V(-5), V(-9), V(-61)], // by relative rank 1-6

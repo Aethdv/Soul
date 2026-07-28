@@ -44,6 +44,12 @@ use crate::core::{
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 const MOB_CLAMP: f64 = 100.0;
 
+/// `p + c·p²/DANGER_SCALE` turns over and starts falling at `p = DANGER_SCALE/2c`,
+/// so a negative curvature puts that turnover inside the reachable pressure range
+/// and a besieged king scores safer than a lightly pressed one. Zero is the
+/// linear block, so a run parked on the floor has answered the question.
+const DANGER_CURVE_CLAMP: (f64, f64) = (0.0, 256.0);
+
 /// Lion's parameter groups in layout order, for anything reported per group.
 const GROUP_NAMES: [&str; 4] = ["psqt", "material", "mobility", "other"];
 
@@ -1884,12 +1890,21 @@ fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
         .collect()
 }
 
-/// Per-parameter range the sign step may not leave, unbounded outside mobility.
+/// Per-parameter range the sign step may not leave, unbounded outside mobility
+/// and the king-danger curvature.
 fn build_clip_mask(params: &[Tunable]) -> Vec<(f64, f64)> {
+    let danger = psqt::LAYOUT.king_danger_offset;
+
     (0..params.len())
-        .map(|i| match param_group(i) {
-            ParamGroup::Mobility => (-MOB_CLAMP, MOB_CLAMP),
-            ParamGroup::Psqt | ParamGroup::Material | ParamGroup::Other => (f64::NEG_INFINITY, f64::INFINITY),
+        .map(|i| {
+            if i == danger {
+                return DANGER_CURVE_CLAMP;
+            }
+
+            match param_group(i) {
+                ParamGroup::Mobility => (-MOB_CLAMP, MOB_CLAMP),
+                ParamGroup::Psqt | ParamGroup::Material | ParamGroup::Other => (f64::NEG_INFINITY, f64::INFINITY),
+            }
         })
         .collect()
 }
