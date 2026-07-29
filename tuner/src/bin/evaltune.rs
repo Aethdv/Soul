@@ -5,7 +5,7 @@ use soul::cli::Help;
 use tuner::{
     core::config::{Init, KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
-    evaltune::{ablation, correlation, evaltuner::Task, loader, seeds},
+    evaltune::{ablation, correlation, loader, run::Task, seeds},
 };
 
 #[derive(Parser)]

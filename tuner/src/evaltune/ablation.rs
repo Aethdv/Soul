@@ -9,7 +9,7 @@ use std::{mem, ops::Range};
 use rayon::prelude::*;
 use soul::engine::eval_params::{self, BLOCKS, Group as BlockGroup};
 
-use super::evaltuner::golden_search_k;
+use super::scale::golden_search_k;
 use crate::evaltune::{
     loader::{self, Entry, SoulEntry},
     training::{self, TunableData},
