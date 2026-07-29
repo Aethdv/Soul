@@ -31,9 +31,9 @@ use crate::{
     weave::Vf64x4,
 };
 
-/// All tuner-side features for one position, packed into a 132-byte record
-/// (three cache lines) so the hot loop reads one record instead of streaming
-/// a dozen arrays. Computed once at startup ([`FeatureRecord::from_entry`]);
+/// All tuner-side features for one position, packed into a 104-byte record
+/// (two to three cache lines) so the hot loop reads one record instead of
+/// streaming a dozen arrays. Computed once at startup ([`FeatureRecord::from_entry`]);
 /// only `values` changes across epochs. The PSQT gather index is pre-resolved
 /// and the board decode folded in, so the loop never re-walks the nibble array.
 ///
@@ -170,9 +170,10 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     for i in 0..record.piece_count as usize {
         let (mg_idx, eg_idx, sign) = record.piece(i);
 
-        // SAFETY: `PieceSlot::new` is the only way to build a slot and takes a piece
-        // type ≤ 5 with a mirrored square ≤ 31, so `mg_index() ≤ 5·64+31 = 351` and
-        // `eg_idx = mg_idx+32 ≤ 383`, both inside the 384-entry PSQT block.
+        // SAFETY: a slot comes from `PieceSlot::new`, which takes a piece type ≤ 5 with a
+        // mirrored square ≤ 31, or from `Default`, which is slot zero. Either way
+        // `mg_index() ≤ 5·64+31 = 351` and `eg_idx = mg_idx+32 ≤ 383`, both inside the
+        // 384-entry PSQT block.
         unsafe {
             lane_mg += sign * *values.get_unchecked(mg_idx);
             lane_eg += sign * *values.get_unchecked(eg_idx);

@@ -29,6 +29,8 @@ use crate::core::{
 /// from `material[pt]` into every `PSQT[pt][sq]` leaves the eval bit-identical, so
 /// the tuner can move material anywhere at no cost to its loss; the thresholds
 /// callers pass are in these units and need them to hold still.
+///
+/// The king keeps its zero: a chain that reaches it has already ended.
 const SEE_VALUE: [i32; 8] = {
     let mut v = [0i32; 8];
     v[PieceType::Pawn.as_usize()] = 92;
