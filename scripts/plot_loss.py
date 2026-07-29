@@ -226,7 +226,8 @@ def parse_log(path: str, want: int | None = None) -> Run | None:
         run.seed = final.get("seed")
         run.split_seed = final.get("split_seed")
 
-        if isinstance(params := final.get("params"), list):
+        # `params` is what logs written before the key was named carry.
+        if isinstance(params := final.get("best_val_params") or final.get("params"), list):
             run.n_params = len(params)
 
         # Authoritative: selection is smoothed, so the epoch that shipped need
