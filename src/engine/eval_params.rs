@@ -37,22 +37,10 @@ pub struct Tunable {
     pub freeze_resistant: bool,
 }
 
-#[derive(Clone, Copy)]
-pub struct PhaseScore {
-    pub mg: i32,
-    pub eg: i32,
-}
-
-impl PhaseScore {
-    pub const fn new(mg: i32, eg: i32) -> Self {
-        Self { mg, eg }
-    }
-}
-
-/// S(mg, eg)  = Tune
-/// CS(mg, eg) = Don't tune
-/// V(val)     = Tune
-/// CV(val)    = Don't tune
+/// S(mg, eg)  tapered score
+/// V(v)       flat weight
+///
+/// The `C` prefix pins a slot; the tuner reads it as `is_fixed` and never steps it.
 pub enum Param {
     S(i32, i32),
     CS(i32, i32),
@@ -71,6 +59,29 @@ const fn V(v: i32) -> Param {
 }
 const fn CV(v: i32) -> Param {
     Param::Const(v)
+}
+
+/// A tapered table's slots, every MG then every EG, named after the const they
+/// came from. `shape` is the `S`/`CS` list the values were split out of and is all
+/// that still distinguishes a tuned slot from a pinned one.
+fn collect_phase_arrays<const N: usize>(name: &str, mg: &[i32; N], eg: &[i32; N], shape: &[Param; N]) -> Vec<Tunable> {
+    let mut params = Vec::with_capacity(2 * N);
+
+    for (prefix, values) in [("MG", mg), ("EG", eg)] {
+        for (i, &value) in values.iter().enumerate() {
+            let is_fixed = matches!(shape[i], Param::CS(..));
+
+            params.push(Tunable {
+                value: f64::from(value),
+                name: format!("{prefix}_{name}[{i}]"),
+                idx: 0,
+                is_fixed,
+                freeze_resistant: false,
+            });
+        }
+    }
+
+    params
 }
 
 fn collect_params_from_arrays<const N: usize>(name: &str, arr: &[Param; N]) -> Vec<Tunable> {
@@ -94,15 +105,6 @@ macro_rules! define_psqt_params {
     ($($name:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
         paste::paste! {
             $(
-                pub const $name: [PhaseScore; { [$($val),*].len() }] = [
-                    $(
-                        match $val {
-                            Param::S(mg, eg) | Param::CS(mg, eg) => PhaseScore::new(mg, eg),
-                            _ => panic!("PSQT params must be S or CS"),
-                        }
-                    ),*
-                ];
-
                 pub const [<MG_ $name>]: [i32; { [$($val),*].len() }] = [
                     $(
                         match $val {
@@ -123,7 +125,7 @@ macro_rules! define_psqt_params {
             )*
 
             // The six tables are one block; every square carries an MG and an EG slot.
-            const PSQT_BLOCKS: SectionDecls = &[&[("psqt", (0 $( + $name.len() )*) * 2)]];
+            const PSQT_BLOCKS: SectionDecls = &[&[("psqt", (0 $( + [<MG_ $name>].len() )*) * 2)]];
 
             fn collect_psqt_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
@@ -137,29 +139,12 @@ macro_rules! define_psqt_params {
                 }
 
                 $(
-                    for (i, param) in $name.iter().enumerate() {
-                        let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
-
-                        params.push(Tunable {
-                            value: param.mg as f64,
-                            name: format!("MG_{}[{i}]", stringify!($name)),
-                            idx: 0,
-                            is_fixed,
-                            freeze_resistant: false,
-                        });
-                    }
-
-                    for (i, param) in $name.iter().enumerate() {
-                        let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
-
-                        params.push(Tunable {
-                            value: param.eg as f64,
-                            name: format!("EG_{}[{i}]", stringify!($name)),
-                            idx: 0,
-                            is_fixed,
-                            freeze_resistant: false,
-                        });
-                    }
+                    params.append(&mut collect_phase_arrays(
+                        stringify!($name),
+                        &[<MG_ $name>],
+                        &[<EG_ $name>],
+                        &[$($val),*],
+                    ));
                 )*
 
                 params
@@ -172,15 +157,6 @@ macro_rules! define_simple_params {
     ($($block:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
         paste::paste! {
             $(
-                pub const [<$block:upper>]: [PhaseScore; { [$($val),*].len() }] = [
-                    $(
-                        match $val {
-                            Param::S(mg, eg) | Param::CS(mg, eg) => PhaseScore::new(mg, eg),
-                            _ => panic!("Simple params must be S or CS"),
-                        }
-                    ),*
-                ];
-
                 pub const [<MG_ $block:upper>]: [i32; { [$($val),*].len() }] = [
                     $(
                         match $val {
@@ -200,34 +176,17 @@ macro_rules! define_simple_params {
                 ];
             )*
 
-            const SIMPLE_BLOCKS: SectionDecls = &[&[$( (stringify!($block), [<$block:upper>].len() * 2) ),*]];
+            const SIMPLE_BLOCKS: SectionDecls = &[&[$( (stringify!($block), [<MG_ $block:upper>].len() * 2) ),*]];
 
             fn collect_simple_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
                 $(
-                    for (i, param) in [<$block:upper>].iter().enumerate() {
-                        let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
-
-                        params.push(Tunable {
-                            value: param.mg as f64,
-                            name: format!("MG_{}[{i}]", stringify!([<$block:upper>])),
-                            idx: 0,
-                            is_fixed,
-                            freeze_resistant: false,
-                        });
-                    }
-
-                    for (i, param) in [<$block:upper>].iter().enumerate() {
-                        let is_fixed = matches!([$($val),*][i], Param::CS(_, _));
-
-                        params.push(Tunable {
-                            value: param.eg as f64,
-                            name: format!("EG_{}[{i}]", stringify!([<$block:upper>])),
-                            idx: 0,
-                            is_fixed,
-                            freeze_resistant: false,
-                        });
-                    }
+                    params.append(&mut collect_phase_arrays(
+                        stringify!([<$block:upper>]),
+                        &[<MG_ $block:upper>],
+                        &[<EG_ $block:upper>],
+                        &[$($val),*],
+                    ));
                 )*
 
                 params
