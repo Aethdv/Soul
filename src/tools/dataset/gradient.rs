@@ -394,20 +394,20 @@ macro_rules! record_terms {
 
 record_terms! {
     scalar {
+        (XrayTerm, xray_ortho, xray_ortho),
+        (TempoTerm, tempo, tempo),
         (BishopPairTerm, bishop_pair, bishop_pair_diff),
         (RookOpenTerm, rook_open, rook_open_diff),
+        (MinorBehindPawnTerm, minor_behind_pawn, minor_behind_pawn_diff),
         (DoubledPawnTerm, doubled_pawn, doubled_pawn_diff),
         (IsolatedPawnTerm, isolated_pawn, isolated_pawn_diff),
         (BackwardPawnTerm, backward_pawn, backward_pawn_diff),
-        (TempoTerm, tempo, tempo),
-        (MinorBehindPawnTerm, minor_behind_pawn, minor_behind_pawn_diff),
-        (XrayTerm, xray_ortho, xray_ortho),
     }
     array {
-        (PassedPawnTerm, passed_pawn, passed_pawn, 6),
-        (EnemyKingDistTerm, enemy_king_dist, enemy_king_dist, 6),
         (PhalanxTerm, phalanx, phalanx, 6),
         (DefendedPawnTerm, defended_pawn, defended_pawn, 6),
+        (PassedPawnTerm, passed_pawn, passed_pawn, 6),
+        (EnemyKingDistTerm, enemy_king_dist, enemy_king_dist, 6),
     }
 }
 

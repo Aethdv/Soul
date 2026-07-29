@@ -1152,7 +1152,11 @@ fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> String {
         let r = rate(realized[cells].iter().sum(), n);
         let band = band_label(b);
 
-        let _ = writeln!(out, "  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}", p - r);
+        let _ = writeln!(
+            out,
+            "  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}",
+            p - r
+        );
     }
 
     let _ = writeln!(out, "\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
@@ -1885,7 +1889,6 @@ fn train_loop(
             }
         }
     }
-
 
     // The JSON log opens in append mode, so a seed sweep writes every run's final params into
     // one file for reading the spread directly.

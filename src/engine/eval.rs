@@ -66,36 +66,36 @@ macro_rules! impl_eval_params {
 crate::define_tunables! {impl_eval_params}
 
 crate::register_terms! {
-    BishopPairTerm           => bonus,
-    RookOpenTerm             => bonus,
-    PassedPawnTerm           => bonus,
-    EnemyKingDistTerm        => bonus,
-    DoubledPawnTerm          => bonus,
-    IsolatedPawnTerm         => bonus,
-    PhalanxTerm              => bonus,
-    DefendedPawnTerm         => bonus,
-    BackwardPawnTerm         => bonus,
-    TempoTerm                => bonus,
-    MinorBehindPawnTerm      => bonus,
-    XrayTerm                 => xray,
     mobility::MobilityTerm   => mobility,
     mobility::KingSafetyTerm => king_safety,
+    XrayTerm                 => xray,
+    TempoTerm                => bonus,
+    BishopPairTerm           => bonus,
+    RookOpenTerm             => bonus,
+    MinorBehindPawnTerm      => bonus,
+    DoubledPawnTerm          => bonus,
+    IsolatedPawnTerm         => bonus,
+    BackwardPawnTerm         => bonus,
+    PhalanxTerm              => bonus,
+    DefendedPawnTerm         => bonus,
+    PassedPawnTerm           => bonus,
+    EnemyKingDistTerm        => bonus,
 }
 
 pub struct XrayTerm;
+
+pub struct TempoTerm; // ~9 Elo
 pub struct BishopPairTerm; // ~9 Elo
 pub struct RookOpenTerm; // ~5 Elo
 pub struct MinorBehindPawnTerm; // ~3 Elo
 
-pub struct PassedPawnTerm; // ~15 Elo
-pub struct EnemyKingDistTerm; // ~12 Elo
 pub struct DoubledPawnTerm; // ~10 Elo
 pub struct IsolatedPawnTerm; // ~8 Elo
+pub struct BackwardPawnTerm; // ~13 Elo
 pub struct PhalanxTerm; // ~5 Elo
 pub struct DefendedPawnTerm; // ~10 Elo
-pub struct BackwardPawnTerm; // ~13 Elo
-
-pub struct TempoTerm; // ~9 Elo
+pub struct PassedPawnTerm; // ~15 Elo
+pub struct EnemyKingDistTerm; // ~12 Elo
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -246,28 +246,28 @@ impl EvalParams<i32> {
             atk_weights: ATTACKER,
             w_xray_ortho: XRAY[0],
             w_king_danger: KING_DANGER[0],
+            w_tempo_mg: TEMPO[0],
+            w_tempo_eg: TEMPO[1],
             w_bp_mg: BISHOP_PAIR[0],
             w_bp_eg: BISHOP_PAIR[1],
             w_rook_open_mg: ROOK_OPEN[0],
             w_rook_open_eg: ROOK_OPEN[1],
-            passed_pawn_mg: PASSED_PAWN_MG,
-            passed_pawn_eg: PASSED_PAWN_EG,
-            enemy_king_dist_mg: ENEMY_KING_DIST_MG,
-            enemy_king_dist_eg: ENEMY_KING_DIST_EG,
+            w_minor_behind_pawn_mg: MINOR_BEHIND_PAWN[0],
+            w_minor_behind_pawn_eg: MINOR_BEHIND_PAWN[1],
             w_doubled_pawn_mg: DOUBLED_PAWN[0],
             w_doubled_pawn_eg: DOUBLED_PAWN[1],
             w_isolated_pawn_mg: ISOLATED_PAWN[0],
             w_isolated_pawn_eg: ISOLATED_PAWN[1],
+            w_backward_pawn_mg: BACKWARD_PAWN[0],
+            w_backward_pawn_eg: BACKWARD_PAWN[1],
             phalanx_mg: PHALANX_MG,
             phalanx_eg: PHALANX_EG,
             defended_pawn_mg: DEFENDED_PAWN_MG,
             defended_pawn_eg: DEFENDED_PAWN_EG,
-            w_backward_pawn_mg: BACKWARD_PAWN[0],
-            w_backward_pawn_eg: BACKWARD_PAWN[1],
-            w_tempo_mg: TEMPO[0],
-            w_tempo_eg: TEMPO[1],
-            w_minor_behind_pawn_mg: MINOR_BEHIND_PAWN[0],
-            w_minor_behind_pawn_eg: MINOR_BEHIND_PAWN[1],
+            passed_pawn_mg: PASSED_PAWN_MG,
+            passed_pawn_eg: PASSED_PAWN_EG,
+            enemy_king_dist_mg: ENEMY_KING_DIST_MG,
+            enemy_king_dist_eg: ENEMY_KING_DIST_EG,
         }
     }
 }
@@ -680,15 +680,15 @@ macro_rules! tapered_bonus_term {
 }
 
 tapered_bonus_term! {
+    TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
     BishopPairTerm      = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
     RookOpenTerm        = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
-    PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
-    EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
+    MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
     DoubledPawnTerm     = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
     IsolatedPawnTerm    = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
+    BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
     PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
     DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
-    BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
-    TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
-    MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
+    PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
+    EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
 }

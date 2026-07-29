@@ -320,28 +320,28 @@ macro_rules! define_tunables {
             (atk_weights,            Array6, attacker_offset,           0),
             (w_xray_ortho,           Scalar, xray_offset,               0),
             (w_king_danger,          Scalar, king_danger_offset,        0),
+            (w_tempo_mg,             Scalar, tempo_offset,              0),
+            (w_tempo_eg,             Scalar, tempo_offset,              1),
             (w_bp_mg,                Scalar, bishop_pair_offset,        0),
             (w_bp_eg,                Scalar, bishop_pair_offset,        1),
             (w_rook_open_mg,         Scalar, rook_open_offset,          0),
             (w_rook_open_eg,         Scalar, rook_open_offset,          1),
-            (passed_pawn_mg,         Array6, passed_pawn_mg_offset,     0),
-            (passed_pawn_eg,         Array6, passed_pawn_eg_offset,     0),
-            (enemy_king_dist_mg,     Array6, enemy_king_dist_mg_offset, 0),
-            (enemy_king_dist_eg,     Array6, enemy_king_dist_eg_offset, 0),
+            (w_minor_behind_pawn_mg, Scalar, minor_behind_pawn_offset,  0),
+            (w_minor_behind_pawn_eg, Scalar, minor_behind_pawn_offset,  1),
             (w_doubled_pawn_mg,      Scalar, doubled_pawn_offset,       0),
             (w_doubled_pawn_eg,      Scalar, doubled_pawn_offset,       1),
             (w_isolated_pawn_mg,     Scalar, isolated_pawn_offset,      0),
             (w_isolated_pawn_eg,     Scalar, isolated_pawn_offset,      1),
+            (w_backward_pawn_mg,     Scalar, backward_pawn_offset,      0),
+            (w_backward_pawn_eg,     Scalar, backward_pawn_offset,      1),
             (phalanx_mg,             Array6, phalanx_mg_offset,         0),
             (phalanx_eg,             Array6, phalanx_eg_offset,         0),
             (defended_pawn_mg,       Array6, defended_pawn_mg_offset,   0),
             (defended_pawn_eg,       Array6, defended_pawn_eg_offset,   0),
-            (w_backward_pawn_mg,     Scalar, backward_pawn_offset,      0),
-            (w_backward_pawn_eg,     Scalar, backward_pawn_offset,      1),
-            (w_tempo_mg,             Scalar, tempo_offset,              0),
-            (w_tempo_eg,             Scalar, tempo_offset,              1),
-            (w_minor_behind_pawn_mg, Scalar, minor_behind_pawn_offset,  0),
-            (w_minor_behind_pawn_eg, Scalar, minor_behind_pawn_offset,  1)
+            (passed_pawn_mg,         Array6, passed_pawn_mg_offset,     0),
+            (passed_pawn_eg,         Array6, passed_pawn_eg_offset,     0),
+            (enemy_king_dist_mg,     Array6, enemy_king_dist_mg_offset, 0),
+            (enemy_king_dist_eg,     Array6, enemy_king_dist_eg_offset, 0)
         }
     };
 }
@@ -509,26 +509,31 @@ define_layout! {
     mobility_open,
     mobility_closed,
     phase,
-    attacker,
     king_safety,
+    attacker,
     xray,
     king_danger,
+    tempo,
     bishop_pair,
     rook_open,
-    passed_pawn_mg,
-    passed_pawn_eg,
-    enemy_king_dist_mg,
-    enemy_king_dist_eg,
+    minor_behind_pawn,
     doubled_pawn,
     isolated_pawn,
+    backward_pawn,
     phalanx_mg,
     phalanx_eg,
     defended_pawn_mg,
     defended_pawn_eg,
-    backward_pawn,
-    tempo,
-    minor_behind_pawn,
+    passed_pawn_mg,
+    passed_pawn_eg,
+    enemy_king_dist_mg,
+    enemy_king_dist_eg,
 }
+
+// `FeatureRecord`'s PSQT gather and `tape.rs`'s lane accumulation both address the
+// table as `pt · 64 + sq` against the raw parameter vector. Move the block off zero
+// and every one of those reads lands in whatever took its place.
+const _: () = assert!(LAYOUT.psqt_offset == 0, "PSQT must be the first block");
 
 /// Concatenates the groups into the parameter vector `LAYOUT` describes. A
 /// collector that emits a different count than its own block table declares
@@ -656,23 +661,23 @@ define_simd_params! {
 
 define_weight_params! {
     phase              = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    attacker           = [CV(0), V(180), V(279), V(472), V(555), V(572)], // [0, 1, 2, 3, 4, 5] attackers × weak
     king_safety        = [V(23), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    attacker           = [CV(0), V(180), V(279), V(472), V(555), V(572)], // [0, 1, 2, 3, 4, 5] attackers × weak
     xray               = [V(11)], // [Ortho King]
     king_danger        = [V(0)], // pressure curvature, over DANGER_SCALE; floored at 0, the data pulls under
+    tempo              = [V(33), V(37)], // [MG, EG], side-to-move initiative
     bishop_pair        = [V(39), V(72)], // [MG, EG]
     rook_open          = [V(44), V(1)], // [MG, EG]
-    passed_pawn_mg     = [V(-3), V(-17), V(-20), V(3), V(0), V(56)], // by relative rank 1-6
-    passed_pawn_eg     = [V(-64), V(-40), V(8), V(61), V(156), V(172)], // by relative rank 1-6
-    enemy_king_dist_mg = [V(-115), V(19), V(4), V(0), V(-2), V(-8)], // enemy king→passer dist, 7 clamps to 6
-    enemy_king_dist_eg = [V(-33), V(18), V(58), V(71), V(83), V(91)], // enemy king→passer dist, 7 clamps to 6
+    minor_behind_pawn  = [V(14), V(32)], // [MG, EG]
     doubled_pawn       = [V(3), V(-45)], // [MG, EG]
     isolated_pawn      = [V(-9), V(-12)], // [MG, EG]
+    backward_pawn      = [V(-8), V(-16)], // [MG, EG]
     phalanx_mg         = [V(6), V(16), V(28), V(62), V(109), V(-189)], // by relative rank 2-7
     phalanx_eg         = [V(-7), V(1), V(24), V(88), V(211), V(378)], // by relative rank 2-7
     defended_pawn_mg   = [CV(0), V(32), V(21), V(18), V(28), V(165)], // by relative rank 2-7 (rank 2 unreachable)
     defended_pawn_eg   = [CV(0), V(16), V(13), V(29), V(62), V(15)], // by relative rank 2-7 (rank 2 unreachable)
-    backward_pawn      = [V(-8), V(-16)], // [MG, EG]
-    tempo              = [V(33), V(37)], // [MG, EG], side-to-move initiative
-    minor_behind_pawn  = [V(14), V(32)], // [MG, EG]
+    passed_pawn_mg     = [V(-3), V(-17), V(-20), V(3), V(0), V(56)], // by relative rank 1-6
+    passed_pawn_eg     = [V(-64), V(-40), V(8), V(61), V(156), V(172)], // by relative rank 1-6
+    enemy_king_dist_mg = [V(-115), V(19), V(4), V(0), V(-2), V(-8)], // enemy king→passer dist, 7 clamps to 6
+    enemy_king_dist_eg = [V(-33), V(18), V(58), V(71), V(83), V(91)], // enemy king→passer dist, 7 clamps to 6
 }
