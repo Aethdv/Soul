@@ -389,7 +389,7 @@ macro_rules! block_sources {
     ($( ($group:ident, $blocks:ident, $collect:ident) ),* $(,)?) => { &[$( (Group::$group, $blocks) ),*] };
 }
 
-/// A declared block: the name it goes by and the slots it takes.
+/// A declared block: its name and the slots it takes.
 type BlockDecl = (&'static str, usize);
 
 /// A group's blocks, in the sections its declaration breaks them into.
@@ -563,9 +563,9 @@ define_layout! {
     enemy_king_dist_eg,
 }
 
-// `FeatureRecord`'s PSQT gather and `tape.rs`'s lane accumulation both address the
-// table as `pt · 64 + sq` against the raw parameter vector. Move the block off zero
-// and every one of those reads lands in whatever took its place.
+// The record's PSQT gather and the tape's lane accumulation both address the table
+// as pt · 64 + sq against the raw parameter vector, adding no offset. Move the block
+// off zero and every one of those reads lands in whatever took its place.
 const _: () = assert!(LAYOUT.psqt_offset == 0, "PSQT must be the first block");
 
 /// Concatenates the groups into the parameter vector `LAYOUT` describes. A

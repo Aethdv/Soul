@@ -1936,15 +1936,13 @@ fn train_loop(
     eprint!("{off_scale}{clamped_k}");
     print!("{calibration}{census}");
 
-    // The log is the run's transcript, read in an editor or a pipe, so it takes
-    // these plain. Dropped here rather than at scope end so a panic in a later
-    // report cannot cost the epoch history.
     if let Some(ref mut w) = logger {
         for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &census] {
             write!(w, "{}", color::strip(part)).ok();
         }
     }
 
+    // Flushed before the reports below, so a panic in one cannot cost the epoch history.
     drop(logger);
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);

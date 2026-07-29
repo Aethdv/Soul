@@ -227,7 +227,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             }
 
             for (i, block) in section.iter().enumerate() {
-                // `;` closes a section, so the render round-trips through the macro.
                 let end = if i + 1 == section.len() { ';' } else { ',' };
 
                 write!(w, "    {:<width$} = [", block.name).ok();

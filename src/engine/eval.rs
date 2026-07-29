@@ -65,22 +65,39 @@ macro_rules! impl_eval_params {
 
 crate::define_tunables! {impl_eval_params}
 
-crate::register_terms! {
-    mobility::MobilityTerm   => mobility,
-    mobility::KingSafetyTerm => king_safety,
-    XrayTerm                 => xray,
-    TempoTerm                => bonus,
-    BishopPairTerm           => bonus,
-    RookOpenTerm             => bonus,
-    MinorBehindPawnTerm      => bonus,
-    DoubledPawnTerm          => bonus,
-    IsolatedPawnTerm         => bonus,
-    BackwardPawnTerm         => bonus,
-    PhalanxTerm              => bonus,
-    DefendedPawnTerm         => bonus,
-    PassedPawnTerm           => bonus,
-    EnemyKingDistTerm        => bonus,
+/// Every tapered bonus term, in slot order. One roster means an implemented term
+/// cannot go unregistered, which compiles clean and drops the term out of the eval
+/// with only the bench to say so.
+macro_rules! bonus_terms {
+    ($macro:ident) => {
+        $macro! {
+            TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
+            BishopPairTerm      = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
+            RookOpenTerm        = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
+            MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
+            DoubledPawnTerm     = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
+            IsolatedPawnTerm    = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
+            BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
+            PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
+            DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
+            PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
+            EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
+        }
+    };
 }
+
+macro_rules! register_bonus {
+    ($( $term:ident = $kind:ident ( $($spec:tt)* ) ; )*) => {
+        crate::register_terms! {
+            mobility::MobilityTerm   => mobility,
+            mobility::KingSafetyTerm => king_safety,
+            XrayTerm                 => xray,
+            $( $term => bonus, )*
+        }
+    };
+}
+
+bonus_terms!(register_bonus);
 
 pub struct XrayTerm;
 
@@ -679,16 +696,4 @@ macro_rules! tapered_bonus_term {
     };
 }
 
-tapered_bonus_term! {
-    TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
-    BishopPairTerm      = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
-    RookOpenTerm        = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
-    MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
-    DoubledPawnTerm     = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
-    IsolatedPawnTerm    = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
-    BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
-    PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
-    DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
-    PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
-    EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
-}
+bonus_terms!(tapered_bonus_term);
