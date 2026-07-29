@@ -64,44 +64,6 @@ pub enum Task {
     ValCost,
 }
 
-pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
-    let total_start = Instant::now();
-
-    let effective_dataset: String = match (dataset_path, resume_path) {
-        (Some(p), _) => p.to_string(),
-        (None, Some(rp)) => peek_checkpoint(rp)
-            .ok()
-            .map(|cp| cp.dataset_path)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "default".to_string()),
-        (None, None) => "default".to_string(),
-    };
-
-    let paths = resolve_dataset_paths(&effective_dataset);
-    let Some(paths) = paths else {
-        eprintln!(
-            "{}[!] Error: No dataset found. Use --dataset <path> or place .soul.zst files in data/.{RESET}",
-            color::ansi_fg((225, 89, 91)),
-        );
-
-        return f64::MAX;
-    };
-
-    let all_entries = loader::load_datasets(&paths);
-
-    if all_entries.is_empty() {
-        eprintln!("Error: No positions loaded.");
-        return f64::MAX;
-    }
-
-    let dataset_label = paths.join(", ");
-    let best_val = train_entries(all_entries, &dataset_label, config, resume_path, task);
-
-    let elapsed = total_start.elapsed().as_secs_f32();
-    println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
-    best_val
-}
-
 pub struct TrainerContext<'a> {
     pub train: &'a [loader::SoulEntry],
     pub val: &'a [loader::SoulEntry],
@@ -228,6 +190,60 @@ impl TrainerContext<'_> {
 struct Seeds {
     rng_seed: u64,
     split_seed: u64,
+}
+
+/// The starting parameter vector for a fresh run; a resume overrides it with the
+/// checkpoint's. Fixed slots hold their declared values under every mode.
+pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
+    let mut rng = fastrand::Rng::with_seed(seed);
+
+    params
+        .iter()
+        .map(|p| match init {
+            _ if p.is_fixed => p.value,
+            Init::Default => p.value,
+            Init::Zero => 0.0,
+            Init::Random => (rng.f64() * 2.0 - 1.0) * RANDOM_INIT_SPREAD,
+        })
+        .collect()
+}
+
+pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
+    let total_start = Instant::now();
+
+    let effective_dataset: String = match (dataset_path, resume_path) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(rp)) => peek_checkpoint(rp)
+            .ok()
+            .map(|cp| cp.dataset_path)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "default".to_string()),
+        (None, None) => "default".to_string(),
+    };
+
+    let paths = resolve_dataset_paths(&effective_dataset);
+    let Some(paths) = paths else {
+        eprintln!(
+            "{}[!] Error: No dataset found. Use --dataset <path> or place .soul.zst files in data/.{RESET}",
+            color::ansi_fg((225, 89, 91)),
+        );
+
+        return f64::MAX;
+    };
+
+    let all_entries = loader::load_datasets(&paths);
+
+    if all_entries.is_empty() {
+        eprintln!("Error: No positions loaded.");
+        return f64::MAX;
+    }
+
+    let dataset_label = paths.join(", ");
+    let best_val = train_entries(all_entries, &dataset_label, config, resume_path, task);
+
+    let elapsed = total_start.elapsed().as_secs_f32();
+    println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
+    best_val
 }
 
 fn train_entries(
@@ -534,15 +550,7 @@ fn train_loop(
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
 
-    let mut best_val_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_val_loss);
-    let mut best_val_epoch = resume.as_ref().map_or(0, |d| d.best_val_epoch);
-    let mut val_smooth = resume.as_ref().map_or(f64::NAN, |d| d.val_smooth);
-    let mut best_val_smooth = resume.as_ref().map_or(f64::MAX, |d| d.best_val_smooth);
-    let mut best_train_loss = resume.as_ref().map_or(f64::MAX, |d| d.best_train_loss);
-    let mut best_train_epoch = resume.as_ref().map_or(0, |d| d.best_train_epoch);
-    let mut train_smooth = resume.as_ref().map_or(f64::NAN, |d| d.train_smooth);
-    let mut best_train_smooth = resume.as_ref().map_or(f64::MAX, |d| d.best_train_smooth);
-    let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
+    let mut progress = resume.as_ref().map_or_else(Progress::default, |d| d.progress.clone());
 
     let slots = all_params.len();
     let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_val_params.clone());
@@ -622,7 +630,7 @@ fn train_loop(
         optimizer.set_lr(lr);
 
         if is_restart {
-            plateau_count = 0;
+            progress.plateau_count = 0;
             // A latched EMA would average the new cycle's peak-LR weights.
             ema_active = is_constant_schedule;
         }
@@ -744,40 +752,19 @@ fn train_loop(
 
         let train_loss = train_loss / train_count.max(1) as f64;
 
-        // Both records select on a smoothed trail. A running minimum over the raw series carries
-        // the bias described on DivergenceMonitor, and here it decides which epoch's parameters
-        // get saved, so it saves whichever epoch the noise dug deepest. The training series gets
-        // no exemption: a fixed-magnitude sign step orbits a minimum rather than settling into
-        // it, so train loss stays as noisy as val until the schedule decays.
-        train_smooth = if train_smooth.is_finite() { train_smooth + A_FAST * (train_loss - train_smooth) } else { train_loss };
-
-        if train_smooth < best_train_smooth {
-            best_train_smooth = train_smooth;
-            best_train_loss = train_loss;
-            best_train_epoch = epoch;
+        if progress.record_train(epoch, train_loss) {
             best_train_params.copy_from_slice(&ema_values);
         }
 
-        // ── Validation Plateau Detection
-        // Reduce LR if validation loss stalls for Constant schedule.
-        val_smooth = if val_smooth.is_finite() { val_smooth + A_FAST * (val_loss - val_smooth) } else { val_loss };
-
-        let improved_val = val_smooth < best_val_smooth;
+        let improved_val = progress.record_val(epoch, val_loss);
 
         if improved_val {
-            best_val_smooth = val_smooth;
-            best_val_loss = val_loss;
-            best_val_epoch = epoch;
             best_val_params.copy_from_slice(&ema_values);
-            plateau_count = 0;
         } else {
-            plateau_count += 1;
-            // Plateau LR halving is gated to constant schedules only.
-            // Cosine/WSD/etc don't need a separate stall-response mechanism.
-            // Reducing LR when the scheduler is already responsible for decay would overcorrect.
-            if is_constant_schedule && plateau_count >= config.patience {
+            // A decaying schedule already answers a stall; halving on top would correct twice.
+            if is_constant_schedule && progress.plateau_count >= config.patience {
                 lr_scale *= 0.5;
-                plateau_count = 0;
+                progress.plateau_count = 0;
                 println!("  Plateau detected, LR scale → {lr_scale:.3}");
             }
         }
@@ -915,15 +902,7 @@ fn train_loop(
                 k: k_ctrl.k(),
                 k_ref: k_ctrl.k_ref(),
                 k_momentum: k_ctrl.momentum,
-                best_val_loss,
-                best_val_epoch,
-                val_smooth,
-                best_val_smooth,
-                best_train_loss,
-                best_train_epoch,
-                train_smooth,
-                best_train_smooth,
-                plateau_count,
+                progress: &progress,
                 rng_seed,
                 split_seed,
                 dataset: dataset_fnv,
@@ -953,10 +932,10 @@ fn train_loop(
                 "seed": rng_seed,
                 "split_seed": split_seed,
                 "epochs": epochs_run,
-                "best_val_loss": best_val_loss,
-                "best_val_epoch": best_val_epoch,
-                "best_train_loss": best_train_loss,
-                "best_train_epoch": best_train_epoch,
+                "best_val_loss": progress.best_val_loss,
+                "best_val_epoch": progress.best_val_epoch,
+                "best_train_loss": progress.best_train_loss,
+                "best_train_epoch": progress.best_train_epoch,
                 "params": quantized,
                 "sensitivity": grad_ema_per_param,
             }),
@@ -1006,11 +985,11 @@ fn train_loop(
         &ema_values,
         &BestEpochs {
             best_val_params: &best_val_params,
-            best_val_loss,
-            best_val_epoch,
+            best_val_loss: progress.best_val_loss,
+            best_val_epoch: progress.best_val_epoch,
             best_train_params: &best_train_params,
-            best_train_loss,
-            best_train_epoch,
+            best_train_loss: progress.best_train_loss,
+            best_train_epoch: progress.best_train_epoch,
             last_val,
             last_train,
         },
@@ -1032,23 +1011,7 @@ fn train_loop(
         );
     }
 
-    best_val_loss
-}
-
-/// The starting parameter vector for a fresh run; a resume overrides it with the
-/// checkpoint's. Fixed slots hold their declared values under every mode.
-pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
-    let mut rng = fastrand::Rng::with_seed(seed);
-
-    params
-        .iter()
-        .map(|p| match init {
-            _ if p.is_fixed => p.value,
-            Init::Default => p.value,
-            Init::Zero => 0.0,
-            Init::Random => (rng.f64() * 2.0 - 1.0) * RANDOM_INIT_SPREAD,
-        })
-        .collect()
+    progress.best_val_loss
 }
 
 #[cfg(test)]

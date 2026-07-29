@@ -13,6 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use soul::{color, engine::eval_params::Tunable};
 
+use super::training::Progress;
 use crate::{
     core::{error::CheckpointError, fnv::Fnv1a},
     evaltune::palette,
@@ -32,19 +33,8 @@ pub struct Checkpoint {
     pub k_ref: f64,
     #[serde(default)]
     pub k_momentum: f64,
-    pub best_val_loss: f64,
-    pub best_val_epoch: usize,
-    #[serde(default = "unset_smooth")]
-    pub val_smooth: f64,
-    #[serde(default = "unset_best")]
-    pub best_val_smooth: f64,
-    pub best_train_loss: f64,
-    pub best_train_epoch: usize,
-    #[serde(default = "unset_smooth")]
-    pub train_smooth: f64,
-    #[serde(default = "unset_best")]
-    pub best_train_smooth: f64,
-    pub plateau_count: usize,
+    #[serde(flatten)]
+    pub progress: Progress,
     pub params: BTreeMap<String, ParamState>,
     pub hash: u64,
     pub rng_seed: u64,
@@ -62,16 +52,8 @@ pub struct Checkpoint {
 
 /// A checkpoint written before smoothed selection carries no trail; it re-seeds from the
 /// first epoch after resume.
-fn unset_smooth() -> f64 {
-    f64::NAN
-}
-
 /// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
 /// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
-fn unset_best() -> f64 {
-    f64::MAX
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct ParamState {
     pub value: f64,
@@ -90,15 +72,7 @@ pub struct TrainerState<'a> {
     pub k: f64,
     pub k_ref: f64,
     pub k_momentum: f64,
-    pub best_val_loss: f64,
-    pub best_val_epoch: usize,
-    pub val_smooth: f64,
-    pub best_val_smooth: f64,
-    pub best_train_loss: f64,
-    pub best_train_epoch: usize,
-    pub train_smooth: f64,
-    pub best_train_smooth: f64,
-    pub plateau_count: usize,
+    pub progress: &'a Progress,
     pub rng_seed: u64,
     pub split_seed: u64,
     pub dataset: u64,
@@ -111,6 +85,26 @@ pub struct TrainerState<'a> {
     pub frozen: &'a [bool],
     pub best_val_params: &'a [f64],
     pub best_train_params: &'a [f64],
+}
+
+/// Per-parameter state mapped back to current `Tunable::idx` order, ready for the trainer to adopt.
+pub struct CheckpointData {
+    pub epoch: usize,
+    pub lr_scale: f64,
+    pub k: f64,
+    pub k_ref: f64,
+    pub k_momentum: f64,
+    pub progress: Progress,
+    pub values: Vec<f64>,
+    pub momentum: Vec<f64>,
+    pub ema: Vec<f64>,
+    pub grad_ema: Vec<f64>,
+    pub stagnant: Vec<usize>,
+    pub frozen: Vec<bool>,
+    pub best_val_params: Vec<f64>,
+    pub best_train_params: Vec<f64>,
+    /// Current tunables the checkpoint never held, resuming from code defaults.
+    pub fresh_params: usize,
 }
 
 /// # Errors
@@ -142,15 +136,7 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
         k: state.k,
         k_ref: state.k_ref,
         k_momentum: state.k_momentum,
-        best_val_loss: state.best_val_loss,
-        best_val_epoch: state.best_val_epoch,
-        val_smooth: state.val_smooth,
-        best_val_smooth: state.best_val_smooth,
-        best_train_loss: state.best_train_loss,
-        best_train_epoch: state.best_train_epoch,
-        train_smooth: state.train_smooth,
-        best_train_smooth: state.best_train_smooth,
-        plateau_count: state.plateau_count,
+        progress: state.progress.clone(),
         params,
         hash: compute_layout_hash(tunables),
         rng_seed: state.rng_seed,
@@ -168,50 +154,6 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
     serde_json::to_writer(BufWriter::new(file), &cp)?;
     std::fs::rename(&tmp, path)?; // atomic on Linux
     Ok(())
-}
-
-/// Per-parameter state mapped back to current `Tunable::idx` order, ready for the trainer to adopt.
-pub struct CheckpointData {
-    pub epoch: usize,
-    pub lr_scale: f64,
-    pub k: f64,
-    pub k_ref: f64,
-    pub k_momentum: f64,
-    pub best_val_loss: f64,
-    pub best_val_epoch: usize,
-    pub val_smooth: f64,
-    pub best_val_smooth: f64,
-    pub best_train_loss: f64,
-    pub best_train_epoch: usize,
-    pub train_smooth: f64,
-    pub best_train_smooth: f64,
-    pub plateau_count: usize,
-    pub values: Vec<f64>,
-    pub momentum: Vec<f64>,
-    pub ema: Vec<f64>,
-    pub grad_ema: Vec<f64>,
-    pub stagnant: Vec<usize>,
-    pub frozen: Vec<bool>,
-    pub best_val_params: Vec<f64>,
-    pub best_train_params: Vec<f64>,
-    /// Current tunables the checkpoint never held, resuming from code defaults.
-    pub fresh_params: usize,
-}
-
-// Missing parameters keep their `fallback` (current code value), so new tunables
-// don't silently zero out on resume.
-fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunables: &[Tunable], fallback: &[f64]) -> Vec<f64> {
-    let saved: BTreeMap<&str, f64> = checkpoint_names.iter().zip(checkpoint_vals).map(|(n, &v)| (n.as_str(), v)).collect();
-
-    let mut out = fallback.to_vec();
-
-    for t in tunables {
-        if let Some(&v) = saved.get(t.name.as_str()) {
-            out[t.idx] = v;
-        }
-    }
-
-    out
 }
 
 /// A parameter missing from the checkpoint gets a fresh start: current code value, zero
@@ -286,15 +228,7 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         k: cp.k,
         k_ref: cp.k_ref,
         k_momentum: cp.k_momentum,
-        best_val_loss: cp.best_val_loss,
-        best_val_epoch: cp.best_val_epoch,
-        val_smooth: cp.val_smooth,
-        best_val_smooth: cp.best_val_smooth,
-        best_train_loss: cp.best_train_loss,
-        best_train_epoch: cp.best_train_epoch,
-        train_smooth: cp.train_smooth,
-        best_train_smooth: cp.best_train_smooth,
-        plateau_count: cp.plateau_count,
+        progress: cp.progress,
         values,
         momentum,
         ema,
@@ -332,6 +266,22 @@ pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
     fnv.digest()
 }
 
+// Missing parameters keep their `fallback` (current code value), so new tunables
+// don't silently zero out on resume.
+fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunables: &[Tunable], fallback: &[f64]) -> Vec<f64> {
+    let saved: BTreeMap<&str, f64> = checkpoint_names.iter().zip(checkpoint_vals).map(|(n, &v)| (n.as_str(), v)).collect();
+
+    let mut out = fallback.to_vec();
+
+    for t in tunables {
+        if let Some(&v) = saved.get(t.name.as_str()) {
+            out[t.idx] = v;
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,15 +300,17 @@ mod tests {
             k: 1.23,
             k_ref: 1.11,
             k_momentum: 0.42,
-            best_val_loss: 0.2,
-            best_val_epoch: 18,
-            val_smooth: 0.21,
-            best_val_smooth: 0.205,
-            best_train_loss: 0.3,
-            best_train_epoch: 37,
-            train_smooth: 0.31,
-            best_train_smooth: 0.305,
-            plateau_count: 3,
+            progress: &Progress {
+                best_val_loss: 0.2,
+                best_val_epoch: 18,
+                val_smooth: 0.21,
+                best_val_smooth: 0.205,
+                best_train_loss: 0.3,
+                best_train_epoch: 37,
+                train_smooth: 0.31,
+                best_train_smooth: 0.305,
+                plateau_count: 3,
+            },
             rng_seed: 999,
             split_seed: 888,
             dataset: 777,
@@ -392,11 +344,14 @@ mod tests {
 
         assert_eq!((d.epoch, d.lr_scale, d.k, d.k_ref, d.k_momentum), (42, 0.5, 1.23, 1.11, 0.42));
         assert_eq!(
-            (d.best_val_loss, d.best_val_epoch, d.best_train_loss, d.best_train_epoch, d.plateau_count),
+            (
+                d.progress.best_val_loss, d.progress.best_val_epoch, d.progress.best_train_loss, d.progress.best_train_epoch,
+                d.progress.plateau_count
+            ),
             (0.2, 18, 0.3, 37, 3)
         );
-        assert_eq!((d.val_smooth, d.best_val_smooth), (0.21, 0.205));
-        assert_eq!((d.train_smooth, d.best_train_smooth), (0.31, 0.305));
+        assert_eq!((d.progress.val_smooth, d.progress.best_val_smooth), (0.21, 0.205));
+        assert_eq!((d.progress.train_smooth, d.progress.best_train_smooth), (0.31, 0.305));
         assert_eq!(d.values, [10.0, 20.0, 30.0]);
         assert_eq!(d.momentum, [0.1, 0.2, 0.0]);
         assert_eq!(d.ema, [9.0, 19.0, 30.0]);
@@ -418,15 +373,17 @@ mod tests {
             k: 1.0,
             k_ref: 1.0,
             k_momentum: 0.0,
-            best_val_loss: 0.2,
-            best_val_epoch: 1,
-            val_smooth: 0.2,
-            best_val_smooth: 0.2,
-            best_train_loss: 0.3,
-            best_train_epoch: 1,
-            train_smooth: 0.3,
-            best_train_smooth: 0.3,
-            plateau_count: 0,
+            progress: &Progress {
+                best_val_loss: 0.2,
+                best_val_epoch: 1,
+                val_smooth: 0.2,
+                best_val_smooth: 0.2,
+                best_train_loss: 0.3,
+                best_train_epoch: 1,
+                train_smooth: 0.3,
+                best_train_smooth: 0.3,
+                plateau_count: 0,
+            },
             rng_seed: 1,
             split_seed: 2,
             dataset: 3,
@@ -474,15 +431,17 @@ mod tests {
             k: 1.0,
             k_ref: 1.0,
             k_momentum: 0.0,
-            best_val_loss: 0.2,
-            best_val_epoch: 3,
-            val_smooth: 0.21,
-            best_val_smooth: 0.205,
-            best_train_loss: 0.3,
-            best_train_epoch: 5,
-            train_smooth: 0.31,
-            best_train_smooth: 0.305,
-            plateau_count: 0,
+            progress: &Progress {
+                best_val_loss: 0.2,
+                best_val_epoch: 3,
+                val_smooth: 0.21,
+                best_val_smooth: 0.205,
+                best_train_loss: 0.3,
+                best_train_epoch: 5,
+                train_smooth: 0.31,
+                best_train_smooth: 0.305,
+                plateau_count: 0,
+            },
             rng_seed: 1,
             split_seed: 3,
             dataset: 2,
@@ -512,10 +471,10 @@ mod tests {
         let d = load_checkpoint(path, &tunables, &[1.0]).unwrap();
         std::fs::remove_file(path).ok();
 
-        assert!(d.val_smooth.is_nan(), "an absent val trail must re-seed, got {}", d.val_smooth);
-        assert!(d.train_smooth.is_nan(), "an absent train trail must re-seed, got {}", d.train_smooth);
-        assert_eq!((d.best_val_smooth, d.best_train_smooth), (f64::MAX, f64::MAX));
-        assert_eq!(d.best_val_loss, 0.2, "the rest of the checkpoint must survive the older format");
+        assert!(d.progress.val_smooth.is_nan(), "an absent val trail must re-seed, got {}", d.progress.val_smooth);
+        assert!(d.progress.train_smooth.is_nan(), "an absent train trail must re-seed, got {}", d.progress.train_smooth);
+        assert_eq!((d.progress.best_val_smooth, d.progress.best_train_smooth), (f64::MAX, f64::MAX));
+        assert_eq!(d.progress.best_val_loss, 0.2, "the rest of the checkpoint must survive the older format");
     }
 
     #[test]
@@ -530,15 +489,17 @@ mod tests {
             k: 1.0,
             k_ref: 1.0,
             k_momentum: 0.0,
-            best_val_loss: 0.2,
-            best_val_epoch: 3,
-            val_smooth: 0.21,
-            best_val_smooth: 0.205,
-            best_train_loss: 0.3,
-            best_train_epoch: 5,
-            train_smooth: 0.31,
-            best_train_smooth: 0.305,
-            plateau_count: 0,
+            progress: &Progress {
+                best_val_loss: 0.2,
+                best_val_epoch: 3,
+                val_smooth: 0.21,
+                best_val_smooth: 0.205,
+                best_train_loss: 0.3,
+                best_train_epoch: 5,
+                train_smooth: 0.31,
+                best_train_smooth: 0.305,
+                plateau_count: 0,
+            },
             rng_seed: 12345,
             split_seed: 3,
             dataset: 2,

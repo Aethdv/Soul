@@ -1,5 +1,6 @@
-//! Tuner output formatting: final parameter tables, weight arrays, and
-//! the training summary printed at the end of a run.
+//! Everything a run prints: the parameter tables it pastes back, the end-of-run
+//! summary, and the diagnostics beside it, calibration, sensitivity, the gate
+//! census and the two scale warnings.
 
 use std::{
     fmt::Write as _,

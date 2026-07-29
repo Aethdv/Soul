@@ -1,9 +1,9 @@
-//! Gradient-norm tracking ([`GradientStats`]), sigmoid/WDL helpers, and the
-//! [`TunableData`] trait.
-//!
-//! Shared between the training loop and the ablation tool. No other module
-//! imports from here.
+//! What a run measures: the WDL target and its sigmoid, phase weighting, the
+//! gradient-norm percentile the clip reads, and the two trails a run keeps,
+//! [`Progress`] for the records it ships and [`DivergenceMonitor`] for the one
+//! it only warns on.
 
+use serde::{Deserialize, Serialize};
 use soul::{
     core::{
         board::Position,
@@ -15,6 +15,25 @@ use soul::{
 
 use crate::evaltune::{loader, report::report_phase_balance, tape::eval_f64};
 
+// EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
+// since a trend read before that span has filled is reading its own seed.
+pub const TREND_FAST: usize = 10;
+const TREND_SLOW: usize = 40;
+
+pub const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
+const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
+
+/// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
+///
+/// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
+/// the smoothed difference rather than a raw value: both trails smooth the same input, so their
+/// covariance leaves sd(fast − slow) at 0.21σ, well under the 0.47σ that summing their
+/// deviations suggests. It is tested against the noise estimate E|Δval| = 2σ/√π ≈ 1.13σ, so one
+/// unit of that is a 5.3σ bar on a 0.21σ quantity. A flat plateau stays quiet under it, and
+/// drift twenty times under the epoch wobble still trips it. Raw-value intuition suggests 2 or
+/// 3, which lands at 11σ here and never fires at all.
+const TREND_NOISE_K: f64 = 1.0;
+
 /// Online 95th percentile estimation of gradient norms via SGD.
 ///
 /// The estimation happens in log-space to ensure the threshold remains positive and
@@ -23,45 +42,6 @@ pub struct GradientStats {
     p95: f64,
     alpha: f64,
     count: usize,
-}
-
-impl GradientStats {
-    #[must_use]
-    pub fn new(window: usize) -> Self {
-        Self { p95: 1.0, alpha: 2.0 / (window as f64 + 1.0), count: 0 }
-    }
-
-    pub fn update(&mut self, norm: f64) {
-        if self.count == 0 {
-            self.p95 = norm.max(1e-6);
-            self.count = 1;
-            return;
-        }
-        self.count += 1;
-
-        // ── Online 95th percentile estimation.
-        // We move up by (1-p) when norm > p95, and down by p when norm < p95.
-        // Balancing: 0.05 · 0.95 (up) + 0.95 · -0.05 (down) = 0.
-        let step = if norm > self.p95 { 0.95 } else { -0.05 };
-
-        // Update in log-space. Stays positive regardless of how
-        // small norms get, and the multiplicative step scales with
-        // the current magnitude. This eliminates the need for a floor
-        // at initialization or late in training.
-        self.p95 *= (self.alpha * step).exp();
-    }
-
-    /// Returns the estimated 95th percentile of recent gradient norms.
-    ///
-    /// Falls back to `default` until 10 observations are collected:
-    /// estimating a distribution from fewer points is noise, not signal.
-    #[must_use]
-    pub fn clip_threshold(&self, default: f64) -> f64 {
-        if self.count < 10 {
-            return default;
-        }
-        self.p95.max(0.1)
-    }
 }
 
 /// Scaling the sigmoid constant K
@@ -104,57 +84,6 @@ pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
     (1.0 - instance_blend).mul_add(f64::from(entry.result) / 2.0, instance_blend * expected)
 }
 
-impl TunableData for loader::SoulEntry {
-    /// Evaluation via FEN round-trip: valid but slow.
-    /// Production code uses `eval_record` with a packed `FeatureRecord`.
-    #[inline]
-    fn eval(&self, values: &[f64]) -> f64 {
-        let board = Position::from_fen(&self.to_fen());
-        eval_f64(&board, values)
-    }
-
-    #[inline]
-    fn result(&self) -> f64 {
-        f64::from(self.result) / 2.0
-    }
-}
-
-impl TunableData for loader::Entry {
-    #[inline]
-    fn eval(&self, values: &[f64]) -> f64 {
-        eval_f64(&self.board, values)
-    }
-
-    #[inline]
-    fn result(&self) -> f64 {
-        // EPD results are from White's perspective.
-        // The eval produces a score relative to the side-to-move,
-        // so we flip for Black.
-        if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
-    }
-}
-
-// EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
-// since a trend read before that span has filled is reading its own seed.
-pub const TREND_FAST: usize = 10;
-
-const TREND_SLOW: usize = 40;
-
-pub const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
-
-const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
-
-/// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
-///
-/// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
-/// the smoothed difference rather than a raw value: both trails smooth the same input, so their
-/// covariance leaves sd(fast − slow) at 0.21σ, well under the 0.47σ that summing their
-/// deviations suggests. It is tested against the noise estimate E|Δval| = 2σ/√π ≈ 1.13σ, so one
-/// unit of that is a 5.3σ bar on a 0.21σ quantity. A flat plateau stays quiet under it, and
-/// drift twenty times under the epoch wobble still trips it. Raw-value intuition suggests 2 or
-/// 3, which lands at 11σ here and never fires at all.
-const TREND_NOISE_K: f64 = 1.0;
-
 /// Overfitting detector: fit still improving while generalization degrades.
 ///
 /// Neither loss is compared to its own running minimum. A running minimum over a noisy series
@@ -174,27 +103,29 @@ pub struct DivergenceMonitor {
     seen: usize,
 }
 
-impl DivergenceMonitor {
-    /// Feeds one epoch, reporting whether the run is diverging.
-    pub fn update(&mut self, train_loss: f64, val_loss: f64) -> bool {
-        if self.seen == 0 {
-            self.train_fast = train_loss;
-            self.train_slow = train_loss;
-            self.val_fast = val_loss;
-            self.val_slow = val_loss;
-        } else {
-            self.train_fast += A_FAST * (train_loss - self.train_fast);
-            self.train_slow += A_SLOW * (train_loss - self.train_slow);
-            self.val_fast += A_FAST * (val_loss - self.val_fast);
-            self.val_slow += A_SLOW * (val_loss - self.val_slow);
-            self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
-        }
-
-        self.prev_val = val_loss;
-        self.seen += 1;
-
-        self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
-    }
+/// A run's best-so-far records, one per series.
+///
+/// Both select on a smoothed trail rather than the raw loss. A running minimum over a
+/// noisy series carries the bias described on [`DivergenceMonitor`], and here it decides
+/// which epoch's parameters get saved, so it would save whichever epoch the noise dug
+/// deepest. The training series gets no exemption: a fixed-magnitude sign step orbits a
+/// minimum rather than settling into it, so train loss stays as noisy as val until the
+/// schedule decays.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Progress {
+    pub best_val_loss: f64,
+    pub best_val_epoch: usize,
+    #[serde(default = "unset_smooth")]
+    pub val_smooth: f64,
+    #[serde(default = "unset_best")]
+    pub best_val_smooth: f64,
+    pub best_train_loss: f64,
+    pub best_train_epoch: usize,
+    #[serde(default = "unset_smooth")]
+    pub train_smooth: f64,
+    #[serde(default = "unset_best")]
+    pub best_train_smooth: f64,
+    pub plateau_count: usize,
 }
 
 /// The eval's own `PHASE`, in piece-type order.
@@ -265,6 +196,164 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
 
     report_phase_balance(&hist, &weights, cap, clamped);
     weights
+}
+
+impl GradientStats {
+    #[must_use]
+    pub fn new(window: usize) -> Self {
+        Self { p95: 1.0, alpha: 2.0 / (window as f64 + 1.0), count: 0 }
+    }
+
+    pub fn update(&mut self, norm: f64) {
+        if self.count == 0 {
+            self.p95 = norm.max(1e-6);
+            self.count = 1;
+            return;
+        }
+        self.count += 1;
+
+        // ── Online 95th percentile estimation.
+        // We move up by (1-p) when norm > p95, and down by p when norm < p95.
+        // Balancing: 0.05 · 0.95 (up) + 0.95 · -0.05 (down) = 0.
+        let step = if norm > self.p95 { 0.95 } else { -0.05 };
+
+        // Update in log-space. Stays positive regardless of how
+        // small norms get, and the multiplicative step scales with
+        // the current magnitude. This eliminates the need for a floor
+        // at initialization or late in training.
+        self.p95 *= (self.alpha * step).exp();
+    }
+
+    /// Returns the estimated 95th percentile of recent gradient norms.
+    ///
+    /// Falls back to `default` until 10 observations are collected:
+    /// estimating a distribution from fewer points is noise, not signal.
+    #[must_use]
+    pub fn clip_threshold(&self, default: f64) -> f64 {
+        if self.count < 10 {
+            return default;
+        }
+        self.p95.max(0.1)
+    }
+}
+
+impl DivergenceMonitor {
+    /// Feeds one epoch, reporting whether the run is diverging.
+    pub fn update(&mut self, train_loss: f64, val_loss: f64) -> bool {
+        if self.seen == 0 {
+            self.train_fast = train_loss;
+            self.train_slow = train_loss;
+            self.val_fast = val_loss;
+            self.val_slow = val_loss;
+        } else {
+            self.train_fast += A_FAST * (train_loss - self.train_fast);
+            self.train_slow += A_SLOW * (train_loss - self.train_slow);
+            self.val_fast += A_FAST * (val_loss - self.val_fast);
+            self.val_slow += A_SLOW * (val_loss - self.val_slow);
+            self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
+        }
+
+        self.prev_val = val_loss;
+        self.seen += 1;
+
+        self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
+    }
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self {
+            best_val_loss: f64::MAX,
+            best_val_epoch: 0,
+            val_smooth: unset_smooth(),
+            best_val_smooth: unset_best(),
+            best_train_loss: f64::MAX,
+            best_train_epoch: 0,
+            train_smooth: unset_smooth(),
+            best_train_smooth: unset_best(),
+            plateau_count: 0,
+        }
+    }
+}
+
+impl Progress {
+    /// Reports whether this epoch set a training record.
+    pub fn record_train(&mut self, epoch: usize, loss: f64) -> bool {
+        self.train_smooth = smooth(self.train_smooth, loss);
+
+        if self.train_smooth >= self.best_train_smooth {
+            return false;
+        }
+
+        self.best_train_smooth = self.train_smooth;
+        self.best_train_loss = loss;
+        self.best_train_epoch = epoch;
+        true
+    }
+
+    /// Reports whether this epoch set a validation record, clearing the plateau
+    /// counter if it did and advancing it otherwise.
+    pub fn record_val(&mut self, epoch: usize, loss: f64) -> bool {
+        self.val_smooth = smooth(self.val_smooth, loss);
+
+        if self.val_smooth >= self.best_val_smooth {
+            self.plateau_count += 1;
+            return false;
+        }
+
+        self.best_val_smooth = self.val_smooth;
+        self.best_val_loss = loss;
+        self.best_val_epoch = epoch;
+        self.plateau_count = 0;
+        true
+    }
+}
+
+impl TunableData for loader::SoulEntry {
+    /// Evaluation via FEN round-trip: valid but slow.
+    /// Production code uses `eval_record` with a packed `FeatureRecord`.
+    #[inline]
+    fn eval(&self, values: &[f64]) -> f64 {
+        let board = Position::from_fen(&self.to_fen());
+        eval_f64(&board, values)
+    }
+
+    #[inline]
+    fn result(&self) -> f64 {
+        f64::from(self.result) / 2.0
+    }
+}
+
+impl TunableData for loader::Entry {
+    #[inline]
+    fn eval(&self, values: &[f64]) -> f64 {
+        eval_f64(&self.board, values)
+    }
+
+    #[inline]
+    fn result(&self) -> f64 {
+        // EPD results are from White's perspective.
+        // The eval produces a score relative to the side-to-move,
+        // so we flip for Black.
+        if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
+    }
+}
+
+/// A non-finite trail is the unseeded state, which is what `unset_smooth` writes.
+fn smooth(trail: f64, loss: f64) -> f64 {
+    if trail.is_finite() { A_FAST.mul_add(loss - trail, trail) } else { loss }
+}
+
+/// A checkpoint written before smoothed selection carries no trail; it re-seeds from the
+/// first epoch after resume.
+fn unset_smooth() -> f64 {
+    f64::NAN
+}
+
+/// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
+/// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
+fn unset_best() -> f64 {
+    f64::MAX
 }
 
 #[cfg(test)]
