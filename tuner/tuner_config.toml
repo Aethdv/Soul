@@ -26,6 +26,8 @@ weight_decay = 0.00001
 # 52M        524,288   100
 batch_size = 65536
 
+shuffle_block = 4
+
 epochs = 4000
 loss = "sce" # ce / focal / mse
 

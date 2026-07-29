@@ -567,6 +567,8 @@ fn train_loop(
     quantize(&ema_values, &mut prev_quantized);
 
     let mut epochs_run = 0usize;
+    let mut batches_run = 0u64;
+    let mut clipped_seen = 0u64;
     let mut epoch_seconds = 0.0f64;
     let mut grad_seconds = 0.0f64;
     let mut shuffle_seconds = 0.0f64;
@@ -646,6 +648,8 @@ fn train_loop(
         let t_grad = Instant::now();
 
         for batch in indices.chunks(config.batch_size) {
+            batches_run += 1;
+
             let (mut grads, k_grad, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k_ctrl.k(), blend);
 
             train_loss += batch_loss;
@@ -707,6 +711,13 @@ fn train_loop(
         }
 
         let grad_secs = t_grad.elapsed().as_secs_f32();
+        let step_l1 = optimizer.take_step_l1();
+
+        // Per epoch, not per run. A run total averages the high-`lr` opening into the decayed
+        // tail, and it is the tail that says whether the floor is a preference or an artifact.
+        let clipped_total: u64 = optimizer.clipped().iter().sum();
+        let clipped_epoch = clipped_total - clipped_seen;
+        clipped_seen = clipped_total;
 
         // Progressive unfreeze; lift the material-only gate.
         if config.unfreeze_epoch > 0 && epoch == config.unfreeze_epoch {
@@ -768,6 +779,11 @@ fn train_loop(
         let is_best = improved_val;
         let overfit = divergence.update(train_loss, val_loss);
 
+        // The overfit flag tests a slope, so a run that simply walks back uphill never
+        // trips it. This tests displacement, against the only bar the run itself supplies:
+        // a smoothed loss above the opening one has given back everything it ever gained.
+        let drifted = val_history.first().is_some_and(|opening| progress.val_smooth > *opening);
+
         // Parameters that crossed an integer boundary this epoch. Zero from here on means the
         // run is still descending in f64 and shipping nothing, which is where a budget ends.
         quantize(&ema_values, &mut quantized);
@@ -809,8 +825,11 @@ fn train_loop(
                     "psqt_norm": psqt_norm,
                     "mob_norm": mob_norm,
                     "overfit": overfit,
+                    "drifted": drifted,
                     "moved": moved,
-                    "gauge": gauge.applied
+                    "gauge": gauge.applied,
+                    "step_l1": step_l1,
+                    "clipped": clipped_epoch
                 }),
             );
         }
@@ -842,7 +861,12 @@ fn train_loop(
         let dim = palette::fg(palette::DIM);
 
         let (mark, epoch_c) = if is_best { ("✦ ", palette::fg(palette::BRAND)) } else { ("  ", dim.clone()) };
-        let warn = if overfit { format!("  {}⚠ overfit{RESET}", palette::fg(color::advantage(-1.0))) } else { String::new() };
+        let alarm = palette::fg(color::advantage(-1.0));
+        let warn = match (overfit, drifted) {
+            (true, _) => format!("  {alarm}⚠ overfit{RESET}"),
+            (false, true) => format!("  {alarm}⚠ drift{RESET}"),
+            (false, false) => String::new(),
+        };
 
         #[rustfmt::skip]
         println!(
@@ -865,8 +889,9 @@ fn train_loop(
             }
 
             println!(
-                "  {lab}gate{RESET} skip {v}{:.1}%{RESET}  canonical {v}{:.1}%{RESET}  band {v}{:.2}%{RESET}  \
+                "  {lab}gate{RESET} φ {v}{:.4}{RESET}  step {v}{step_l1:.1}{RESET}  skip {v}{:.1}%{RESET}  canonical {v}{:.1}%{RESET}  band {v}{:.2}%{RESET}  \
                  c-only {v}{:.1}%{RESET}  waived {v}{:.1}%{RESET}  dead {v}{:.1}%{RESET}  no grad {v}{:.1}%{RESET}",
+                all.active_share(),
                 100.0 * all.share(all.skipped),
                 100.0 * all.share(all.canonical),
                 100.0 * all.share(all.band),
@@ -958,13 +983,14 @@ fn train_loop(
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
     let calibration = calibration_report(ctx, &best_val_params, k_ctrl.k());
     let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
+    let clip = clip_report(&all_params, optimizer.clipped(), batches_run);
 
     print!("{gauge_line}");
     eprint!("{off_scale}{clamped_k}");
-    print!("{calibration}{census}");
+    print!("{calibration}{census}{clip}");
 
     if let Some(ref mut w) = logger {
-        for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &census] {
+        for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &census, &clip] {
             write!(w, "{}", color::strip(part)).ok();
         }
     }

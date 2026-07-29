@@ -350,7 +350,7 @@ pub fn off_scale_warning(shipped: f64) -> String {
     }
 
     format!(
-        "{}[!] Warning: the parameters ship at {shipped:.3}× the reference scale.\n\
+        "{}[!] Warning: the final-epoch parameters ship at {shipped:.3}× the reference scale.\n\
          [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
         color::ansi_fg((225, 89, 91)),
     )
@@ -460,7 +460,7 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 
     let mut out = String::new();
 
-    let _ = writeln!(out, "\n{lab}Calibration{RESET} {dim}(validation split at K = {k:.6}){RESET}");
+    let _ = writeln!(out, "\n{lab}Calibration{RESET} {dim}(best-val parameters, validation split at K = {k:.6}){RESET}");
     let _ = writeln!(out, "  {lab}phase           n   predicted   realized  residual{RESET}");
 
     for b in 0..BANDS {
@@ -528,12 +528,13 @@ pub fn gate_census_report(groups: &[GateCensus]) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "\n{lab}Gate census{RESET} {dim}(share of parameter-updates){RESET}");
-    let _ = writeln!(out, "  {lab}group       skip  canonical    band   c-only   waived     dead  no grad{RESET}");
+    let _ = writeln!(out, "  {lab}group          φ     skip  canonical    band   c-only   waived     dead  no grad{RESET}");
 
     for (name, c) in GROUP_NAMES.iter().zip(groups) {
         let _ = writeln!(
             out,
-            "  {name:<9} {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
+            "  {name:<9} {v}{:6.4}{RESET}   {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
+            c.active_share(),
             100.0 * c.share(c.skipped),
             100.0 * c.share(c.canonical),
             100.0 * c.share(c.band),
@@ -602,6 +603,36 @@ pub fn loss_sparkline(history: &[f64]) -> String {
     }
 
     out.push_str(RESET);
+    out
+}
+
+/// Which parameters the clip bound truncated, and how often.
+///
+/// Momentum keeps accumulating outward while only the value is clamped, so when the
+/// gradient reverses the gate reads
+/// `m·g ≤ 0` and holds the step for roughly `1/(1−β₂)` updates more. The clamp and the
+/// gate are stickiest together at exactly the moment a parameter tries to leave the wall.
+pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String {
+    let mut pinned: Vec<_> = params.iter().filter(|p| clipped[p.idx] > 0).collect();
+
+    if pinned.is_empty() {
+        return String::new();
+    }
+
+    pinned.sort_unstable_by_key(|p| std::cmp::Reverse(clipped[p.idx]));
+
+    let lab = palette::fg(palette::LABEL);
+    let v = palette::fg(palette::VALUE);
+    let width = pinned.iter().take(10).map(|p| p.name.len()).max().unwrap_or(20);
+
+    let mut out = String::new();
+    let _ = writeln!(out, "\n{lab}Clip{RESET} {}(share of updates truncated at the bound){RESET}", palette::fg(palette::DIM));
+
+    for p in pinned.iter().take(10) {
+        let share = 100.0 * clipped[p.idx] as f64 / updates.max(1) as f64;
+        let _ = writeln!(out, "  {:<width$}  {v}{share:5.1}%{RESET}", p.name);
+    }
+
     out
 }
 

@@ -43,6 +43,14 @@ pub struct Lion {
     /// One EMA of past gradients per slot. Owned here rather than by the caller:
     /// it is the algorithm's state, and what it holds decides how it rescales.
     momentum: Vec<f64>,
+    /// Updates the clip bound truncated, per slot. Without the count a pinned parameter
+    /// reads as a converged one, and `Δp` agrees.
+    clipped: Vec<u64>,
+    /// Σ of the `eff_lr` every sign step spent, since the last read. Gate width and step
+    /// length are the same lever, `‖Δθ‖₁ = eff_lr · (stepping count)`, which is what made
+    /// two cautious-mask retunes unreadable: the candidate arm stepped further as well as
+    /// differently, and nothing printed the difference.
+    step_l1: f64,
 }
 
 /// Why the coordinates of one `update` call did or did not take their sign step.
@@ -74,13 +82,25 @@ pub struct GateCensus {
 impl Lion {
     #[must_use]
     pub fn new(slots: usize, interp: f64, lr: f64, wd: f64) -> Self {
-        Self { interp, lr, wd, momentum: vec![0.0; slots] }
+        Self { interp, lr, wd, momentum: vec![0.0; slots], clipped: vec![0; slots], step_l1: 0.0 }
     }
 
     /// The momentum trail, for a checkpoint to persist and hand back.
     #[must_use]
     pub fn momentum(&self) -> &[f64] {
         &self.momentum
+    }
+
+    /// How often each slot's update was truncated by its clip bound, over the run.
+    #[must_use]
+    pub fn clipped(&self) -> &[u64] {
+        &self.clipped
+    }
+
+    /// The L1 distance the sign steps travelled since the last call, and zero it.
+    /// Weight decay is excluded: it moves θ under every gate alike.
+    pub fn take_step_l1(&mut self) -> f64 {
+        std::mem::take(&mut self.step_l1)
     }
 
     pub fn restore_momentum(&mut self, momentum: &[f64]) {
@@ -233,11 +253,17 @@ impl Lion {
             // Skip the Lion sign step when the correlation gate is open (c≈0)
             // or momentum and gradient disagree: either way, decay only.
             // The m.abs() guard prevents zero-momentum from deferring every parameter's first step.
-            let updated = if c.abs() < 1e-9 || (m * g <= 0.0 && m.abs() > 1e-6) { decayed } else { decayed - eff_lr * c.signum() };
+            let held = c.abs() < 1e-9 || (m * g <= 0.0 && m.abs() > 1e-6);
+            let updated = if held { decayed } else { decayed - eff_lr * c.signum() };
+
+            self.step_l1 += if held { 0.0 } else { eff_lr };
 
             // 3. Weight clipping
             let (min, max) = clip_mask[i];
-            params[i] = updated.clamp(min, max);
+            let clamped = updated.clamp(min, max);
+
+            self.clipped[i] += u64::from(clamped != updated);
+            params[i] = clamped;
 
             // 4. Momentum: m = β₂ · m + (1 - β₂) · g
             // Hard-zero momentum when both gradient and current momentum are essentially zero.
@@ -264,6 +290,18 @@ impl GateCensus {
     #[must_use]
     pub fn share(&self, count: u64) -> f64 {
         if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 }
+    }
+
+    /// The share of updates that stepped, which is Liang's φ. Theirs falls to about 0.55
+    /// on a 100M-parameter model at batch 4096; ours sits near 1.0.
+    ///
+    /// Read ours carefully. The `|m| > 1e-6` clause waives a coordinate whose momentum
+    /// never clears it, so those step and count as active however loudly they disagree,
+    /// and φ under this gate reports how often momentum was large enough to be judged.
+    /// Under the epsilon-free `c·g` form it reports disagreement itself.
+    #[must_use]
+    pub fn active_share(&self) -> f64 {
+        self.share(self.total.saturating_sub(self.skipped + self.dead))
     }
 }
 
