@@ -7,9 +7,11 @@
 use std::{mem, ops::Range};
 
 use rayon::prelude::*;
-use soul::engine::eval_params::{self, BLOCKS, Group as BlockGroup};
 
-use super::scale::golden_search_k;
+use super::{
+    engine::{BLOCKS, Group as BlockGroup, eval_params},
+    scale::golden_search_k,
+};
 use crate::evaltune::{
     loader::{self, Entry, SoulEntry},
     training::{self, TunableData},

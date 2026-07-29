@@ -11,9 +11,11 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use soul::{color, engine::eval_params::Tunable};
 
-use super::training::Progress;
+use super::{
+    engine::{Tunable, color},
+    training::Progress,
+};
 use crate::{
     core::{error::CheckpointError, fnv::Fnv1a},
     evaltune::palette,

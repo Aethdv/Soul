@@ -4,13 +4,12 @@
 //! on the scale the search reads, and the fold collapses the one direction between
 //! material and PSQT that no evaluation can see.
 
-use soul::{
-    core::defs::PieceType,
-    engine::eval_params::{LAYOUT, Tunable},
-    tools::dataset::{FeatureRecord, eval_record},
+use super::{
+    engine::{FeatureRecord, LAYOUT, PieceType, Tunable, eval_record},
+    lion::Lion,
+    run::TrainerContext,
+    storage::CheckpointData,
 };
-
-use super::{lion::Lion, run::TrainerContext, storage::CheckpointData};
 use crate::core::config::{EvalTuneConfig, KMode};
 
 /// Positions the [`Gauge`] reads the eval's scale from, every batch.
@@ -334,9 +333,13 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
 
 #[cfg(test)]
 mod tests {
-    use soul::{core::board::Position, engine::eval_params, tools::dataset::SoulEntry};
-
-    use super::{super::run::seed_values, *};
+    use super::{
+        super::{
+            engine::{Position, SoulEntry, eval_params},
+            run::seed_values,
+        },
+        *,
+    };
     use crate::core::config::Init;
 
     /// Stands in for a run's thousand-position probe: the lopsided positions carry

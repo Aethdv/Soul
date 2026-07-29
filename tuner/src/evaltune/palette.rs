@@ -4,7 +4,7 @@
 //! trend on the live line, within-window rank on the sparkline, both off
 //! the shared advantage gradient.
 
-use soul::color::Rgb;
+use super::engine::Rgb;
 
 pub const LABEL: Rgb = (150, 140, 128); // field labels             (muted taupe)
 pub const VALUE: Rgb = (122, 205, 196); // config / telemetry       (teal)
@@ -21,5 +21,5 @@ pub const CLEAR_LINE: &str = "\x1b[K";
 /// Truecolor foreground escape for `c`.
 #[must_use]
 pub fn fg(c: Rgb) -> String {
-    soul::color::ansi_fg(c)
+    super::engine::ansi_fg(c)
 }

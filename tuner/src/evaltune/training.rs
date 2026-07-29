@@ -4,15 +4,8 @@
 //! it only warns on.
 
 use serde::{Deserialize, Serialize};
-use soul::{
-    core::{
-        board::Position,
-        defs::{Color, TOTAL_PHASE},
-    },
-    engine::eval_params::{self, LAYOUT},
-    tools::dataset::FeatureRecord,
-};
 
+use super::engine::{Color, FeatureRecord, LAYOUT, Position, TOTAL_PHASE, eval_params};
 use crate::evaltune::{loader, report::report_phase_balance, tape::eval_f64};
 
 // EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,

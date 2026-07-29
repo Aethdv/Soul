@@ -16,9 +16,10 @@
 //! another already explains. A seed sweep sees those flat directions from the outside, as
 //! parameters that disagree at equal loss; this sees them from the inside and can name them.
 
-use soul::engine::eval_params::Tunable;
-
-use super::palette::{self, RESET};
+use super::{
+    engine::Tunable,
+    palette::{self, RESET},
+};
 
 /// Sweeps the Jacobi rotation is allowed before it gives up on an unconverged matrix.
 const MAX_SWEEPS: usize = 40;

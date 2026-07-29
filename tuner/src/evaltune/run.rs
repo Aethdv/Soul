@@ -17,13 +17,9 @@ use std::{
 
 use palette::{CLEAR_LINE, RESET};
 use rayon::prelude::*;
-use soul::{
-    color,
-    engine::eval_params::{self, LAYOUT, Tunable},
-    tools::dataset::FeatureRecord,
-};
 
 use super::{
+    engine::{FeatureRecord, LAYOUT, Tunable, color, eval_params},
     groups::{GROUP_NAMES, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
     lion::{GateCensus, Lion, build_beta2_mask},
     loader::{self, dataset_fingerprint, resolve_dataset_paths},
@@ -1016,9 +1012,10 @@ fn train_loop(
 
 #[cfg(test)]
 mod tests {
-    use soul::{core::board::Position, tools::dataset::SoulEntry};
-
-    use super::*;
+    use super::{
+        super::engine::{Position, SoulEntry},
+        *,
+    };
 
     #[test]
     fn a_cold_start_leaves_the_fixed_slots_alone() {

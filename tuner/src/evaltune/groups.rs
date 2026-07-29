@@ -6,8 +6,7 @@
 
 use std::ops::Range;
 
-use soul::engine::eval_params::LAYOUT;
-
+use super::engine::LAYOUT;
 use crate::core::config::EvalTuneConfig;
 
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.

@@ -12,9 +12,11 @@
 use std::{cmp::Reverse, env, fs, process::Command, time::Instant};
 
 use serde::Deserialize;
-use soul::engine::eval_params;
 
-use super::palette::{self, RESET};
+use super::{
+    engine::eval_params,
+    palette::{self, RESET},
+};
 
 /// How many of the most load-bearing parameters get their own line in the report. A spread
 /// concentrated below this rank costs nothing; a spread above it is the tuner handing you a

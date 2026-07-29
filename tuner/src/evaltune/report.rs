@@ -9,13 +9,9 @@ use std::{
 };
 
 use rayon::prelude::*;
-use soul::{
-    color,
-    core::defs::TOTAL_PHASE,
-    engine::eval_params::{BLOCKS, Block, Group, Tunable},
-};
 
 use super::{
+    engine::{BLOCKS, Block, Group, TOTAL_PHASE, Tunable, color},
     groups::GROUP_NAMES,
     lion::GateCensus,
     loader,
@@ -312,9 +308,7 @@ fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use soul::engine::eval_params::collect_parameters;
-
-    use super::*;
+    use super::{super::engine::collect_parameters, *};
 
     /// The output is text, so neither the compiler nor the oracle reads it.
     #[test]

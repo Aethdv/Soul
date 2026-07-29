@@ -2,7 +2,7 @@
 //! [`load_datasets`] which dispatches by extension.
 //!
 //! Re-exports the tuner's datasource types ([`SoulEntry`], [`FeatureRecord`],
-//! [`eval_record`]) from the engine crate.
+//! [`eval_record`]) through [`super::engine`].
 
 use std::{
     fs,
@@ -14,16 +14,14 @@ use std::{
     time::Instant,
 };
 
-pub use soul::tools::dataset::{
+pub use super::engine::{
     FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str, parse_viri_file,
     save_encoded,
 };
-use soul::{
-    color,
-    core::{board::Position as Board, defs::Color},
+use super::{
+    engine::{Color, Position as Board, color},
+    palette::RESET,
 };
-
-use super::palette::RESET;
 use crate::core::fnv::Fnv1a;
 
 /// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).

@@ -6,10 +6,10 @@
 use std::time::Instant;
 
 use rayon::prelude::*;
-use soul::{engine::eval_params, tools::dataset::accumulate_record_grad};
 
 use super::{
     curvature::Curvature,
+    engine::{accumulate_record_grad, eval_params},
     loader,
     palette::{self, RESET},
     run::TrainerContext,
