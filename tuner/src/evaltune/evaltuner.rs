@@ -1875,7 +1875,7 @@ fn train_loop(
     }
 
     // Flush the log before writing final reports,
-    // since print_results opens its own handle to the same file.
+    // so a panic in one of them cannot cost the epoch history.
     drop(logger);
 
     // The JSON log opens in append mode, so a seed sweep writes every run's final params into

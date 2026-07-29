@@ -52,16 +52,14 @@ pub struct BestEpochs<'a> {
     pub last_train: f64,
 }
 
+/// Final epoch is printed; all three go to `evaltune_best.txt`.
 pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: &[f64], best: &BestEpochs, final_epoch: usize) {
     let gold = color::ansi_fg((218, 165, 32));
 
     println!();
     println!("{gold}Best L_val: {:.6} (Epoch {}){}", best.best_val_loss, best.best_val_epoch, palette::RESET);
-    print_params(all_params, initial_values, best.best_val_params);
 
-    println!();
     println!("{gold}Best L_train: {:.6} (Epoch {}){}", best.best_train_loss, best.best_train_epoch, palette::RESET);
-    print_params(all_params, initial_values, best.best_train_params);
 
     println!();
     println!(
