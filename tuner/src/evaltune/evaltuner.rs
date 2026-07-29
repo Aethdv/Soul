@@ -342,16 +342,10 @@ impl<'a> Gauge<'a> {
     }
 
     /// [`Gauge::normalize`] with the rest of the optimizer state carried along.
-    fn restore(&mut self, values: &mut [f64], momentum: &mut [f64], k_ctrl: &mut KController) {
+    fn restore(&mut self, values: &mut [f64], optimizer: &mut Lion, k_ctrl: &mut KController) {
         let f = self.normalize(values);
 
-        // A slot's gradient scales by the reciprocal of whatever the slot itself
-        // took, and momentum is an EMA of gradients, so it follows or the gate
-        // reads stale signs.
-        for (i, m) in momentum.iter_mut().enumerate() {
-            *m /= Self::slot(i, f);
-        }
-
+        optimizer.rescale(|i| Self::slot(i, f));
         k_ctrl.rescale(f);
         self.applied *= f;
     }
@@ -1328,7 +1322,6 @@ fn train_loop(
         Some(d) => d.values.clone(),
         None => seed_values(&all_params, config.init, rng_seed),
     };
-    let mut momentum = resume.as_ref().map_or_else(|| vec![0.0; default_values.len()], |d| d.momentum.clone());
 
     let is_constant_schedule = matches!(config.lr_schedule, LrScheduleConfig::Constant { .. });
     let lr_scheduler = config.lr_schedule.clone().into_scheduler();
@@ -1466,7 +1459,12 @@ fn train_loop(
     }
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
-    let mut optimizer = Lion::new(config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
+    let mut optimizer =
+        Lion::new(all_params.len(), config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
+
+    if let Some(d) = &resume {
+        optimizer.restore_momentum(&d.momentum);
+    }
 
     let mut grad_stats = GradientStats::new(100);
 
@@ -1616,17 +1614,17 @@ fn train_loop(
             // Before the update, while momentum still holds what the gate is about to read.
             if config.gate_census {
                 for (census, range) in epoch_census.iter_mut().zip(&group_ranges) {
-                    census.absorb(optimizer.census(&momentum[range.clone()], &grads[range.clone()], &fixed_mask[range.clone()]));
+                    census.absorb(optimizer.census(range.clone(), &grads, &fixed_mask));
                 }
             }
 
-            optimizer.update(&mut values, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask, &clip_mask);
+            optimizer.update(&mut values, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask, &clip_mask);
 
             k_ctrl.on_batch(k_grad, batch_count, lr, scale, config.weight_decay);
             canonicalize(&mut values, &all_params);
 
             if hold_scale {
-                gauge.restore(&mut values, &mut momentum, &mut k_ctrl);
+                gauge.restore(&mut values, &mut optimizer, &mut k_ctrl);
             }
 
             // ── Per-parameter Convergence Tracking
@@ -1877,7 +1875,7 @@ fn train_loop(
                 dataset: dataset_fnv,
                 dataset_path: dataset_label,
                 values: &values,
-                momentum: &momentum,
+                momentum: optimizer.momentum(),
                 ema: &ema_values,
                 grad_ema: &grad_ema_per_param,
                 stagnant: &stagnant_epochs,
@@ -2348,7 +2346,8 @@ mod tests {
     fn the_gauge_returns_the_scale_and_pays_k_for_it() {
         let params = eval_params::collect_parameters();
         let mut values: Vec<f64> = params.iter().map(|p| p.value).collect();
-        let mut momentum = vec![0.5; values.len()];
+        let mut optimizer = Lion::new(values.len(), 0.9, 0.1, 0.0);
+        optimizer.restore_momentum(&vec![0.5; values.len()]);
         let records = probe_records();
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge_ref = Gauge::measure(&probe, &values);
@@ -2372,12 +2371,12 @@ mod tests {
             values[i] *= 1.23;
         }
 
-        gauge.restore(&mut values, &mut momentum, &mut k_ctrl);
+        gauge.restore(&mut values, &mut optimizer, &mut k_ctrl);
 
         assert!((Gauge::measure(&probe, &values) - gauge_ref).abs() < 1e-6 * gauge_ref, "scale not restored");
         assert_eq!(&values[lo..hi], &phase_before[..], "phase is a coordinate, not a score term");
         assert!((k_ctrl.k() / (0.004 * 1.23) - 1.0).abs() < 1e-6, "K did not take the other half: {}", k_ctrl.k());
-        assert!((momentum[0] / (0.5 * 1.23) - 1.0).abs() < 1e-6, "momentum did not follow the gradient rescale");
+        assert!((optimizer.momentum()[0] / (0.5 * 1.23) - 1.0).abs() < 1e-6, "momentum did not follow the gradient rescale");
         assert!((gauge.applied * 1.23 - 1.0).abs() < 1e-6, "the pull was not recorded");
     }
 

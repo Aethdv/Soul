@@ -32,10 +32,15 @@
 //!    m = β₂ · m + (1 - β₂) · g,
 //!    where β₂ is per-parameter (PSQT 0.995, mobility 0.95, default 0.99).
 
+use std::ops::Range;
+
 pub struct Lion {
     interp: f64, // β₁ (interpolation weight)
     lr: f64,
     wd: f64,
+    /// One EMA of past gradients per slot. Owned here rather than by the caller:
+    /// it is the algorithm's state, and what it holds decides how it rescales.
+    momentum: Vec<f64>,
 }
 
 /// Why the coordinates of one `update` call did or did not take their sign step.
@@ -66,8 +71,30 @@ pub struct GateCensus {
 
 impl Lion {
     #[must_use]
-    pub const fn new(interp: f64, lr: f64, wd: f64) -> Self {
-        Self { interp, lr, wd }
+    pub fn new(slots: usize, interp: f64, lr: f64, wd: f64) -> Self {
+        Self { interp, lr, wd, momentum: vec![0.0; slots] }
+    }
+
+    /// The momentum trail, for a checkpoint to persist and hand back.
+    #[must_use]
+    pub fn momentum(&self) -> &[f64] {
+        &self.momentum
+    }
+
+    pub fn restore_momentum(&mut self, momentum: &[f64]) {
+        debug_assert_eq!(self.momentum.len(), momentum.len());
+        self.momentum.copy_from_slice(momentum);
+    }
+
+    /// Rescale the trail when the parameter vector is rescaled under it.
+    ///
+    /// A slot's gradient scales by the reciprocal of whatever the slot took,
+    /// and momentum is an EMA of gradients, so it follows or the gate reads
+    /// stale signs. An optimizer holding squared gradients would take the square.
+    pub fn rescale<F: Fn(usize) -> f64>(&mut self, slot_factor: F) {
+        for (i, m) in self.momentum.iter_mut().enumerate() {
+            *m /= slot_factor(i);
+        }
     }
 
     #[inline]
@@ -81,9 +108,10 @@ impl Lion {
     /// Groups are contiguous in the parameter layout, so a per-group tally is this over a
     /// subslice.
     #[must_use]
-    pub fn census(&self, momentum: &[f64], gradients: &[f64], fixed_mask: &[bool]) -> GateCensus {
-        debug_assert_eq!(momentum.len(), gradients.len());
-        debug_assert_eq!(momentum.len(), fixed_mask.len());
+    pub fn census(&self, range: Range<usize>, gradients: &[f64], fixed_mask: &[bool]) -> GateCensus {
+        let momentum = &self.momentum[range.clone()];
+        let gradients = &gradients[range.clone()];
+        let fixed_mask = &fixed_mask[range];
 
         let mut census = GateCensus::default();
 
@@ -115,9 +143,8 @@ impl Lion {
     }
 
     pub fn update(
-        &self,
+        &mut self,
         params: &mut [f64],
-        momentum: &mut [f64],
         gradients: &[f64],
         decay_mask: &[f64],
         fixed_mask: &[bool],
@@ -125,7 +152,7 @@ impl Lion {
         lr_mask: &[f64],
         clip_mask: &[(f64, f64)],
     ) {
-        debug_assert_eq!(params.len(), momentum.len());
+        debug_assert_eq!(params.len(), self.momentum.len());
         debug_assert_eq!(params.len(), gradients.len());
         debug_assert_eq!(params.len(), decay_mask.len());
         debug_assert_eq!(params.len(), fixed_mask.len());
@@ -139,7 +166,7 @@ impl Lion {
             }
 
             let p = params[i];
-            let m = momentum[i];
+            let m = self.momentum[i];
             let g = gradients[i];
             let d = decay_mask[i];
             let eff_lr = self.lr * lr_mask[i];
@@ -163,8 +190,8 @@ impl Lion {
             // <https://arxiv.org/abs/2411.16085v4>
             //
             // Liang's canonical mask skips on c·g ≤ 0, which at β₁ = 0.9 reads m·g ≤ -g²/9:
-            // a strict subset of ours, so it steps on reversals we hold. Attempted at
-            // 490 HCE parameters, two retunes on separate seeds:
+            // a strict subset of ours, so it steps on reversals we hold.
+            // Attempted at 490 HCE parameters, two retunes on separate seeds:
             //
             //   Elo   | -6.24 ± 6.43 (95%)
             //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
@@ -214,7 +241,7 @@ impl Lion {
             // Hard-zero momentum when both gradient and current momentum are essentially zero.
             // Without this, floating-point residuals in m can accumulate and trigger sign updates
             // on perfectly converged parameters: a kind of ghost-gradient effect.
-            momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { beta2[i].mul_add(m, (1.0 - beta2[i]) * g) };
+            self.momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { beta2[i].mul_add(m, (1.0 - beta2[i]) * g) };
         }
     }
 }
@@ -254,7 +281,10 @@ mod tests {
         let gradients = [1.0, -1.0, -1.0, -1.0, 0.0, 1e-6, -1.0];
         let fixed_mask = [false, false, false, false, false, false, true];
 
-        let c = Lion::new(0.9, 1.0, 0.0).census(&momentum, &gradients, &fixed_mask);
+        let mut lion = Lion::new(momentum.len(), 0.9, 1.0, 0.0);
+        lion.restore_momentum(&momentum);
+
+        let c = lion.census(0..momentum.len(), &gradients, &fixed_mask);
 
         assert_eq!(c.total, 6, "the fixed parameter must not be counted");
         assert_eq!(c.skipped, 2, "gated: momentum over the epsilon disagreeing with the gradient");
@@ -274,23 +304,21 @@ mod tests {
         let clip_mask = vec![(-2.0, 2.0)];
 
         let grads_neg = vec![-1.0];
-        let opt = Lion::new(0.9, 1.0, 0.0);
-        let mut momentum_neg = vec![-0.5];
+        let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
+        opt.restore_momentum(&[-0.5]);
         let beta2 = vec![0.99];
 
         let lr_mask = vec![1.0; params.len()];
-        opt.update(&mut params, &mut momentum_neg, &grads_neg, &decay_mask, &fixed_mask, &beta2, &lr_mask, &clip_mask);
+        opt.update(&mut params, &grads_neg, &decay_mask, &fixed_mask, &beta2, &lr_mask, &clip_mask);
         assert!((params[0] - 2.0).abs() < 1e-9, "Should be clipped to max: {}", params[0]);
 
         // Test sparse path clipping
         let mut params_sparse = vec![10.0];
-        let mut momentum_sparse = vec![0.0];
         let grads_sparse = vec![0.0];
         let lr_mask2 = vec![1.0; params_sparse.len()];
+        let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
 
-        opt.update(
-            &mut params_sparse, &mut momentum_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2, &lr_mask2, &clip_mask,
-        );
+        opt.update(&mut params_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2, &lr_mask2, &clip_mask);
 
         assert!((params_sparse[0] - 2.0).abs() < 1e-9, "Sparse update should still clip: {}", params_sparse[0]);
     }
@@ -302,12 +330,12 @@ mod tests {
         let fixed_mask = vec![false];
         let beta2 = vec![0.99];
         let lr_mask = vec![1.0];
-        let opt = Lion::new(0.9, 1.0, 0.0);
+        let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
 
         for m0 in [0.5, -0.5] {
             let mut params = vec![1.0];
-            let mut momentum = vec![m0];
-            opt.update(&mut params, &mut momentum, &[0.0], &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
+            opt.restore_momentum(&[m0]);
+            opt.update(&mut params, &[0.0], &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
             assert!((params[0] - 1.0).abs() < 1e-12, "g=0 must not step (m={m0}): {}", params[0]);
         }
     }
@@ -315,15 +343,14 @@ mod tests {
     #[test]
     fn lion_no_clipping_by_default() {
         let mut params = vec![100.0];
-        let mut momentum = vec![0.0];
         let grads = vec![0.0];
         let decay_mask = vec![0.0];
         let fixed_mask = vec![false];
 
-        let opt = Lion::new(0.9, 0.1, 0.0);
+        let mut opt = Lion::new(1, 0.9, 0.1, 0.0);
         let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
+        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
 
         // c = β₁ · m + (1 - β₁) · g = 0.9 · 0.0 + 0.1 · 0.0 = 0
         assert!((params[0] - 100.0).abs() < 0.01, "No clipping: {}", params[0]);
@@ -333,16 +360,15 @@ mod tests {
     fn lion_zero_gradient_still_applies_weight_decay() {
         // c ≈ 0, g ≈ 0: no sign update, but weight decay must still fire.
         let mut params = vec![10.0];
-        let mut momentum = vec![0.0];
         let grads = vec![0.0];
         let decay_mask = vec![1.0]; // Full decay on this slot
         let fixed_mask = vec![false];
 
         // lr=1.0, wd=0.05, d=1.0 → decay = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
-        let opt = Lion::new(0.9, 1.0, 0.05);
+        let mut opt = Lion::new(1, 0.9, 1.0, 0.05);
         let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
+        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
 
         let expected = 10.0 - 0.5;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
@@ -352,7 +378,6 @@ mod tests {
     fn lion_sign_update_unchanged() {
         // When c is nonzero, behavior should be identical to before the fix.
         let mut params = vec![1.0];
-        let mut momentum = vec![0.0];
         let grads = vec![1.0]; // g=1.0, m=0 → c = 0.9·0 + 0.1·1 = 0.1
         let decay_mask = vec![0.5];
         let fixed_mask = vec![false];
@@ -360,10 +385,10 @@ mod tests {
         // lr=0.2, wd=0.01, d=0.5 → decay = 0.2·0.01·0.5·1.0 = 0.001
         // sign update = 0.2 · sign(0.1) = 0.2
         // net: 1.0 - 0.001 - 0.2 = 0.799
-        let opt = Lion::new(0.9, 0.2, 0.01);
+        let mut opt = Lion::new(1, 0.9, 0.2, 0.01);
         let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
+        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
 
         let expected = 1.0 - 0.001 - 0.2;
         assert!((params[0] - expected).abs() < 1e-6, "Expected {expected}, got {}", params[0]);
@@ -373,17 +398,17 @@ mod tests {
     fn lion_skips_sign_update_on_momentum_gradient_disagreement() {
         // momentum and gradient point in opposite directions → skip.
         let mut params = vec![5.0];
-        let mut momentum = vec![0.5]; // positive momentum
-        let grads = vec![-1.0]; // negative gradient
+        let grads = vec![-1.0];
         let decay_mask = vec![0.0];
         let fixed_mask = vec![false];
 
         // c = 0.9·0.5 + 0.1·(-1.0) = 0.45 - 0.1 = 0.35 > 0 → would normally update
         // but m.signum() ≠ g.signum() → skip sign step
-        let opt = Lion::new(0.9, 0.1, 0.0);
+        let mut opt = Lion::new(1, 0.9, 0.1, 0.0);
+        opt.restore_momentum(&[0.5]);
         let lr_mask = vec![1.0; params.len()];
         let beta2 = vec![0.99];
-        opt.update(&mut params, &mut momentum, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
+        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN);
 
         // No weight decay (wd=0, d=1.0), sign update skipped → no change.
         assert!((params[0] - 5.0).abs() < 1e-9, "Expected no change, got {}", params[0]);
