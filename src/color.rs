@@ -48,8 +48,7 @@ pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result
 }
 
 /// Drop the escapes from colored text bound for a file or a pipe. Everything
-/// emitted here terminates at `m`, so a stray escape that doesn't is passed
-/// through rather than eaten.
+/// emitted here ends at `m`; a stray escape that doesn't keeps its text.
 #[must_use]
 pub fn strip(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

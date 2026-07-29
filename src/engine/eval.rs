@@ -65,19 +65,18 @@ macro_rules! impl_eval_params {
 
 crate::define_tunables! {impl_eval_params}
 
-/// Every tapered bonus term, in slot order. One roster means an implemented term
-/// cannot go unregistered, which compiles clean and drops the term out of the eval
-/// with only the bench to say so.
+/// Every consumer works from this list. A term implemented in one place and
+/// registered in another builds clean and stops being evaluated.
 macro_rules! bonus_terms {
     ($macro:ident) => {
         $macro! {
-            TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
-            BishopPairTerm      = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
-            RookOpenTerm        = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
-            MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
-            DoubledPawnTerm     = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
-            IsolatedPawnTerm    = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
-            BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
+            TempoTerm           = scalar(tempo, tempo_mg, tempo_eg, tempo_offset);
+            BishopPairTerm      = scalar(bishop_pair_diff, bishop_pair_mg, bishop_pair_eg, bishop_pair_offset);
+            RookOpenTerm        = scalar(rook_open_diff, rook_open_mg, rook_open_eg, rook_open_offset);
+            MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg, minor_behind_pawn_offset);
+            DoubledPawnTerm     = scalar(doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg, doubled_pawn_offset);
+            IsolatedPawnTerm    = scalar(isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg, isolated_pawn_offset);
+            BackwardPawnTerm    = scalar(backward_pawn_diff, backward_pawn_mg, backward_pawn_eg, backward_pawn_offset);
             PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
             DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
             PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
@@ -263,20 +262,20 @@ impl EvalParams<i32> {
             atk_weights: ATTACKER,
             w_xray_ortho: XRAY[0],
             w_king_danger: KING_DANGER[0],
-            w_tempo_mg: TEMPO[0],
-            w_tempo_eg: TEMPO[1],
-            w_bp_mg: BISHOP_PAIR[0],
-            w_bp_eg: BISHOP_PAIR[1],
-            w_rook_open_mg: ROOK_OPEN[0],
-            w_rook_open_eg: ROOK_OPEN[1],
-            w_minor_behind_pawn_mg: MINOR_BEHIND_PAWN[0],
-            w_minor_behind_pawn_eg: MINOR_BEHIND_PAWN[1],
-            w_doubled_pawn_mg: DOUBLED_PAWN[0],
-            w_doubled_pawn_eg: DOUBLED_PAWN[1],
-            w_isolated_pawn_mg: ISOLATED_PAWN[0],
-            w_isolated_pawn_eg: ISOLATED_PAWN[1],
-            w_backward_pawn_mg: BACKWARD_PAWN[0],
-            w_backward_pawn_eg: BACKWARD_PAWN[1],
+            tempo_mg: TEMPO[0],
+            tempo_eg: TEMPO[1],
+            bishop_pair_mg: BISHOP_PAIR[0],
+            bishop_pair_eg: BISHOP_PAIR[1],
+            rook_open_mg: ROOK_OPEN[0],
+            rook_open_eg: ROOK_OPEN[1],
+            minor_behind_pawn_mg: MINOR_BEHIND_PAWN[0],
+            minor_behind_pawn_eg: MINOR_BEHIND_PAWN[1],
+            doubled_pawn_mg: DOUBLED_PAWN[0],
+            doubled_pawn_eg: DOUBLED_PAWN[1],
+            isolated_pawn_mg: ISOLATED_PAWN[0],
+            isolated_pawn_eg: ISOLATED_PAWN[1],
+            backward_pawn_mg: BACKWARD_PAWN[0],
+            backward_pawn_eg: BACKWARD_PAWN[1],
             phalanx_mg: PHALANX_MG,
             phalanx_eg: PHALANX_EG,
             defended_pawn_mg: DEFENDED_PAWN_MG,

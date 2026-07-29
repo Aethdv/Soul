@@ -279,8 +279,8 @@ macro_rules! define_simd_params {
     };
 }
 
-/// Rows are comma-separated and every section closes with `;`, which the paste
-/// block renders as a blank line and aligns its own column width against.
+/// Rows are comma-separated; `;` closes a section. The paste block prints a blank
+/// line between sections and gives each its own column width.
 macro_rules! define_weight_params {
     ($( $($block:ident = [$($val:expr),* $(,)?]),* $(,)? ; )*) => {
         paste::paste! {
@@ -324,20 +324,20 @@ macro_rules! define_tunables {
             (atk_weights,            Array6, attacker_offset,           0),
             (w_xray_ortho,           Scalar, xray_offset,               0),
             (w_king_danger,          Scalar, king_danger_offset,        0),
-            (w_tempo_mg,             Scalar, tempo_offset,              0),
-            (w_tempo_eg,             Scalar, tempo_offset,              1),
-            (w_bp_mg,                Scalar, bishop_pair_offset,        0),
-            (w_bp_eg,                Scalar, bishop_pair_offset,        1),
-            (w_rook_open_mg,         Scalar, rook_open_offset,          0),
-            (w_rook_open_eg,         Scalar, rook_open_offset,          1),
-            (w_minor_behind_pawn_mg, Scalar, minor_behind_pawn_offset,  0),
-            (w_minor_behind_pawn_eg, Scalar, minor_behind_pawn_offset,  1),
-            (w_doubled_pawn_mg,      Scalar, doubled_pawn_offset,       0),
-            (w_doubled_pawn_eg,      Scalar, doubled_pawn_offset,       1),
-            (w_isolated_pawn_mg,     Scalar, isolated_pawn_offset,      0),
-            (w_isolated_pawn_eg,     Scalar, isolated_pawn_offset,      1),
-            (w_backward_pawn_mg,     Scalar, backward_pawn_offset,      0),
-            (w_backward_pawn_eg,     Scalar, backward_pawn_offset,      1),
+            (tempo_mg,               Scalar, tempo_offset,              0),
+            (tempo_eg,               Scalar, tempo_offset,              1),
+            (bishop_pair_mg,         Scalar, bishop_pair_offset,        0),
+            (bishop_pair_eg,         Scalar, bishop_pair_offset,        1),
+            (rook_open_mg,           Scalar, rook_open_offset,          0),
+            (rook_open_eg,           Scalar, rook_open_offset,          1),
+            (minor_behind_pawn_mg,   Scalar, minor_behind_pawn_offset,  0),
+            (minor_behind_pawn_eg,   Scalar, minor_behind_pawn_offset,  1),
+            (doubled_pawn_mg,        Scalar, doubled_pawn_offset,       0),
+            (doubled_pawn_eg,        Scalar, doubled_pawn_offset,       1),
+            (isolated_pawn_mg,       Scalar, isolated_pawn_offset,      0),
+            (isolated_pawn_eg,       Scalar, isolated_pawn_offset,      1),
+            (backward_pawn_mg,       Scalar, backward_pawn_offset,      0),
+            (backward_pawn_eg,       Scalar, backward_pawn_offset,      1),
             (phalanx_mg,             Array6, phalanx_mg_offset,         0),
             (phalanx_eg,             Array6, phalanx_eg_offset,         0),
             (defended_pawn_mg,       Array6, defended_pawn_mg_offset,   0),
@@ -359,9 +359,8 @@ pub enum Group {
 }
 
 /// One parameter block: a named, contiguous run of slots in the tunable vector.
-///
-/// `section` numbers the visual runs a group's declaration is broken into, so the
-/// paste block reproduces the grouping instead of flattening it on the next tune.
+/// `section` is which run of its group's declaration it sits in, so a paste-back
+/// reprints the blank lines between them.
 #[derive(Clone, Copy)]
 pub struct Block {
     pub name: &'static str,
@@ -563,9 +562,8 @@ define_layout! {
     enemy_king_dist_eg,
 }
 
-// The record's PSQT gather and the tape's lane accumulation both address the table
-// as pt · 64 + sq against the raw parameter vector, adding no offset. Move the block
-// off zero and every one of those reads lands in whatever took its place.
+// The record's PSQT gather and the tape's lane accumulation index the raw vector
+// at pt · 64 + sq; off zero, those reads land in whatever took its place.
 const _: () = assert!(LAYOUT.psqt_offset == 0, "PSQT must be the first block");
 
 /// Concatenates the groups into the parameter vector `LAYOUT` describes. A
