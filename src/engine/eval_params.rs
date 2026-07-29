@@ -558,6 +558,13 @@ pub fn collect_parameters() -> Vec<Tunable> {
     param_groups!(collect_groups)
 }
 
+/// The values the declarations ship, in slot order: what a tuner starts from and what
+/// every diagnostic measures the shipped eval at.
+#[must_use]
+pub fn default_values(params: &[Tunable]) -> Vec<f64> {
+    params.iter().map(|p| p.value).collect()
+}
+
 define_psqt_params! {
     // Files A-D (mirrored to E-H) × 8 ranks
     PAWN = [

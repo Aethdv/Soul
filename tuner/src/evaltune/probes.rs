@@ -26,7 +26,7 @@ use crate::core::{config::EvalTuneConfig, shuffle::Shuffler};
 /// to change to read them.
 pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
     let params = eval_params::collect_parameters();
-    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+    let values = eval_params::default_values(&params);
 
     let blend = config.wdl_schedule.clone().into_scheduler().blend(1, config.epochs);
     let k = KController::bootstrap(config, ctx, &values, &values, blend, None).k();
@@ -93,7 +93,7 @@ pub fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     const BATCHES: usize = 200;
 
     let params = eval_params::collect_parameters();
-    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+    let values = eval_params::default_values(&params);
     let k = 0.5 * (config.k_min + config.k_max);
 
     let batches = (ctx.train_count / config.batch_size).clamp(1, BATCHES);
@@ -118,9 +118,7 @@ pub fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     Shuffler::new(ctx.train_count).fill(&mut indices, 0xC0FFEE);
     let shuffled = time_pass(&indices);
 
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
+    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
 
     println!("\n{lab}Gather cost{RESET} {dim}({batches} batches of {}){RESET}", config.batch_size);
     println!("  {lab}sequential{RESET}  {v}{sequential:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / sequential / 1e6);
@@ -132,7 +130,7 @@ pub fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     const REPEATS: usize = 7;
 
     let params = eval_params::collect_parameters();
-    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+    let values = eval_params::default_values(&params);
     let k = 0.5 * (config.k_min + config.k_max);
 
     let fused = || {
@@ -160,9 +158,7 @@ pub fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
         best_split = best_split.min(split());
     }
 
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
+    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
 
     println!("\n{lab}Val cost{RESET} {dim}({} positions, best of {REPEATS}){RESET}", ctx.val.len());
     println!("  {lab}fused{RESET}    {v}{:7.2} ms{RESET}  {dim}one traversal, two probes{RESET}", best_fused * 1e3);

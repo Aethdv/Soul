@@ -14,7 +14,7 @@ pub use soul::{
         board::Position,
         defs::{Color, PieceType, TOTAL_PHASE},
     },
-    engine::eval_params::{self, BLOCKS, Block, Group, LAYOUT, Tunable, collect_parameters},
+    engine::eval_params::{self, BLOCKS, Block, Group, LAYOUT, Tunable, collect_parameters, default_values},
     tools::dataset::{
         FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str,
         parse_viri_file, save_encoded,

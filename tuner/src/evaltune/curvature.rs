@@ -194,9 +194,7 @@ impl Spectrum {
 
     /// Everything the spectrum has to say.
     pub fn report(&self, params: &[Tunable], positions: usize, k: f64) {
-        let lab = palette::fg(palette::LABEL);
-        let v = palette::fg(palette::VALUE);
-        let dim = palette::fg(palette::DIM);
+        let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
 
         let m = self.live.len();
         let name = |i: usize| params.get(i).map_or("?", |p| p.name.as_str());

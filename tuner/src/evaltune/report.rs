@@ -302,13 +302,16 @@ fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::engine::collect_parameters, *};
+    use super::{
+        super::engine::{collect_parameters, default_values},
+        *,
+    };
 
     /// The output is text, so neither the compiler nor the oracle reads it.
     #[test]
     fn the_paste_block_reproduces_eval_params() {
         let params = collect_parameters();
-        let values: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let values = default_values(&params);
 
         // The colored form is the one with the header comments; values as their own
         // baseline mark nothing changed, so no ANSI lands in it.
@@ -439,9 +442,7 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
             },
         );
 
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
+    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
 
     let band_label = |b: usize| {
         let lo = b * BAND_WIDTH;
@@ -515,9 +516,7 @@ fn compact(n: u64) -> String {
 /// `band` is the column the cautious-mask question turns on, since it is where our gate and
 /// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
 pub fn gate_census_report(groups: &[GateCensus]) -> String {
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
+    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
 
     let mut out = String::new();
 
@@ -529,13 +528,13 @@ pub fn gate_census_report(groups: &[GateCensus]) -> String {
             out,
             "  {name:<9} {v}{:6.4}{RESET}   {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
             c.active_share(),
-            100.0 * c.share(c.skipped),
-            100.0 * c.share(c.canonical),
-            100.0 * c.share(c.band),
-            100.0 * c.share(c.canonical_only),
-            100.0 * c.share(c.epsilon_waived),
-            100.0 * c.share(c.dead),
-            100.0 * c.share(c.absent),
+            c.percent(c.skipped),
+            c.percent(c.canonical),
+            c.percent(c.band),
+            c.percent(c.canonical_only),
+            c.percent(c.epsilon_waived),
+            c.percent(c.dead),
+            c.percent(c.absent),
         );
     }
 
@@ -543,8 +542,7 @@ pub fn gate_census_report(groups: &[GateCensus]) -> String {
 }
 
 pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
-    let lab = palette::fg(palette::LABEL);
-    let c = palette::fg(palette::COUNT);
+    let (lab, c) = (palette::fg(palette::LABEL), palette::fg(palette::COUNT));
     println!("{lab}Positions:{RESET}  {c}{total}{RESET} ({} train / {} val)", train.len(), val.len());
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
@@ -613,8 +611,7 @@ pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String 
 
     pinned.sort_unstable_by_key(|p| std::cmp::Reverse(clipped[p.idx]));
 
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
+    let (lab, v) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
     let width = pinned.iter().take(10).map(|p| p.name.len()).max().unwrap_or(20);
 
     let mut out = String::new();
@@ -694,8 +691,7 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
     let wmax = weights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let clamp_pct = 100.0 * clamped as f64 / weights.len().max(1) as f64;
 
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
+    let (lab, v) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
 
     println!("{lab}Phase balance:{RESET} {v}{bars}{RESET} {lab}(phase 0..{}){RESET}", hist.len() - 1);
     println!(

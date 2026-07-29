@@ -41,8 +41,7 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
     let mut rng = fastrand::Rng::with_seed(0xA5EE_D000);
     let seeds: Vec<u64> = (0..count).map(|_| rng.u64(..)).collect();
 
-    let lab = palette::fg(palette::LABEL);
-    let val = palette::fg(palette::VALUE);
+    let (lab, val) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
 
     println!("\n{lab}Seed spread:{RESET} {val}{count}{RESET} seeds × {val}{epochs}{RESET} epochs on {dataset}\n");
     for (i, &seed) in seeds.iter().enumerate() {
@@ -131,8 +130,7 @@ fn collect(log_path: &str, seeds: &[u64]) -> Vec<Final> {
 }
 
 fn report(runs: &[Final]) {
-    let lab = palette::fg(palette::LABEL);
-    let val = palette::fg(palette::VALUE);
+    let (lab, val) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
 
     // On big3, which tenth got held out moves best_val_loss by 1.6e-3 at identical parameters,
     // eighty times what 4000 epochs buy. A table mixing holdouts therefore ranks the holdouts.

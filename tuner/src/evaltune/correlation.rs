@@ -37,7 +37,7 @@ struct SliceStats {
 
 /// Run PSQT adjacency analysis on the current parameter values.
 pub fn run_correlation() {
-    let values: Vec<f64> = eval_params::collect_parameters().iter().map(|p| p.value).collect();
+    let values = eval_params::default_values(&eval_params::collect_parameters());
 
     let slices = analyse_all(&values);
 

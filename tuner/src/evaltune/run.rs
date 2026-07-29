@@ -374,7 +374,7 @@ fn train_loop(
     let Seeds { rng_seed, split_seed } = seeds;
 
     let all_params = eval_params::collect_parameters();
-    let default_values: Vec<f64> = all_params.iter().map(|p| p.value).collect();
+    let default_values = eval_params::default_values(&all_params);
 
     let resume = resume_path.map(|path| {
         println!("Resuming from checkpoint: {}{path}{RESET}", palette::fg(palette::VALUE));
@@ -407,9 +407,7 @@ fn train_loop(
     let init_blend = wdl_scheduler.blend(1, config.epochs);
     let mut k_ctrl = KController::bootstrap(config, ctx, &values, &default_values, init_blend, resume.as_ref());
 
-    let v = palette::fg(palette::VALUE);
-    let lab = palette::fg(palette::LABEL);
-    let dim = palette::fg(palette::DIM);
+    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
     let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
 
@@ -870,13 +868,13 @@ fn train_loop(
                 "  {lab}gate{RESET} φ {v}{:.4}{RESET}  step {v}{step_l1:.1}{RESET}  skip {v}{:.1}%{RESET}  canonical {v}{:.1}%{RESET}  band {v}{:.2}%{RESET}  \
                  c-only {v}{:.1}%{RESET}  waived {v}{:.1}%{RESET}  dead {v}{:.1}%{RESET}  no grad {v}{:.1}%{RESET}",
                 all.active_share(),
-                100.0 * all.share(all.skipped),
-                100.0 * all.share(all.canonical),
-                100.0 * all.share(all.band),
-                100.0 * all.share(all.canonical_only),
-                100.0 * all.share(all.epsilon_waived),
-                100.0 * all.share(all.dead),
-                100.0 * all.share(all.absent),
+                all.percent(all.skipped),
+                all.percent(all.canonical),
+                all.percent(all.band),
+                all.percent(all.canonical_only),
+                all.percent(all.epsilon_waived),
+                all.percent(all.dead),
+                all.percent(all.absent),
             );
         }
 

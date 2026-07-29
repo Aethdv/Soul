@@ -357,7 +357,7 @@ mod tests {
         engine::{
             combiner::Accumulators,
             eval::evaluate,
-            eval_params::{BLOCKS, LAYOUT, PHASE, collect_parameters},
+            eval_params::{BLOCKS, LAYOUT, PHASE, collect_parameters, default_values},
         },
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
@@ -552,7 +552,7 @@ mod tests {
     /// carries some.
     #[test]
     fn test_score_is_homogeneous_in_its_weights_oracle() {
-        let base: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+        let base = default_values(&collect_parameters());
         let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
         let mut asserted = 0;
 
@@ -593,7 +593,7 @@ mod tests {
     /// compares across the two.
     #[test]
     fn test_i32_matches_f64_oracle() {
-        let values: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+        let values = default_values(&collect_parameters());
 
         for fen in FENS {
             let pos = Position::from_fen(fen);
@@ -609,7 +609,7 @@ mod tests {
     /// basis at all for anything whose shape depends on scale.
     #[test]
     fn test_shipped_values_oracle() {
-        let values: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+        let values = default_values(&collect_parameters());
 
         assert_oracle_matches("shipped defaults", &values);
     }
@@ -779,7 +779,7 @@ mod tests {
     /// the drift asserts above stay quiet because both paths agree on it.
     #[test]
     fn test_encoded_block_coverage_oracle() {
-        let base: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+        let base = default_values(&collect_parameters());
 
         let records: Vec<FeatureRecord> = FENS
             .iter()
@@ -804,7 +804,7 @@ mod tests {
     /// built on them agrees with the board path wherever it rounds.
     #[test]
     fn test_encoded_matches_board_at_defaults_oracle() {
-        let values: Vec<f64> = collect_parameters().iter().map(|t| t.value).collect();
+        let values = default_values(&collect_parameters());
 
         for fen in FENS {
             let pos = Position::from_fen(fen);

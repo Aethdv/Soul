@@ -374,7 +374,7 @@ mod tests {
 
         // Off canon by 60 on the queen's midgame table, so the fold has work to do
         // whatever the shipped file happens to hold.
-        let mut values: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let mut values = eval_params::default_values(&params);
 
         for i in table..table + l.psqt_len / 12 {
             values[i] += 60.0;
@@ -408,7 +408,7 @@ mod tests {
         let queen = PieceType::Queen as usize;
         let table = l.psqt_offset + queen * 2 * squares;
 
-        let mut base: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let mut base = eval_params::default_values(&params);
         let mut drifted = base.clone();
 
         // Onto every queen square and off the queen's material: nothing to the eval.
@@ -432,7 +432,7 @@ mod tests {
 
         // A mean of exactly half a unit, which integer squares hit often enough to
         // see. Rounding away from zero folds it back and forth from here on.
-        let mut tied: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let mut tied = eval_params::default_values(&params);
 
         for (n, i) in (table..table + squares).enumerate() {
             tied[i] = if n < squares / 2 { -1.0 } else { 0.0 };
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn the_gauge_returns_the_scale_and_pays_k_for_it() {
         let params = eval_params::collect_parameters();
-        let mut values: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let mut values = eval_params::default_values(&params);
         let mut optimizer = Lion::new(values.len(), 0.9, 0.1, 0.0);
 
         optimizer.restore_momentum(&vec![0.5; values.len()]);
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn the_gauge_restores_a_live_curvature_too() {
         let params = eval_params::collect_parameters();
-        let defaults: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let defaults = eval_params::default_values(&params);
         let curve = LAYOUT.king_danger_offset;
 
         let mut want = defaults.clone();
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn a_cold_start_does_not_gauge() {
         let params = eval_params::collect_parameters();
-        let defaults: Vec<f64> = params.iter().map(|p| p.value).collect();
+        let defaults = eval_params::default_values(&params);
         let records = probe_records();
         let gauge = Gauge::new(records.iter().collect(), &defaults);
 

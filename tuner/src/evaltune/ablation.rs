@@ -18,7 +18,7 @@ use crate::evaltune::{
 };
 
 pub fn run_ablation(dataset_paths: &[String]) {
-    let values: Vec<f64> = eval_params::collect_parameters().iter().map(|p| p.value).collect();
+    let values = eval_params::default_values(&eval_params::collect_parameters());
 
     println!("Loading dataset...");
 

@@ -314,6 +314,12 @@ impl GateCensus {
         if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 }
     }
 
+    /// The same share as a percentage, the unit both readouts print it in.
+    #[must_use]
+    pub fn percent(&self, count: u64) -> f64 {
+        100.0 * self.share(count)
+    }
+
     /// The share of updates that stepped, which is Liang's φ. Theirs falls to about 0.55
     /// on a 100M-parameter model at batch 4096; ours sits near 1.0.
     ///
