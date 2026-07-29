@@ -979,7 +979,7 @@ fn train_loop(
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
 
     let gauge_line = format!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
-    let off_scale = off_scale_warning(Gauge::measure(&gauge.probe, &best_val_params) / gauge.reference);
+    let off_scale = off_scale_warning(Gauge::measure(&gauge.probe, &ema_values) / gauge.reference);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
     let calibration = calibration_report(ctx, &best_val_params, k_ctrl.k());
     let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
