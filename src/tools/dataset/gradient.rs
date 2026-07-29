@@ -22,6 +22,7 @@ use crate::{
             MinorBehindPawnTerm, PassedPawnTerm, PhalanxTerm, RookOpenTerm, SharedFeatures, TempoTerm, XrayTerm, apply_all_inputs,
             evaluate_fast, extract_phase, scatter_all_terms,
         },
+        eval_params::LAYOUT,
         mobility::{
             KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, SideMetrics, compute_openness_raw,
         },
@@ -157,7 +158,7 @@ pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
 /// same registered terms, so [`LinearCombiner`] owns every rounding site.
 #[inline]
 pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
-    let l = &psqt::LAYOUT;
+    let l = &LAYOUT;
     let phase_counts: [f64; 6] = array::from_fn(|i| f64::from(record.phase_counts[i]));
     let phase = compute_phase_f64(&phase_counts, values);
 
@@ -211,7 +212,7 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
     let mg_w = eval.phase / f64::from(TOTAL_PHASE);
     let eg_w = 1.0 - mg_w;
 
-    let l = &psqt::LAYOUT;
+    let l = &LAYOUT;
 
     for i in 0..record.piece_count as usize {
         let (mg_idx, eg_idx, sign) = record.piece(i);

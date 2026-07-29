@@ -2,7 +2,7 @@
 //!
 //! Interpolates between middlegame and endgame weights based on remaining material.
 
-use crate::core::{defs::TOTAL_PHASE, psqt};
+use crate::{core::defs::TOTAL_PHASE, engine::eval_params::LAYOUT};
 
 /// Compute the clamped phase from f64 piece counts. The tuner feeds `f64` counts
 /// from gradient traces; the engine reads its phase from the PSQT accumulator
@@ -17,7 +17,7 @@ pub fn compute_phase_f64(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
     let mut phase_raw = 0.0;
 
     for (pt, &count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.phase_offset + pt;
+        let phase_idx = LAYOUT.phase_offset + pt;
 
         if phase_idx < values.len() {
             phase_raw += count * values[phase_idx];

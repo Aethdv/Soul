@@ -5,7 +5,6 @@
 
 use std::{arch, mem};
 
-pub use crate::engine::eval_params::LAYOUT;
 use crate::{
     core::defs::{Color, PieceType, Square},
     engine::eval_params::{

@@ -92,7 +92,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let mut phase_dual = DualNode::zero();
 
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.phase_offset + pt;
+        let phase_idx = LAYOUT.phase_offset + pt;
 
         if phase_idx < values.len() {
             phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
@@ -130,16 +130,16 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let d_eg = outer_deriv * f64::from(result.grad[1]);
 
     debug_assert!(
-        param_grads.len() >= psqt::LAYOUT.mobility_open_offset,
+        param_grads.len() >= LAYOUT.mobility_open_offset,
         "param_grads too small: {} < {} (material+PSQT footprint)",
         param_grads.len(),
-        psqt::LAYOUT.mobility_open_offset,
+        LAYOUT.mobility_open_offset,
     );
 
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
-        let mat_mg_idx = psqt::LAYOUT.material_offset + pt;
-        let mat_eg_idx = psqt::LAYOUT.material_offset + 6 + pt;
+        let mat_mg_idx = LAYOUT.material_offset + pt;
+        let mat_eg_idx = LAYOUT.material_offset + 6 + pt;
 
         let mut bb_w = board.pieces(piece, Color::White);
         let count_w = bb_w.popcount() as f64;
@@ -219,10 +219,10 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let d = outer * stm_sign;
 
     debug_assert!(
-        param_grads.len() >= psqt::LAYOUT.mobility_open_offset,
+        param_grads.len() >= LAYOUT.mobility_open_offset,
         "param_grads too small: {} < {} (material+PSQT footprint)",
         param_grads.len(),
-        psqt::LAYOUT.mobility_open_offset,
+        LAYOUT.mobility_open_offset,
     );
 
     // Combiner owns every upstream derivative. PSQT / material scatter
@@ -237,8 +237,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
-        let mat_mg_idx = psqt::LAYOUT.material_offset + pt;
-        let mat_eg_idx = psqt::LAYOUT.material_offset + 6 + pt;
+        let mat_mg_idx = LAYOUT.material_offset + pt;
+        let mat_eg_idx = LAYOUT.material_offset + 6 + pt;
 
         let mut bb_w = board.pieces(piece, Color::White);
         let count_w = bb_w.popcount() as f64;
@@ -306,7 +306,7 @@ fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
     let mut phase_raw = 0.0;
 
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = psqt::LAYOUT.phase_offset + pt;
+        let phase_idx = LAYOUT.phase_offset + pt;
 
         if phase_idx < values.len() {
             phase_raw += count * values[phase_idx];
@@ -318,10 +318,10 @@ fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
 #[inline(always)]
 fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
     debug_assert!(
-        values.len() >= psqt::LAYOUT.mobility_open_offset,
+        values.len() >= LAYOUT.mobility_open_offset,
         "values too short: {} < {} (needs PSQT + material footprint)",
         values.len(),
-        psqt::LAYOUT.mobility_open_offset
+        LAYOUT.mobility_open_offset
     );
 
     // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
@@ -330,8 +330,8 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
         let pt = piece.as_usize();
         piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
 
-        let mat_mg = values[psqt::LAYOUT.material_offset + pt];
-        let mat_eg = values[psqt::LAYOUT.material_offset + 6 + pt];
+        let mat_mg = values[LAYOUT.material_offset + pt];
+        let mat_eg = values[LAYOUT.material_offset + 6 + pt];
 
         let mut bb_w = board.pieces(piece, Color::White);
         let count_w = bb_w.popcount() as f64;
@@ -367,11 +367,11 @@ mod tests {
     use std::ops::Range;
 
     use soul::{
-        core::{board::Position, defs::TOTAL_PHASE, psqt::LAYOUT},
+        core::{board::Position, defs::TOTAL_PHASE},
         engine::{
             combiner::Accumulators,
             eval::evaluate,
-            eval_params::{BLOCKS, PHASE, collect_parameters},
+            eval_params::{BLOCKS, LAYOUT, PHASE, collect_parameters},
         },
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };

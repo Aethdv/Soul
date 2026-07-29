@@ -21,11 +21,8 @@ use palette::{CLEAR_LINE, RESET};
 use rayon::prelude::*;
 use soul::{
     color,
-    core::{
-        defs::{PieceType, TOTAL_PHASE},
-        psqt,
-    },
-    engine::eval_params::{self, Tunable},
+    core::defs::{PieceType, TOTAL_PHASE},
+    engine::eval_params::{self, LAYOUT, Tunable},
     tools::dataset::{FeatureRecord, accumulate_record_grad, eval_record},
 };
 
@@ -213,7 +210,7 @@ impl KController {
 /// `f64::round` breaks that at exactly −0.5, which a mean over integer squares hits
 /// often enough to see, and the table folds back and forth from then on.
 fn canonicalize(values: &mut [f64], params: &[Tunable]) {
-    let l = &psqt::LAYOUT;
+    let l = &LAYOUT;
     let pieces = l.material_len / 2;
     let squares = l.psqt_len / (2 * pieces);
 
@@ -315,11 +312,11 @@ impl<'a> Gauge<'a> {
     /// `p + c·p²/S` is homogeneous only when `c` takes `1/f` against everything
     /// else's `f`, and scaling it alike leaves the curve trading unevenly against K.
     fn slot(i: usize, f: f64) -> f64 {
-        let (lo, hi) = (psqt::LAYOUT.phase_offset, psqt::LAYOUT.phase_offset + psqt::LAYOUT.phase_len);
+        let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
 
         if (lo..hi).contains(&i) {
             1.0
-        } else if i == psqt::LAYOUT.king_danger_offset {
+        } else if i == LAYOUT.king_danger_offset {
             f.recip()
         } else {
             f
@@ -921,7 +918,7 @@ fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
 /// The eval's own `PHASE`, in piece-type order.
 fn phase_weights() -> [f64; 6] {
     let params = eval_params::collect_parameters();
-    let woff = psqt::LAYOUT.phase_offset;
+    let woff = LAYOUT.phase_offset;
 
     std::array::from_fn(|pt| params[woff + pt].value)
 }
@@ -1504,10 +1501,10 @@ fn train_loop(
     let mut val_seconds = 0.0f64;
     let mut epoch_positions = 0u64;
 
-    let psqt_end = psqt::LAYOUT.material_offset;
-    let base_end = psqt_end + psqt::LAYOUT.material_len;
-    let mob_start = psqt::LAYOUT.mobility_open_offset;
-    let mob_end = psqt::LAYOUT.mobility_closed_offset + psqt::LAYOUT.mobility_closed_len;
+    let psqt_end = LAYOUT.material_offset;
+    let base_end = psqt_end + LAYOUT.material_len;
+    let mob_start = LAYOUT.mobility_open_offset;
+    let mob_end = LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len;
 
     let group_ranges = group_ranges(np);
     let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
@@ -2068,11 +2065,11 @@ enum ParamGroup {
 /// Classify a parameter index into its layout group: the single source of the
 /// group boundaries the masks below share.
 fn param_group(i: usize) -> ParamGroup {
-    if i < psqt::LAYOUT.material_offset {
+    if i < LAYOUT.material_offset {
         ParamGroup::Psqt
-    } else if i < psqt::LAYOUT.mobility_open_offset {
+    } else if i < LAYOUT.mobility_open_offset {
         ParamGroup::Material
-    } else if i < psqt::LAYOUT.mobility_closed_offset + psqt::LAYOUT.mobility_closed_len {
+    } else if i < LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len {
         ParamGroup::Mobility
     } else {
         ParamGroup::Other
@@ -2191,7 +2188,7 @@ fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
 /// Per-parameter range the sign step may not leave, unbounded outside mobility
 /// and the king-danger curvature.
 fn build_clip_mask(params: &[Tunable]) -> Vec<(f64, f64)> {
-    let danger = psqt::LAYOUT.king_danger_offset;
+    let danger = LAYOUT.king_danger_offset;
 
     (0..params.len())
         .map(|i| {
@@ -2245,7 +2242,7 @@ mod tests {
     #[test]
     fn canonicalizing_moves_no_score() {
         let params = eval_params::collect_parameters();
-        let l = &psqt::LAYOUT;
+        let l = &LAYOUT;
         let table = l.psqt_offset + PieceType::Queen as usize * (l.psqt_len / 6);
         let records = probe_records();
 
@@ -2280,7 +2277,7 @@ mod tests {
     #[test]
     fn canonicalizing_collapses_the_flat_direction() {
         let params = eval_params::collect_parameters();
-        let l = &psqt::LAYOUT;
+        let l = &LAYOUT;
         let squares = l.psqt_len / 12; // six piece types, two phases each
         let queen = PieceType::Queen as usize;
         let table = l.psqt_offset + queen * 2 * squares;
@@ -2334,7 +2331,7 @@ mod tests {
         let records = probe_records();
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge_ref = Gauge::measure(&probe, &values);
-        let (lo, hi) = (psqt::LAYOUT.phase_offset, psqt::LAYOUT.phase_offset + psqt::LAYOUT.phase_len);
+        let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
         let phase_before: Vec<f64> = values[lo..hi].to_vec();
 
         let mut gauge = Gauge::new(probe.clone(), &values);
@@ -2370,7 +2367,7 @@ mod tests {
     fn the_gauge_restores_a_live_curvature_too() {
         let params = eval_params::collect_parameters();
         let defaults: Vec<f64> = params.iter().map(|p| p.value).collect();
-        let curve = psqt::LAYOUT.king_danger_offset;
+        let curve = LAYOUT.king_danger_offset;
 
         let mut want = defaults.clone();
         want[curve] = 64.0;
@@ -2379,7 +2376,7 @@ mod tests {
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge = Gauge::new(probe.clone(), &want);
         let mut drifted = want.clone();
-        let (lo, hi) = (psqt::LAYOUT.phase_offset, psqt::LAYOUT.phase_offset + psqt::LAYOUT.phase_len);
+        let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
 
         // Spelled out rather than routed through `Gauge::slot`, so a wrong rule
         // there cannot cancel against itself on both sides of the test.
@@ -2429,9 +2426,9 @@ mod tests {
             }
         }
 
-        let phase = psqt::LAYOUT.phase_offset;
+        let phase = LAYOUT.phase_offset;
         let zeroed = seed_values(&params, Init::Zero, 7);
-        assert!(zeroed[phase..phase + psqt::LAYOUT.phase_len].iter().any(|w| *w > 0.0), "phase taper zeroed");
+        assert!(zeroed[phase..phase + LAYOUT.phase_len].iter().any(|w| *w > 0.0), "phase taper zeroed");
     }
 
     #[test]
