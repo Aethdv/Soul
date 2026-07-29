@@ -132,50 +132,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let d_mg = outer_deriv * f64::from(result.grad[0]);
     let d_eg = outer_deriv * f64::from(result.grad[1]);
 
-    debug_assert!(
-        param_grads.len() >= LAYOUT.mobility_open_offset,
-        "param_grads too small: {} < {} (material+PSQT footprint)",
-        param_grads.len(),
-        LAYOUT.mobility_open_offset,
-    );
-
-    for piece in PieceType::ALL {
-        let pt = piece.as_usize();
-        let mat_mg_idx = LAYOUT.material_offset + pt;
-        let mat_eg_idx = LAYOUT.material_offset + 6 + pt;
-
-        let mut bb_w = board.pieces(piece, Color::White);
-        let count_w = bb_w.popcount() as f64;
-
-        param_grads[mat_mg_idx] += d_mg * count_w;
-        param_grads[mat_eg_idx] += d_eg * count_w;
-
-        while bb_w.is_not_empty() {
-            let sq = bb_w.pop_lsb();
-            let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
-            let mg_idx = pt * 64 + mirror_idx;
-            let eg_idx = pt * 64 + 32 + mirror_idx;
-
-            param_grads[mg_idx] += d_mg;
-            param_grads[eg_idx] += d_eg;
-        }
-
-        let mut bb_b = board.pieces(piece, Color::Black);
-        let count_b = bb_b.popcount() as f64;
-
-        param_grads[mat_mg_idx] -= d_mg * count_b;
-        param_grads[mat_eg_idx] -= d_eg * count_b;
-
-        while bb_b.is_not_empty() {
-            let sq = bb_b.pop_lsb();
-            let mirror_idx = psqt::mirror_sq(usize::from(sq));
-            let mg_idx = pt * 64 + mirror_idx;
-            let eg_idx = pt * 64 + 32 + mirror_idx;
-
-            param_grads[mg_idx] -= d_mg;
-            param_grads[eg_idx] -= d_eg;
-        }
-    }
+    scatter_psqt(board, d_mg, d_eg, param_grads);
     err * err
 }
 
@@ -219,13 +176,6 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let outer = 2.0 * err * sig * (1.0 - sig) * k;
     let d = outer * stm_sign;
 
-    debug_assert!(
-        param_grads.len() >= LAYOUT.mobility_open_offset,
-        "param_grads too small: {} < {} (material+PSQT footprint)",
-        param_grads.len(),
-        LAYOUT.mobility_open_offset,
-    );
-
     // Combiner owns every upstream derivative. PSQT / material scatter
     // (out-of-band, accumulator-level) pulls `mg_eg`; term scatter reads
     // the rest via `scatter_all_terms`.
@@ -235,6 +185,50 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // One board sweep writes both gradients for every active piece.
     let d_mg = upstreams.mg_eg.d_mg;
     let d_eg = upstreams.mg_eg.d_eg;
+
+    scatter_psqt(board, d_mg, d_eg, param_grads);
+    // Adding a new term = one line in `register_terms!`
+    scatter_all_terms(&features, &upstreams, param_grads);
+    err * err
+}
+
+/// Substitutes f64 for i32 in the engine eval path.
+#[inline(always)]
+pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
+    eval_f64_with_acc(board, values).0
+}
+
+/// Returns the eval score and the lane-sum accumulator + piece counts,
+/// so `eval_linear_grad` can reuse them instead of re-iterating the board.
+pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
+    let mut trace_acc = <f64 as EvalMath>::Vec8::zero();
+    let mut piece_counts = [0.0f64; 6];
+
+    accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
+
+    let phase = compute_phase_f64(&piece_counts, values);
+
+    // Same generator the DualNode path uses: no per-term hand literal to drift.
+    let params = EvalParams::<f64>::load_tunable(values);
+    let features = SharedFeatures::compute(board);
+
+    (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
+}
+
+/// PSQT and material gradients for one board: the half of the scatter that lives in the
+/// accumulator rather than in any registered term.
+///
+/// Both gradient paths end here, and that is the point. The dual pass exists to cross-check
+/// the linear one, so a copy of this loop in each would let one bug sit in both and be agreed
+/// with. `d_mg` and `d_eg` arrive carrying the loss derivative and the STM sign.
+#[inline(always)]
+fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
+    debug_assert!(
+        param_grads.len() >= LAYOUT.mobility_open_offset,
+        "param_grads too small: {} < {} (material+PSQT footprint)",
+        param_grads.len(),
+        LAYOUT.mobility_open_offset,
+    );
 
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
@@ -273,32 +267,6 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
             param_grads[eg_idx] -= d_eg;
         }
     }
-    // Adding a new term = one line in `register_terms!`
-    scatter_all_terms(&features, &upstreams, param_grads);
-    err * err
-}
-
-/// Substitutes f64 for i32 in the engine eval path.
-#[inline(always)]
-pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
-    eval_f64_with_acc(board, values).0
-}
-
-/// Returns the eval score and the lane-sum accumulator + piece counts,
-/// so `eval_linear_grad` can reuse them instead of re-iterating the board.
-pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
-    let mut trace_acc = <f64 as EvalMath>::Vec8::zero();
-    let mut piece_counts = [0.0f64; 6];
-
-    accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
-
-    let phase = compute_phase_f64(&piece_counts, values);
-
-    // Same generator the DualNode path uses: no per-term hand literal to drift.
-    let params = EvalParams::<f64>::load_tunable(values);
-    let features = SharedFeatures::compute(board);
-
-    (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
 }
 
 #[inline(always)]
