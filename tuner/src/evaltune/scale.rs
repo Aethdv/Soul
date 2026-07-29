@@ -46,7 +46,7 @@ impl KController {
         resume: Option<&CheckpointData>,
     ) -> Self {
         let (k, k_ref, k_momentum) = match resume {
-            Some(d) => (d.k, d.k_ref, d.k_momentum),
+            Some(d) => (d.run.k, d.run.k_ref, d.run.k_momentum),
             None => match config.k_mode {
                 KMode::Fixed { value } => (value, value, 0.0),
                 _ => {

@@ -392,7 +392,7 @@ fn train_loop(
         data
     });
 
-    let (start_epoch, mut lr_scale) = resume.as_ref().map_or((1, 1.0), |d| (d.epoch, d.lr_scale));
+    let (start_epoch, mut lr_scale) = resume.as_ref().map_or((1, 1.0), |d| (d.run.epoch, d.run.lr_scale));
     let mut values = match resume.as_ref() {
         Some(d) => d.values.clone(),
         None => seed_values(&all_params, config.init, rng_seed),
@@ -522,7 +522,7 @@ fn train_loop(
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
 
-    let mut progress = resume.as_ref().map_or_else(Progress::default, |d| d.progress.clone());
+    let mut progress = resume.as_ref().map_or_else(Progress::default, |d| d.run.progress.clone());
 
     let slots = all_params.len();
     let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_val_params.clone());
@@ -891,12 +891,14 @@ fn train_loop(
             }
 
             if let Err(e) = save_checkpoint("evaltune_checkpoint.json", &all_params, &TrainerState {
-                epoch: epoch + 1, // resume starts here; the current epoch is already done
-                lr_scale,
-                k: k_ctrl.k(),
-                k_ref: k_ctrl.k_ref(),
-                k_momentum: k_ctrl.momentum,
-                progress: &progress,
+                run: RunState {
+                    epoch: epoch + 1, // resume starts here; the current epoch is already done
+                    lr_scale,
+                    k: k_ctrl.k(),
+                    k_ref: k_ctrl.k_ref(),
+                    k_momentum: k_ctrl.momentum,
+                    progress: progress.clone(),
+                },
                 rng_seed,
                 split_seed,
                 dataset: dataset_fnv,

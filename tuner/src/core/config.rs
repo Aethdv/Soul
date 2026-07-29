@@ -60,25 +60,20 @@ impl<'de> Visitor<'de> for LossFnVisitor {
         }
     }
 
+    /// The parameter names the variant, so two of them name two losses.
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<LossFn, M::Error> {
-        let mut gamma = None;
-        let mut epsilon = None;
+        let loss = match map.next_entry::<String, f64>()? {
+            Some((key, value)) if key == "gamma" => LossFn::Focal { gamma: value },
+            Some((key, value)) if key == "epsilon" => LossFn::SmoothedCE { epsilon: value },
+            Some((key, _)) => return Err(de::Error::unknown_field(&key, &["gamma", "epsilon"])),
+            None => return Err(de::Error::custom("expected 'gamma' (Focal) or 'epsilon' (SmoothedCE)")),
+        };
 
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "gamma" => gamma = Some(map.next_value::<f64>()?),
-                "epsilon" => epsilon = Some(map.next_value::<f64>()?),
-                other => return Err(de::Error::unknown_field(other, &["gamma", "epsilon"])),
-            }
+        if let Some((extra, _)) = map.next_entry::<String, f64>()? {
+            return Err(de::Error::custom(format!("{extra} names a second loss; give one of 'gamma' or 'epsilon'")));
         }
 
-        if let Some(gamma) = gamma {
-            Ok(LossFn::Focal { gamma })
-        } else if let Some(epsilon) = epsilon {
-            Ok(LossFn::SmoothedCE { epsilon })
-        } else {
-            Err(de::Error::custom("expected map with 'gamma' (Focal) or 'epsilon' (SmoothedCE)"))
-        }
+        Ok(loss)
     }
 }
 
@@ -666,7 +661,40 @@ fn default_k_lr_mult() -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::TunerConfig;
+    use super::{LossFn, TunerConfig};
+
+    /// A bare scalar is not a TOML document, so the spec goes under a key or it never
+    /// reaches the visitor.
+    fn loss(spec: &str) -> Result<LossFn, toml::de::Error> {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            loss: LossFn,
+        }
+
+        toml::from_str::<Wrap>(&format!("loss = {spec}")).map(|w| w.loss)
+    }
+
+    #[test]
+    fn every_loss_spelling_parses_to_its_variant() {
+        assert_eq!(loss("\"ce\"").unwrap(), LossFn::CrossEntropy);
+        assert_eq!(loss("\"mse\"").unwrap(), LossFn::MeanSquaredError);
+        assert_eq!(loss("\"focal\"").unwrap(), LossFn::Focal { gamma: 2.0 });
+        assert_eq!(loss("\"sce\"").unwrap(), LossFn::SmoothedCE { epsilon: 0.01 });
+        assert_eq!(loss("{ gamma = 2.5 }").unwrap(), LossFn::Focal { gamma: 2.5 });
+        assert_eq!(loss("{ epsilon = 0.02 }").unwrap(), LossFn::SmoothedCE { epsilon: 0.02 });
+    }
+
+    #[test]
+    fn an_ambiguous_or_unknown_loss_is_refused() {
+        for (doc, wanted) in [
+            ("\"crossentropy\"", "crossentropy"),
+            ("{ delta = 1.0 }", "delta"),
+            ("{ gamma = 2.0, epsilon = 0.01 }", "epsilon"),
+        ] {
+            let error = loss(doc).expect_err("{doc} must not parse");
+            assert!(error.to_string().contains(wanted), "the error must name {wanted}: {error}");
+        }
+    }
 
     #[test]
     fn the_shipped_config_parses() {
