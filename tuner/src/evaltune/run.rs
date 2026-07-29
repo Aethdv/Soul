@@ -33,7 +33,7 @@ use super::{
 use crate::core::{
     config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
     logger::JsonLogger,
-    shuffle::{self, Shuffler},
+    shuffle::Shuffler,
 };
 
 /// Fixes which tenth of a dataset is held out, so two runs over one dataset are scored on the
@@ -616,7 +616,7 @@ fn train_loop(
 
         let t_shuffle = Instant::now();
         if config.shuffle_block > 0 {
-            shuffle::fill_blocked(&mut indices, rng.u64(..), config.shuffle_block);
+            shuffler.fill_blocked(&mut indices, rng.u64(..), config.shuffle_block);
         } else {
             shuffler.fill(&mut indices, rng.u64(..));
         }

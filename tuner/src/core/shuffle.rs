@@ -33,58 +33,67 @@ const TASK: usize = 1 << 16;
 /// the gamma in `mix` does the job.
 const BUCKET_DOMAIN: u64 = 0xD1B5_4A32_D192_ED03;
 
-/// Permutes blocks of `block` consecutive indices instead of the indices themselves.
-///
-/// The entry list is shuffled once at load, before features are extracted, so a run of
-/// consecutive records is already a random sample of games and a batch drawn from whole
-/// blocks is still unbiased. What it gives up is the fresh partition a full permutation
-/// buys every epoch: positions inside a block travel together for the whole run, and the
-/// blocks themselves are the same on every seed, since the load-time shuffle is seeded by
-/// the fixed split.
-///
-/// What it buys is sequential reads. The gather over `FeatureRecord`s is DRAM latency per
-/// record, and a block turns that back into a stream the prefetcher can follow.
-pub fn fill_blocked(out: &mut [u32], seed: u64, block: usize) {
-    let n = out.len();
-    let blocks = n.div_ceil(block.max(1));
-    let mut order = vec![0u32; blocks];
-
-    Shuffler::new(blocks).fill(&mut order, seed);
-
-    let mut w = 0;
-
-    for &b in &order {
-        let start = b as usize * block;
-
-        for i in start..(start + block).min(n) {
-            out[w] = i as u32;
-            w += 1;
-        }
-    }
-}
-
+/// Scratch for one dataset's permutations, sized once and reused every epoch.
 pub struct Shuffler {
     /// The bucket each position landed in. Materialized rather than replayed, so the counting
     /// pass and the scattering pass cannot disagree about where an element goes.
     ids: Vec<u8>,
+    /// The block permutation [`Shuffler::fill_blocked`] draws before expanding it.
+    order: Vec<u32>,
 }
 
 impl Shuffler {
     pub fn new(len: usize) -> Self {
-        Self { ids: vec![0; len] }
+        Self { ids: vec![0; len], order: Vec::new() }
     }
 
     /// Fills `out` with a uniform random permutation of `0..out.len()`.
     ///
     /// # Panics
-    /// If `out` is not the length this was constructed for.
+    /// If `out` is longer than the length this was constructed for.
     pub fn fill(&mut self, out: &mut [u32], seed: u64) {
         self.fill_into(out, seed, bucket_count(out.len()));
     }
 
+    /// Permutes blocks of `block` consecutive indices instead of the indices themselves.
+    ///
+    /// The entry list is shuffled once at load, before features are extracted, so a run of
+    /// consecutive records is already a random sample of games and a batch drawn from whole
+    /// blocks is still unbiased. What it gives up is the fresh partition a full permutation
+    /// buys every epoch: positions inside a block travel together for the whole run, and the
+    /// blocks themselves are the same on every seed, since the load-time shuffle is seeded by
+    /// the fixed split.
+    ///
+    /// What it buys is sequential reads. The gather over `FeatureRecord`s is DRAM latency per
+    /// record, and a block turns that back into a stream the prefetcher can follow.
+    pub fn fill_blocked(&mut self, out: &mut [u32], seed: u64, block: usize) {
+        let n = out.len();
+        let blocks = n.div_ceil(block.max(1));
+
+        // Lifted out so the block permutation can borrow the same `ids` scratch, and put
+        // back for the next epoch: at a block of 4 this vector is most of the dataset.
+        let mut order = std::mem::take(&mut self.order);
+        order.resize(blocks, 0);
+
+        self.fill(&mut order[..blocks], seed);
+
+        let mut w = 0;
+
+        for &b in &order[..blocks] {
+            let start = b as usize * block;
+
+            for i in start..(start + block).min(n) {
+                out[w] = i as u32;
+                w += 1;
+            }
+        }
+
+        self.order = order;
+    }
+
     fn fill_into(&mut self, out: &mut [u32], seed: u64, buckets: usize) {
         let n = out.len();
-        assert_eq!(self.ids.len(), n, "shuffler built for a different length");
+        assert!(self.ids.len() >= n, "shuffler built for a shorter length");
         assert!(u32::try_from(n).is_ok(), "more elements than a u32 index can name");
 
         if n < 2 {
@@ -102,7 +111,7 @@ impl Shuffler {
         // write straight into `out` instead of staging the permutation somewhere first.
         let mut counts = vec![0u32; tasks * buckets];
 
-        self.ids
+        self.ids[..n]
             .par_chunks_mut(TASK)
             .zip(counts.par_chunks_mut(buckets))
             .enumerate()
@@ -131,7 +140,7 @@ impl Shuffler {
             }
         }
 
-        self.ids
+        self.ids[..n]
             .par_chunks(TASK)
             .zip(slots.par_iter_mut())
             .enumerate()
@@ -203,7 +212,7 @@ mod tests {
     fn blocked_fill_is_still_a_permutation() {
         for (n, block) in [(1000usize, 64usize), (1000, 7), (64, 64), (5, 8), (1, 4)] {
             let mut out = vec![0u32; n];
-            fill_blocked(&mut out, 0x5EED, block);
+            Shuffler::new(n).fill_blocked(&mut out, 0x5EED, block);
 
             let mut seen = out.clone();
             seen.sort_unstable();
@@ -215,7 +224,7 @@ mod tests {
     #[test]
     fn blocked_fill_keeps_each_block_in_order() {
         let mut out = vec![0u32; 512];
-        fill_blocked(&mut out, 0x5EED, 64);
+        Shuffler::new(512).fill_blocked(&mut out, 0x5EED, 64);
 
         for run in out.chunks(64) {
             assert!(run.windows(2).all(|w| w[1] == w[0] + 1), "a block came apart: {run:?}");
@@ -235,6 +244,14 @@ mod tests {
 
         assert_eq!(first, second, "same seed gave a different permutation");
         assert_ne!(first, other, "different seeds gave the same permutation");
+
+        // The blocked path reuses one scratch buffer across calls, so its determinism is a
+        // property of that reuse rather than of the algorithm alone. A resume draws its
+        // batches from the seed and nothing else.
+        shuffler.fill_blocked(&mut first, 7, 4);
+        shuffler.fill_blocked(&mut second, 7, 4);
+
+        assert_eq!(first, second, "same seed gave a different blocked permutation");
     }
 
     #[test]
