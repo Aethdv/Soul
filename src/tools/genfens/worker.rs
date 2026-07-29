@@ -221,7 +221,7 @@ impl WorkerState {
         // search scores keep the 0.5 prior, high-magnitude scores converge
         // to sigmoid(k · score). With wdl_blend=1.0, the draw prior only
         // sticks when the search itself is uncertain.
-        let entry = SoulEntry::from_board(&self.board, 0.5, Some(static_eval), Some(search_eval));
+        let entry = SoulEntry::from_board(&self.board, 0.5, Some(search_eval));
         self.global.saved.fetch_add(1, Relaxed);
         vec![entry]
     }
@@ -377,12 +377,7 @@ impl WorkerState {
             };
 
             if should_save && sampled {
-                let entry = SoulEntry::from_board(
-                    &self.board,
-                    0.0, // placeholder WDL, back-filled once the game ends
-                    Some(static_eval),
-                    Some(search_eval),
-                );
+                let entry = SoulEntry::from_board(&self.board, 0.0, Some(search_eval));
                 self.pending.push((entry, self.board.stm));
             }
 

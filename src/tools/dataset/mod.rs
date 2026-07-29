@@ -53,11 +53,8 @@ impl SoulEntry {
     pub const NO_SCORE: i16 = i16::MAX;
 
     /// Encode a board position into a training entry.
-    ///
-    /// `static_score` is accepted for call-site compatibility but not stored.
-    /// V6 stores only the search eval label.
-    pub fn from_board(board: &Position, result: f64, static_score: Option<i32>, search_score: Option<i32>) -> Self {
-        quant::from_board(board, result, static_score, search_score)
+    pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> Self {
+        quant::from_board(board, result, search_score)
     }
 
     /// Decode the packed entry back into a FEN string.

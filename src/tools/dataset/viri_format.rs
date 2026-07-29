@@ -66,7 +66,6 @@ pub fn parse_viri_file(path: &str) -> io::Result<Vec<SoulEntry>> {
             entries.push(SoulEntry::from_board(
                 &position,
                 f64::from(stm_result(game_result, position.stm)) / 2.0,
-                None,
                 Some(relative_score(viri_score, position.stm)),
             ));
 

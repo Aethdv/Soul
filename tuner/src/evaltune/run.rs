@@ -204,7 +204,9 @@ pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
         .collect()
 }
 
-pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> f64 {
+/// The best validation loss a training run reached, or `None` when there is no such figure:
+/// a dataset that never loaded, or a diagnostic task, which reports to stdout and ranks nothing.
+pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> Option<f64> {
     let total_start = Instant::now();
 
     let effective_dataset: String = match (dataset_path, resume_path) {
@@ -224,14 +226,14 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
             palette::ALARM,
         );
 
-        return f64::MAX;
+        return None;
     };
 
     let all_entries = loader::load_datasets(&paths);
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
-        return f64::MAX;
+        return None;
     }
 
     let dataset_label = paths.join(", ");
@@ -248,7 +250,7 @@ fn train_entries(
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     task: Task,
-) -> f64 {
+) -> Option<f64> {
     let dataset_fnv = dataset_fingerprint(&entries);
 
     let (rng_seed, split_seed) = match resume_path {
@@ -321,17 +323,17 @@ fn train_entries(
     match task {
         Task::GatherCost => {
             gather_cost(&ctx, config);
-            return 0.0;
+            return None;
         },
 
         Task::Curvature => {
             curvature_report(&ctx, config);
-            return 0.0;
+            return None;
         },
 
         Task::ValCost => {
             val_cost(&ctx, config);
-            return 0.0;
+            return None;
         },
 
         Task::Train => {},
@@ -339,7 +341,7 @@ fn train_entries(
 
     let seeds = Seeds { rng_seed, split_seed };
 
-    train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
+    Some(train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx))
 }
 
 /// `Name (detail)` with the name in the value color. Both schedulers and `KMode`

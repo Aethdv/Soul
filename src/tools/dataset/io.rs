@@ -141,7 +141,7 @@ pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
     let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
 
-    Some(SoulEntry::from_board(&board, stm_wdl, None, None))
+    Some(SoulEntry::from_board(&board, stm_wdl, None))
 }
 
 fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {

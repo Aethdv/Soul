@@ -71,7 +71,7 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
 
         // Result is white-relative in EPD, we need STM-relative.
         let stm_result = if board.stm == Color::Black { 1.0 - result } else { result };
-        encoded.push(SoulEntry::from_board(&board, stm_result, None, None));
+        encoded.push(SoulEntry::from_board(&board, stm_result, None));
 
         if last_print.elapsed().as_millis() > 500 {
             print!("\r\x1b[K  Processed {} positions...", encoded.len());
@@ -131,7 +131,7 @@ pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
                 Ok(epd_entries) => {
                     for e in &epd_entries {
                         let stm_result = if e.board.stm == Color::Black { 1.0 - e.result } else { e.result };
-                        all_entries.push(SoulEntry::from_board(&e.board, stm_result, None, None));
+                        all_entries.push(SoulEntry::from_board(&e.board, stm_result, None));
                     }
                 },
                 Err(e) => eprintln!("Error loading {path}: {e}"),

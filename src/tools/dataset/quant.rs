@@ -20,7 +20,7 @@ use crate::{
 /// Board state is stored in raw (non-normalized) form;
 /// occupancy bitboard + nibble-array of piece types/colors.
 /// The tuner normalizes the perspective during feature extraction.
-pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, search_score: Option<i32>) -> SoulEntry {
+pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> SoulEntry {
     let mut pieces = [0u8; 16];
     let mut idx = 0usize;
     let mut occ = board.occ.0;
@@ -221,8 +221,8 @@ mod tests {
     fn an_absent_search_score_encodes_as_the_sentinel() {
         let board = Position::from_fen(STARTPOS);
 
-        assert_eq!(from_board(&board, 0.5, None, None).score, SoulEntry::NO_SCORE);
-        assert_eq!(from_board(&board, 0.5, None, Some(0)).score, 0);
-        assert_eq!(from_board(&board, 0.5, None, Some(-42)).score, -42);
+        assert_eq!(from_board(&board, 0.5, None).score, SoulEntry::NO_SCORE);
+        assert_eq!(from_board(&board, 0.5, Some(0)).score, 0);
+        assert_eq!(from_board(&board, 0.5, Some(-42)).score, -42);
     }
 }

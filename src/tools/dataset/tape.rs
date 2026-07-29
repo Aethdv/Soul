@@ -695,7 +695,7 @@ mod tests {
 
         for fen in FENS {
             let pos = Position::from_fen(fen);
-            let entry = SoulEntry::from_board(&pos, TARGET, None, Some(20));
+            let entry = SoulEntry::from_board(&pos, TARGET, Some(20));
 
             // Position → SoulEntry → to_fen → Position.
             // If this fails, to_fen() is corrupting the board.
@@ -750,7 +750,7 @@ mod tests {
 
         let records: Vec<FeatureRecord> = FENS
             .iter()
-            .map(|fen| FeatureRecord::from_entry(&SoulEntry::from_board(&Position::from_fen(fen), TARGET, None, Some(20))))
+            .map(|fen| FeatureRecord::from_entry(&SoulEntry::from_board(&Position::from_fen(fen), TARGET, Some(20))))
             .collect();
 
         for block in BLOCKS {
@@ -775,7 +775,7 @@ mod tests {
 
         for fen in FENS {
             let pos = Position::from_fen(fen);
-            let record = FeatureRecord::from_entry(&SoulEntry::from_board(&pos, TARGET, None, Some(20)));
+            let record = FeatureRecord::from_entry(&SoulEntry::from_board(&pos, TARGET, Some(20)));
 
             let board = eval_f64(&pos, &values);
             let cached = eval_record(&record, &values);

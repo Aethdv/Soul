@@ -11,7 +11,9 @@ pub use soul::{
         defs::{Color, PieceType, TOTAL_PHASE},
     },
     engine::{
-        eval_params::{self, BLOCKS, Block, Group, LAYOUT, Tunable, collect_parameters, default_values},
+        eval_params::{
+            self, BLOCKS, Block, Group, LAYOUT, PIECE_TABLES, TABLE_SQUARES, Tunable, collect_parameters, default_values,
+        },
         wdl::sigmoid,
     },
     tools::dataset::{

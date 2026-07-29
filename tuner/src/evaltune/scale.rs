@@ -5,7 +5,7 @@
 //! material and PSQT that no evaluation can see.
 
 use super::{
-    engine::{FeatureRecord, LAYOUT, PieceType, Tunable, eval_record},
+    engine::{FeatureRecord, LAYOUT, PIECE_TABLES, PieceType, TABLE_SQUARES, Tunable, eval_record},
     lion::Lion,
     run::TrainerContext,
     storage::CheckpointData,
@@ -145,8 +145,7 @@ impl KController {
 /// often enough to see, and the table folds back and forth from then on.
 pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
     let l = &LAYOUT;
-    let pieces = l.material_len / 2;
-    let squares = l.psqt_len / (2 * pieces);
+    let (pieces, squares) = (PIECE_TABLES, TABLE_SQUARES);
 
     for piece in 0..pieces {
         for phase in 0..2 {
@@ -360,7 +359,7 @@ mod tests {
     fn probe_records() -> Vec<FeatureRecord> {
         PROBE_FENS
             .iter()
-            .map(|fen| FeatureRecord::from_entry(&SoulEntry::from_board(&Position::from_fen(fen), 0.5, None, Some(20))))
+            .map(|fen| FeatureRecord::from_entry(&SoulEntry::from_board(&Position::from_fen(fen), 0.5, Some(20))))
             .collect()
     }
 
@@ -369,14 +368,14 @@ mod tests {
     fn canonicalizing_moves_no_score() {
         let params = eval_params::collect_parameters();
         let l = &LAYOUT;
-        let table = l.psqt_offset + PieceType::Queen as usize * (l.psqt_len / 6);
+        let table = l.psqt_offset + PieceType::Queen as usize * 2 * TABLE_SQUARES;
         let records = probe_records();
 
         // Off canon by 60 on the queen's midgame table, so the fold has work to do
         // whatever the shipped file happens to hold.
         let mut values = eval_params::default_values(&params);
 
-        for i in table..table + l.psqt_len / 12 {
+        for i in table..table + TABLE_SQUARES {
             values[i] += 60.0;
         }
 
@@ -404,7 +403,7 @@ mod tests {
     fn canonicalizing_collapses_the_flat_direction() {
         let params = eval_params::collect_parameters();
         let l = &LAYOUT;
-        let squares = l.psqt_len / 12; // six piece types, two phases each
+        let squares = TABLE_SQUARES;
         let queen = PieceType::Queen as usize;
         let table = l.psqt_offset + queen * 2 * squares;
 

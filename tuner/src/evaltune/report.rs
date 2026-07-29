@@ -11,7 +11,7 @@ use std::{
 use rayon::prelude::*;
 
 use super::{
-    engine::{BLOCKS, Block, Group, TOTAL_PHASE, Tunable, color},
+    engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color},
     groups::GROUP_NAMES,
     lion::GateCensus,
     loader,
@@ -118,8 +118,8 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
         writeln!(w, "    // Files A-D (mirrored to E-H) × 8 ranks").ok();
     }
 
-    for p_idx in 0..6 {
-        let psqt_offset = p_idx * 64;
+    for p_idx in 0..PIECE_TABLES {
+        let psqt_offset = p_idx * 2 * TABLE_SQUARES;
         let name = params[psqt_offset]
             .name
             .strip_prefix("MG_")
@@ -136,7 +136,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             for col in 0..4 {
                 let sq_idx = row * 4 + col;
                 let mg_idx = psqt_offset + sq_idx;
-                let eg_idx = psqt_offset + 32 + sq_idx;
+                let eg_idx = psqt_offset + TABLE_SQUARES + sq_idx;
 
                 let mg_val = values[mg_idx].round() as i32;
                 let eg_val = values[eg_idx].round() as i32;
@@ -156,7 +156,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
         writeln!(w, "    ],").ok();
 
-        if p_idx < 5 {
+        if p_idx + 1 < PIECE_TABLES {
             writeln!(w).ok();
         }
     }

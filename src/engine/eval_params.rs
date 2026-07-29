@@ -24,9 +24,148 @@ macro_rules! count_dual_slots {
     };
 }
 
+/// The declaration groups in slot order, each with the collector that emits it.
+/// `BLOCKS`, the layout accessors and the parameter vector all derive from the
+/// four tables named here.
+macro_rules! param_groups {
+    ($macro:ident) => {
+        $macro! {
+            (Psqt,   PSQT_BLOCKS,   collect_psqt_params),
+            (Simple, SIMPLE_BLOCKS, collect_simple_params),
+            (Simd,   SIMD_BLOCKS,   collect_simd_params),
+            (Weight, WEIGHT_BLOCKS, collect_weight_params),
+        }
+    };
+}
+
+macro_rules! block_sources {
+    ($( ($group:ident, $blocks:ident, $collect:ident) ),* $(,)?) => { &[$( (Group::$group, $blocks) ),*] };
+}
+
+/// Piece tables in the PSQT block, read off the material block's MG and EG halves.
+pub const PIECE_TABLES: usize = LAYOUT.material_len / 2;
+
+/// Half-board squares in one phase of one piece's table; also the MG-to-EG stride within it.
+pub const TABLE_SQUARES: usize = LAYOUT.psqt_len / (2 * PIECE_TABLES);
+
+// The record's PSQT gather and the tape's lane accumulation index the raw vector
+// at pt · 64 + sq; off zero, those reads land in whatever took its place.
+const _: () = assert!(LAYOUT.psqt_offset == 0, "PSQT must be the first block");
+
 /// Total dual-AD inputs; the 2 accumulator lanes plus every tunable weight.
 /// Drives `DUAL_N`, so the gradient array sizes itself as eval terms are added.
 pub const DUAL_SLOTS: usize = crate::define_tunables!(count_dual_slots);
+
+/// Every parameter block in slot order, offsets prefix-summed over the groups.
+/// `LAYOUT` is the same table under named accessors.
+pub const BLOCKS: &[Block] = &BLOCK_TABLE;
+
+const BLOCK_SOURCES: &[(Group, SectionDecls)] = param_groups!(block_sources);
+
+const BLOCK_COUNT: usize = {
+    let mut count = 0;
+    let mut g = 0;
+
+    while g < BLOCK_SOURCES.len() {
+        let sections = BLOCK_SOURCES[g].1;
+        let mut s = 0;
+
+        while s < sections.len() {
+            count += sections[s].len();
+            s += 1;
+        }
+        g += 1;
+    }
+    count
+};
+
+const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
+    let mut table = [Block { name: "", group: Group::Psqt, section: 0, offset: 0, len: 0 }; BLOCK_COUNT];
+    let mut offset = 0;
+    let mut next = 0;
+    let mut g = 0;
+
+    while g < BLOCK_SOURCES.len() {
+        let (group, sections) = BLOCK_SOURCES[g];
+        let mut s = 0;
+
+        while s < sections.len() {
+            let mut i = 0;
+
+            while i < sections[s].len() {
+                let (name, len) = sections[s][i];
+                table[next] = Block { name, group, section: s as u8, offset, len };
+                offset += len;
+
+                next += 1;
+                i += 1;
+            }
+            s += 1;
+        }
+        g += 1;
+    }
+    table
+};
+
+const fn block_slots(sections: SectionDecls) -> usize {
+    let mut slots = 0;
+    let mut s = 0;
+
+    while s < sections.len() {
+        let mut i = 0;
+
+        while i < sections[s].len() {
+            slots += sections[s][i].1;
+            i += 1;
+        }
+        s += 1;
+    }
+    slots
+}
+
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let mut i = 0;
+
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// A declared block: its name and the slots it takes.
+type BlockDecl = (&'static str, usize);
+
+/// A group's blocks, in the sections its declaration breaks them into.
+type SectionDecls = &'static [&'static [BlockDecl]];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Psqt,
+    Simple,
+    Simd,
+    Weight,
+}
+
+/// One parameter block: a named, contiguous run of slots in the tunable vector.
+/// `section` is which run of its group's declaration it sits in, so a paste-back
+/// reprints the blank lines between them.
+#[derive(Clone, Copy)]
+pub struct Block {
+    pub name: &'static str,
+    pub group: Group,
+    pub section: u8,
+    pub offset: usize,
+    pub len: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct Tunable {
@@ -80,7 +219,6 @@ fn collect_phase_arrays<const N: usize>(name: &str, mg: &[i32; N], eg: &[i32; N]
             });
         }
     }
-
     params
 }
 
@@ -146,7 +284,6 @@ macro_rules! define_psqt_params {
                         &[$($val),*],
                     ));
                 )*
-
                 params
             }
         }
@@ -188,7 +325,6 @@ macro_rules! define_simple_params {
                         &[$($val),*],
                     ));
                 )*
-
                 params
             }
         }
@@ -231,7 +367,6 @@ macro_rules! define_simd_params {
                     params.append(&mut collect_params_from_arrays(stringify!([<MG_ $block:upper>]), &mg));
                     params.append(&mut collect_params_from_arrays(stringify!([<EG_ $block:upper>]), &eg));
                 )*
-
                 params
             }
         }
@@ -262,7 +397,6 @@ macro_rules! define_weight_params {
                     let arr = [$($val),*];
                     params.append(&mut collect_params_from_arrays(stringify!([<$block:upper>]), &arr));
                 )*)*
-
                 params
             }
         }
@@ -307,146 +441,6 @@ macro_rules! define_tunables {
             (enemy_king_dist_eg,   Array6, enemy_king_dist_eg_offset, 0)
         }
     };
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Group {
-    Psqt,
-    Simple,
-    Simd,
-    Weight,
-}
-
-/// One parameter block: a named, contiguous run of slots in the tunable vector.
-/// `section` is which run of its group's declaration it sits in, so a paste-back
-/// reprints the blank lines between them.
-#[derive(Clone, Copy)]
-pub struct Block {
-    pub name: &'static str,
-    pub group: Group,
-    pub section: u8,
-    pub offset: usize,
-    pub len: usize,
-}
-
-/// The declaration groups in slot order, each with the collector that emits it.
-/// `BLOCKS`, the layout accessors and the parameter vector all derive from the
-/// four tables named here.
-macro_rules! param_groups {
-    ($macro:ident) => {
-        $macro! {
-            (Psqt,   PSQT_BLOCKS,   collect_psqt_params),
-            (Simple, SIMPLE_BLOCKS, collect_simple_params),
-            (Simd,   SIMD_BLOCKS,   collect_simd_params),
-            (Weight, WEIGHT_BLOCKS, collect_weight_params),
-        }
-    };
-}
-
-macro_rules! block_sources {
-    ($( ($group:ident, $blocks:ident, $collect:ident) ),* $(,)?) => { &[$( (Group::$group, $blocks) ),*] };
-}
-
-/// A declared block: its name and the slots it takes.
-type BlockDecl = (&'static str, usize);
-
-/// A group's blocks, in the sections its declaration breaks them into.
-type SectionDecls = &'static [&'static [BlockDecl]];
-
-const BLOCK_SOURCES: &[(Group, SectionDecls)] = param_groups!(block_sources);
-
-const BLOCK_COUNT: usize = {
-    let mut count = 0;
-    let mut g = 0;
-
-    while g < BLOCK_SOURCES.len() {
-        let sections = BLOCK_SOURCES[g].1;
-        let mut s = 0;
-
-        while s < sections.len() {
-            count += sections[s].len();
-
-            s += 1;
-        }
-
-        g += 1;
-    }
-
-    count
-};
-
-const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
-    let mut table = [Block { name: "", group: Group::Psqt, section: 0, offset: 0, len: 0 }; BLOCK_COUNT];
-    let mut offset = 0;
-    let mut next = 0;
-    let mut g = 0;
-
-    while g < BLOCK_SOURCES.len() {
-        let (group, sections) = BLOCK_SOURCES[g];
-        let mut s = 0;
-
-        while s < sections.len() {
-            let mut i = 0;
-
-            while i < sections[s].len() {
-                let (name, len) = sections[s][i];
-                table[next] = Block { name, group, section: s as u8, offset, len };
-                offset += len;
-
-                next += 1;
-                i += 1;
-            }
-
-            s += 1;
-        }
-
-        g += 1;
-    }
-
-    table
-};
-
-/// Every parameter block in slot order, offsets prefix-summed over the groups.
-/// `LAYOUT` is the same table under named accessors.
-pub const BLOCKS: &[Block] = &BLOCK_TABLE;
-
-const fn block_slots(sections: SectionDecls) -> usize {
-    let mut slots = 0;
-    let mut s = 0;
-
-    while s < sections.len() {
-        let mut i = 0;
-
-        while i < sections[s].len() {
-            slots += sections[s][i].1;
-
-            i += 1;
-        }
-
-        s += 1;
-    }
-
-    slots
-}
-
-const fn str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut i = 0;
-
-    while i < a.len() {
-        if a[i] != b[i] {
-            return false;
-        }
-
-        i += 1;
-    }
-
-    true
 }
 
 /// The named view of `BLOCKS`: generates the `Layout` struct
@@ -520,10 +514,6 @@ define_layout! {
     enemy_king_dist_mg,
     enemy_king_dist_eg,
 }
-
-// The record's PSQT gather and the tape's lane accumulation index the raw vector
-// at pt · 64 + sq; off zero, those reads land in whatever took its place.
-const _: () = assert!(LAYOUT.psqt_offset == 0, "PSQT must be the first block");
 
 /// Concatenates the groups into the parameter vector `LAYOUT` describes. A
 /// collector that emits a different count than its own block table declares
