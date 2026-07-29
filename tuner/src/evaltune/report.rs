@@ -33,10 +33,10 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ("backward_pawn",      "[MG, EG]"),
     ("phalanx_mg",         "by relative rank 2-7"),
     ("phalanx_eg",         "by relative rank 2-7"),
-    ("defended_pawn_mg",   "by relative rank 2-7 (rank 2 unreachable)"),
-    ("defended_pawn_eg",   "by relative rank 2-7 (rank 2 unreachable)"),
-    ("passed_pawn_mg",     "by relative rank 1-6"),
-    ("passed_pawn_eg",     "by relative rank 1-6"),
+    ("defended_pawn_mg",   "by relative rank 2-7; rank 2 needs a defender on rank 1"),
+    ("defended_pawn_eg",   "by relative rank 2-7; rank 2 needs a defender on rank 1"),
+    ("passed_pawn_mg",     "by relative rank 2-7"),
+    ("passed_pawn_eg",     "by relative rank 2-7"),
     ("enemy_king_dist_mg", "enemy king→passer dist, 7 clamps to 6"),
     ("enemy_king_dist_eg", "enemy king→passer dist, 7 clamps to 6"),
 ];
@@ -217,13 +217,23 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     let weights = present_blocks(Group::Weight, params);
 
     if !weights.is_empty() {
-        let width = weights.iter().map(|b| b.name.len()).max().unwrap_or(0);
         writeln!(w, "\ndefine_weight_params! {{").ok();
 
-        for block in weights {
-            write!(w, "    {:<width$} = [", block.name).ok();
-            write_weight_array(w, block.offset, block.len, values, params, initial);
-            writeln!(w, "],{}", annotation(block.name)).ok();
+        for (s, section) in weights.chunk_by(|a, b| a.section == b.section).enumerate() {
+            let width = section.iter().map(|b| b.name.len()).max().unwrap_or(0);
+
+            if s > 0 {
+                writeln!(w).ok();
+            }
+
+            for (i, block) in section.iter().enumerate() {
+                // `;` closes a section, so the render round-trips through the macro.
+                let end = if i + 1 == section.len() { ';' } else { ',' };
+
+                write!(w, "    {:<width$} = [", block.name).ok();
+                write_weight_array(w, block.offset, block.len, values, params, initial);
+                writeln!(w, "]{end}{}", annotation(block.name)).ok();
+            }
         }
 
         writeln!(w, "}}").ok();

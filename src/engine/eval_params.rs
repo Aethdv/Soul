@@ -123,7 +123,7 @@ macro_rules! define_psqt_params {
             )*
 
             // The six tables are one block; every square carries an MG and an EG slot.
-            const PSQT_BLOCKS: &[(&str, usize)] = &[("psqt", (0 $( + $name.len() )*) * 2)];
+            const PSQT_BLOCKS: SectionDecls = &[&[("psqt", (0 $( + $name.len() )*) * 2)]];
 
             fn collect_psqt_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
@@ -200,7 +200,7 @@ macro_rules! define_simple_params {
                 ];
             )*
 
-            const SIMPLE_BLOCKS: &[(&str, usize)] = &[$( (stringify!($block), [<$block:upper>].len() * 2) ),*];
+            const SIMPLE_BLOCKS: SectionDecls = &[&[$( (stringify!($block), [<$block:upper>].len() * 2) ),*]];
 
             fn collect_simple_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
@@ -259,9 +259,9 @@ macro_rules! define_simd_params {
                 ]);
             )*
 
-            const SIMD_BLOCKS: &[(&str, usize)] = &[
+            const SIMD_BLOCKS: SectionDecls = &[&[
                 $( (stringify!($block), [$($mg),*].len() + [$($eg),*].len()) ),*
-            ];
+            ]];
 
             fn collect_simd_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
@@ -279,26 +279,30 @@ macro_rules! define_simd_params {
     };
 }
 
+/// Rows are comma-separated and every section closes with `;`, which the paste
+/// block renders as a blank line and aligns its own column width against.
 macro_rules! define_weight_params {
-    ($($block:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
+    ($( $($block:ident = [$($val:expr),* $(,)?]),* $(,)? ; )*) => {
         paste::paste! {
-            $(pub const [<$block:upper>]: [i32; { [$($val),*].len() }] = [
+            $($(pub const [<$block:upper>]: [i32; { [$($val),*].len() }] = [
                 $(
                     match $val {
                         Param::Val(v) | Param::Const(v) => v,
                         _ => 0,
                     }
                 ),*
-            ];)*
+            ];)*)*
 
-            const WEIGHT_BLOCKS: &[(&str, usize)] = &[$( (stringify!($block), [<$block:upper>].len()) ),*];
+            const WEIGHT_BLOCKS: SectionDecls = &[
+                $( &[$( (stringify!($block), [<$block:upper>].len()) ),*] ),*
+            ];
 
             fn collect_weight_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
-                $(
+                $($(
                     let arr = [$($val),*];
                     params.append(&mut collect_params_from_arrays(stringify!([<$block:upper>]), &arr));
-                )*
+                )*)*
 
                 params
             }
@@ -355,10 +359,14 @@ pub enum Group {
 }
 
 /// One parameter block: a named, contiguous run of slots in the tunable vector.
+///
+/// `section` numbers the visual runs a group's declaration is broken into, so the
+/// paste block reproduces the grouping instead of flattening it on the next tune.
 #[derive(Clone, Copy)]
 pub struct Block {
     pub name: &'static str,
     pub group: Group,
+    pub section: u8,
     pub offset: usize,
     pub len: usize,
 }
@@ -381,41 +389,60 @@ macro_rules! block_sources {
     ($( ($group:ident, $blocks:ident, $collect:ident) ),* $(,)?) => { &[$( (Group::$group, $blocks) ),*] };
 }
 
-const BLOCK_SOURCES: &[(Group, &[(&str, usize)])] = param_groups!(block_sources);
+/// A declared block: the name it goes by and the slots it takes.
+type BlockDecl = (&'static str, usize);
+
+/// A group's blocks, in the sections its declaration breaks them into.
+type SectionDecls = &'static [&'static [BlockDecl]];
+
+const BLOCK_SOURCES: &[(Group, SectionDecls)] = param_groups!(block_sources);
 
 const BLOCK_COUNT: usize = {
     let mut count = 0;
-    let mut i = 0;
+    let mut g = 0;
 
-    while i < BLOCK_SOURCES.len() {
-        count += BLOCK_SOURCES[i].1.len();
+    while g < BLOCK_SOURCES.len() {
+        let sections = BLOCK_SOURCES[g].1;
+        let mut s = 0;
 
-        i += 1;
+        while s < sections.len() {
+            count += sections[s].len();
+
+            s += 1;
+        }
+
+        g += 1;
     }
 
     count
 };
 
 const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
-    let mut table = [Block { name: "", group: Group::Psqt, offset: 0, len: 0 }; BLOCK_COUNT];
+    let mut table = [Block { name: "", group: Group::Psqt, section: 0, offset: 0, len: 0 }; BLOCK_COUNT];
     let mut offset = 0;
     let mut next = 0;
-    let mut s = 0;
+    let mut g = 0;
 
-    while s < BLOCK_SOURCES.len() {
-        let (group, source) = BLOCK_SOURCES[s];
-        let mut i = 0;
+    while g < BLOCK_SOURCES.len() {
+        let (group, sections) = BLOCK_SOURCES[g];
+        let mut s = 0;
 
-        while i < source.len() {
-            let (name, len) = source[i];
-            table[next] = Block { name, group, offset, len };
-            offset += len;
+        while s < sections.len() {
+            let mut i = 0;
 
-            next += 1;
-            i += 1;
+            while i < sections[s].len() {
+                let (name, len) = sections[s][i];
+                table[next] = Block { name, group, section: s as u8, offset, len };
+                offset += len;
+
+                next += 1;
+                i += 1;
+            }
+
+            s += 1;
         }
 
-        s += 1;
+        g += 1;
     }
 
     table
@@ -425,14 +452,20 @@ const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
 /// `LAYOUT` is the same table under named accessors.
 pub const BLOCKS: &[Block] = &BLOCK_TABLE;
 
-const fn block_slots(blocks: &[(&str, usize)]) -> usize {
+const fn block_slots(sections: SectionDecls) -> usize {
     let mut slots = 0;
-    let mut i = 0;
+    let mut s = 0;
 
-    while i < blocks.len() {
-        slots += blocks[i].1;
+    while s < sections.len() {
+        let mut i = 0;
 
-        i += 1;
+        while i < sections[s].len() {
+            slots += sections[s][i].1;
+
+            i += 1;
+        }
+
+        s += 1;
     }
 
     slots
@@ -660,24 +693,27 @@ define_simd_params! {
 }
 
 define_weight_params! {
-    phase              = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)], // [P, N, B, R, Q, K]
-    king_safety        = [V(23), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    attacker           = [CV(0), V(180), V(279), V(472), V(555), V(572)], // [0, 1, 2, 3, 4, 5] attackers × weak
-    xray               = [V(11)], // [Ortho King]
-    king_danger        = [V(0)], // pressure curvature, over DANGER_SCALE; floored at 0, the data pulls under
-    tempo              = [V(33), V(37)], // [MG, EG], side-to-move initiative
-    bishop_pair        = [V(39), V(72)], // [MG, EG]
-    rook_open          = [V(44), V(1)], // [MG, EG]
-    minor_behind_pawn  = [V(14), V(32)], // [MG, EG]
+    phase = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)]; // [P, N, B, R, Q, K]
+
+    king_safety = [V(23), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
+    attacker    = [CV(0), V(180), V(279), V(472), V(555), V(572)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    xray        = [V(11)], // [Ortho King]
+    king_danger = [V(0)]; // pressure curvature, over DANGER_SCALE; floored at 0, the data pulls under
+
+    tempo             = [V(33), V(37)], // [MG, EG], side-to-move initiative
+    bishop_pair       = [V(39), V(72)], // [MG, EG]
+    rook_open         = [V(44), V(1)], // [MG, EG]
+    minor_behind_pawn = [V(14), V(32)]; // [MG, EG]
+
     doubled_pawn       = [V(3), V(-45)], // [MG, EG]
     isolated_pawn      = [V(-9), V(-12)], // [MG, EG]
     backward_pawn      = [V(-8), V(-16)], // [MG, EG]
     phalanx_mg         = [V(6), V(16), V(28), V(62), V(109), V(-189)], // by relative rank 2-7
     phalanx_eg         = [V(-7), V(1), V(24), V(88), V(211), V(378)], // by relative rank 2-7
-    defended_pawn_mg   = [CV(0), V(32), V(21), V(18), V(28), V(165)], // by relative rank 2-7 (rank 2 unreachable)
-    defended_pawn_eg   = [CV(0), V(16), V(13), V(29), V(62), V(15)], // by relative rank 2-7 (rank 2 unreachable)
-    passed_pawn_mg     = [V(-3), V(-17), V(-20), V(3), V(0), V(56)], // by relative rank 1-6
-    passed_pawn_eg     = [V(-64), V(-40), V(8), V(61), V(156), V(172)], // by relative rank 1-6
+    defended_pawn_mg   = [CV(0), V(32), V(21), V(18), V(28), V(165)], // by relative rank 2-7; rank 2 needs a defender on rank 1
+    defended_pawn_eg   = [CV(0), V(16), V(13), V(29), V(62), V(15)], // by relative rank 2-7; rank 2 needs a defender on rank 1
+    passed_pawn_mg     = [V(-3), V(-17), V(-20), V(3), V(0), V(56)], // by relative rank 2-7
+    passed_pawn_eg     = [V(-64), V(-40), V(8), V(61), V(156), V(172)], // by relative rank 2-7
     enemy_king_dist_mg = [V(-115), V(19), V(4), V(0), V(-2), V(-8)], // enemy king→passer dist, 7 clamps to 6
-    enemy_king_dist_eg = [V(-33), V(18), V(58), V(71), V(83), V(91)], // enemy king→passer dist, 7 clamps to 6
+    enemy_king_dist_eg = [V(-33), V(18), V(58), V(71), V(83), V(91)]; // enemy king→passer dist, 7 clamps to 6
 }
