@@ -1,9 +1,11 @@
 pub mod ablation;
 pub mod correlation;
 pub mod curvature;
+pub mod groups;
 pub mod lion;
 pub mod loader;
 pub mod palette;
+pub mod probes;
 pub mod report;
 pub mod run;
 pub mod scale;

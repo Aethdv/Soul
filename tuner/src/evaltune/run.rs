@@ -10,11 +10,8 @@
 //! let you inspect both the best-validating and best-training parameters.
 
 use std::{
-    fmt::Write as _,
     fs,
-    io::{self, BufWriter, Write},
-    ops::Range,
-    path,
+    io::{BufWriter, Write},
     time::Instant,
 };
 
@@ -22,15 +19,16 @@ use palette::{CLEAR_LINE, RESET};
 use rayon::prelude::*;
 use soul::{
     color,
-    core::defs::TOTAL_PHASE,
     engine::eval_params::{self, LAYOUT, Tunable},
-    tools::dataset::{FeatureRecord, accumulate_record_grad},
+    tools::dataset::FeatureRecord,
 };
 
 use super::{
-    curvature::Curvature,
-    lion::{GateCensus, Lion},
-    loader, palette,
+    groups::{GROUP_NAMES, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
+    lion::{GateCensus, Lion, build_beta2_mask},
+    loader::{self, dataset_fingerprint, resolve_dataset_paths},
+    palette,
+    probes::{curvature_report, gather_cost, val_cost},
     report::*,
     scale::{GAUGE_PROBE, Gauge, KController, canonicalize},
     storage::*,
@@ -38,91 +36,14 @@ use super::{
 };
 use crate::core::{
     config::{EvalTuneConfig, Init, KMode, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
-    fnv::Fnv1a,
     logger::JsonLogger,
     shuffle::{self, Shuffler},
 };
-
-/// Hard clamp for mobility parameters to prevent drift from unbounded features.
-const MOB_CLAMP: f64 = 100.0;
-
-/// `p + c·p²/DANGER_SCALE` turns over and starts falling at `p = DANGER_SCALE/2c`,
-/// so a negative curvature puts that turnover inside the reachable pressure range
-/// and a besieged king scores safer than a lightly pressed one. Zero is the
-/// linear block, so a run parked on the floor has answered the question.
-const DANGER_CURVE_CLAMP: (f64, f64) = (0.0, 256.0);
-
-/// Lion's parameter groups in layout order, for anything reported per group.
-const GROUP_NAMES: [&str; 4] = ["psqt", "material", "mobility", "other"];
 
 /// Fixes which tenth of a dataset is held out, so two runs over one dataset are scored on the
 /// same positions. The value is arbitrary and permanent: changing it renumbers every
 /// `best_val_loss` ever recorded on every dataset.
 const VAL_SPLIT_SEED: u64 = 0x5350_4C49_5432_3736;
-
-// EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
-// since a trend read before that span has filled is reading its own seed.
-const TREND_FAST: usize = 10;
-const TREND_SLOW: usize = 40;
-
-const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
-const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
-
-/// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
-///
-/// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
-/// the smoothed difference rather than a raw value: both trails smooth the same input, so their
-/// covariance leaves sd(fast − slow) at 0.21σ, well under the 0.47σ that summing their
-/// deviations suggests. It is tested against the noise estimate E|Δval| = 2σ/√π ≈ 1.13σ, so one
-/// unit of that is a 5.3σ bar on a 0.21σ quantity. A flat plateau stays quiet under it, and
-/// drift twenty times under the epoch wobble still trips it. Raw-value intuition suggests 2 or
-/// 3, which lands at 11σ here and never fires at all.
-const TREND_NOISE_K: f64 = 1.0;
-
-/// Overfitting detector: fit still improving while generalization degrades.
-///
-/// Neither loss is compared to its own running minimum. A running minimum over a noisy series
-/// settles at the deepest trough it has seen and never recovers, so it sits below the true mean
-/// by roughly the noise amplitude and every ordinary epoch afterward reads as a regression
-/// against it. A trend carries no such bias, and it needs no special case at an LR restart:
-/// a restart lifts both losses at once, and divergence needs train falling. Clearing the
-/// trails there would only blind the detector for a slow span, so nothing clears them.
-struct DivergenceMonitor {
-    train_fast: f64,
-    train_slow: f64,
-    val_fast: f64,
-    val_slow: f64,
-    noise: f64,
-    prev_val: f64,
-    seen: usize,
-}
-
-impl DivergenceMonitor {
-    const fn new() -> Self {
-        Self { train_fast: 0.0, train_slow: 0.0, val_fast: 0.0, val_slow: 0.0, noise: 0.0, prev_val: 0.0, seen: 0 }
-    }
-
-    /// Feeds one epoch, reporting whether the run is diverging.
-    fn update(&mut self, train_loss: f64, val_loss: f64) -> bool {
-        if self.seen == 0 {
-            self.train_fast = train_loss;
-            self.train_slow = train_loss;
-            self.val_fast = val_loss;
-            self.val_slow = val_loss;
-        } else {
-            self.train_fast += A_FAST * (train_loss - self.train_fast);
-            self.train_slow += A_SLOW * (train_loss - self.train_slow);
-            self.val_fast += A_FAST * (val_loss - self.val_fast);
-            self.val_slow += A_SLOW * (val_loss - self.val_slow);
-            self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
-        }
-
-        self.prev_val = val_loss;
-        self.seen += 1;
-
-        self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
-    }
-}
 
 /// What a loaded dataset is for.
 ///
@@ -182,18 +103,18 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 }
 
 pub struct TrainerContext<'a> {
-    train: &'a [loader::SoulEntry],
-    val: &'a [loader::SoulEntry],
-    records: &'a [FeatureRecord],
-    train_count: usize,
-    phase_weights: &'a [f64],
+    pub train: &'a [loader::SoulEntry],
+    pub val: &'a [loader::SoulEntry],
+    pub records: &'a [FeatureRecord],
+    pub train_count: usize,
+    pub phase_weights: &'a [f64],
     loss_fn: LossFn,
     vol_threshold: i16,
     vol_adaptive: bool,
 }
 
 impl TrainerContext<'_> {
-    fn passes_vol_filter(&self, entry: &loader::SoulEntry, static_eval: i16) -> bool {
+    pub fn passes_vol_filter(&self, entry: &loader::SoulEntry, static_eval: i16) -> bool {
         if self.vol_threshold == 0 || entry.score == i16::MAX {
             return true;
         }
@@ -208,7 +129,7 @@ impl TrainerContext<'_> {
         (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
     }
 
-    fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
+    pub fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
         batch_indices
             .par_chunks(256)
             .fold(
@@ -409,559 +330,12 @@ fn train_entries(
     train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
 }
 
-/// Curvature of the loss at the shipped parameters, over the training split.
-///
-/// The Hessian needs the eval's raw coefficient vector per position, and `accumulate_record_grad`
-/// already produces exactly that: its `gradient` argument is a scalar multiplier, so passing 1.0
-/// leaves the coefficients themselves in the scratch buffer. Nothing about the training path has
-/// to change to read them.
-fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
-    let params = eval_params::collect_parameters();
-    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
-
-    let blend = config.wdl_schedule.clone().into_scheduler().blend(1, config.epochs);
-    let k = KController::bootstrap(config, ctx, &values, &values, blend, None).k();
-
-    let free: Vec<usize> = params.iter().filter(|p| !p.is_fixed).map(|p| p.idx).collect();
-    let n = params.len();
-    let trainable: Vec<bool> = {
-        let mut mask = vec![false; n];
-
-        for &i in &free {
-            mask[i] = true;
-        }
-
-        mask
-    };
-
-    let curvature = (0..ctx.train_count)
-        .into_par_iter()
-        .fold(
-            || (Curvature::zeros(n), vec![0.0; n], Vec::with_capacity(64)),
-            |(mut acc, mut scratch, mut nonzeros), i| {
-                let (entry, record) = (&ctx.train[i], &ctx.records[i]);
-
-                if ctx.passes_vol_filter(entry, record.static_eval) {
-                    let eval = loader::eval_record_full(record, &values);
-                    let p = sigmoid(eval.score, k);
-                    let w = if ctx.phase_weights.is_empty() { 1.0 } else { ctx.phase_weights[i] };
-
-                    accumulate_record_grad(record, &eval, 1.0, &mut scratch);
-
-                    // One walk drains the buffer and collects it, so the next position starts from
-                    // zero without paying to clear all 490 slots again.
-                    nonzeros.clear();
-
-                    for (j, coefficient) in scratch.iter_mut().enumerate() {
-                        if *coefficient != 0.0 {
-                            if trainable[j] {
-                                nonzeros.push((j, *coefficient));
-                            }
-
-                            *coefficient = 0.0;
-                        }
-                    }
-
-                    acc.add_outer(k * k * w * p * (1.0 - p), &nonzeros);
-                }
-
-                (acc, scratch, nonzeros)
-            },
-        )
-        .map(|(acc, ..)| acc)
-        .reduce(
-            || Curvature::zeros(n),
-            |mut acc, other| {
-                acc.merge(&other);
-                acc
-            },
-        )
-        .symmetrized();
-
-    curvature.spectrum(&free).report(&params, ctx.train_count, k);
-}
-
-/// Gradient throughput over sequential batches against shuffled ones.
-///
-/// `grad` is 90% of an epoch and the open question is what binds it. This holds the arithmetic and
-/// the records fixed and varies only the order they are visited in, so the gap is the whole cost of
-/// gathering `FeatureRecord`s at random: a wide gap points at latency and the TLB, and names the
-/// record layout and hugepages as the levers, while a narrow one says the math is the wall and
-/// none of that pays.
-fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
-    const BATCHES: usize = 200;
-
-    let params = eval_params::collect_parameters();
-    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
-    let k = 0.5 * (config.k_min + config.k_max);
-
-    let batches = (ctx.train_count / config.batch_size).clamp(1, BATCHES);
-    let positions = (batches * config.batch_size) as f64;
-
-    let mut indices: Vec<u32> = (0..ctx.train_count as u32).collect();
-
-    let time_pass = |order: &[u32]| {
-        let start = Instant::now();
-
-        for batch in order.chunks(config.batch_size).take(batches) {
-            // Discarded: only the read pattern is under measurement.
-            let _ = ctx.batch_grad(batch, &values, k, 0.0);
-        }
-
-        start.elapsed().as_secs_f64()
-    };
-
-    // Sequential first, so the shuffled arm cannot be the one paying for a cold page cache.
-    let sequential = time_pass(&indices);
-
-    Shuffler::new(ctx.train_count).fill(&mut indices, 0xC0FFEE);
-    let shuffled = time_pass(&indices);
-
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
-
-    println!("\n{lab}Gather cost{RESET} {dim}({batches} batches of {}){RESET}", config.batch_size);
-    println!("  {lab}sequential{RESET}  {v}{sequential:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / sequential / 1e6);
-    println!("  {lab}shuffled{RESET}    {v}{shuffled:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / shuffled / 1e6);
-    println!("  {lab}ratio{RESET}       {v}{:6.2}×{RESET}", shuffled / sequential);
-}
-
-fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
-    const REPEATS: usize = 7;
-
-    let params = eval_params::collect_parameters();
-    let values: Vec<f64> = params.iter().map(|p| p.value).collect();
-    let k = 0.5 * (config.k_min + config.k_max);
-
-    let fused = || {
-        let start = Instant::now();
-        let _ = ctx.val_eval(&values, [(k, 1.0), (k, 0.0)]);
-        start.elapsed().as_secs_f64()
-    };
-
-    let split = || {
-        let start = Instant::now();
-        let _ = ctx.val_eval(&values, [(k, 1.0)]);
-        let _ = ctx.val_eval(&values, [(k, 0.0)]);
-        start.elapsed().as_secs_f64()
-    };
-
-    // Both arms untimed once, or the first one pays to fault in the val slice.
-    let _ = fused();
-    let _ = split();
-
-    // Interleaved, and scored on the minimum: noise only ever adds time.
-    let (mut best_fused, mut best_split) = (f64::INFINITY, f64::INFINITY);
-
-    for _ in 0..REPEATS {
-        best_fused = best_fused.min(fused());
-        best_split = best_split.min(split());
-    }
-
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
-
-    println!("\n{lab}Val cost{RESET} {dim}({} positions, best of {REPEATS}){RESET}", ctx.val.len());
-    println!("  {lab}fused{RESET}    {v}{:7.2} ms{RESET}  {dim}one traversal, two probes{RESET}", best_fused * 1e3);
-    println!("  {lab}split{RESET}    {v}{:7.2} ms{RESET}  {dim}two traversals, one probe each{RESET}", best_split * 1e3);
-    println!(
-        "  {lab}saved{RESET}    {v}{:7.2} ms{RESET}  {v}{:.2}×{RESET} {dim}per epoch{RESET}",
-        (best_split - best_fused) * 1e3,
-        best_split / best_fused
-    );
-}
-
-/// Hashed before shuffle: identifies loaded contents, not a permutation.
-/// A checkpoint's split seed replays the same split only over the same entries.
-fn dataset_fingerprint(entries: &[loader::SoulEntry]) -> u64 {
-    let mut fnv = Fnv1a::new();
-    fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
-
-    let stride = (entries.len() / 1024).max(1);
-
-    for e in entries.iter().step_by(stride) {
-        fnv.write_bytes(&e.occupancy.to_le_bytes());
-        fnv.write_bytes(&e.score.to_le_bytes());
-        fnv.write_bytes(&[e.result, e.stm_and_ep]);
-    }
-
-    fnv.digest()
-}
-
-/// The eval's own `PHASE`, in piece-type order.
-fn phase_weights() -> [f64; 6] {
-    let params = eval_params::collect_parameters();
-    let woff = LAYOUT.phase_offset;
-
-    std::array::from_fn(|pt| params[woff + pt].value)
-}
-
-/// Game phase of a record, `0..=TOTAL_PHASE`. Fixed for the life of a run, since `PHASE`
-/// are constants rather than tunables.
-fn phase_of(rec: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
-    let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();
-
-    raw.clamp(0.0, f64::from(TOTAL_PHASE)).trunc() as usize
-}
-
-/// Reweights toward `target` phase distribution, clamped to `[1/cap, cap]`.
-/// `None` is uniform: inverse bucket frequency, lifting sparse phases toward
-/// even representation. `Some(t)` is `target[phase] / observed[phase]`, toward
-/// the density `t`. Mean-1 keeps gradient scale equal to unweighted.
-fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64]>) -> Vec<f64> {
-    let cap = cap.max(1.0);
-    let phase_w = phase_weights();
-
-    let mut hist = vec![0u64; TOTAL_PHASE as usize + 1];
-
-    for rec in records {
-        hist[phase_of(rec, &phase_w)] += 1;
-    }
-
-    let used = hist.iter().filter(|&&c| c > 0).count().max(1);
-    let avg = records.len() as f64 / used as f64;
-    let n = records.len() as f64;
-    let target_sum: f64 = target.map_or(1.0, |t| t.iter().sum::<f64>().max(1e-12));
-    let (lo, hi) = (1.0 / cap, cap);
-
-    let mut clamped = 0usize;
-    let mut weights: Vec<f64> = records
-        .iter()
-        .map(|rec| {
-            let p = phase_of(rec, &phase_w);
-            let raw = match target {
-                // Uniform: inverse frequency, lifting sparse phases toward even weight.
-                None => avg / hist[p] as f64,
-                // Custom: importance weight toward the target density `t`.
-                Some(t) => {
-                    let observed = hist[p] as f64 / n;
-                    if observed > 0.0 { (t.get(p).copied().unwrap_or(0.0) / target_sum) / observed } else { 0.0 }
-                },
-            };
-
-            if raw < lo || raw > hi {
-                clamped += 1;
-            }
-
-            raw.clamp(lo, hi)
-        })
-        .collect();
-
-    // Mean-1 normalization keeps the gradient scale equal to an unweighted run.
-    let mean = weights.iter().sum::<f64>() / weights.len() as f64;
-
-    for w in &mut weights {
-        *w /= mean;
-    }
-
-    report_phase_balance(&hist, &weights, cap, clamped);
-    weights
-}
-
-/// Set `phase_balance_cap` toward the printed imbalance to fully correct it,
-/// or lower to spare the sparse buckets their variance.
-fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize) {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-    let max_pop = hist.iter().copied().max().unwrap_or(0);
-    let min_pop = hist.iter().copied().filter(|&c| c > 0).min().unwrap_or(0);
-    let imbalance = if min_pop > 0 { max_pop as f64 / min_pop as f64 } else { f64::INFINITY };
-
-    let bars: String = hist
-        .iter()
-        .map(|&c| if c == 0 { ' ' } else { BLOCKS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
-        .collect();
-
-    let wmin = weights.iter().copied().fold(f64::INFINITY, f64::min);
-    let wmax = weights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let clamp_pct = 100.0 * clamped as f64 / weights.len().max(1) as f64;
-
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-
-    println!("{lab}Phase balance:{RESET} {v}{bars}{RESET} {lab}(phase 0..{}){RESET}", hist.len() - 1);
-    println!(
-        "  {lab}imbalance{RESET} {v}{imbalance:.0}×{RESET} {lab}vs cap{RESET} {v}{cap:.0}×{RESET}  \
-         {lab}weights{RESET} {v}{wmin:.2}–{wmax:.2}×{RESET}  {lab}clamped{RESET} {v}{clamp_pct:.1}%{RESET}"
-    );
-}
-
-/// The gauge reports how hard it pulled; this reads what the pull achieved.
-///
-/// A run can hold a statistic perfectly and still ship an eval off the scale
-/// `search_params` was written against, which is worth −25 Elo and looks like
-/// nothing in the loss. The tail EMA averages vectors that are individually on
-/// the reference and lands fractionally under it, so the bar sits well clear of
-/// that rather than at the gauge's own 1e-6.
-fn off_scale_warning(shipped: f64) -> String {
-    if (shipped - 1.0).abs() <= 0.01 {
-        return String::new();
-    }
-
-    format!(
-        "{}[!] Warning: the parameters ship at {shipped:.3}× the reference scale.\n\
-         [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
-        color::ansi_fg((225, 89, 91)),
-    )
-}
-
-/// Warns when the run's K finished against `k_min` or `k_max`.
-///
-/// Both live modes clamp: the golden search never leaves its bracket and `on_batch` clamps the
-/// learned K every batch. A K on a bound is therefore the bracket's answer rather than the data's,
-/// and it is silent otherwise. The 32.8M set spent a run pinned to a `k_min` of 0.003 and settled
-/// at 0.001350 once the floor moved.
-fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
-    // Fixed K is the configured value by definition, bound or not.
-    if matches!(config.k_mode, KMode::Fixed { .. }) {
-        return String::new();
-    }
-
-    let margin = 0.01 * (config.k_max - config.k_min);
-
-    if k - config.k_min >= margin && config.k_max - k >= margin {
-        return String::new();
-    }
-
-    format!(
-        "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
-         [!] this run reported a clamp rather than an optimum.{RESET}\n",
-        color::ansi_fg((225, 89, 91)),
-        config.k_min,
-        config.k_max,
-    )
-}
-
-/// Predicted against realized win rate on the validation split, by game phase.
-///
-/// One global K asserts that a centipawn buys the same win probability in a rook ending as it
-/// does at full material. Whether it does is measurable rather than arguable, and this is the
-/// measurement: a residual that walks monotonically with phase is a material-conditioned target
-/// earning its keep, and noise around zero is that idea deflating before it costs a single game.
-///
-/// The second table splits each band by eval, because K is a slope and the first table reads an
-/// offset. A band whose K is too flat under-predicts the winning side and over-predicts the
-/// losing side, netting a mean residual of zero, so the split has to keep the sign: bucketed by
-/// `|eval|` those two errors would cancel inside the bucket and hide exactly what is sought.
-///
-/// Realized rate comes from the label, so it means the same thing the loss means: on outcome data
-/// it is the game result, and on score-target data it is whatever the blend made of it.
-fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> String {
-    const BAND_WIDTH: usize = 4;
-    const BANDS: usize = TOTAL_PHASE as usize / BAND_WIDTH;
-
-    /// Centipawn cuts of the signed-eval buckets each phase band splits into.
-    const EDGES: [f64; 2] = [-50.0, 50.0];
-    const CELLS: usize = EDGES.len() + 1;
-
-    let phase_w = phase_weights();
-
-    let (counts, predicted, realized) = ctx
-        .val
-        .par_iter()
-        .enumerate()
-        .fold(
-            || ([0u64; BANDS * CELLS], [0.0_f64; BANDS * CELLS], [0.0_f64; BANDS * CELLS]),
-            |(mut counts, mut predicted, mut realized), (idx, entry)| {
-                let record = &ctx.records[ctx.train_count + idx];
-
-                if !ctx.passes_vol_filter(entry, record.static_eval) {
-                    return (counts, predicted, realized);
-                }
-
-                // Full material divides into the top band rather than owning one of its own.
-                let b = (phase_of(record, &phase_w) / BAND_WIDTH).min(BANDS - 1);
-                let eval = loader::eval_record(record, values);
-                let cell = b * CELLS + EDGES.iter().filter(|&&edge| eval >= edge).count();
-
-                counts[cell] += 1;
-                predicted[cell] += sigmoid(eval, k);
-                realized[cell] += f64::from(entry.result) / 2.0;
-
-                (counts, predicted, realized)
-            },
-        )
-        .reduce(
-            || ([0u64; BANDS * CELLS], [0.0_f64; BANDS * CELLS], [0.0_f64; BANDS * CELLS]),
-            |(mut c1, mut p1, mut r1), (c2, p2, r2)| {
-                for i in 0..BANDS * CELLS {
-                    c1[i] += c2[i];
-                    p1[i] += p2[i];
-                    r1[i] += r2[i];
-                }
-
-                (c1, p1, r1)
-            },
-        );
-
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
-
-    let band_label = |b: usize| {
-        let lo = b * BAND_WIDTH;
-        let hi = if b + 1 == BANDS { TOTAL_PHASE as usize } else { lo + BAND_WIDTH - 1 };
-
-        format!("{lo}-{hi}")
-    };
-
-    let rate = |sum: f64, n: u64| 100.0 * sum / n as f64;
-
-    let mut out = String::new();
-
-    let _ = writeln!(out, "\n{lab}Calibration{RESET} {dim}(validation split at K = {k:.6}){RESET}");
-    let _ = writeln!(out, "  {lab}phase           n   predicted   realized  residual{RESET}");
-
-    for b in 0..BANDS {
-        let cells = b * CELLS..(b + 1) * CELLS;
-        let n: u64 = counts[cells.clone()].iter().sum();
-
-        if n == 0 {
-            continue;
-        }
-
-        let p = rate(predicted[cells.clone()].iter().sum(), n);
-        let r = rate(realized[cells].iter().sum(), n);
-        let band = band_label(b);
-
-        let _ = writeln!(
-            out,
-            "  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}",
-            p - r
-        );
-    }
-
-    let _ = writeln!(out, "\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
-    let _ = writeln!(out, "  {lab}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
-
-    for b in 0..BANDS {
-        let row: Vec<String> = (0..CELLS)
-            .map(|c| {
-                let i = b * CELLS + c;
-
-                match counts[i] {
-                    0 => "-".to_string(),
-                    n => format!("{:+.1} ({})", rate(predicted[i], n) - rate(realized[i], n), compact(n)),
-                }
-            })
-            .collect();
-
-        if row.iter().all(|cell| cell == "-") {
-            continue;
-        }
-
-        let _ = writeln!(out, "  {:<7} {:<13} {:<13} {}", band_label(b), row[0], row[1], row[2]);
-    }
-
-    out
-}
-
-/// Counts wide enough to crowd a table, shortened to three significant characters.
-fn compact(n: u64) -> String {
-    match n {
-        0..10_000 => n.to_string(),
-        10_000..10_000_000 => format!("{}k", n / 1000),
-        _ => format!("{}M", n / 1_000_000),
-    }
-}
-
-/// Whole-run gate census, per parameter group.
-///
-/// `band` is the column the cautious-mask question turns on, since it is where our gate and
-/// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
-fn gate_census_report(groups: &[GateCensus]) -> String {
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
-    let dim = palette::fg(palette::DIM);
-
-    let mut out = String::new();
-
-    let _ = writeln!(out, "\n{lab}Gate census{RESET} {dim}(share of parameter-updates){RESET}");
-    let _ = writeln!(out, "  {lab}group       skip  canonical    band   c-only   waived     dead  no grad{RESET}");
-
-    for (name, c) in GROUP_NAMES.iter().zip(groups) {
-        let _ = writeln!(
-            out,
-            "  {name:<9} {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
-            100.0 * c.share(c.skipped),
-            100.0 * c.share(c.canonical),
-            100.0 * c.share(c.band),
-            100.0 * c.share(c.canonical_only),
-            100.0 * c.share(c.epsilon_waived),
-            100.0 * c.share(c.dead),
-            100.0 * c.share(c.absent),
-        );
-    }
-
-    out
-}
-
 fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
     for (a, b) in g1.iter_mut().zip(g2) {
         *a += b;
     }
 
     (g1, l1 + l2)
-}
-
-fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
-    let lab = palette::fg(palette::LABEL);
-    let c = palette::fg(palette::COUNT);
-    println!("{lab}Positions:{RESET}  {c}{total}{RESET} ({} train / {} val)", train.len(), val.len());
-
-    let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
-        let r = result_fn(entry);
-
-        if (r - 1.0).abs() < 1e-4 {
-            (w + 1, b, d)
-        } else if r.abs() < 1e-4 {
-            (w, b + 1, d)
-        } else {
-            (w, b, d + 1)
-        }
-    });
-
-    println!("  {lab}White wins:{RESET} {c}{ww}{RESET}");
-    println!("  {lab}Black wins:{RESET} {c}{bw}{RESET}");
-    println!("  {lab}Draws:{RESET}      {c}{dr}{RESET}");
-
-    // A datagen run that never filled the result field looks exactly like a set of drawn games.
-    // The outcome target is then 0.5 everywhere and only a score-weighted blend can learn.
-    if ww + bw == 0 {
-        eprintln!(
-            "{}[!] Warning: no decisive results. Every outcome target is 0.5, so a wdl_schedule\n\
-             [!] near 0.0 trains on a constant.{RESET}",
-            color::ansi_fg((225, 89, 91)),
-        );
-    }
-}
-
-/// Loss history as a sparkline: lower loss → shorter block.
-fn loss_sparkline(history: &[f64]) -> String {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-    if history.is_empty() {
-        return String::new();
-    }
-
-    let lo = history.iter().copied().fold(f64::MAX, f64::min);
-    let hi = history.iter().copied().fold(f64::MIN, f64::max);
-    let span = (hi - lo).max(1e-12);
-
-    let mut out = String::with_capacity(history.len() * 20);
-
-    for &v in history {
-        let frac = (v - lo) / span; // 0 = best (lowest), 1 = worst (highest)
-        let level = (frac * 8.0).min(7.0) as usize;
-
-        out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
-        out.push(BLOCKS[level]);
-    }
-
-    out.push_str(RESET);
-    out
 }
 
 fn train_loop(
@@ -1181,7 +555,7 @@ fn train_loop(
 
     // Also not restored: the detector re-warms within a slow span, and a warning does not
     // justify more checkpoint surface.
-    let mut divergence = DivergenceMonitor::new();
+    let mut divergence = DivergenceMonitor::default();
 
     // Not restored on resume: re-seeding from the resumed EMA is the right baseline anyway.
     let mut prev_quantized = vec![0i32; slots];
@@ -1661,213 +1035,6 @@ fn train_loop(
     best_val_loss
 }
 
-fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
-    let Ok(mut f) = fs::File::create("sensitivity-report.txt") else { return };
-    let mut w = io::BufWriter::new(&mut f);
-
-    writeln!(w, "Sensitivity Analysis").ok();
-    writeln!(w).ok();
-
-    let mut sensitivities = Vec::new();
-    let mut frozen = Vec::new();
-
-    for p in params {
-        let delta = grad_ema[p.idx];
-
-        if p.is_fixed || fixed_mask[p.idx] {
-            frozen.push((delta, p.idx, p.name.as_str()));
-        } else {
-            sensitivities.push((delta, p.idx, p.name.as_str()));
-        }
-    }
-
-    sensitivities.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-    frozen.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-
-    let max_width = |list: &[(f64, usize, &str)]| list.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20);
-    let active_width = max_width(&sensitivities) + 1;
-    let frozen_width = frozen.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
-
-    writeln!(w, "  Top Load-Bearing Parameters:").ok();
-
-    for (i, (delta, _, name)) in sensitivities.iter().take(10).enumerate() {
-        writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
-    }
-
-    writeln!(w).ok();
-    writeln!(w, "  Lowest-Impact Parameters:").ok();
-
-    for (i, (delta, _, name)) in sensitivities.iter().rev().take(10).enumerate() {
-        writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
-    }
-
-    if !frozen.is_empty() {
-        writeln!(w).ok();
-        writeln!(w, "  Highest Sensitivity Auto-Frozen/Fixed Parameters:").ok();
-
-        for (i, (delta, _, name)) in frozen.iter().take(10).enumerate() {
-            writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = frozen_width).ok();
-        }
-    }
-}
-
-fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
-    if input == "default" {
-        let mut paths = Vec::new();
-
-        if let Ok(entries) = fs::read_dir("data") {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = path.to_string_lossy();
-
-                if name.ends_with(".soul.zst") || name.ends_with(".soul") {
-                    paths.push(name.to_string());
-                }
-            }
-        }
-
-        if paths.is_empty() {
-            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", color::ansi_fg((225, 89, 91)));
-            eprintln!("Please provide a dataset path using --dataset <path>");
-            None
-        } else {
-            println!("Auto-discovered datasets: {}", paths.join(", "));
-            Some(paths)
-        }
-    } else {
-        let paths: Vec<String> = input
-            .split(',')
-            .map(str::trim)
-            .map(|s| {
-                if path::Path::new(s).exists() {
-                    s.to_string()
-                } else {
-                    let data_prefixed = format!("data/{s}");
-                    if path::Path::new(&data_prefixed).exists() { data_prefixed } else { s.to_string() }
-                }
-            })
-            .collect();
-
-        Some(paths)
-    }
-}
-
-/// Parameter group by position in the layout, the axis the per-group optimizer
-/// masks (decay, momentum, learning rate) all key off.
-enum ParamGroup {
-    Psqt,
-    Material,
-    Mobility,
-    Other,
-}
-
-/// Classify a parameter index into its layout group: the single source of the
-/// group boundaries the masks below share.
-fn param_group(i: usize) -> ParamGroup {
-    if i < LAYOUT.material_offset {
-        ParamGroup::Psqt
-    } else if i < LAYOUT.mobility_open_offset {
-        ParamGroup::Material
-    } else if i < LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len {
-        ParamGroup::Mobility
-    } else {
-        ParamGroup::Other
-    }
-}
-
-/// Index of a group in [`GROUP_NAMES`] and in anything else reported per group.
-const fn group_index(group: &ParamGroup) -> usize {
-    match group {
-        ParamGroup::Psqt => 0,
-        ParamGroup::Material => 1,
-        ParamGroup::Mobility => 2,
-        ParamGroup::Other => 3,
-    }
-}
-
-/// Each group as an index range, read back off [`param_group`] rather than restated.
-///
-/// Restating the cuts is how a per-group report drifts into reporting the wrong parameters
-/// after a layout change, silently, since every number it prints stays plausible.
-/// The contiguity the ranges assume is asserted here rather than assumed.
-fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
-    let mut span = [(usize::MAX, 0usize); GROUP_NAMES.len()];
-    let mut counts = [0usize; GROUP_NAMES.len()];
-
-    for i in 0..slots {
-        let g = group_index(&param_group(i));
-
-        span[g].0 = span[g].0.min(i);
-        span[g].1 = i + 1;
-        counts[g] += 1;
-    }
-
-    std::array::from_fn(|g| {
-        if counts[g] == 0 {
-            return 0..0;
-        }
-
-        let (lo, hi) = span[g];
-        assert_eq!(hi - lo, counts[g], "{} does not occupy a contiguous range of the layout", GROUP_NAMES[g]);
-
-        lo..hi
-    })
-}
-
-/// Weight decay mask: not all parameters deserve equal punishment.
-///
-/// - PSQT center squares decay at 0.5× (central values are more structurally
-///   significant; aggressive decay risks flattening critical gradients).
-/// - Mobility weights decay at 1.5× (these can drift without bound since their
-///   features are unbounded integer counts).
-/// - Everything else decays at 1.0×.
-fn build_decay_mask(slots: usize) -> Vec<f64> {
-    (0..slots)
-        .map(|i| match param_group(i) {
-            ParamGroup::Psqt => {
-                let sq = i % 32;
-                let (row, col) = (sq / 4, sq % 4);
-                let is_center = (2..=5).contains(&row) && (2..=3).contains(&col);
-                if is_center { 0.5 } else { 1.0 }
-            },
-
-            ParamGroup::Mobility => 1.5,
-            ParamGroup::Material | ParamGroup::Other => 1.0,
-        })
-        .collect()
-}
-
-/// Per-group momentum decay mask.
-///
-/// Different parameter groups have different natural gradient timescales.
-/// - PSQT (0.995): squares only see updates when a piece of that type lands
-///   there: longer momentum smooths sparse signal across positions.
-/// - Mobility (0.95): features are computed every position; shorter momentum
-///   lets weights track the faster dynamics without lag.
-/// - Everything else (0.99): the existing default from the config.
-fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
-    (0..slots)
-        .map(|i| match param_group(i) {
-            ParamGroup::Psqt => 0.995,
-            ParamGroup::Mobility => 0.95,
-            ParamGroup::Material | ParamGroup::Other => default_beta2,
-        })
-        .collect()
-}
-
-/// Per-group learning-rate mask: PSQT, material, mobility, and the rest each scale
-/// by their configured rate, so groups on different gradient scales tune independently.
-fn build_lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
-    (0..slots)
-        .map(|i| match param_group(i) {
-            ParamGroup::Psqt => config.lr_psqt,
-            ParamGroup::Material => config.lr_material,
-            ParamGroup::Mobility => config.lr_mobility,
-            ParamGroup::Other => config.lr_other,
-        })
-        .collect()
-}
-
 /// The starting parameter vector for a fresh run; a resume overrides it with the
 /// checkpoint's. Fixed slots hold their declared values under every mode.
 pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
@@ -1884,36 +1051,11 @@ pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
         .collect()
 }
 
-/// Per-parameter range the sign step may not leave, unbounded outside mobility
-/// and the king-danger curvature.
-fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
-    let danger = LAYOUT.king_danger_offset;
-
-    (0..slots)
-        .map(|i| {
-            if i == danger {
-                return DANGER_CURVE_CLAMP;
-            }
-
-            match param_group(i) {
-                ParamGroup::Mobility => (-MOB_CLAMP, MOB_CLAMP),
-                ParamGroup::Psqt | ParamGroup::Material | ParamGroup::Other => (f64::NEG_INFINITY, f64::INFINITY),
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use soul::{core::board::Position, tools::dataset::SoulEntry};
 
     use super::*;
-
-    /// Deterministic stand-in for epoch noise, so the assertions below cannot flake.
-    fn wobble(i: usize, amp: f64) -> f64 {
-        let x = (i as f64 * 12.9898).sin() * 43758.545_312;
-        (x - x.floor()).mul_add(2.0, -1.0) * amp
-    }
 
     #[test]
     fn a_cold_start_leaves_the_fixed_slots_alone() {
@@ -1934,79 +1076,5 @@ mod tests {
         let phase = LAYOUT.phase_offset;
         let zeroed = seed_values(&params, Init::Zero, 7);
         assert!(zeroed[phase..phase + LAYOUT.phase_len].iter().any(|w| *w > 0.0), "phase taper zeroed");
-    }
-
-    #[test]
-    fn divergence_quiet_on_a_noisy_plateau() {
-        // Both losses flat with val wobbling 20e-6 an epoch: the shape a running-minimum
-        // comparison flags on roughly every other epoch.
-        let mut d = DivergenceMonitor::new();
-        let mut fired = 0;
-
-        for e in 0..600 {
-            let train = 0.4041 + wobble(e, 4e-6);
-            let val = 0.4053 + wobble(e + 977, 20e-6);
-
-            if d.update(train, val) {
-                fired += 1;
-            }
-        }
-
-        assert_eq!(fired, 0, "flat plateau must not read as divergence");
-    }
-
-    #[test]
-    fn divergence_fires_on_a_real_split() {
-        // Train descending, val climbing, both under the same noise as the plateau case.
-        let mut d = DivergenceMonitor::new();
-        let mut fired = 0;
-
-        for e in 0..600 {
-            let t = e as f64;
-            let train = 0.4041 - t * 2e-6 + wobble(e, 4e-6);
-            let val = 0.4053 + t * 2e-6 + wobble(e + 977, 20e-6);
-
-            if d.update(train, val) {
-                fired += 1;
-            }
-        }
-
-        assert!(fired > 400, "sustained divergence must flag, fired {fired} of 600");
-    }
-
-    #[test]
-    fn divergence_stays_quiet_through_a_restart() {
-        // Nothing clears the trails at an LR restart, so this test carries the whole guarantee:
-        // neither the jump nor the recovery that follows it may read as divergence.
-        let mut d = DivergenceMonitor::new();
-
-        for e in 0..200 {
-            d.update(0.4041 + wobble(e, 4e-6), 0.4053 + wobble(e + 977, 20e-6));
-        }
-
-        let mut fired = 0;
-
-        for e in 0..160 {
-            let bump = 0.0012 * (-f64::from(i32::try_from(e).unwrap()) / 25.0).exp();
-
-            if d.update(0.4041 + bump + wobble(e, 4e-6), 0.4053 + bump + wobble(e + 977, 20e-6)) {
-                fired += 1;
-            }
-        }
-
-        assert_eq!(fired, 0, "a restart cycle must not read as divergence");
-    }
-
-    #[test]
-    fn divergence_warms_up_before_reporting() {
-        let mut d = DivergenceMonitor::new();
-
-        // Maximally divergent input, so warmup is the only thing holding the flag down.
-        for e in 0..TREND_SLOW {
-            let t = e as f64;
-            assert!(!d.update(0.5 - t * 1e-3, 0.5 + t * 1e-3), "reported at epoch {e}, inside the warmup span");
-        }
-
-        assert!(d.update(0.5 - 0.04, 0.5 + 0.04), "must report once the slow span has filled");
     }
 }

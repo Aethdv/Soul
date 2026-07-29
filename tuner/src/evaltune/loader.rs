@@ -9,16 +9,22 @@ use std::{
     fs::File,
     io,
     io::{BufRead, BufReader, Write},
-    mem,
+    mem, path,
     path::Path,
     time::Instant,
 };
 
-use soul::core::{board::Position as Board, defs::Color};
 pub use soul::tools::dataset::{
     FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str, parse_viri_file,
     save_encoded,
 };
+use soul::{
+    color,
+    core::{board::Position as Board, defs::Color},
+};
+
+use super::palette::RESET;
+use crate::core::fnv::Fnv1a;
 
 /// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).
 pub struct Entry {
@@ -133,4 +139,62 @@ pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
     }
 
     all_entries
+}
+
+/// Hashed before shuffle: identifies loaded contents, not a permutation.
+/// A checkpoint's split seed replays the same split only over the same entries.
+pub fn dataset_fingerprint(entries: &[SoulEntry]) -> u64 {
+    let mut fnv = Fnv1a::new();
+    fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
+
+    let stride = (entries.len() / 1024).max(1);
+
+    for e in entries.iter().step_by(stride) {
+        fnv.write_bytes(&e.occupancy.to_le_bytes());
+        fnv.write_bytes(&e.score.to_le_bytes());
+        fnv.write_bytes(&[e.result, e.stm_and_ep]);
+    }
+
+    fnv.digest()
+}
+
+pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
+    if input == "default" {
+        let mut paths = Vec::new();
+
+        if let Ok(entries) = fs::read_dir("data") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.to_string_lossy();
+
+                if name.ends_with(".soul.zst") || name.ends_with(".soul") {
+                    paths.push(name.to_string());
+                }
+            }
+        }
+
+        if paths.is_empty() {
+            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", color::ansi_fg((225, 89, 91)));
+            eprintln!("Please provide a dataset path using --dataset <path>");
+            None
+        } else {
+            println!("Auto-discovered datasets: {}", paths.join(", "));
+            Some(paths)
+        }
+    } else {
+        let paths: Vec<String> = input
+            .split(',')
+            .map(str::trim)
+            .map(|s| {
+                if path::Path::new(s).exists() {
+                    s.to_string()
+                } else {
+                    let data_prefixed = format!("data/{s}");
+                    if path::Path::new(&data_prefixed).exists() { data_prefixed } else { s.to_string() }
+                }
+            })
+            .collect();
+
+        Some(paths)
+    }
 }

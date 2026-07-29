@@ -4,9 +4,16 @@
 //! Shared between the training loop and the ablation tool. No other module
 //! imports from here.
 
-use soul::core::{board::Position, defs::Color};
+use soul::{
+    core::{
+        board::Position,
+        defs::{Color, TOTAL_PHASE},
+    },
+    engine::eval_params::{self, LAYOUT},
+    tools::dataset::FeatureRecord,
+};
 
-use crate::evaltune::{loader, tape::eval_f64};
+use crate::evaltune::{loader, report::report_phase_balance, tape::eval_f64};
 
 /// Online 95th percentile estimation of gradient norms via SGD.
 ///
@@ -124,5 +131,223 @@ impl TunableData for loader::Entry {
         // The eval produces a score relative to the side-to-move,
         // so we flip for Black.
         if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
+    }
+}
+
+// EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
+// since a trend read before that span has filled is reading its own seed.
+pub const TREND_FAST: usize = 10;
+
+const TREND_SLOW: usize = 40;
+
+pub const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
+
+const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
+
+/// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
+///
+/// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
+/// the smoothed difference rather than a raw value: both trails smooth the same input, so their
+/// covariance leaves sd(fast − slow) at 0.21σ, well under the 0.47σ that summing their
+/// deviations suggests. It is tested against the noise estimate E|Δval| = 2σ/√π ≈ 1.13σ, so one
+/// unit of that is a 5.3σ bar on a 0.21σ quantity. A flat plateau stays quiet under it, and
+/// drift twenty times under the epoch wobble still trips it. Raw-value intuition suggests 2 or
+/// 3, which lands at 11σ here and never fires at all.
+const TREND_NOISE_K: f64 = 1.0;
+
+/// Overfitting detector: fit still improving while generalization degrades.
+///
+/// Neither loss is compared to its own running minimum. A running minimum over a noisy series
+/// settles at the deepest trough it has seen and never recovers, so it sits below the true mean
+/// by roughly the noise amplitude and every ordinary epoch afterward reads as a regression
+/// against it. A trend carries no such bias, and it needs no special case at an LR restart:
+/// a restart lifts both losses at once, and divergence needs train falling. Clearing the
+/// trails there would only blind the detector for a slow span, so nothing clears them.
+#[derive(Default)]
+pub struct DivergenceMonitor {
+    train_fast: f64,
+    train_slow: f64,
+    val_fast: f64,
+    val_slow: f64,
+    noise: f64,
+    prev_val: f64,
+    seen: usize,
+}
+
+impl DivergenceMonitor {
+    /// Feeds one epoch, reporting whether the run is diverging.
+    pub fn update(&mut self, train_loss: f64, val_loss: f64) -> bool {
+        if self.seen == 0 {
+            self.train_fast = train_loss;
+            self.train_slow = train_loss;
+            self.val_fast = val_loss;
+            self.val_slow = val_loss;
+        } else {
+            self.train_fast += A_FAST * (train_loss - self.train_fast);
+            self.train_slow += A_SLOW * (train_loss - self.train_slow);
+            self.val_fast += A_FAST * (val_loss - self.val_fast);
+            self.val_slow += A_SLOW * (val_loss - self.val_slow);
+            self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
+        }
+
+        self.prev_val = val_loss;
+        self.seen += 1;
+
+        self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
+    }
+}
+
+/// The eval's own `PHASE`, in piece-type order.
+pub fn phase_weights() -> [f64; 6] {
+    let params = eval_params::collect_parameters();
+    let woff = LAYOUT.phase_offset;
+
+    std::array::from_fn(|pt| params[woff + pt].value)
+}
+
+/// Game phase of a record, `0..=TOTAL_PHASE`. Fixed for the life of a run, since `PHASE`
+/// are constants rather than tunables.
+pub fn phase_of(rec: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
+    let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();
+
+    raw.clamp(0.0, f64::from(TOTAL_PHASE)).trunc() as usize
+}
+
+/// Reweights toward `target` phase distribution, clamped to `[1/cap, cap]`.
+/// `None` is uniform: inverse bucket frequency, lifting sparse phases toward
+/// even representation. `Some(t)` is `target[phase] / observed[phase]`, toward
+/// the density `t`. Mean-1 keeps gradient scale equal to unweighted.
+pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64]>) -> Vec<f64> {
+    let cap = cap.max(1.0);
+    let phase_w = phase_weights();
+
+    let mut hist = vec![0u64; TOTAL_PHASE as usize + 1];
+
+    for rec in records {
+        hist[phase_of(rec, &phase_w)] += 1;
+    }
+
+    let used = hist.iter().filter(|&&c| c > 0).count().max(1);
+    let avg = records.len() as f64 / used as f64;
+    let n = records.len() as f64;
+    let target_sum: f64 = target.map_or(1.0, |t| t.iter().sum::<f64>().max(1e-12));
+    let (lo, hi) = (1.0 / cap, cap);
+
+    let mut clamped = 0usize;
+    let mut weights: Vec<f64> = records
+        .iter()
+        .map(|rec| {
+            let p = phase_of(rec, &phase_w);
+            let raw = match target {
+                // Uniform: inverse frequency, lifting sparse phases toward even weight.
+                None => avg / hist[p] as f64,
+                // Custom: importance weight toward the target density `t`.
+                Some(t) => {
+                    let observed = hist[p] as f64 / n;
+                    if observed > 0.0 { (t.get(p).copied().unwrap_or(0.0) / target_sum) / observed } else { 0.0 }
+                },
+            };
+
+            if raw < lo || raw > hi {
+                clamped += 1;
+            }
+
+            raw.clamp(lo, hi)
+        })
+        .collect();
+
+    // Mean-1 normalization keeps the gradient scale equal to an unweighted run.
+    let mean = weights.iter().sum::<f64>() / weights.len() as f64;
+
+    for w in &mut weights {
+        *w /= mean;
+    }
+
+    report_phase_balance(&hist, &weights, cap, clamped);
+    weights
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic stand-in for epoch noise, so the assertions below cannot flake.
+    fn wobble(i: usize, amp: f64) -> f64 {
+        let x = (i as f64 * 12.9898).sin() * 43758.545_312;
+        (x - x.floor()).mul_add(2.0, -1.0) * amp
+    }
+
+    #[test]
+    fn divergence_quiet_on_a_noisy_plateau() {
+        // Both losses flat with val wobbling 20e-6 an epoch: the shape a running-minimum
+        // comparison flags on roughly every other epoch.
+        let mut d = DivergenceMonitor::default();
+        let mut fired = 0;
+
+        for e in 0..600 {
+            let train = 0.4041 + wobble(e, 4e-6);
+            let val = 0.4053 + wobble(e + 977, 20e-6);
+
+            if d.update(train, val) {
+                fired += 1;
+            }
+        }
+
+        assert_eq!(fired, 0, "flat plateau must not read as divergence");
+    }
+
+    #[test]
+    fn divergence_fires_on_a_real_split() {
+        // Train descending, val climbing, both under the same noise as the plateau case.
+        let mut d = DivergenceMonitor::default();
+        let mut fired = 0;
+
+        for e in 0..600 {
+            let t = e as f64;
+            let train = 0.4041 - t * 2e-6 + wobble(e, 4e-6);
+            let val = 0.4053 + t * 2e-6 + wobble(e + 977, 20e-6);
+
+            if d.update(train, val) {
+                fired += 1;
+            }
+        }
+
+        assert!(fired > 400, "sustained divergence must flag, fired {fired} of 600");
+    }
+
+    #[test]
+    fn divergence_stays_quiet_through_a_restart() {
+        // Nothing clears the trails at an LR restart, so this test carries the whole guarantee:
+        // neither the jump nor the recovery that follows it may read as divergence.
+        let mut d = DivergenceMonitor::default();
+
+        for e in 0..200 {
+            d.update(0.4041 + wobble(e, 4e-6), 0.4053 + wobble(e + 977, 20e-6));
+        }
+
+        let mut fired = 0;
+
+        for e in 0..160 {
+            let bump = 0.0012 * (-f64::from(i32::try_from(e).unwrap()) / 25.0).exp();
+
+            if d.update(0.4041 + bump + wobble(e, 4e-6), 0.4053 + bump + wobble(e + 977, 20e-6)) {
+                fired += 1;
+            }
+        }
+
+        assert_eq!(fired, 0, "a restart cycle must not read as divergence");
+    }
+
+    #[test]
+    fn divergence_warms_up_before_reporting() {
+        let mut d = DivergenceMonitor::default();
+
+        // Maximally divergent input, so warmup is the only thing holding the flag down.
+        for e in 0..TREND_SLOW {
+            let t = e as f64;
+            assert!(!d.update(0.5 - t * 1e-3, 0.5 + t * 1e-3), "reported at epoch {e}, inside the warmup span");
+        }
+
+        assert!(d.update(0.5 - 0.04, 0.5 + 0.04), "must report once the slow span has filled");
     }
 }

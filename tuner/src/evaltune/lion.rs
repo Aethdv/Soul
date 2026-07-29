@@ -34,6 +34,8 @@
 
 use std::ops::Range;
 
+use super::groups::{ParamGroup, param_group};
+
 pub struct Lion {
     interp: f64, // β₁ (interpolation weight)
     lr: f64,
@@ -413,4 +415,22 @@ mod tests {
         // No weight decay (wd=0, d=1.0), sign update skipped → no change.
         assert!((params[0] - 5.0).abs() < 1e-9, "Expected no change, got {}", params[0]);
     }
+}
+
+/// Per-group momentum decay mask.
+///
+/// Different parameter groups have different natural gradient timescales.
+/// - PSQT (0.995): squares only see updates when a piece of that type lands
+///   there: longer momentum smooths sparse signal across positions.
+/// - Mobility (0.95): features are computed every position; shorter momentum
+///   lets weights track the faster dynamics without lag.
+/// - Everything else (0.99): the existing default from the config.
+pub fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
+    (0..slots)
+        .map(|i| match param_group(i) {
+            ParamGroup::Psqt => 0.995,
+            ParamGroup::Mobility => 0.95,
+            ParamGroup::Material | ParamGroup::Other => default_beta2,
+        })
+        .collect()
 }
