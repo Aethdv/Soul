@@ -1380,10 +1380,10 @@ fn train_loop(
 
     // Setup optimizer state and convergence tracking
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
-    let decay_mask = build_decay_mask(&all_params);
-    let beta2_mask = build_beta2_mask(&all_params, config.beta2);
-    let lr_mask = build_lr_mask(&all_params, config);
-    let clip_mask = build_clip_mask(&all_params);
+    let decay_mask = build_decay_mask(all_params.len());
+    let beta2_mask = build_beta2_mask(all_params.len(), config.beta2);
+    let lr_mask = build_lr_mask(all_params.len(), config);
+    let clip_mask = build_clip_mask(all_params.len());
 
     // Zero init: 0.99 EMA decay washes out any seed within a few batches.
     let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
@@ -1492,9 +1492,9 @@ fn train_loop(
     let mut best_train_smooth = resume.as_ref().map_or(f64::MAX, |d| d.best_train_smooth);
     let mut plateau_count = resume.as_ref().map_or(0, |d| d.plateau_count);
 
-    let np = all_params.len();
-    let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; np], |d| d.best_val_params.clone());
-    let mut best_train_params = resume.as_ref().map_or_else(|| vec![0.0; np], |d| d.best_train_params.clone());
+    let slots = all_params.len();
+    let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_val_params.clone());
+    let mut best_train_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_train_params.clone());
 
     // Not restored on resume: sparklines are a display artifact, not state.
     let mut val_history: Vec<f64> = Vec::new();
@@ -1506,8 +1506,8 @@ fn train_loop(
     let mut divergence = DivergenceMonitor::new();
 
     // Not restored on resume: re-seeding from the resumed EMA is the right baseline anyway.
-    let mut prev_quantized = vec![0i32; np];
-    let mut quantized = vec![0i32; np];
+    let mut prev_quantized = vec![0i32; slots];
+    let mut quantized = vec![0i32; slots];
     quantize(&ema_values, &mut prev_quantized);
 
     let mut epochs_run = 0usize;
@@ -1522,7 +1522,7 @@ fn train_loop(
     let mob_start = LAYOUT.mobility_open_offset;
     let mob_end = LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len;
 
-    let group_ranges = group_ranges(np);
+    let group_ranges = group_ranges(slots);
     let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
 
     // ── Progressive unfreeze
@@ -2112,11 +2112,11 @@ const fn group_index(group: &ParamGroup) -> usize {
 /// Restating the cuts is how a per-group report drifts into reporting the wrong parameters
 /// after a layout change, silently, since every number it prints stays plausible.
 /// The contiguity the ranges assume is asserted here rather than assumed.
-fn group_ranges(np: usize) -> [Range<usize>; GROUP_NAMES.len()] {
+fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
     let mut span = [(usize::MAX, 0usize); GROUP_NAMES.len()];
     let mut counts = [0usize; GROUP_NAMES.len()];
 
-    for i in 0..np {
+    for i in 0..slots {
         let g = group_index(&param_group(i));
 
         span[g].0 = span[g].0.min(i);
@@ -2143,8 +2143,8 @@ fn group_ranges(np: usize) -> [Range<usize>; GROUP_NAMES.len()] {
 /// - Mobility weights decay at 1.5× (these can drift without bound since their
 ///   features are unbounded integer counts).
 /// - Everything else decays at 1.0×.
-fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
-    (0..params.len())
+fn build_decay_mask(slots: usize) -> Vec<f64> {
+    (0..slots)
         .map(|i| match param_group(i) {
             ParamGroup::Psqt => {
                 let sq = i % 32;
@@ -2167,8 +2167,8 @@ fn build_decay_mask(params: &[Tunable]) -> Vec<f64> {
 /// - Mobility (0.95): features are computed every position; shorter momentum
 ///   lets weights track the faster dynamics without lag.
 /// - Everything else (0.99): the existing default from the config.
-fn build_beta2_mask(params: &[Tunable], default_beta2: f64) -> Vec<f64> {
-    (0..params.len())
+fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
+    (0..slots)
         .map(|i| match param_group(i) {
             ParamGroup::Psqt => 0.995,
             ParamGroup::Mobility => 0.95,
@@ -2179,8 +2179,8 @@ fn build_beta2_mask(params: &[Tunable], default_beta2: f64) -> Vec<f64> {
 
 /// Per-group learning-rate mask: PSQT, material, mobility, and the rest each scale
 /// by their configured rate, so groups on different gradient scales tune independently.
-fn build_lr_mask(params: &[Tunable], config: &EvalTuneConfig) -> Vec<f64> {
-    (0..params.len())
+fn build_lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
+    (0..slots)
         .map(|i| match param_group(i) {
             ParamGroup::Psqt => config.lr_psqt,
             ParamGroup::Material => config.lr_material,
@@ -2208,10 +2208,10 @@ fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
 
 /// Per-parameter range the sign step may not leave, unbounded outside mobility
 /// and the king-danger curvature.
-fn build_clip_mask(params: &[Tunable]) -> Vec<(f64, f64)> {
+fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
     let danger = LAYOUT.king_danger_offset;
 
-    (0..params.len())
+    (0..slots)
         .map(|i| {
             if i == danger {
                 return DANGER_CURVE_CLAMP;
