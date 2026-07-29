@@ -6,7 +6,7 @@ grad_clip = 1.0
 # so a run whose final K lands on either bound reported a constraint rather than an optimum:
 # 32.8M sat at the old floor of 0.003 and settles at 0.001350 once given the room.
 k_min = 0.001
-k_max = 0.010
+k_max = 0.020
 k_mode = { type="learned", lr_mult=0.001 }
 #   { type = "sweep", interval=200 }
 #   { type = "learned", lr_mult=0.001 }

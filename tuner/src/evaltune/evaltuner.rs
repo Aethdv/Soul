@@ -10,6 +10,7 @@
 //! let you inspect both the best-validating and best-training parameters.
 
 use std::{
+    fmt::Write as _,
     fs,
     io::{self, BufWriter, Write},
     ops::Range,
@@ -1020,16 +1021,16 @@ fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize)
 /// nothing in the loss. The tail EMA averages vectors that are individually on
 /// the reference and lands fractionally under it, so the bar sits well clear of
 /// that rather than at the gauge's own 1e-6.
-fn warn_off_scale(shipped: f64) {
+fn off_scale_warning(shipped: f64) -> String {
     if (shipped - 1.0).abs() <= 0.01 {
-        return;
+        return String::new();
     }
 
-    eprintln!(
+    format!(
         "{}[!] Warning: the parameters ship at {shipped:.3}× the reference scale.\n\
-         [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}",
+         [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
         color::ansi_fg((225, 89, 91)),
-    );
+    )
 }
 
 /// Warns when the run's K finished against `k_min` or `k_max`.
@@ -1038,23 +1039,25 @@ fn warn_off_scale(shipped: f64) {
 /// learned K every batch. A K on a bound is therefore the bracket's answer rather than the data's,
 /// and it is silent otherwise. The 32.8M set spent a run pinned to a `k_min` of 0.003 and settled
 /// at 0.001350 once the floor moved.
-fn warn_on_clamped_k(config: &EvalTuneConfig, k: f64) {
+fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
     // Fixed K is the configured value by definition, bound or not.
     if matches!(config.k_mode, KMode::Fixed { .. }) {
-        return;
+        return String::new();
     }
 
     let margin = 0.01 * (config.k_max - config.k_min);
 
-    if k - config.k_min < margin || config.k_max - k < margin {
-        eprintln!(
-            "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
-             [!] this run reported a clamp rather than an optimum.{RESET}",
-            color::ansi_fg((225, 89, 91)),
-            config.k_min,
-            config.k_max,
-        );
+    if k - config.k_min >= margin && config.k_max - k >= margin {
+        return String::new();
     }
+
+    format!(
+        "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
+         [!] this run reported a clamp rather than an optimum.{RESET}\n",
+        color::ansi_fg((225, 89, 91)),
+        config.k_min,
+        config.k_max,
+    )
 }
 
 /// Predicted against realized win rate on the validation split, by game phase.
@@ -1071,7 +1074,7 @@ fn warn_on_clamped_k(config: &EvalTuneConfig, k: f64) {
 ///
 /// Realized rate comes from the label, so it means the same thing the loss means: on outcome data
 /// it is the game result, and on score-target data it is whatever the blend made of it.
-fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) {
+fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> String {
     const BAND_WIDTH: usize = 4;
     const BANDS: usize = TOTAL_PHASE as usize / BAND_WIDTH;
 
@@ -1132,8 +1135,10 @@ fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) {
 
     let rate = |sum: f64, n: u64| 100.0 * sum / n as f64;
 
-    println!("\n{lab}Calibration{RESET} {dim}(validation split at K = {k:.6}){RESET}");
-    println!("  {lab}phase           n   predicted   realized  residual{RESET}");
+    let mut out = String::new();
+
+    let _ = writeln!(out, "\n{lab}Calibration{RESET} {dim}(validation split at K = {k:.6}){RESET}");
+    let _ = writeln!(out, "  {lab}phase           n   predicted   realized  residual{RESET}");
 
     for b in 0..BANDS {
         let cells = b * CELLS..(b + 1) * CELLS;
@@ -1147,11 +1152,11 @@ fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) {
         let r = rate(realized[cells].iter().sum(), n);
         let band = band_label(b);
 
-        println!("  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}", p - r);
+        let _ = writeln!(out, "  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}", p - r);
     }
 
-    println!("\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
-    println!("  {lab}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
+    let _ = writeln!(out, "\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
+    let _ = writeln!(out, "  {lab}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
 
     for b in 0..BANDS {
         let row: Vec<String> = (0..CELLS)
@@ -1169,8 +1174,10 @@ fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) {
             continue;
         }
 
-        println!("  {:<7} {:<13} {:<13} {}", band_label(b), row[0], row[1], row[2]);
+        let _ = writeln!(out, "  {:<7} {:<13} {:<13} {}", band_label(b), row[0], row[1], row[2]);
     }
+
+    out
 }
 
 /// Counts wide enough to crowd a table, shortened to three significant characters.
@@ -1186,16 +1193,19 @@ fn compact(n: u64) -> String {
 ///
 /// `band` is the column the cautious-mask question turns on, since it is where our gate and
 /// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
-fn print_gate_census(groups: &[GateCensus]) {
+fn gate_census_report(groups: &[GateCensus]) -> String {
     let lab = palette::fg(palette::LABEL);
     let v = palette::fg(palette::VALUE);
     let dim = palette::fg(palette::DIM);
 
-    println!("\n{lab}Gate census{RESET} {dim}(share of parameter-updates){RESET}");
-    println!("  {lab}group       skip  canonical    band   c-only   waived     dead  no grad{RESET}");
+    let mut out = String::new();
+
+    let _ = writeln!(out, "\n{lab}Gate census{RESET} {dim}(share of parameter-updates){RESET}");
+    let _ = writeln!(out, "  {lab}group       skip  canonical    band   c-only   waived     dead  no grad{RESET}");
 
     for (name, c) in GROUP_NAMES.iter().zip(groups) {
-        println!(
+        let _ = writeln!(
+            out,
             "  {name:<9} {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
             100.0 * c.share(c.skipped),
             100.0 * c.share(c.canonical),
@@ -1206,6 +1216,8 @@ fn print_gate_census(groups: &[GateCensus]) {
             100.0 * c.share(c.absent),
         );
     }
+
+    out
 }
 
 fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
@@ -1730,7 +1742,7 @@ fn train_loop(
         if let Some(ref mut w) = logger {
             writeln!(
                 w,
-                "{:>3}     {:.6}    {:.6}    {:.6}    {:.4}{}",
+                "{:>5}  {:>11.6}  {:>11.6}  {:>11.6}  {:>8.4}{}",
                 epoch,
                 train_loss,
                 val_loss,
@@ -1874,9 +1886,6 @@ fn train_loop(
         }
     }
 
-    // Flush the log before writing final reports,
-    // so a panic in one of them cannot cost the epoch history.
-    drop(logger);
 
     // The JSON log opens in append mode, so a seed sweep writes every run's final params into
     // one file for reading the spread directly.
@@ -1913,16 +1922,27 @@ fn train_loop(
     let lab = palette::fg(palette::LABEL);
     let v = palette::fg(palette::VALUE);
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
-    println!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}");
 
-    warn_off_scale(Gauge::measure(&gauge.probe, &best_val_params) / gauge.reference);
+    let gauge_line = format!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
+    let off_scale = off_scale_warning(Gauge::measure(&gauge.probe, &best_val_params) / gauge.reference);
+    let clamped_k = clamped_k_warning(config, k_ctrl.k());
+    let calibration = calibration_report(ctx, &best_val_params, k_ctrl.k());
+    let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
 
-    warn_on_clamped_k(config, k_ctrl.k());
-    calibration_report(ctx, &best_val_params, k_ctrl.k());
+    print!("{gauge_line}");
+    eprint!("{off_scale}{clamped_k}");
+    print!("{calibration}{census}");
 
-    if config.gate_census {
-        print_gate_census(&run_census);
+    // The log is the run's transcript, read in an editor or a pipe, so it takes
+    // these plain. Dropped here rather than at scope end so a panic in a later
+    // report cannot cost the epoch history.
+    if let Some(ref mut w) = logger {
+        for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &census] {
+            write!(w, "{}", color::strip(part)).ok();
+        }
     }
+
+    drop(logger);
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
     let last_val = val_history.last().copied().unwrap_or(0.0);

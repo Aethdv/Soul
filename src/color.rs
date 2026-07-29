@@ -47,6 +47,29 @@ pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result
     write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
+/// Drop the escapes from colored text bound for somewhere that renders them
+/// literally: a log file, a pipe, an editor. Everything emitted here terminates
+/// at `m`, so a stray escape that doesn't is passed through rather than eaten.
+#[must_use]
+pub fn strip(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(esc) = rest.find('\x1b') {
+        out.push_str(&rest[..esc]);
+
+        let Some(end) = rest[esc..].find('m') else {
+            out.push_str(&rest[esc..]);
+            return out;
+        };
+
+        rest = &rest[esc + end + 1..];
+    }
+
+    out.push_str(rest);
+    out
+}
+
 /// Perceptual blend of two sRGB colors; interpolate in OkLab so the midpoint
 /// stays bright and saturated instead of dipping through gray. `t` in `[0, 1]`.
 #[must_use]
@@ -111,4 +134,24 @@ fn encode(x: f64) -> u8 {
 fn decode(b: u8) -> f64 {
     let x = f64::from(b) / 255.0;
     if x <= 0.040_45 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_leaves_only_the_text() {
+        let colored = format!("{}Gauge:{} 0.739x", ansi_fg((218, 165, 32)), "\x1b[0m");
+
+        assert_eq!(strip(&colored), "Gauge: 0.739x");
+        assert_eq!(strip("nothing to drop"), "nothing to drop");
+        assert_eq!(strip(""), "");
+    }
+
+    /// An escape with no terminator would otherwise swallow the rest of the line.
+    #[test]
+    fn strip_keeps_text_after_an_unterminated_escape() {
+        assert_eq!(strip("before\x1b[38;2;1;2;3after"), "before\x1b[38;2;1;2;3after");
+    }
 }
