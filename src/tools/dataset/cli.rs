@@ -131,7 +131,7 @@ fn inspect(path: &str, count: usize) {
 /// Single-pass statistical summary.
 /// The output surfaces data-quality problems at a glance:
 /// heavily skewed W/D/L ratios usually point to broken adjudication,
-/// a non-zero average static score suggests the generator has a systematic side-to-move bias.
+/// a non-zero average search score suggests the generator has a systematic side-to-move bias.
 fn info(path: &str) {
     let entries: Vec<SoulEntry> = load_or_bail!(path);
 
@@ -142,6 +142,7 @@ fn info(path: &str) {
     // Scores use i64 to prevent overflow: WDL uses f64 because f32 loses
     // precision past 2²⁴ (~16.8M): adding 1.0 to 16_777_216.0f32 is a no-op.
     let mut total_search = 0i64;
+    let mut scored = 0u64;
     let mut white_wins = 0u64;
     let mut draw_count = 0u64;
     let mut black_wins = 0u64;
@@ -151,7 +152,10 @@ fn info(path: &str) {
         let result = entry.result;
         let stm_white = (entry.stm_and_ep & 0x80) == 0;
 
-        total_search += i64::from(score);
+        if score != SoulEntry::NO_SCORE {
+            total_search += i64::from(score);
+            scored += 1;
+        }
 
         // Result: 0=loss, 1=draw, 2=win from side-to-move perspective.
         // Convert to white-relative for the breakdown.
@@ -178,8 +182,14 @@ fn info(path: &str) {
     println!("  Black wins: {black_wins} ({:.1}%)", (black_wins as f64) / n * 100.0);
     println!("  Draws:      {draw_count} ({:.1}%)", (draw_count as f64) / n * 100.0);
     println!();
+
     println!("Average Scores:");
-    println!("  Search:  {:+.2} cp", (total_search as f64) / n);
+
+    match (scored, entries.len() as u64 - scored) {
+        (0, _) => println!("  Search:  none, nothing here carries one"),
+        (s, 0) => println!("  Search:  {:+.2} cp", (total_search as f64) / s as f64),
+        (s, missing) => println!("  Search:  {:+.2} cp, {missing} entries carry none", (total_search as f64) / s as f64),
+    }
 }
 
 fn dump_scores(path: &str) {

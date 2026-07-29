@@ -128,7 +128,7 @@ pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
                 Ok(epd_entries) => {
                     for e in &epd_entries {
                         let stm_result = if e.board.stm == Color::Black { 1.0 - e.result } else { e.result };
-                        all_entries.push(SoulEntry::from_board(&e.board, stm_result, None, Some(i16::MAX as i32)));
+                        all_entries.push(SoulEntry::from_board(&e.board, stm_result, None, None));
                     }
                 },
                 Err(e) => eprintln!("Error loading {path}: {e}"),

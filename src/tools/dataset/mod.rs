@@ -47,6 +47,10 @@ impl Default for SoulEntry {
 }
 
 impl SoulEntry {
+    /// `score` on an entry nothing ever searched, an EPD line being the usual one.
+    /// Not zero, which is indistinguishable from a genuinely even position.
+    pub const NO_SCORE: i16 = i16::MAX;
+
     /// Encode a board position into a training entry.
     ///
     /// `static_score` is accepted for call-site compatibility but not stored.

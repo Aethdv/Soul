@@ -73,7 +73,7 @@ pub struct TrainerContext<'a> {
 
 impl TrainerContext<'_> {
     pub fn passes_vol_filter(&self, entry: &loader::SoulEntry, static_eval: i16) -> bool {
-        if self.vol_threshold == 0 || entry.score == i16::MAX {
+        if self.vol_threshold == 0 || entry.score == loader::SoulEntry::NO_SCORE {
             return true;
         }
 
@@ -1038,10 +1038,7 @@ fn train_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::engine::{Position, SoulEntry},
-        *,
-    };
+    use super::*;
 
     #[test]
     fn a_cold_start_leaves_the_fixed_slots_alone() {

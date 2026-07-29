@@ -47,8 +47,11 @@ pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result
     write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
 }
 
-/// Drop the escapes from colored text bound for a file or a pipe. Everything
-/// emitted here ends at `m`; a stray escape that doesn't keeps its text.
+/// Drop the escapes from colored text bound for a file or a pipe.
+///
+/// Only what this module writes: `ESC [` params `m`, and `ESC [ K`. Anything
+/// else keeps its text, escape included, since scanning on for a terminator
+/// would swallow the prose up to the next one.
 #[must_use]
 pub fn strip(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -56,13 +59,18 @@ pub fn strip(text: &str) -> String {
 
     while let Some(esc) = rest.find('\x1b') {
         out.push_str(&rest[..esc]);
+        rest = &rest[esc..];
 
-        let Some(end) = rest[esc..].find('m') else {
-            out.push_str(&rest[esc..]);
-            return out;
-        };
+        let params = rest.strip_prefix("\x1b[").unwrap_or_default();
+        let Some(end) = params.find(|c: char| !c.is_ascii_digit() && c != ';') else { break };
 
-        rest = &rest[esc + end + 1..];
+        // Narrower than the CSI grammar on purpose: over-accepting eats prose,
+        // under-accepting leaves an escape in a log.
+        if !matches!(params.as_bytes()[end], b'm' | b'K') {
+            break;
+        }
+
+        rest = &params[end + 1..];
     }
 
     out.push_str(rest);
@@ -148,9 +156,11 @@ mod tests {
         assert_eq!(strip(""), "");
     }
 
-    /// An escape with no terminator would otherwise swallow the rest of the line.
+    /// An escape with no terminator would otherwise swallow the rest of the line,
+    /// or the words up to whatever letter the prose reaches first.
     #[test]
     fn strip_keeps_text_after_an_unterminated_escape() {
         assert_eq!(strip("before\x1b[38;2;1;2;3after"), "before\x1b[38;2;1;2;3after");
+        assert_eq!(strip("before\x1b[38;2;1;2;3 more"), "before\x1b[38;2;1;2;3 more");
     }
 }

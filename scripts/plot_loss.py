@@ -8,7 +8,9 @@ Training and validation loss curves.
 One log draws EMA-smoothed train and val over faint raw traces, the best-val
 epoch in gold, warm-restart lines, and a dashed fixed-K reference where the log
 carries `ref_loss`. A reference too far off to share the scale moves to a strip
-along the frame.
+along the frame. Below sits a Δp strip, the parameters each epoch moved past an
+integer boundary, so a curve still falling can be read against weights that have
+stopped changing.
 
 Several logs draw a comparison. One color per run down a purple→coral→gold ramp,
 train and val in their own panels, and `--baseline` holds one run in dashed grey
@@ -22,6 +24,7 @@ Options:
     --val-only          validation curves only
     --train-only        training curves only
     --no-raw            hide raw traces, smoothed only
+    --no-deltas         hide the Δp strip
     --baseline PATH     draw this run dashed, as the line to beat
     --ylim LO,HI        pin the loss axis, so two renders share one scale
     --run N             which run in an append-only log (default: the longest completed)
@@ -36,6 +39,7 @@ import sys
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 import soulplot as sp
 
@@ -51,6 +55,7 @@ BEST_TRAIN = "#f4dcaa" # light wheat
 REF = "#6fa5e0"        # cornflower
 BASE = "#8b8b8b"       # gray
 RESTART = "#b79be0"    # plum
+DELTA = "#7dc2a7"      # sea green
 
 # Purple → coral → gold, the ramp comparative runs are spread over. The first
 # hue is negative because oklch_ramp lerps H linearly and the wheel is circular:
@@ -77,6 +82,8 @@ class Run:
     best_train: float
     restarts: list[int] = field(default_factory=list)
     ref: np.ndarray | None = None
+    moved: np.ndarray | None = None
+    n_params: int | None = None
     seed: int | None = None
     split_seed: int | None = None
     label: str | None = None
@@ -144,7 +151,7 @@ def parse_log(path: str, want: int | None = None) -> Run | None:
         counts = [sum(1 for e in r if e.get("event") == "epoch") for r in runs]
         print(f"  {Path(path).name}: {len(runs)} runs {counts}, plotting #{idx + 1}", file=sys.stderr)
 
-    epochs, train, val, ref = [], [], [], []
+    epochs, train, val, ref, moved = [], [], [], [], []
     restarts: list[int] = []
     best_idx, best_val = 0, float("inf")
     final: dict | None = None
@@ -166,9 +173,10 @@ def parse_log(path: str, want: int | None = None) -> Run | None:
             epochs.append(int(ep))
             train.append(t)
             val.append(v)
-            # NaN-padded: appending only the finite ones desyncs it from epochs.
-            r = e.get("ref_loss")
+            # NaN-padded: appending only the finite ones desyncs them from epochs.
+            r, m = e.get("ref_loss"), e.get("moved")
             ref.append(float(r) if r is not None else np.nan)
+            moved.append(float(m) if m is not None else np.nan)
 
             if e.get("is_best") and v < best_val:
                 best_idx, best_val = len(epochs) - 1, v
@@ -206,13 +214,20 @@ def parse_log(path: str, want: int | None = None) -> Run | None:
     )
 
     ref = np.array(ref, dtype=np.float64)
+    moved = np.array(moved, dtype=np.float64)
 
     if np.isfinite(ref).any():
         run.ref = np.nan_to_num(ref, nan=float(np.nanmean(ref)))
 
+    if np.isfinite(moved).any():
+        run.moved = np.nan_to_num(moved, nan=0.0)
+
     if final is not None:
         run.seed = final.get("seed")
         run.split_seed = final.get("split_seed")
+
+        if isinstance(params := final.get("params"), list):
+            run.n_params = len(params)
 
         # Authoritative: selection is smoothed, so the epoch that shipped need
         # not be the raw argmin the loop above settled on. Logs written before
@@ -230,12 +245,19 @@ def parse_log(path: str, want: int | None = None) -> Run | None:
 
 
 def plot_single(run: Run, *, alpha: float, metrics: tuple[str, ...], show_raw: bool,
-                ylim: tuple[float, float] | None, fig_width: float, fig_height: float):
+                show_deltas: bool, ylim: tuple[float, float] | None,
+                fig_width: float, fig_height: float):
     epochs = run.epochs
     n = epochs.size
     want_train, want_val = "train" in metrics, "val" in metrics
+    deltas = run.moved if show_deltas else None
 
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    if deltas is None:
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        ax_delta = None
+    else:
+        fig, (ax, ax_delta) = plt.subplots(2, 1, figsize=(fig_width, fig_height),
+                                           height_ratios=[4, 1], sharex=True)
 
     t_smooth = v_smooth = None
 
@@ -300,7 +322,7 @@ def plot_single(run: Run, *, alpha: float, metrics: tuple[str, ...], show_raw: b
     if v_smooth is not None:
         sp.dot(ax, [run.best_epoch], [on_curve(v_smooth, run.best_epoch)], BEST_VAL, size=52, zorder=7)
 
-    ax.set_xlabel("epoch", labelpad=8)
+    (ax if ax_delta is None else ax_delta).set_xlabel("epoch", labelpad=8)
     ax.set_ylabel("loss", labelpad=8)
     ax.margins(x=0.01)
     # Grow the window so the curves stop at the rule and the strip is left to the
@@ -322,11 +344,15 @@ def plot_single(run: Run, *, alpha: float, metrics: tuple[str, ...], show_raw: b
         entries.append((r_end, "ref", REF))
     sp.end_labels(ax, epochs[-1], entries)
 
+    if deltas is not None:
+        _deltas(ax_delta, run, deltas, alpha, raw=show_raw, best=run.best_epoch if want_val else None)
+
     facts = [
         *([] if run.name == "evaltune" else [run.name]),
         f"{sp.format_count(int(epochs[-1]))} epochs",
         *([f"final {run.final_val:.6f}", f"val {run.best_val:.6f} @{run.best_epoch}"] if want_val else []),
         *([f"train {run.best_train:.6f} @{run.best_train_epoch}"] if want_train else []),
+        *([f"{run.n_params} params"] if deltas is not None and run.n_params else []),
         f"ema α={alpha}",
     ]
 
@@ -335,7 +361,7 @@ def plot_single(run: Run, *, alpha: float, metrics: tuple[str, ...], show_raw: b
              if value is not None]
 
     sp.title(fig, "evaltune", "   ·   ".join(facts), "   ·   ".join(seeds) or None)
-    fig.subplots_adjust(top=0.89, bottom=0.09, left=0.08, right=0.90)
+    fig.subplots_adjust(top=0.89, bottom=0.09, left=0.08, right=0.90, hspace=0.09)
     return fig
 
 
@@ -457,6 +483,42 @@ def _gutter(ax, x, y, *, above: bool) -> None:
     # straight through a label placed inside it.
     ax.text(1.008, sum(band) / 2, f"ref {'↑' if above else '↓'} {float(y[-1]):.6f}",
             transform=ax.transAxes, ha="left", va="center", fontsize=7.5, color=REF, zorder=4)
+
+
+def _deltas(ax, run: Run, moved: np.ndarray, alpha: float, *, raw: bool, best: int | None) -> None:
+    """Parameters that crossed an integer boundary each epoch, in a strip under the losses.
+
+    Loss keeps descending in f64 long after the rounded parameters stop changing, so a
+    falling curve is no proof that anything reached the eval.
+    """
+    epochs = run.epochs
+    smooth = _curve(ax, epochs, moved, alpha, color=DELTA, lw=1.5, raw=raw, raw_alpha=0.22, zorder=4)
+    ax.fill_between(epochs, 0.0, smooth, color=DELTA, alpha=0.12, lw=0, zorder=0.8)
+
+    if best is not None:
+        ax.axvline(best, color=BEST_VAL, ls="--", lw=0.7, alpha=0.35, zorder=2)
+
+    for rx in run.restarts:
+        ax.axvline(rx, color=RESTART, ls=(0, (1, 2)), lw=1.0, alpha=0.40, zorder=2)
+
+    total = float(moved.sum())
+    hit = int(np.searchsorted(np.cumsum(moved), 0.99 * total))
+    landed = int(epochs[min(hit, epochs.size - 1)])
+
+    if total > 0 and landed < epochs[-1]:
+        # Past three quarters in, a left-hung label runs off the frame.
+        late = landed > epochs[0] + 0.75 * (epochs[-1] - epochs[0])
+        ax.axvline(landed, color=DELTA, ls=(0, (1, 2)), lw=0.9, alpha=0.45, zorder=3)
+        ax.text(landed, 0.94, f"99% of Δp @{landed} " if late else f" 99% of Δp @{landed}",
+                transform=ax.get_xaxis_transform(), va="top", ha="right" if late else "left",
+                fontsize=7.5, color=DELTA, alpha=0.8)
+
+    ax.set_ylim(0.0, float(smooth.max()) * 1.18 or 1.0)
+    # Shared, so this pins the losses too: both panels run frame to frame.
+    ax.set_xlim(epochs[0], epochs[-1])
+    ax.set_ylabel("Δp", labelpad=8)
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(3, integer=True))
+    sp.style_axes(ax, grain=False)
 
 
 def _envelope(y: np.ndarray) -> np.ndarray:
@@ -642,6 +704,7 @@ def main() -> None:
     metric.add_argument("--val-only", action="store_true", help="validation curves only")
     metric.add_argument("--train-only", action="store_true", help="training curves only")
     ap.add_argument("--no-raw", action="store_true", help="hide raw traces, smoothed only")
+    ap.add_argument("--no-deltas", action="store_true", help="hide the Δp strip")
     ap.add_argument("--baseline", default=None, help="draw this run dashed, as the line to beat")
     ap.add_argument("--ylim", default=None, help="pin the loss axis, lo,hi (default: fit the data)")
     ap.add_argument("--run", type=int, default=None, metavar="N",
@@ -702,7 +765,8 @@ def main() -> None:
 
     if len(runs) == 1:
         fig = plot_single(runs[0], alpha=args.alpha, metrics=metrics, show_raw=not args.no_raw,
-                          ylim=ylim, fig_width=args.width, fig_height=args.height)
+                          show_deltas=not args.no_deltas, ylim=ylim,
+                          fig_width=args.width, fig_height=args.height)
         suffix = "_loss.png"
     else:
         fig = plot_compare(runs, alpha=args.alpha, metrics=metrics, show_raw=not args.no_raw,

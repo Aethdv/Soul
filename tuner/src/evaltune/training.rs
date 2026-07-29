@@ -64,8 +64,7 @@ pub trait TunableData: Sync + Send {
 pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
     const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
-    // i16::MAX sentinel = EPD data with no search score: pure outcome.
-    if entry.score == i16::MAX {
+    if entry.score == loader::SoulEntry::NO_SCORE {
         return f64::from(entry.result) / 2.0;
     }
     let score = f64::from(entry.score);

@@ -50,7 +50,7 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
     SoulEntry {
         occupancy: board.occ.0,
         pieces,
-        score: search_score.unwrap_or(0).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        score: search_score.map_or(SoulEntry::NO_SCORE, |s| s.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
         result: (result * 2.0) as u8,
         stm_and_ep: (u8::from(board.stm == Color::Black) << 7) | (board.en_passant.map_or(64, |sq| sq.0) & 0x7F),
         castling: board.castling_rights,
@@ -208,4 +208,21 @@ pub(super) fn next_nibble(pieces: &[u8; 16], idx: &mut usize) -> u8 {
 
     let byte = pieces[i / 2];
     if i & 1 == 0 { byte & 0x0F } else { byte >> 4 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::board::STARTPOS;
+
+    /// The volatility filter measures every static eval against this field, so a
+    /// zero here quietly cuts an unsearched dataset down to its quiet positions.
+    #[test]
+    fn an_absent_search_score_encodes_as_the_sentinel() {
+        let board = Position::from_fen(STARTPOS);
+
+        assert_eq!(from_board(&board, 0.5, None, None).score, SoulEntry::NO_SCORE);
+        assert_eq!(from_board(&board, 0.5, None, Some(0)).score, 0);
+        assert_eq!(from_board(&board, 0.5, None, Some(-42)).score, -42);
+    }
 }

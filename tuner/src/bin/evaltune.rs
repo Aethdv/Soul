@@ -232,6 +232,11 @@ fn probe(config_path: &str, dataset: &str, task: Task) {
 }
 
 fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    // Otherwise `i / (n - 1)` is 0/0 and every point on the grid comes out NaN.
+    if n <= 1 {
+        return vec![lo];
+    }
+
     let e0 = lo.ln();
     let e1 = hi.ln();
 
@@ -244,7 +249,13 @@ fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
 }
 
 fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
-    let mut cmd = std::process::Command::new(std::env::args().next().unwrap());
+    // argv[0] is whatever the caller typed, not necessarily this binary.
+    let Ok(exe) = std::env::current_exe() else {
+        eprintln!("Cannot locate the running binary to spawn a trial.");
+        return (f64::MAX, 0.0);
+    };
+
+    let mut cmd = std::process::Command::new(exe);
 
     cmd.arg("--dataset").arg(dataset);
     cmd.arg("--config").arg(config_path);
@@ -256,16 +267,16 @@ fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize
     }
 
     let tmp = std::env::temp_dir().join(format!("sweep_{lr_mult}_{epochs}.txt"));
-    let out = std::fs::File::create(&tmp).unwrap();
+    let Ok(out) = std::fs::File::create(&tmp) else { return (f64::MAX, 0.0) };
 
     cmd.stdout(out);
     cmd.stderr(std::process::Stdio::inherit());
 
     let start = std::time::Instant::now();
-    let status = cmd.status().expect("sweep subprocess failed");
+    let status = cmd.status();
     let elapsed = start.elapsed().as_secs_f32();
 
-    if !status.success() {
+    if !status.is_ok_and(|s| s.success()) {
         let _ = std::fs::remove_file(&tmp);
         return (f64::MAX, elapsed);
     }
