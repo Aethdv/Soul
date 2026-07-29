@@ -184,8 +184,8 @@ searchtune:
 test: ## Run test suite
 	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="-C target-cpu=native" cargo test --workspace -- --nocapture
 
-oracle: ## Run the eval-tuner gradient oracle tests
-	@RUSTFLAGS="-C target-cpu=native" cargo test -p tuner --release oracle
+oracle: ## Run the eval gradient oracle tests
+	@RUSTFLAGS="-C target-cpu=native" cargo test --workspace --release oracle
 
 seeformat: ## Check formatting
 	@cargo fmt --check

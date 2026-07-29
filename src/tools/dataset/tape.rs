@@ -5,7 +5,7 @@
 //! by multiplying the 8 accumulator-lane gradients by each piece's ±1
 //! contribution.
 
-use soul::{
+use crate::{
     core::{
         board::Position as Board,
         defs::{Color, PieceType, TOTAL_PHASE},
@@ -20,6 +20,7 @@ use soul::{
         combiner::{Combiner, CombinerParams, LinearCombiner},
         eval::{EvalParams, SharedFeatures, evaluate_generic, fill_accumulators, scatter_all_terms},
         eval_params::LAYOUT,
+        wdl::sigmoid,
     },
 };
 
@@ -68,7 +69,7 @@ macro_rules! impl_scatter {
     };
 }
 
-soul::define_tunables!(impl_scatter);
+crate::define_tunables!(impl_scatter);
 
 /// Consumed by `scatter_dynamic` once the outer loss derivative is known.
 pub struct DualEvalResult {
@@ -120,7 +121,7 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let score = result.val;
 
     // Sigmoid + loss derivative
-    let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
+    let sig = sigmoid(score, k);
     let err = sig - target;
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
 
@@ -171,7 +172,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     // ── Sigmoid + loss derivative
     // `d` folds the STM sign into the outer derivative once,
     // so every downstream scatter can stay STM-agnostic.
-    let sig = 1.0 / (1.0 + (-k * score).clamp(-700.0, 700.0).exp());
+    let sig = sigmoid(score, k);
     let err = sig - target;
     let outer = 2.0 * err * sig * (1.0 - sig) * k;
     let d = outer * stm_sign;
@@ -320,7 +321,8 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 mod tests {
     use std::ops::Range;
 
-    use soul::{
+    use super::*;
+    use crate::{
         core::{board::Position, defs::TOTAL_PHASE},
         engine::{
             combiner::Accumulators,
@@ -329,9 +331,6 @@ mod tests {
         },
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
-
-    use super::*;
-    use crate::evaltune::training::sigmoid;
 
     // Each must round-trip cleanly through `SoulEntry`.
     const FENS: &[&str] = &[

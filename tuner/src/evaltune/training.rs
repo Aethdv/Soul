@@ -5,8 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::engine::{Color, FeatureRecord, LAYOUT, Position, TOTAL_PHASE, eval_params};
-use crate::evaltune::{loader, report::report_phase_balance, tape::eval_f64};
+pub use super::engine::sigmoid;
+use super::engine::{Color, FeatureRecord, LAYOUT, Position, TOTAL_PHASE, eval_f64, eval_params};
+use crate::evaltune::{loader, report::report_phase_balance};
 
 // EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
 // since a trend read before that span has filled is reading its own seed.
@@ -35,17 +36,6 @@ pub struct GradientStats {
     p95: f64,
     alpha: f64,
     count: usize,
-}
-
-/// Scaling the sigmoid constant K
-/// S(x) = 1 / (1 + exp(-K · x))
-#[inline]
-#[must_use]
-pub fn sigmoid(score: f64, k: f64) -> f64 {
-    // Clamp the exponent to avoid libm's extremely slow subnormal fallback path
-    // for values between -708 and -744, which ignores CPU FTZ/DAZ flags.
-    let x = (-k * score).clamp(-700.0, 700.0);
-    1.0 / (1.0 + x.exp())
 }
 
 /// Read-only evaluation trait: can compute a score and knows the game result.

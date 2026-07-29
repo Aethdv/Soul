@@ -11,6 +11,7 @@ pub mod cli;
 mod gradient;
 mod io;
 mod quant;
+pub mod tape;
 pub mod viri_format;
 
 pub use gradient::{FeatureRecord, RecordEval, accumulate_record_grad, eval_record, eval_record_full};

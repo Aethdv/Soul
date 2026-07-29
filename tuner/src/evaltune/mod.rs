@@ -12,7 +12,6 @@ pub mod run;
 pub mod scale;
 pub mod seeds;
 pub mod storage;
-pub mod tape;
 pub mod training;
 
 pub use run::run;
