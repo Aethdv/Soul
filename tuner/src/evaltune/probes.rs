@@ -32,16 +32,8 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
     let k = KController::bootstrap(config, ctx, &values, &values, blend, None).k();
 
     let free: Vec<usize> = params.iter().filter(|p| !p.is_fixed).map(|p| p.idx).collect();
+    let trainable: Vec<bool> = params.iter().map(|p| !p.is_fixed).collect();
     let n = params.len();
-    let trainable: Vec<bool> = {
-        let mut mask = vec![false; n];
-
-        for &i in &free {
-            mask[i] = true;
-        }
-
-        mask
-    };
 
     let curvature = (0..ctx.train_count)
         .into_par_iter()

@@ -143,21 +143,23 @@ impl Lion {
             }
 
             let (m, g) = (momentum[i], gradients[i]);
-            let c = self.interp.mul_add(m, (1.0 - self.interp) * g);
+            let (c, verdict) = self.gate(m, g);
             let disagrees = m * g <= 0.0;
 
             census.total += 1;
             census.absent += u64::from(g.abs() < 1e-9);
             census.canonical += u64::from(c * g <= 0.0);
 
-            if c.abs() < 1e-9 {
-                census.dead += 1;
-            } else if disagrees && m.abs() > 1e-6 {
-                census.skipped += 1;
-                census.band += u64::from(c * g > 0.0);
-            } else {
-                census.epsilon_waived += u64::from(disagrees);
-                census.canonical_only += u64::from(c * g <= 0.0);
+            match verdict {
+                Gate::Dead => census.dead += 1,
+                Gate::Held => {
+                    census.skipped += 1;
+                    census.band += u64::from(c * g > 0.0);
+                },
+                Gate::Step => {
+                    census.epsilon_waived += u64::from(disagrees);
+                    census.canonical_only += u64::from(c * g <= 0.0);
+                },
             }
         }
 
@@ -193,70 +195,20 @@ impl Lion {
             let d = decay_mask[i];
             let eff_lr = self.lr * lr_mask[i];
 
-            // 1. Interpolation: c = β₁ · m + (1 - β₁) · g
-            let c = self.interp.mul_add(m, (1.0 - self.interp) * g);
+            // 1. Interpolation, and the gate's verdict on it.
+            let (c, verdict) = self.gate(m, g);
 
-            // 2. Parameter update with sign gate and weight decay.
-            //
-            // When |c| is negligible the sign step is skipped, but weight decay
-            // still fires: a converged parameter without gradient signal should
-            // not lose its regularization pressure.
-            //
-            // Per-parameter disagreement gate (m · g ≤ 0) catches local oscillation:
-            // if momentum and gradient disagree, the sign update is skipped for this
-            // parameter. An absent gradient (g = 0) is disagreement; a signum test
-            // would let one momentum sign coast.
-            //
-            // Ref: Kaizhao Liang, Lizhang Chen, Bo Liu & Qiang Liu (2024).
-            // Cautious Optimizers: Improving Training with One Line of Code.
-            // <https://arxiv.org/abs/2411.16085v4>
-            //
-            // Liang's canonical mask skips on c·g ≤ 0, which at β₁ = 0.9 reads m·g ≤ -g²/9:
-            // a strict subset of ours, so it steps on reversals we hold.
-            // Attempted at 490 HCE parameters, two retunes on separate seeds:
-            //
-            //   Elo   | -6.24 ± 6.43 (95%)
-            //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
-            //   LLR   | -2.54 (-2.47, 2.91) [0.00, 5.00]
-            //   Games | N: 5286 W: 1492 L: 1587 D: 2207
-            //   <https://asylum.red/test/5761/>
-            //
-            //   Elo   | -1.53 ± 4.13 (95%)
-            //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
-            //   LLR   | -2.50 (-2.47, 2.91) [0.00, 5.00]
-            //   Games | N: 12734 W: 3658 L: 3714 D: 5362
-            //   <https://asylum.red/test/5762/>
-            //
-            // Liang pairs the mask with a φ/mean(φ) rescale, which we skip: it would set the
-            // surviving step to lr·dim/nnz, forfeiting the uniform magnitude Lion is built on
-            // and pricing every coordinate off a global statistic. Skipping it is not free.
-            // Gate width sets ‖Δθ‖₁ directly, so a wider gate is also a longer step, and the
-            // two runs above differ in step length as well as in mask shape. Any retry pins
-            // one of the two, or it buys another confounded result.
-            //
-            // Ref: Taejong Joo, Wenhan Xia, Cheolmin Kim, Ming Zhang & Eugene Ie (2026).
-            // On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.
-            // <https://arxiv.org/abs/2602.15322v1>
-            //
-            // Magma scores per parameter block. Ours collapsed that to one global cossim over
-            // 430 HCE parameters, 384 of them PSQT, which set the gate for everything else.
-            // However, I do admit that I was a bit too impatient that day.
-            //
-            //   Elo   | -0.67 ± 5.39 (95%)
-            //   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
-            //   LLR   | -1.17 (-2.47, 2.91) [0.00, 5.00]
-            //   Games | N: 8240 W: 2499 L: 2515 D: 3226
-            //   <https://asylum.red/test/4378/>
-            //
-            // TODO: Revisit per-group, with more HCE terms or at NNUE scale.
+            // 2. Parameter update. Decay fires whatever the gate says: a converged
+            // parameter without gradient signal should not lose its regularization
+            // pressure along with its step.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
-            // Skip the Lion sign step when the correlation gate is open (c≈0)
-            // or momentum and gradient disagree: either way, decay only.
-            // The m.abs() guard prevents zero-momentum from deferring every parameter's first step.
-            let held = c.abs() < 1e-9 || (m * g <= 0.0 && m.abs() > 1e-6);
-            let updated = if held { decayed } else { decayed - eff_lr * c.signum() };
 
-            self.step_l1 += if held { 0.0 } else { eff_lr };
+            let updated = if verdict == Gate::Step {
+                self.step_l1 += eff_lr;
+                decayed - eff_lr * c.signum()
+            } else {
+                decayed
+            };
 
             // 3. Weight clipping
             let (min, max) = clip_mask[i];
@@ -271,6 +223,76 @@ impl Lion {
             // on perfectly converged parameters: a kind of ghost-gradient effect.
             self.momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { beta2[i].mul_add(m, (1.0 - beta2[i]) * g) };
         }
+    }
+
+    /// The blended direction `c = β₁·m + (1−β₁)·g`, and what the gate does with it.
+    ///
+    /// Three outcomes. Dead is `|c|` under the zone where a direction stops meaning
+    /// anything, and it has to be a case of its own because `sign(0.0)` is `1.0`, which
+    /// would walk every quiet parameter positive forever. Held is momentum and gradient
+    /// disagreeing, local oscillation worth sitting out; an absent gradient counts as
+    /// disagreement, where a signum test would let one momentum sign coast. The
+    /// `|m| > 1e-6` clause is what stops a zero-momentum parameter from deferring its
+    /// own first step.
+    ///
+    /// Ref: Kaizhao Liang, Lizhang Chen, Bo Liu & Qiang Liu (2024).
+    /// Cautious Optimizers: Improving Training with One Line of Code.
+    /// <https://arxiv.org/abs/2411.16085v4>
+    ///
+    /// Liang's canonical mask skips on c·g ≤ 0, which at β₁ = 0.9 reads m·g ≤ -g²/9:
+    /// a strict subset of ours, so it steps on reversals we hold. Attempted at 490 HCE
+    /// parameters, two retunes on separate seeds:
+    ///
+    /// ```text
+    ///   Elo   | -6.24 ± 6.43 (95%)
+    ///   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
+    ///   LLR   | -2.54 (-2.47, 2.91) [0.00, 5.00]
+    ///   Games | N: 5286 W: 1492 L: 1587 D: 2207
+    ///   <https://asylum.red/test/5761/>
+    ///
+    ///   Elo   | -1.53 ± 4.13 (95%)
+    ///   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
+    ///   LLR   | -2.50 (-2.47, 2.91) [0.00, 5.00]
+    ///   Games | N: 12734 W: 3658 L: 3714 D: 5362
+    ///   <https://asylum.red/test/5762/>
+    /// ```
+    ///
+    /// Liang pairs the mask with a φ/mean(φ) rescale, which we skip: it would set the
+    /// surviving step to lr·dim/nnz, forfeiting the uniform magnitude Lion is built on
+    /// and pricing every coordinate off a global statistic. Skipping it is not free.
+    /// Gate width sets ‖Δθ‖₁ directly, so a wider gate is also a longer step, and the
+    /// two runs above differ in step length as well as in mask shape. Any retry pins
+    /// one of the two, or it buys another confounded result.
+    ///
+    /// Ref: Taejong Joo, Wenhan Xia, Cheolmin Kim, Ming Zhang & Eugene Ie (2026).
+    /// On Surprising Effectiveness of Masking Updates in Adaptive Optimizers.
+    /// <https://arxiv.org/abs/2602.15322v1>
+    ///
+    /// Magma scores per parameter block. Ours collapsed that to one global cossim over
+    /// 430 HCE parameters, 384 of them PSQT, which set the gate for everything else.
+    ///
+    /// ```text
+    ///   Elo   | -0.67 ± 5.39 (95%)
+    ///   SPRT  | 8.0+0.08s Threads=1 Hash=16MB
+    ///   LLR   | -1.17 (-2.47, 2.91) [0.00, 5.00]
+    ///   Games | N: 8240 W: 2499 L: 2515 D: 3226
+    ///   <https://asylum.red/test/4378/>
+    /// ```
+    ///
+    /// TODO: Revisit per-group, with more HCE terms or at NNUE scale.
+    #[inline(always)]
+    fn gate(&self, m: f64, g: f64) -> (f64, Gate) {
+        let c = self.interp.mul_add(m, (1.0 - self.interp) * g);
+
+        let verdict = if c.abs() < 1e-9 {
+            Gate::Dead
+        } else if m * g <= 0.0 && m.abs() > 1e-6 {
+            Gate::Held
+        } else {
+            Gate::Step
+        };
+
+        (c, verdict)
     }
 }
 
@@ -303,6 +325,35 @@ impl GateCensus {
     pub fn active_share(&self) -> f64 {
         self.share(self.total.saturating_sub(self.skipped + self.dead))
     }
+}
+
+/// Per-group momentum decay mask.
+///
+/// Different parameter groups have different natural gradient timescales.
+/// - PSQT (0.995): squares only see updates when a piece of that type lands
+///   there: longer momentum smooths sparse signal across positions.
+/// - Mobility (0.95): features are computed every position; shorter momentum
+///   lets weights track the faster dynamics without lag.
+/// - Everything else (0.99): the existing default from the config.
+pub fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
+    (0..slots)
+        .map(|i| match param_group(i) {
+            ParamGroup::Psqt => 0.995,
+            ParamGroup::Mobility => 0.95,
+            ParamGroup::Material | ParamGroup::Other => default_beta2,
+        })
+        .collect()
+}
+
+/// What the gate decided for one coordinate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    /// `|c|` under the dead zone: no direction to take.
+    Dead,
+    /// The gradient disagrees with momentum that clears the epsilon.
+    Held,
+    /// Move by `sign(c)`.
+    Step,
 }
 
 #[cfg(test)]
@@ -453,22 +504,4 @@ mod tests {
         // No weight decay (wd=0, d=1.0), sign update skipped → no change.
         assert!((params[0] - 5.0).abs() < 1e-9, "Expected no change, got {}", params[0]);
     }
-}
-
-/// Per-group momentum decay mask.
-///
-/// Different parameter groups have different natural gradient timescales.
-/// - PSQT (0.995): squares only see updates when a piece of that type lands
-///   there: longer momentum smooths sparse signal across positions.
-/// - Mobility (0.95): features are computed every position; shorter momentum
-///   lets weights track the faster dynamics without lag.
-/// - Everything else (0.99): the existing default from the config.
-pub fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
-    (0..slots)
-        .map(|i| match param_group(i) {
-            ParamGroup::Psqt => 0.995,
-            ParamGroup::Mobility => 0.95,
-            ParamGroup::Material | ParamGroup::Other => default_beta2,
-        })
-        .collect()
 }

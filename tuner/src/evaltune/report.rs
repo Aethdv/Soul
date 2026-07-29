@@ -23,6 +23,9 @@ use crate::{
     evaltune::palette::{self, RESET},
 };
 
+/// Eighth-blocks, tallest last: the height ramp every sparkline here draws with.
+const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
 /// Trailing comments for the paste block, by block name. Cosmetic: offsets,
 /// widths and order come from `BLOCKS`, so a missing entry costs a comment and
 /// a stale one cannot move a number.
@@ -64,7 +67,7 @@ pub struct BestEpochs<'a> {
 
 /// Final epoch is printed; all three go to `evaltune_best.txt`.
 pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: &[f64], best: &BestEpochs, final_epoch: usize) {
-    let gold = color::ansi_fg((218, 165, 32));
+    let gold = palette::fg(palette::BRAND);
 
     println!();
     println!("{gold}Best L_val: {:.6} (Epoch {}){}", best.best_val_loss, best.best_val_epoch, palette::RESET);
@@ -165,7 +168,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
         }
     }
 
-    let simple = present_blocks(Group::Simple, params);
+    let simple = present_blocks(Group::Simple);
 
     if !simple.is_empty() {
         writeln!(w, "}}\n\ndefine_simple_params! {{").ok();
@@ -180,10 +183,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
         for i in 0..half {
             let mg_idx = block.offset + i;
             let eg_idx = block.offset + half + i;
-
-            if eg_idx >= params.len() {
-                break;
-            }
 
             let mg_val = values[mg_idx].round() as i32;
             let eg_val = values[eg_idx].round() as i32;
@@ -202,7 +201,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
     writeln!(w, "}}").ok();
 
-    let simd = present_blocks(Group::Simd, params);
+    let simd = present_blocks(Group::Simd);
 
     if !simd.is_empty() {
         writeln!(w, "\ndefine_simd_params! {{").ok();
@@ -224,7 +223,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
         writeln!(w, "}}").ok();
     }
 
-    let weights = present_blocks(Group::Weight, params);
+    let weights = present_blocks(Group::Weight);
 
     if !weights.is_empty() {
         writeln!(w, "\ndefine_weight_params! {{").ok();
@@ -266,11 +265,6 @@ pub fn write_weight_array<W: Write>(
 ) {
     for i in 0..count {
         let idx = offset + i;
-
-        if idx >= values.len() {
-            break;
-        }
-
         let val = values[idx].round() as i32;
         let fixed = params[idx].is_fixed;
 
@@ -286,8 +280,8 @@ pub fn write_weight_array<W: Write>(
     }
 }
 
-fn present_blocks(group: Group, params: &[Tunable]) -> Vec<&'static Block> {
-    BLOCKS.iter().filter(|b| b.group == group && params.len() > b.offset).collect()
+fn present_blocks(group: Group) -> Vec<&'static Block> {
+    BLOCKS.iter().filter(|b| b.group == group).collect()
 }
 
 fn annotation(block: &str) -> String {
@@ -300,7 +294,7 @@ fn annotation(block: &str) -> String {
 /// Green ANSI if `changed` and `initial` is `Some` (terminal context).
 fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
     if initial.is_some() && changed {
-        format!("{}{text}{}", color::ansi_fg((100, 200, 120)), palette::RESET)
+        format!("{}{text}{RESET}", palette::fg(palette::MOVED))
     } else {
         text.to_string()
     }
@@ -352,7 +346,7 @@ pub fn off_scale_warning(shipped: f64) -> String {
     format!(
         "{}[!] Warning: the final-epoch parameters ship at {shipped:.3}× the reference scale.\n\
          [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
-        color::ansi_fg((225, 89, 91)),
+        palette::fg(palette::ALARM),
     )
 }
 
@@ -377,7 +371,7 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
     format!(
         "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
          [!] this run reported a clamp rather than an optimum.{RESET}\n",
-        color::ansi_fg((225, 89, 91)),
+        palette::fg(palette::ALARM),
         config.k_min,
         config.k_max,
     )
@@ -575,15 +569,13 @@ pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: u
         eprintln!(
             "{}[!] Warning: no decisive results. Every outcome target is 0.5, so a wdl_schedule\n\
              [!] near 0.0 trains on a constant.{RESET}",
-            color::ansi_fg((225, 89, 91)),
+            palette::fg(palette::ALARM),
         );
     }
 }
 
 /// Loss history as a sparkline: lower loss → shorter block.
 pub fn loss_sparkline(history: &[f64]) -> String {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
     if history.is_empty() {
         return String::new();
     }
@@ -599,7 +591,7 @@ pub fn loss_sparkline(history: &[f64]) -> String {
         let level = (frac * 8.0).min(7.0) as usize;
 
         out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
-        out.push(BLOCKS[level]);
+        out.push(BARS[level]);
     }
 
     out.push_str(RESET);
@@ -659,9 +651,9 @@ pub fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bo
     sensitivities.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
     frozen.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
-    let max_width = |list: &[(f64, usize, &str)]| list.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20);
-    let active_width = max_width(&sensitivities) + 1;
-    let frozen_width = frozen.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
+    let max_width = |list: &[(f64, usize, &str)]| list.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
+    let active_width = max_width(&sensitivities);
+    let frozen_width = max_width(&frozen);
 
     writeln!(w, "  Top Load-Bearing Parameters:").ok();
 
@@ -689,15 +681,13 @@ pub fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bo
 /// Set `phase_balance_cap` toward the printed imbalance to fully correct it,
 /// or lower to spare the sparse buckets their variance.
 pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: usize) {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
     let max_pop = hist.iter().copied().max().unwrap_or(0);
     let min_pop = hist.iter().copied().filter(|&c| c > 0).min().unwrap_or(0);
     let imbalance = if min_pop > 0 { max_pop as f64 / min_pop as f64 } else { f64::INFINITY };
 
     let bars: String = hist
         .iter()
-        .map(|&c| if c == 0 { ' ' } else { BLOCKS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
+        .map(|&c| if c == 0 { ' ' } else { BARS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
         .collect();
 
     let wmin = weights.iter().copied().fold(f64::INFINITY, f64::min);

@@ -19,8 +19,8 @@ pub use super::engine::{
     save_encoded,
 };
 use super::{
-    engine::{Color, Position as Board, color},
-    palette::RESET,
+    engine::{Color, Position as Board},
+    palette::{self, RESET},
 };
 use crate::core::fnv::Fnv1a;
 
@@ -172,7 +172,7 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
         }
 
         if paths.is_empty() {
-            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", color::ansi_fg((225, 89, 91)));
+            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", palette::fg(palette::ALARM));
             eprintln!("Please provide a dataset path using --dataset <path>");
             None
         } else {

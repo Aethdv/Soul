@@ -47,7 +47,7 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
     println!("\n{lab}Seed spread:{RESET} {val}{count}{RESET} seeds × {val}{epochs}{RESET} epochs on {dataset}\n");
     for (i, &seed) in seeds.iter().enumerate() {
         let start = Instant::now();
-        let ok = run_one(dataset, config_path, epochs, seed, log_path);
+        let ok = spawn_trial(dataset, config_path, epochs, log_path, &[("--seed", seed.to_string())]);
         let elapsed = start.elapsed().as_secs_f32();
 
         let kept = if ok { fs::copy("evaltune_best.txt", format!("seed_{seed}_best.txt")).is_ok() } else { false };
@@ -68,57 +68,60 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
     report(&runs);
 }
 
-/// One training run in its own process, so a failure costs one seed rather than the sweep.
-fn run_one(dataset: &str, config_path: &str, epochs: usize, seed: u64, log_path: &str) -> bool {
+/// One training run in its own process, so a failure costs one trial rather than the sweep.
+///
+/// `extra` is whatever the caller varies. Results come back through `log_path`, where
+/// the child appends its `final` record; reading them off stdout instead would tie every
+/// caller to a print format.
+pub fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &str, extra: &[(&str, String)]) -> bool {
     let Ok(exe) = env::current_exe() else {
         eprintln!("Cannot locate the running binary to spawn a trial.");
         return false;
     };
 
-    let quiet = env::temp_dir().join(format!("seed_spread_{seed}.txt"));
+    let quiet = env::temp_dir().join(format!("evaltune_trial_{}.txt", std::process::id()));
     let Ok(sink) = fs::File::create(&quiet) else { return false };
 
-    let status = Command::new(exe)
-        .arg("--dataset")
-        .arg(dataset)
-        .arg("--config")
-        .arg(config_path)
-        .arg("--epochs")
-        .arg(epochs.to_string())
-        .arg("--seed")
-        .arg(seed.to_string())
-        // The children have to append where `collect` reads, so the caller's path
-        // goes down with them.
-        .arg("--log")
-        .arg(log_path)
-        .stdout(sink)
-        .stderr(std::process::Stdio::inherit())
-        .status();
+    let mut cmd = Command::new(exe);
 
+    cmd.arg("--dataset").arg(dataset);
+    cmd.arg("--config").arg(config_path);
+    cmd.arg("--epochs").arg(epochs.to_string());
+    cmd.arg("--log").arg(log_path);
+
+    for (flag, value) in extra {
+        cmd.arg(flag).arg(value);
+    }
+
+    let status = cmd.stdout(sink).stderr(std::process::Stdio::inherit()).status();
     let _ = fs::remove_file(&quiet);
 
     status.is_ok_and(|s| s.success())
 }
 
-/// Last `final` record per requested seed. The log is append-only across runs, so matching by
-/// seed and keeping the latest is what makes a rerun overwrite rather than accumulate.
-fn collect(log_path: &str, seeds: &[u64]) -> Vec<Final> {
-    let Ok(text) = fs::read_to_string(log_path) else {
-        eprintln!("No log at {log_path}; nothing to compare.");
-        return Vec::new();
-    };
+/// What the last run in `log_path` reached, for a caller spawning one trial at a time.
+#[must_use]
+pub fn last_best_val(log_path: &str) -> Option<f64> {
+    finals(log_path).last().map(|r| r.best_val_loss)
+}
 
+/// Every `final` record in an append-only log, in the order they were written.
+fn finals(log_path: &str) -> Vec<Final> {
+    let Ok(text) = fs::read_to_string(log_path) else { return Vec::new() };
+
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|v| v.get("event").and_then(serde_json::Value::as_str) == Some("final"))
+        .filter_map(|v| serde_json::from_value::<Final>(v).ok())
+        .collect()
+}
+
+/// Last record per requested seed. The log is append-only across runs, so matching by seed
+/// and keeping the latest is what makes a rerun overwrite rather than accumulate.
+fn collect(log_path: &str, seeds: &[u64]) -> Vec<Final> {
     let mut found: Vec<Option<Final>> = seeds.iter().map(|_| None).collect();
 
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-
-        if value.get("event").and_then(serde_json::Value::as_str) != Some("final") {
-            continue;
-        }
-
-        let Ok(record) = serde_json::from_value::<Final>(value) else { continue };
-
+    for record in finals(log_path) {
         if let Some(slot) = seeds.iter().position(|&s| s == record.seed) {
             found[slot] = Some(record);
         }

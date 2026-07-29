@@ -31,7 +31,7 @@ use super::{
     training::*,
 };
 use crate::core::{
-    config::{EvalTuneConfig, Init, KMode, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
+    config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
     logger::JsonLogger,
     shuffle::{self, Shuffler},
 };
@@ -221,7 +221,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     let Some(paths) = paths else {
         eprintln!(
             "{}[!] Error: No dataset found. Use --dataset <path> or place .soul.zst files in data/.{RESET}",
-            color::ansi_fg((225, 89, 91)),
+            palette::fg(palette::ALARM),
         );
 
         return f64::MAX;
@@ -270,7 +270,7 @@ fn train_entries(
                     "{}[!] Warning: dataset does not match the checkpoint's fingerprint.\n\
                      [!] The train/val split will differ from the original run: positions the\n\
                      [!] checkpoint trained on may now sit in val, making its loss optimistic.{RESET}",
-                    color::ansi_fg((225, 89, 91)),
+                    palette::fg(palette::ALARM),
                 );
             }
 
@@ -342,6 +342,17 @@ fn train_entries(
     train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
 }
 
+/// `Name (detail)` with the name in the value color. Both schedulers and `KMode`
+/// describe themselves in that shape, so the header paints them the same way.
+fn paint_head(text: &str) -> String {
+    let v = palette::fg(palette::VALUE);
+
+    match text.find('(') {
+        Some(op) => format!("{v}{}{RESET} ({})", text[..op].trim_end(), &text[op + 1..text.len() - 1]),
+        None => format!("{v}{text}{RESET}"),
+    }
+}
+
 fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
     for (a, b) in g1.iter_mut().zip(g2) {
         *a += b;
@@ -398,15 +409,12 @@ fn train_loop(
 
     let v = palette::fg(palette::VALUE);
     let lab = palette::fg(palette::LABEL);
+    let dim = palette::fg(palette::DIM);
     let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
 
     println!("{lab}K Factor:{RESET}   {v}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
-    println!("{lab}K Mode:{RESET}     {}", match config.k_mode {
-        KMode::Fixed { value } => format!("{v}Fixed{RESET} ({value})"),
-        KMode::Learned { lr_mult } => format!("{v}Learned{RESET} ({lr_mult})"),
-        KMode::Sweep { interval } => format!("{v}Sweep{RESET} ({interval})"),
-    });
+    println!("{lab}K Mode:{RESET}     {}", paint_head(&config.k_mode.to_string()));
 
     let seed_label = if resume.is_some() {
         " (checkpoint)"
@@ -450,30 +458,8 @@ fn train_loop(
 
     println!("{lab}Parameters:{RESET} {v}{}{RESET}", all_params.len());
     println!("{lab}Mode:{RESET}       {v}{mode_label}{RESET}");
-    {
-        let d = lr_scheduler.describe();
-        let d = d.find('(').map_or_else(
-            || format!("{v}{d}{RESET}"),
-            |op| {
-                let name = &d[..op].trim_end();
-                let inner = &d[op + 1..d.len() - 1];
-                format!("{v}{name}{RESET} ({inner})")
-            },
-        );
-        println!("{lab}LR Sched:{RESET}   {d}");
-    }
-    {
-        let d = wdl_scheduler.describe();
-        let d = d.find('(').map_or_else(
-            || format!("{v}{d}{RESET}"),
-            |op| {
-                let name = &d[..op].trim_end();
-                let inner = &d[op + 1..d.len() - 1];
-                format!("{v}{name}{RESET} ({inner})")
-            },
-        );
-        println!("{lab}WDL Sched:{RESET}  {d}");
-    }
+    println!("{lab}LR Sched:{RESET}   {}", paint_head(&lr_scheduler.describe()));
+    println!("{lab}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
     println!("{lab}Optimizer:{RESET}  {v}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = fs::OpenOptions::new().create(true).append(true).open("evaltune_log.txt").ok();
@@ -490,12 +476,7 @@ fn train_loop(
         writeln!(w, "Mode:      {mode_label}").ok();
         writeln!(w, "Dataset:   {dataset_label}").ok();
         writeln!(w, "K:         {k:.6} (100cp → {:.1}%)", win_rate_100cp * 100.0).ok();
-        writeln!(w, "K mode:    {}", match config.k_mode {
-            KMode::Fixed { value } => format!("Fixed ({value})"),
-            KMode::Learned { lr_mult } => format!("Learned ({lr_mult})"),
-            KMode::Sweep { interval } => format!("Sweep ({interval})"),
-        })
-        .ok();
+        writeln!(w, "K mode:    {}", config.k_mode).ok();
         writeln!(w, "Epochs:    {}", config.epochs).ok();
         writeln!(w, "Params:    {}", all_params.len()).ok();
         writeln!(w, "LR:        {}", lr_scheduler.describe()).ok();
@@ -857,9 +838,6 @@ fn train_loop(
             ('▲', palette::fg(color::advantage(-0.7)))
         };
 
-        let lab = palette::fg(palette::LABEL);
-        let dim = palette::fg(palette::DIM);
-
         let (mark, epoch_c) = if is_best { ("✦ ", palette::fg(palette::BRAND)) } else { ("  ", dim.clone()) };
         let alarm = palette::fg(color::advantage(-1.0));
         let warn = match (overfit, drifted) {
@@ -974,8 +952,6 @@ fn train_loop(
         1.0 / gauge.normalize(&mut best_val_params)
     };
 
-    let lab = palette::fg(palette::LABEL);
-    let v = palette::fg(palette::VALUE);
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
 
     let gauge_line = format!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
@@ -1023,8 +999,6 @@ fn train_loop(
         // process wall clock by that plus feature extraction.
         let avg_mpos = epoch_positions as f64 / grad_seconds.max(1e-6) / 1e6;
         let rest_seconds = epoch_seconds - grad_seconds - shuffle_seconds - val_seconds;
-        let lab = palette::fg(palette::LABEL);
-        let dim = palette::fg(palette::DIM);
 
         println!(
             "\n{lab}Trained{RESET} {epochs_run} epochs in {epoch_seconds:.2}s  \

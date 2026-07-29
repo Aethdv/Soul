@@ -162,56 +162,12 @@ fn main() {
             probe(&config_path, &dataset, Task::ValCost);
         },
         Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
-            let base_epochs = epochs.unwrap_or(100);
-
-            let mut grid: Vec<f64> = match values {
+            let grid = match values {
                 Some(v) if !v.is_empty() => v,
                 _ => log_space(min, max, count),
             };
 
-            let mut all_results: Vec<(f64, f64, f32)> = Vec::new();
-            let mut best = (f64::MAX, grid[0]);
-
-            for round in 0..=refine_rounds {
-                let ep = base_epochs * (1 << round);
-                let lstep = if grid.len() > 1 { (grid[grid.len() - 1].ln() - grid[0].ln()) / (grid.len() - 1) as f64 } else { 0.5 };
-
-                println!("── Round {round}: {ep} epochs");
-                println!("  lr_mult    Best L_val    Time");
-                println!("  -------    ----------    ----");
-
-                for &lr_mult in &grid {
-                    let (val, t) = run_sweep_trial(lr_mult, &dataset, &config_path, ep, seed);
-                    let label = if val == f64::MAX { "FAILED".to_string() } else { format!("{val:>10.6}") };
-
-                    println!("  {lr_mult:>7.4}    {label}    {t:.1}s");
-                    all_results.push((lr_mult, val, t));
-
-                    if val < best.0 {
-                        best = (val, lr_mult);
-                    }
-                }
-
-                if round < refine_rounds && grid.len() > 1 {
-                    let half = lstep / 2.0;
-                    let b = best.1.ln();
-
-                    grid = vec![(b - half).exp().clamp(min, max), b.exp().clamp(min, max), (b + half).exp().clamp(min, max)];
-                }
-            }
-
-            all_results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-            println!("\n  Sorted by L_val:");
-            println!("  lr_mult    Best L_val    Time");
-            println!("  -------    ----------    ----");
-
-            for &(lr_mult, val, t) in &all_results {
-                let label = if val == f64::MAX { "FAILED".to_string() } else { format!("{val:>10.6}") };
-
-                println!("  {lr_mult:>7.4}    {label}    {t:.1}s");
-            }
-            println!("\nBest lr_mult = {:.4} (L_val = {:.6})", best.1, best.0);
+            sweep_lr_mult(&dataset, &config_path, grid, (min, max), epochs.unwrap_or(100), refine_rounds, seed);
         },
         None => {
             if !run_evaltune(args) {
@@ -248,49 +204,86 @@ fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
         .collect()
 }
 
-fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
-    // argv[0] is whatever the caller typed, not necessarily this binary.
-    let Ok(exe) = std::env::current_exe() else {
-        eprintln!("Cannot locate the running binary to spawn a trial.");
-        return (f64::MAX, 0.0);
+/// Each round doubles the epoch budget and re-centers a three-point grid on the winner,
+/// so the cheap rounds place the bracket and the expensive one only has to split it.
+fn sweep_lr_mult(
+    dataset: &str,
+    config_path: &str,
+    mut grid: Vec<f64>,
+    (min, max): (f64, f64),
+    base_epochs: usize,
+    refine_rounds: usize,
+    seed: Option<u64>,
+) {
+    let mut all_results: Vec<(f64, f64, f32)> = Vec::new();
+    let mut best = (f64::MAX, grid[0]);
+
+    let row = |lr_mult: f64, val: f64, t: f32| {
+        let label = if val == f64::MAX { "FAILED".to_string() } else { format!("{val:>10.6}") };
+        println!("  {lr_mult:>7.4}    {label}    {t:.1}s");
     };
 
-    let mut cmd = std::process::Command::new(exe);
+    for round in 0..=refine_rounds {
+        let ep = base_epochs * (1 << round);
+        let lstep = if grid.len() > 1 { (grid[grid.len() - 1].ln() - grid[0].ln()) / (grid.len() - 1) as f64 } else { 0.5 };
 
-    cmd.arg("--dataset").arg(dataset);
-    cmd.arg("--config").arg(config_path);
-    cmd.arg("--lr-mult").arg(lr_mult.to_string());
-    cmd.arg("--epochs").arg(epochs.to_string());
+        println!("── Round {round}: {ep} epochs");
+        println!("  lr_mult    Best L_val    Time");
+        println!("  -------    ----------    ----");
+
+        for &lr_mult in &grid {
+            let (val, t) = run_sweep_trial(lr_mult, dataset, config_path, ep, seed);
+
+            row(lr_mult, val, t);
+            all_results.push((lr_mult, val, t));
+
+            if val < best.0 {
+                best = (val, lr_mult);
+            }
+        }
+
+        if round < refine_rounds && grid.len() > 1 {
+            let half = lstep / 2.0;
+            let b = best.1.ln();
+
+            grid = vec![(b - half).exp().clamp(min, max), b.exp().clamp(min, max), (b + half).exp().clamp(min, max)];
+        }
+    }
+
+    all_results.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+    println!("\n  Sorted by L_val:");
+    println!("  lr_mult    Best L_val    Time");
+    println!("  -------    ----------    ----");
+
+    for &(lr_mult, val, t) in &all_results {
+        row(lr_mult, val, t);
+    }
+
+    println!("\nBest lr_mult = {:.4} (L_val = {:.6})", best.1, best.0);
+}
+
+/// One trial's best validation loss, or `f64::MAX` if it never reported one.
+///
+/// The child logs to a scratch file of its own rather than the run log, so a sweep of
+/// short trials does not bury a real run in the file the plotter reads.
+fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
+    let log = std::env::temp_dir().join(format!("sweep_lr_mult_{}.jsonl", std::process::id()));
+    let log = log.to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&log);
+
+    let mut extra = vec![("--lr-mult", lr_mult.to_string())];
 
     if let Some(s) = seed {
-        cmd.arg("--seed").arg(s.to_string());
+        extra.push(("--seed", s.to_string()));
     }
-
-    let tmp = std::env::temp_dir().join(format!("sweep_{lr_mult}_{epochs}.txt"));
-    let Ok(out) = std::fs::File::create(&tmp) else { return (f64::MAX, 0.0) };
-
-    cmd.stdout(out);
-    cmd.stderr(std::process::Stdio::inherit());
 
     let start = std::time::Instant::now();
-    let status = cmd.status();
+    let ok = seeds::spawn_trial(dataset, config_path, epochs, &log, &extra);
     let elapsed = start.elapsed().as_secs_f32();
 
-    if !status.is_ok_and(|s| s.success()) {
-        let _ = std::fs::remove_file(&tmp);
-        return (f64::MAX, elapsed);
-    }
-
-    let output = std::fs::read_to_string(&tmp).unwrap_or_default();
-    let _ = std::fs::remove_file(&tmp);
-
-    let val = output
-        .lines()
-        .find(|l| l.contains("Best L_val"))
-        .and_then(|l| l.split("L_val: ").nth(1))
-        .and_then(|s| s.split_whitespace().next())
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(f64::MAX);
+    let val = if ok { seeds::last_best_val(&log).unwrap_or(f64::MAX) } else { f64::MAX };
+    let _ = std::fs::remove_file(&log);
 
     (val, elapsed)
 }

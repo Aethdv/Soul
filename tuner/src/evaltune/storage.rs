@@ -12,20 +12,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    engine::{Tunable, color},
-    training::Progress,
-};
-use crate::{
-    core::{error::CheckpointError, fnv::Fnv1a},
-    evaltune::palette,
-};
+use super::{engine::Tunable, training::Progress};
+use crate::core::{error::CheckpointError, fnv::Fnv1a};
 
 pub const CHECKPOINT_VERSION: u32 = 5;
 
-/// Parameters are keyed by name so adding or reordering evaluation terms
-/// doesn't corrupt the load. The flat best-* vectors share the same ordering
-/// as `param_names` and are remapped by name on resume.
+/// The flat best-* vectors carry no names of their own; they share `param_names`
+/// ordering and are remapped through it on resume.
 #[derive(Serialize, Deserialize)]
 pub struct Checkpoint {
     pub version: u32,
@@ -52,10 +45,7 @@ pub struct Checkpoint {
     pub best_train_params: Vec<f64>,
 }
 
-/// A checkpoint written before smoothed selection carries no trail; it re-seeds from the
-/// first epoch after resume.
-/// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
-/// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
+/// Everything the optimizer holds about one parameter, keyed by its name.
 #[derive(Serialize, Deserialize)]
 pub struct ParamState {
     pub value: f64,
@@ -113,8 +103,10 @@ pub struct CheckpointData {
 /// Returns an error if the file cannot be created or written.
 pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -> Result<(), CheckpointError> {
     let mut params = BTreeMap::new();
+    let mut param_names = vec![String::new(); tunables.len()];
 
     for t in tunables {
+        param_names[t.idx] = t.name.clone();
         params.insert(t.name.clone(), ParamState {
             value: state.values[t.idx],
             momentum: state.momentum[t.idx],
@@ -123,12 +115,6 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
             stagnant: state.stagnant[t.idx],
             frozen: state.frozen[t.idx],
         });
-    }
-
-    let mut param_names = vec![String::new(); tunables.len()];
-
-    for t in tunables {
-        param_names[t.idx] = t.name.clone();
     }
 
     let cp = Checkpoint {
@@ -170,15 +156,9 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     let cp: Checkpoint = serde_json::from_reader(reader)?;
 
     if cp.version != CHECKPOINT_VERSION {
-        eprintln!(
-            "{}[!] Error: Checkpoint version mismatch! (Expected: {}, Found: {}){}",
-            color::ansi_fg((225, 89, 91)),
-            CHECKPOINT_VERSION,
-            cp.version,
-            palette::RESET,
-        );
+        let mismatch = format!("checkpoint is version {}, this build writes {CHECKPOINT_VERSION}", cp.version);
 
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Checkpoint version mismatch").into());
+        return Err(io::Error::new(io::ErrorKind::InvalidData, mismatch).into());
     }
 
     let mut values = current_values.to_vec();

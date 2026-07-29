@@ -8,7 +8,8 @@
 use soul::{
     core::{
         board::Position as Board,
-        defs::{Color, PieceType},
+        defs::{Color, PieceType, TOTAL_PHASE},
+        phase::compute_phase_f64,
         psqt,
     },
     engine::{
@@ -99,7 +100,9 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
         }
     }
 
-    let phase = phase_dual.math_clamp(DualNode::constant(0.0), DualNode::constant(24.0)).trunc();
+    let phase = phase_dual
+        .math_clamp(DualNode::zero(), DualNode::constant(f64::from(TOTAL_PHASE)))
+        .trunc();
 
     let mut dual_acc = DualVec8::zero();
     dual_acc.0[0] = DualNode::seed(lane_vals[0], 0);
@@ -193,11 +196,9 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    let phase_raw = compute_phase(&piece_counts, values);
-
     // dJ/dPhaseWeight is deliberately omitted: phase weights must stay at their
     // engineered values for the MG/EG interpolation to be meaningful.
-    let phase = phase_raw.clamp(0.0, 24.0).trunc();
+    let phase = compute_phase_f64(&piece_counts, values);
 
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
@@ -291,28 +292,13 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
 
     accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
 
-    let phase_raw = compute_phase(&piece_counts, values);
-    let phase = phase_raw.math_clamp(0.0, 24.0).trunc();
+    let phase = compute_phase_f64(&piece_counts, values);
 
     // Same generator the DualNode path uses: no per-term hand literal to drift.
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
 
     (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
-}
-
-#[inline(always)]
-fn compute_phase(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
-    let mut phase_raw = 0.0;
-
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = LAYOUT.phase_offset + pt;
-
-        if phase_idx < values.len() {
-            phase_raw += count * values[phase_idx];
-        }
-    }
-    phase_raw
 }
 
 #[inline(always)]
