@@ -415,41 +415,9 @@ mod tests {
     const TARGET: f64 = 0.5;
     const K: f64 = 0.005;
 
-    // Names the owning eval layer for drift-localized oracle failures.
+    // Names the owning block for drift-localized oracle failures.
     fn term_for(slot: usize) -> &'static str {
-        if slot < LAYOUT.mobility_open_offset {
-            "PSQT/material (accumulator-level)"
-        } else if slot < LAYOUT.king_safety_offset {
-            "MobilityTerm"
-        } else if slot < LAYOUT.attacker_offset {
-            "KingSafetyTerm (shield/ortho/diag)"
-        } else if slot < LAYOUT.xray_offset {
-            "KingSafetyTerm (attackers)"
-        } else if slot < LAYOUT.bishop_pair_offset {
-            "XrayTerm"
-        } else if slot < LAYOUT.rook_open_offset {
-            "BishopPairTerm"
-        } else if slot < LAYOUT.passed_pawn_mg_offset {
-            "RookOpenTerm"
-        } else if slot < LAYOUT.enemy_king_dist_mg_offset {
-            "PassedPawnTerm"
-        } else if slot < LAYOUT.doubled_pawn_offset {
-            "EnemyKingDistTerm"
-        } else if slot < LAYOUT.isolated_pawn_offset {
-            "DoubledPawnTerm"
-        } else if slot < LAYOUT.phalanx_mg_offset {
-            "IsolatedPawnTerm"
-        } else if slot < LAYOUT.defended_pawn_mg_offset {
-            "PhalanxTerm"
-        } else if slot < LAYOUT.backward_pawn_offset {
-            "DefendedPawnTerm"
-        } else if slot < LAYOUT.tempo_offset {
-            "BackwardPawnTerm"
-        } else if slot < LAYOUT.minor_behind_pawn_offset {
-            "TempoTerm"
-        } else {
-            "MinorBehindPawnTerm"
-        }
+        BLOCKS.iter().rev().find(|b| slot >= b.offset).map_or("out of range", |b| b.name)
     }
 
     // Compares eval vs gradients across both paths, identifies drift by term name.
