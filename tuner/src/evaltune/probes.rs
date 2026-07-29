@@ -11,7 +11,7 @@ use super::{
     curvature::Curvature,
     engine::{accumulate_record_grad, eval_params},
     loader,
-    palette::{self, RESET},
+    palette::{DIM, LAB, RESET, VAL},
     run::TrainerContext,
     scale::KController,
     training::sigmoid,
@@ -118,12 +118,13 @@ pub fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     Shuffler::new(ctx.train_count).fill(&mut indices, 0xC0FFEE);
     let shuffled = time_pass(&indices);
 
-    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
-
-    println!("\n{lab}Gather cost{RESET} {dim}({batches} batches of {}){RESET}", config.batch_size);
-    println!("  {lab}sequential{RESET}  {v}{sequential:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / sequential / 1e6);
-    println!("  {lab}shuffled{RESET}    {v}{shuffled:6.2}s{RESET}  {v}{:5.1}M pos/s{RESET}", positions / shuffled / 1e6);
-    println!("  {lab}ratio{RESET}       {v}{:6.2}×{RESET}", shuffled / sequential);
+    println!("\n{LAB}Gather cost{RESET} {DIM}({batches} batches of {}){RESET}", config.batch_size);
+    println!(
+        "  {LAB}sequential{RESET}  {VAL}{sequential:6.2}s{RESET}  {VAL}{:5.1}M pos/s{RESET}",
+        positions / sequential / 1e6
+    );
+    println!("  {LAB}shuffled{RESET}    {VAL}{shuffled:6.2}s{RESET}  {VAL}{:5.1}M pos/s{RESET}", positions / shuffled / 1e6);
+    println!("  {LAB}ratio{RESET}       {VAL}{:6.2}×{RESET}", shuffled / sequential);
 }
 
 pub fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
@@ -158,13 +159,11 @@ pub fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
         best_split = best_split.min(split());
     }
 
-    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
-
-    println!("\n{lab}Val cost{RESET} {dim}({} positions, best of {REPEATS}){RESET}", ctx.val.len());
-    println!("  {lab}fused{RESET}    {v}{:7.2} ms{RESET}  {dim}one traversal, two probes{RESET}", best_fused * 1e3);
-    println!("  {lab}split{RESET}    {v}{:7.2} ms{RESET}  {dim}two traversals, one probe each{RESET}", best_split * 1e3);
+    println!("\n{LAB}Val cost{RESET} {DIM}({} positions, best of {REPEATS}){RESET}", ctx.val.len());
+    println!("  {LAB}fused{RESET}    {VAL}{:7.2} ms{RESET}  {DIM}one traversal, two probes{RESET}", best_fused * 1e3);
+    println!("  {LAB}split{RESET}    {VAL}{:7.2} ms{RESET}  {DIM}two traversals, one probe each{RESET}", best_split * 1e3);
     println!(
-        "  {lab}saved{RESET}    {v}{:7.2} ms{RESET}  {v}{:.2}×{RESET} {dim}per epoch{RESET}",
+        "  {LAB}saved{RESET}    {VAL}{:7.2} ms{RESET}  {VAL}{:.2}×{RESET} {DIM}per epoch{RESET}",
         (best_split - best_fused) * 1e3,
         best_split / best_fused
     );

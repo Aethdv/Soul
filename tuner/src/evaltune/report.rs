@@ -20,15 +20,15 @@ use super::{
 };
 use crate::{
     core::config::{EvalTuneConfig, KMode},
-    evaltune::palette::{self, RESET},
+    evaltune::palette::{self, BRAND, COUNT, DIM, LAB, MOVED, RESET, VAL},
 };
 
 /// Eighth-blocks, tallest last: the height ramp every sparkline here draws with.
 const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-/// Trailing comments for the paste block, by block name. Cosmetic: offsets,
-/// widths and order come from `BLOCKS`, so a missing entry costs a comment and
-/// a stale one cannot move a number.
+/// Trailing comments for the paste block, by block name.
+/// Cosmetic: offsets, widths and order come from `BLOCKS`, so a missing entry
+/// costs a comment and a stale one cannot move a number.
 #[rustfmt::skip]
 const ANNOTATIONS: &[(&str, &str)] = &[
     ("mobility_open",      "[mobility, battery, threats, xray threats]"),
@@ -67,20 +67,13 @@ pub struct BestEpochs<'a> {
 
 /// Final epoch is printed; all three go to `evaltune_best.txt`.
 pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: &[f64], best: &BestEpochs, final_epoch: usize) {
-    let gold = palette::fg(palette::BRAND);
+    println!();
+    println!("{BRAND}Best L_val: {:.6} (Epoch {}){RESET}", best.best_val_loss, best.best_val_epoch);
+
+    println!("{BRAND}Best L_train: {:.6} (Epoch {}){RESET}", best.best_train_loss, best.best_train_epoch);
 
     println!();
-    println!("{gold}Best L_val: {:.6} (Epoch {}){}", best.best_val_loss, best.best_val_epoch, palette::RESET);
-
-    println!("{gold}Best L_train: {:.6} (Epoch {}){}", best.best_train_loss, best.best_train_epoch, palette::RESET);
-
-    println!();
-    println!(
-        "{gold}Final epoch {final_epoch}:  L_val {:.6}  L_train {:.6}{}",
-        best.last_val,
-        best.last_train,
-        palette::RESET
-    );
+    println!("{BRAND}Final epoch {final_epoch}:  L_val {:.6}  L_train {:.6}{RESET}", best.last_val, best.last_train);
     print_params(all_params, initial_values, final_ema);
 
     if let Ok(mut f) = File::create("evaltune_best.txt") {
@@ -280,60 +273,6 @@ pub fn write_weight_array<W: Write>(
     }
 }
 
-fn present_blocks(group: Group) -> Vec<&'static Block> {
-    BLOCKS.iter().filter(|b| b.group == group).collect()
-}
-
-fn annotation(block: &str) -> String {
-    match ANNOTATIONS.iter().find(|(name, _)| *name == block) {
-        Some((_, text)) => format!(" // {text}"),
-        None => String::new(),
-    }
-}
-
-/// Green ANSI if `changed` and `initial` is `Some` (terminal context).
-fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
-    if initial.is_some() && changed {
-        format!("{}{text}{RESET}", palette::fg(palette::MOVED))
-    } else {
-        text.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        super::engine::{collect_parameters, default_values},
-        *,
-    };
-
-    /// The output is text, so neither the compiler nor the oracle reads it.
-    #[test]
-    fn the_paste_block_reproduces_eval_params() {
-        let params = collect_parameters();
-        let values = default_values(&params);
-
-        // The colored form is the one with the header comments; values as their own
-        // baseline mark nothing changed, so no ANSI lands in it.
-        let mut printed = Vec::new();
-        write_params(&mut printed, &params, &values, Some(&values));
-        let printed = String::from_utf8(printed).expect("the paste block is utf-8");
-        let printed = printed
-            .trim_start_matches('\n')
-            .trim_start_matches("// --- Tuned Parameters (paste into eval_params.rs) ---\n")
-            .trim_end()
-            .trim_end_matches("// -------------------------------------")
-            .trim_end();
-
-        let source = include_str!("../../../src/engine/eval_params.rs");
-        let start = source.find("define_psqt_params! {").expect("no psqt block in eval_params.rs");
-        let last = source.find("define_weight_params! {").expect("no weight block in eval_params.rs");
-        let end = last + source[last..].find("\n}").expect("the weight block never closes") + 2;
-
-        assert_eq!(printed, &source[start..end], "the paste block no longer reproduces eval_params.rs");
-    }
-}
-
 /// The gauge reports how hard it pulled; this reads what the pull achieved.
 ///
 /// A run can hold a statistic perfectly and still ship an eval off the scale
@@ -349,7 +288,7 @@ pub fn off_scale_warning(shipped: f64) -> String {
     format!(
         "{}[!] Warning: the final-epoch parameters ship at {shipped:.3}× the reference scale.\n\
          [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
-        palette::fg(palette::ALARM),
+        palette::ALARM,
     )
 }
 
@@ -374,7 +313,7 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
     format!(
         "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
          [!] this run reported a clamp rather than an optimum.{RESET}\n",
-        palette::fg(palette::ALARM),
+        palette::ALARM,
         config.k_min,
         config.k_max,
     )
@@ -442,8 +381,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
             },
         );
 
-    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
-
     let band_label = |b: usize| {
         let lo = b * BAND_WIDTH;
         let hi = if b + 1 == BANDS { TOTAL_PHASE as usize } else { lo + BAND_WIDTH - 1 };
@@ -455,8 +392,8 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 
     let mut out = String::new();
 
-    let _ = writeln!(out, "\n{lab}Calibration{RESET} {dim}(best-val parameters, validation split at K = {k:.6}){RESET}");
-    let _ = writeln!(out, "  {lab}phase           n   predicted   realized  residual{RESET}");
+    let _ = writeln!(out, "\n{LAB}Calibration{RESET} {DIM}(best-val parameters, validation split at K = {k:.6}){RESET}");
+    let _ = writeln!(out, "  {LAB}phase           n   predicted   realized  residual{RESET}");
 
     for b in 0..BANDS {
         let cells = b * CELLS..(b + 1) * CELLS;
@@ -472,13 +409,13 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 
         let _ = writeln!(
             out,
-            "  {band:<7} {v}{n:>9}{RESET}      {v}{p:5.1}%{RESET}     {v}{r:5.1}%{RESET}     {v}{:+5.1}{RESET}",
+            "  {band:<7} {VAL}{n:>9}{RESET}      {VAL}{p:5.1}%{RESET}     {VAL}{r:5.1}%{RESET}     {VAL}{:+5.1}{RESET}",
             p - r
         );
     }
 
-    let _ = writeln!(out, "\n{lab}Residual by eval within phase{RESET} {dim}(cell counts in parentheses){RESET}");
-    let _ = writeln!(out, "  {lab}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
+    let _ = writeln!(out, "\n{LAB}Residual by eval within phase{RESET} {DIM}(cell counts in parentheses){RESET}");
+    let _ = writeln!(out, "  {LAB}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
 
     for b in 0..BANDS {
         let row: Vec<String> = (0..CELLS)
@@ -502,31 +439,21 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
     out
 }
 
-/// Counts wide enough to crowd a table, shortened to three significant characters.
-fn compact(n: u64) -> String {
-    match n {
-        0..10_000 => n.to_string(),
-        10_000..10_000_000 => format!("{}k", n / 1000),
-        _ => format!("{}M", n / 1_000_000),
-    }
-}
-
 /// Whole-run gate census, per parameter group.
 ///
 /// `band` is the column the cautious-mask question turns on, since it is where our gate and
 /// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
 pub fn gate_census_report(groups: &[GateCensus]) -> String {
-    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
-
     let mut out = String::new();
 
-    let _ = writeln!(out, "\n{lab}Gate census{RESET} {dim}(share of parameter-updates){RESET}");
-    let _ = writeln!(out, "  {lab}group          φ     skip  canonical    band   c-only   waived     dead  no grad{RESET}");
+    let _ = writeln!(out, "\n{LAB}Gate census{RESET} {DIM}(share of parameter-updates){RESET}");
+    let _ = writeln!(out, "  {LAB}group          φ     skip  canonical    band   c-only   waived     dead  no grad{RESET}");
 
     for (name, c) in GROUP_NAMES.iter().zip(groups) {
         let _ = writeln!(
             out,
-            "  {name:<9} {v}{:6.4}{RESET}   {v}{:5.1}%{RESET}     {v}{:5.1}%{RESET}  {v}{:5.2}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}   {v}{:5.1}%{RESET}",
+            "  {name:<9} {VAL}{:6.4}{RESET}   {VAL}{:5.1}%{RESET}     {VAL}{:5.1}%{RESET}  {VAL}{:5.2}%{RESET}   \
+             {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}",
             c.active_share(),
             c.percent(c.skipped),
             c.percent(c.canonical),
@@ -542,8 +469,7 @@ pub fn gate_census_report(groups: &[GateCensus]) -> String {
 }
 
 pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
-    let (lab, c) = (palette::fg(palette::LABEL), palette::fg(palette::COUNT));
-    println!("{lab}Positions:{RESET}  {c}{total}{RESET} ({} train / {} val)", train.len(), val.len());
+    println!("{LAB}Positions:{RESET}  {COUNT}{total}{RESET} ({} train / {} val)", train.len(), val.len());
 
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
@@ -557,9 +483,9 @@ pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: u
         }
     });
 
-    println!("  {lab}White wins:{RESET} {c}{ww}{RESET}");
-    println!("  {lab}Black wins:{RESET} {c}{bw}{RESET}");
-    println!("  {lab}Draws:{RESET}      {c}{dr}{RESET}");
+    println!("  {LAB}White wins:{RESET} {COUNT}{ww}{RESET}");
+    println!("  {LAB}Black wins:{RESET} {COUNT}{bw}{RESET}");
+    println!("  {LAB}Draws:{RESET}      {COUNT}{dr}{RESET}");
 
     // A datagen run that never filled the result field looks exactly like a set of drawn games.
     // The outcome target is then 0.5 everywhere and only a score-weighted blend can learn.
@@ -567,7 +493,7 @@ pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: u
         eprintln!(
             "{}[!] Warning: no decisive results. Every outcome target is 0.5, so a wdl_schedule\n\
              [!] near 0.0 trains on a constant.{RESET}",
-            palette::fg(palette::ALARM),
+            palette::ALARM,
         );
     }
 }
@@ -611,15 +537,14 @@ pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String 
 
     pinned.sort_unstable_by_key(|p| std::cmp::Reverse(clipped[p.idx]));
 
-    let (lab, v) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
     let width = pinned.iter().take(10).map(|p| p.name.len()).max().unwrap_or(20);
 
     let mut out = String::new();
-    let _ = writeln!(out, "\n{lab}Clip{RESET} {}(share of updates truncated at the bound){RESET}", palette::fg(palette::DIM));
+    let _ = writeln!(out, "\n{LAB}Clip{RESET} {}(share of updates truncated at the bound){RESET}", palette::DIM);
 
     for p in pinned.iter().take(10) {
         let share = 100.0 * clipped[p.idx] as f64 / updates.max(1) as f64;
-        let _ = writeln!(out, "  {:<width$}  {v}{share:5.1}%{RESET}", p.name);
+        let _ = writeln!(out, "  {:<width$}  {VAL}{share:5.1}%{RESET}", p.name);
     }
 
     out
@@ -691,11 +616,68 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
     let wmax = weights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let clamp_pct = 100.0 * clamped as f64 / weights.len().max(1) as f64;
 
-    let (lab, v) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
-
-    println!("{lab}Phase balance:{RESET} {v}{bars}{RESET} {lab}(phase 0..{}){RESET}", hist.len() - 1);
+    println!("{LAB}Phase balance:{RESET} {VAL}{bars}{RESET} {LAB}(phase 0..{}){RESET}", hist.len() - 1);
     println!(
-        "  {lab}imbalance{RESET} {v}{imbalance:.0}×{RESET} {lab}vs cap{RESET} {v}{cap:.0}×{RESET}  \
-         {lab}weights{RESET} {v}{wmin:.2}–{wmax:.2}×{RESET}  {lab}clamped{RESET} {v}{clamp_pct:.1}%{RESET}"
+        "  {LAB}imbalance{RESET} {VAL}{imbalance:.0}×{RESET} {LAB}vs cap{RESET} {VAL}{cap:.0}×{RESET}  \
+         {LAB}weights{RESET} {VAL}{wmin:.2}–{wmax:.2}×{RESET}  {LAB}clamped{RESET} {VAL}{clamp_pct:.1}%{RESET}"
     );
+}
+
+fn present_blocks(group: Group) -> Vec<&'static Block> {
+    BLOCKS.iter().filter(|b| b.group == group).collect()
+}
+
+fn annotation(block: &str) -> String {
+    match ANNOTATIONS.iter().find(|(name, _)| *name == block) {
+        Some((_, text)) => format!(" // {text}"),
+        None => String::new(),
+    }
+}
+
+/// Green ANSI if `changed` and `initial` is `Some` (terminal context).
+fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
+    if initial.is_some() && changed { format!("{MOVED}{text}{RESET}") } else { text.to_string() }
+}
+
+/// Counts wide enough to crowd a table, shortened to three significant characters.
+fn compact(n: u64) -> String {
+    match n {
+        0..10_000 => n.to_string(),
+        10_000..10_000_000 => format!("{}k", n / 1000),
+        _ => format!("{}M", n / 1_000_000),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::engine::{collect_parameters, default_values},
+        *,
+    };
+
+    /// The output is text, so neither the compiler nor the oracle reads it.
+    #[test]
+    fn the_paste_block_reproduces_eval_params() {
+        let params = collect_parameters();
+        let values = default_values(&params);
+
+        // The colored form is the one with the header comments; values as their own
+        // baseline mark nothing changed, so no ANSI lands in it.
+        let mut printed = Vec::new();
+        write_params(&mut printed, &params, &values, Some(&values));
+        let printed = String::from_utf8(printed).expect("the paste block is utf-8");
+        let printed = printed
+            .trim_start_matches('\n')
+            .trim_start_matches("// --- Tuned Parameters (paste into eval_params.rs) ---\n")
+            .trim_end()
+            .trim_end_matches("// -------------------------------------")
+            .trim_end();
+
+        let source = include_str!("../../../src/engine/eval_params.rs");
+        let start = source.find("define_psqt_params! {").expect("no psqt block in eval_params.rs");
+        let last = source.find("define_weight_params! {").expect("no weight block in eval_params.rs");
+        let end = last + source[last..].find("\n}").expect("the weight block never closes") + 2;
+
+        assert_eq!(printed, &source[start..end], "the paste block no longer reproduces eval_params.rs");
+    }
 }

@@ -18,7 +18,7 @@
 
 use super::{
     engine::Tunable,
-    palette::{self, RESET},
+    palette::{DIM, LAB, RESET, VAL},
 };
 
 /// Sweeps the Jacobi rotation is allowed before it gives up on an unconverged matrix.
@@ -92,7 +92,6 @@ impl Curvature {
                 self.h[j * self.n + i] = self.h[i * self.n + j];
             }
         }
-
         self
     }
 
@@ -137,7 +136,6 @@ impl Curvature {
                     v[row * m + col] = vectors[row * m + j];
                 }
             }
-
             v
         };
 
@@ -194,8 +192,6 @@ impl Spectrum {
 
     /// Everything the spectrum has to say.
     pub fn report(&self, params: &[Tunable], positions: usize, k: f64) {
-        let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
-
         let m = self.live.len();
         let name = |i: usize| params.get(i).map_or("?", |p| p.name.as_str());
 
@@ -212,12 +208,15 @@ impl Spectrum {
 
         let smallest = self.values[determined - 1];
 
-        println!("\n{lab}Curvature{RESET} {dim}({positions} train positions at K = {k:.6}){RESET}");
-        println!("  {lab}parameters{RESET}      {v}{m}{RESET} carry curvature, {v}{}{RESET} never appear", self.untouched.len());
-        println!("  {lab}directions{RESET}      {v}{determined}{RESET} determined, {v}{}{RESET} free", m - determined);
+        println!("\n{LAB}Curvature{RESET} {DIM}({positions} train positions at K = {k:.6}){RESET}");
         println!(
-            "  {lab}eigenvalues{RESET}     max {v}{largest:.3e}{RESET}  min {v}{smallest:.3e}{RESET}  \
-             condition {v}{:.2e}{RESET}",
+            "  {LAB}parameters{RESET}      {VAL}{m}{RESET} carry curvature, {VAL}{}{RESET} never appear",
+            self.untouched.len()
+        );
+        println!("  {LAB}directions{RESET}      {VAL}{determined}{RESET} determined, {VAL}{}{RESET} free", m - determined);
+        println!(
+            "  {LAB}eigenvalues{RESET}     max {VAL}{largest:.3e}{RESET}  min {VAL}{smallest:.3e}{RESET}  \
+             condition {VAL}{:.2e}{RESET}",
             largest / smallest
         );
 
@@ -226,7 +225,7 @@ impl Spectrum {
         // carry signal well clear of it.
         let rank = |relative: f64| self.values.iter().filter(|&&x| x > largest * relative).count();
         println!(
-            "  {lab}effective rank{RESET}  {v}{}{RESET} above 1e-3 of max, {v}{}{RESET} above 1e-6, {v}{}{RESET} above 1e-9",
+            "  {LAB}effective rank{RESET}  {VAL}{}{RESET} above 1e-3 of max, {VAL}{}{RESET} above 1e-6, {VAL}{}{RESET} above 1e-9",
             rank(1e-3),
             rank(1e-6),
             rank(1e-9)
@@ -234,28 +233,28 @@ impl Spectrum {
 
         let raw_max = self.diagonal.iter().copied().fold(0.0_f64, f64::max);
         let raw_min = self.diagonal.iter().copied().filter(|&x| x > 0.0).fold(f64::MAX, f64::min);
-        println!("  {lab}raw diagonal{RESET}    max {v}{raw_max:.3e}{RESET}  min {v}{raw_min:.3e}{RESET}");
+        println!("  {LAB}raw diagonal{RESET}    max {VAL}{raw_max:.3e}{RESET}  min {VAL}{raw_min:.3e}{RESET}");
 
         if !self.untouched.is_empty() {
             let names: Vec<&str> = self.untouched.iter().take(LISTED).map(|&i| name(i)).collect();
             let more = self.untouched.len().saturating_sub(names.len());
             let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
 
-            println!("  {lab}never appear{RESET}    {}{tail}", names.join(", "));
+            println!("  {LAB}never appear{RESET}    {}{tail}", names.join(", "));
         }
 
         if determined < m {
             println!(
-                "\n{lab}Undetermined{RESET} {dim}(share of each parameter lying in the {} free directions){RESET}",
+                "\n{LAB}Undetermined{RESET} {DIM}(share of each parameter lying in the {} free directions){RESET}",
                 m - determined
             );
 
             for &(share, name) in self.ranked(&self.participation(), params).iter().take(LISTED) {
-                println!("  {v}{share:5.2}{RESET}  {name}");
+                println!("  {VAL}{share:5.2}{RESET}  {name}");
             }
         }
 
-        println!("\n{lab}Flattest determined directions{RESET} {dim}(heaviest loadings){RESET}");
+        println!("\n{LAB}Flattest determined directions{RESET} {DIM}(heaviest loadings){RESET}");
 
         for k in (determined.saturating_sub(LISTED)..determined).rev() {
             let mut loadings: Vec<(f64, usize)> = (0..m).map(|row| (self.vectors[row * m + k], self.live[row])).collect();
@@ -264,23 +263,23 @@ impl Spectrum {
 
             let named: Vec<String> = loadings.iter().take(3).map(|&(w, i)| format!("{} {w:+.2}", name(i))).collect();
 
-            println!("  {v}{:.3e}{RESET}  {}", self.values[k], named.join("   "));
+            println!("  {VAL}{:.3e}{RESET}  {}", self.values[k], named.join("   "));
         }
 
         // Raw rather than correlation-scaled, so the bottom of this list is the sparse
         // parameters a global gradient threshold mistakes for converged.
-        println!("\n{lab}Least curvature{RESET} {dim}(raw diagonal, the freeze normalizer){RESET}");
+        println!("\n{LAB}Least curvature{RESET} {DIM}(raw diagonal, the freeze normalizer){RESET}");
 
         let raw: Vec<f64> = self.live.iter().map(|&i| -self.diagonal[i]).collect();
 
         for &(negated, name) in self.ranked(&raw, params).iter().take(LISTED) {
-            println!("  {v}{:9.3e}{RESET}  {name}", -negated);
+            println!("  {VAL}{:9.3e}{RESET}  {name}", -negated);
         }
 
-        println!("\n{lab}Most collinear parameters{RESET} {dim}(variance inflation){RESET}");
+        println!("\n{LAB}Most collinear parameters{RESET} {DIM}(variance inflation){RESET}");
 
         for &(factor, name) in self.ranked(&self.inflation(), params).iter().take(LISTED) {
-            println!("  {v}{factor:9.3e}{RESET}  {name}");
+            println!("  {VAL}{factor:9.3e}{RESET}  {name}");
         }
     }
 }
@@ -313,8 +312,8 @@ fn jacobi(a: &mut [f64], vectors: &mut [f64], n: usize) {
                     continue;
                 }
 
-                // Rotate by the angle that zeroes (p, q). The reciprocal form of tan is stable at
-                // small angles, where the quadratic formula would cancel.
+                // Rotate by the angle that zeroes (p, q). The reciprocal form of tan
+                // is stable at small angles, where the quadratic formula would cancel.
                 let theta = (a[q * n + q] - a[p * n + p]) / (2.0 * apq);
                 let t = theta.signum() / (theta.abs() + theta.mul_add(theta, 1.0).sqrt());
                 let c = 1.0 / t.mul_add(t, 1.0).sqrt();
@@ -370,8 +369,8 @@ mod tests {
         }
     }
 
-    /// Two parameters the data can only ever see the sum of. The flat direction is their
-    /// difference, and it has to come out as the smallest eigenvalue.
+    /// Two parameters the data can only ever see the sum of. The flat direction
+    /// is their difference, and it has to come out as the smallest eigenvalue.
     #[test]
     fn a_duplicated_column_leaves_one_flat_direction() {
         let mut curvature = Curvature::zeros(3);

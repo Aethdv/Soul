@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use super::{
     engine::eval_params,
-    palette::{self, RESET},
+    palette::{LAB, RESET, VAL},
 };
 
 /// How many of the most load-bearing parameters get their own line in the report. A spread
@@ -31,6 +31,8 @@ struct Final {
     split_seed: Option<u64>,
     best_val_loss: f64,
     best_val_epoch: usize,
+    /// `params` in a log written before the key said which vector it holds.
+    #[serde(rename = "best_val_params", alias = "params")]
     params: Vec<i32>,
     /// Per-parameter |gradient| EMA, the same figure `sensitivity-report.txt` ranks on.
     #[serde(default)]
@@ -41,9 +43,7 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
     let mut rng = fastrand::Rng::with_seed(0xA5EE_D000);
     let seeds: Vec<u64> = (0..count).map(|_| rng.u64(..)).collect();
 
-    let (lab, val) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
-
-    println!("\n{lab}Seed spread:{RESET} {val}{count}{RESET} seeds × {val}{epochs}{RESET} epochs on {dataset}\n");
+    println!("\n{LAB}Seed spread:{RESET} {VAL}{count}{RESET} seeds × {VAL}{epochs}{RESET} epochs on {dataset}\n");
     for (i, &seed) in seeds.iter().enumerate() {
         let start = Instant::now();
         let ok = spawn_trial(dataset, config_path, epochs, log_path, &[("--seed", seed.to_string())]);
@@ -130,8 +130,6 @@ fn collect(log_path: &str, seeds: &[u64]) -> Vec<Final> {
 }
 
 fn report(runs: &[Final]) {
-    let (lab, val) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE));
-
     // On big3, which tenth got held out moves best_val_loss by 1.6e-3 at identical parameters,
     // eighty times what 4000 epochs buy. A table mixing holdouts therefore ranks the holdouts.
     if runs.iter().any(|r| r.split_seed != runs[0].split_seed) {
@@ -141,13 +139,13 @@ fn report(runs: &[Final]) {
     let lo = runs.iter().map(|r| r.best_val_loss).fold(f64::MAX, f64::min);
     let hi = runs.iter().map(|r| r.best_val_loss).fold(f64::MIN, f64::max);
 
-    println!("\n  {lab}seed{RESET}                    {lab}L_val{RESET}       {lab}epoch{RESET}");
+    println!("\n  {LAB}seed{RESET}                    {LAB}L_val{RESET}       {LAB}epoch{RESET}");
 
     for r in runs {
         println!("  {:<22}  {:.6}    {}", r.seed, r.best_val_loss, r.best_val_epoch);
     }
 
-    println!("\n  {lab}L_val{RESET}   min {val}{lo:.6}{RESET}  max {val}{hi:.6}{RESET}  spread {val}{:.2e}{RESET}", hi - lo);
+    println!("\n  {LAB}L_val{RESET}   min {VAL}{lo:.6}{RESET}  max {VAL}{hi:.6}{RESET}  spread {VAL}{:.2e}{RESET}", hi - lo);
 
     let params = eval_params::collect_parameters();
     let np = runs[0].params.len();
@@ -174,8 +172,8 @@ fn report(runs: &[Final]) {
     let total: i32 = ranges.iter().map(|(r, _)| *r).sum();
 
     println!(
-        "  {lab}Params{RESET}  identical {val}{identical}{RESET}  ±1 on {val}{jitter}{RESET}  \
-         wider on {val}{real}{RESET}  of {np}, total spread {val}{total}{RESET}"
+        "  {LAB}Params{RESET}  identical {VAL}{identical}{RESET}  ±1 on {VAL}{jitter}{RESET}  \
+         wider on {VAL}{real}{RESET}  of {np}, total spread {VAL}{total}{RESET}"
     );
 
     // Range grows with the seed count even at fixed variance, 2.06σ at four seeds against 3.53σ
@@ -191,8 +189,8 @@ fn report(runs: &[Final]) {
     let total_deviation: f64 = (0..np).map(deviation).sum();
 
     println!(
-        "  {lab}Spread{RESET}  sd over half a unit on {val}{unsettled}{RESET}  total sd {val}{total_deviation:.1}{RESET}  \
-         {lab}(comparable across sweep sizes){RESET}"
+        "  {LAB}Spread{RESET}  sd over half a unit on {VAL}{unsettled}{RESET}  total sd {VAL}{total_deviation:.1}{RESET}  \
+         {LAB}(comparable across sweep sizes){RESET}"
     );
 
     // The same spread split by whether the loss notices the parameter at all. Seeds disagreeing
@@ -209,8 +207,8 @@ fn report(runs: &[Final]) {
         let spread: i32 = top.iter().map(|&i| ranges[i].0).sum();
 
         println!(
-            "  {lab}Top {LOAD_BEARING}{RESET}  identical {val}{same}{RESET}  ±1 on {val}{}{RESET}  \
-             wider on {val}{wider}{RESET}, total spread {val}{spread}{RESET}",
+            "  {LAB}Top {LOAD_BEARING}{RESET}  identical {VAL}{same}{RESET}  ±1 on {VAL}{}{RESET}  \
+             wider on {VAL}{wider}{RESET}, total spread {VAL}{spread}{RESET}",
             top.len() - same - wider
         );
     }
@@ -225,7 +223,7 @@ fn report(runs: &[Final]) {
         .collect();
 
     if !worst.is_empty() {
-        println!("  {lab}Widest{RESET}  {}", worst.join("   "));
+        println!("  {LAB}Widest{RESET}  {}", worst.join("   "));
     }
 
     // The pair to spend games on: furthest apart in shipped integers, so an SPRT between them
@@ -245,7 +243,7 @@ fn report(runs: &[Final]) {
     let (a, b, distance) = far;
 
     println!(
-        "\n  {lab}Furthest pair{RESET}  {val}{}{RESET} and {val}{}{RESET}, {val}{distance}{RESET} apart, \
+        "\n  {LAB}Furthest pair{RESET}  {VAL}{}{RESET} and {VAL}{}{RESET}, {VAL}{distance}{RESET} apart, \
          L_val {:.6} vs {:.6}\n  paste seed_{}_best.txt against seed_{}_best.txt",
         runs[a].seed, runs[b].seed, runs[a].best_val_loss, runs[b].best_val_loss, runs[a].seed, runs[b].seed
     );

@@ -15,7 +15,7 @@ use std::{
     time::Instant,
 };
 
-use palette::{CLEAR_LINE, RESET};
+use palette::{BRAND, CLEAR_LINE, DIM, LAB, RESET, VAL};
 use rayon::prelude::*;
 
 use super::{
@@ -221,7 +221,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     let Some(paths) = paths else {
         eprintln!(
             "{}[!] Error: No dataset found. Use --dataset <path> or place .soul.zst files in data/.{RESET}",
-            palette::fg(palette::ALARM),
+            palette::ALARM,
         );
 
         return f64::MAX;
@@ -238,7 +238,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     let best_val = train_entries(all_entries, &dataset_label, config, resume_path, task);
 
     let elapsed = total_start.elapsed().as_secs_f32();
-    println!("\n{}Done in {elapsed:.2}s{RESET}", palette::fg(palette::BRAND));
+    println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
     best_val
 }
 
@@ -270,7 +270,7 @@ fn train_entries(
                     "{}[!] Warning: dataset does not match the checkpoint's fingerprint.\n\
                      [!] The train/val split will differ from the original run: positions the\n\
                      [!] checkpoint trained on may now sit in val, making its loss optimistic.{RESET}",
-                    palette::fg(palette::ALARM),
+                    palette::ALARM,
                 );
             }
 
@@ -345,11 +345,9 @@ fn train_entries(
 /// `Name (detail)` with the name in the value color. Both schedulers and `KMode`
 /// describe themselves in that shape, so the header paints them the same way.
 fn paint_head(text: &str) -> String {
-    let v = palette::fg(palette::VALUE);
-
     match text.find('(') {
-        Some(op) => format!("{v}{}{RESET} ({})", text[..op].trim_end(), &text[op + 1..text.len() - 1]),
-        None => format!("{v}{text}{RESET}"),
+        Some(op) => format!("{VAL}{}{RESET} ({})", text[..op].trim_end(), &text[op + 1..text.len() - 1]),
+        None => format!("{VAL}{text}{RESET}"),
     }
 }
 
@@ -377,7 +375,7 @@ fn train_loop(
     let default_values = eval_params::default_values(&all_params);
 
     let resume = resume_path.map(|path| {
-        println!("Resuming from checkpoint: {}{path}{RESET}", palette::fg(palette::VALUE));
+        println!("Resuming from checkpoint: {}{path}{RESET}", palette::VAL);
         let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
             eprintln!("Failed to load checkpoint: {e}");
             std::process::exit(1);
@@ -386,7 +384,7 @@ fn train_loop(
         if data.fresh_params > 0 {
             println!(
                 "{}{}{RESET} parameter(s) are newer than the checkpoint, starting from code defaults",
-                palette::fg(palette::VALUE),
+                palette::VAL,
                 data.fresh_params,
             );
         }
@@ -407,12 +405,11 @@ fn train_loop(
     let init_blend = wdl_scheduler.blend(1, config.epochs);
     let mut k_ctrl = KController::bootstrap(config, ctx, &values, &default_values, init_blend, resume.as_ref());
 
-    let (lab, v, dim) = (palette::fg(palette::LABEL), palette::fg(palette::VALUE), palette::fg(palette::DIM));
     let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
 
-    println!("{lab}K Factor:{RESET}   {v}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
-    println!("{lab}K Mode:{RESET}     {}", paint_head(&config.k_mode.to_string()));
+    println!("{LAB}K Factor:{RESET}   {VAL}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
+    println!("{LAB}K Mode:{RESET}     {}", paint_head(&config.k_mode.to_string()));
 
     let seed_label = if resume.is_some() {
         " (checkpoint)"
@@ -422,14 +419,14 @@ fn train_loop(
         ""
     };
 
-    println!("{lab}Seed:{RESET}       {v}{rng_seed}{RESET}{seed_label}");
+    println!("{LAB}Seed:{RESET}       {VAL}{rng_seed}{RESET}{seed_label}");
 
     if split_seed != VAL_SPLIT_SEED {
-        println!("{lab}Split seed:{RESET} {v}{split_seed}{RESET} (L_val does not compare to default-split runs)");
+        println!("{LAB}Split seed:{RESET} {VAL}{split_seed}{RESET} (L_val does not compare to default-split runs)");
     }
 
     if config.init != Init::Default && resume.is_none() {
-        println!("{lab}Init:{RESET}       {v}{:?}{RESET} (cold start; K is meaningless until material grows)", config.init);
+        println!("{LAB}Init:{RESET}       {VAL}{:?}{RESET} (cold start; K is meaningless until material grows)", config.init);
     }
 
     let initial_values = values.clone();
@@ -454,11 +451,11 @@ fn train_loop(
     let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
     let mut stagnant_epochs = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
 
-    println!("{lab}Parameters:{RESET} {v}{}{RESET}", all_params.len());
-    println!("{lab}Mode:{RESET}       {v}{mode_label}{RESET}");
-    println!("{lab}LR Sched:{RESET}   {}", paint_head(&lr_scheduler.describe()));
-    println!("{lab}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
-    println!("{lab}Optimizer:{RESET}  {v}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
+    println!("{LAB}Parameters:{RESET} {VAL}{}{RESET}", all_params.len());
+    println!("{LAB}Mode:{RESET}       {VAL}{mode_label}{RESET}");
+    println!("{LAB}LR Sched:{RESET}   {}", paint_head(&lr_scheduler.describe()));
+    println!("{LAB}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
+    println!("{LAB}Optimizer:{RESET}  {VAL}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = fs::OpenOptions::new().create(true).append(true).open("evaltune_log.txt").ok();
     let mut logger = log_file.map(BufWriter::new);
@@ -829,14 +826,14 @@ fn train_loop(
         // Loss has no absolute scale, so color the live value by its per-epoch
         // trend; dropped from last epoch → green ▼, rose → red ▲.
         let (arrow, trend) = if !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
-            ('·', palette::fg(palette::LABEL))
+            ('·', LAB.to_string())
         } else if val_loss < prev_val_loss {
             ('▼', palette::fg(color::advantage(0.7)))
         } else {
             ('▲', palette::fg(color::advantage(-0.7)))
         };
 
-        let (mark, epoch_c) = if is_best { ("✦ ", palette::fg(palette::BRAND)) } else { ("  ", dim.clone()) };
+        let (mark, epoch_c) = if is_best { ("✦ ", BRAND) } else { ("  ", DIM) };
         let alarm = palette::fg(color::advantage(-1.0));
         let warn = match (overfit, drifted) {
             (true, _) => format!("  {alarm}⚠ overfit{RESET}"),
@@ -847,13 +844,13 @@ fn train_loop(
         #[rustfmt::skip]
         println!(
             "{mark}{epoch_c}Epoch {epoch:>3}/{}{RESET}  \
-             {lab}val{RESET} {trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}  \
-             {lab}train{RESET} {dim}{train_loss:.6}{RESET}  \
-             {lab}ref{RESET} {dim}{ref_loss:.6}{RESET}  \
-             {lab}lr{RESET} {}{lr:.4}{RESET}  {lab}Δp{RESET} {dim}{moved:>3}{RESET}  \
-             {dim}{elapsed:.2}s{RESET}  {dim}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
+             {LAB}val{RESET} {trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}  \
+             {LAB}train{RESET} {DIM}{train_loss:.6}{RESET}  \
+             {LAB}ref{RESET} {DIM}{ref_loss:.6}{RESET}  \
+             {LAB}lr{RESET} {}{lr:.4}{RESET}  {LAB}Δp{RESET} {DIM}{moved:>3}{RESET}  \
+             {DIM}{elapsed:.2}s{RESET}  {DIM}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
             config.epochs,
-            palette::fg(palette::VALUE),
+            palette::VAL,
         );
 
         if config.gate_census {
@@ -865,8 +862,8 @@ fn train_loop(
             }
 
             println!(
-                "  {lab}gate{RESET} φ {v}{:.4}{RESET}  step {v}{step_l1:.1}{RESET}  skip {v}{:.1}%{RESET}  canonical {v}{:.1}%{RESET}  band {v}{:.2}%{RESET}  \
-                 c-only {v}{:.1}%{RESET}  waived {v}{:.1}%{RESET}  dead {v}{:.1}%{RESET}  no grad {v}{:.1}%{RESET}",
+                "  {LAB}gate{RESET} φ {VAL}{:.4}{RESET}  step {VAL}{step_l1:.1}{RESET}  skip {VAL}{:.1}%{RESET}  canonical {VAL}{:.1}%{RESET}  band {VAL}{:.2}%{RESET}  \
+                 c-only {VAL}{:.1}%{RESET}  waived {VAL}{:.1}%{RESET}  dead {VAL}{:.1}%{RESET}  no grad {VAL}{:.1}%{RESET}",
                 all.active_share(),
                 all.percent(all.skipped),
                 all.percent(all.canonical),
@@ -886,8 +883,8 @@ fn train_loop(
             let val_tail = &val_history[val_history.len().saturating_sub(40)..];
             let train_tail = &train_history[train_history.len().saturating_sub(40)..];
 
-            println!("\n  {lab}L_val{RESET}    {}", loss_sparkline(val_tail));
-            println!("\n  {lab}L_train{RESET}  {}", loss_sparkline(train_tail));
+            println!("\n  {LAB}L_val{RESET}    {}", loss_sparkline(val_tail));
+            println!("\n  {LAB}L_train{RESET}  {}", loss_sparkline(train_tail));
 
             if epoch != config.epochs {
                 print_params(&all_params, &initial_values, &ema_values);
@@ -933,7 +930,9 @@ fn train_loop(
                 "best_val_epoch": progress.best_val_epoch,
                 "best_train_loss": progress.best_train_loss,
                 "best_train_epoch": progress.best_train_epoch,
-                "params": quantized,
+                // Named for the vector it is: the run also ships `ema_values`,
+                // and a spread measured over one of them says nothing about the other.
+                "best_val_params": quantized,
                 "sensitivity": grad_ema_per_param,
             }),
         );
@@ -952,7 +951,7 @@ fn train_loop(
 
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
 
-    let gauge_line = format!("\n{lab}Gauge:{RESET}      {v}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
+    let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
     let off_scale = off_scale_warning(Gauge::measure(&gauge.probe, &ema_values) / gauge.reference);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
     let calibration = calibration_report(ctx, &best_val_params, k_ctrl.k());
@@ -999,8 +998,8 @@ fn train_loop(
         let rest_seconds = epoch_seconds - grad_seconds - shuffle_seconds - val_seconds;
 
         println!(
-            "\n{lab}Trained{RESET} {epochs_run} epochs in {epoch_seconds:.2}s  \
-             {dim}grad {grad_seconds:.2}s · shuffle {shuffle_seconds:.2}s · val {val_seconds:.2}s · rest {rest_seconds:.2}s{RESET}  \
+            "\n{LAB}Trained{RESET} {epochs_run} epochs in {epoch_seconds:.2}s  \
+             {DIM}grad {grad_seconds:.2}s · shuffle {shuffle_seconds:.2}s · val {val_seconds:.2}s · rest {rest_seconds:.2}s{RESET}  \
              {avg_mpos:.1}M pos/s"
         );
     }
@@ -1023,7 +1022,7 @@ mod tests {
                 if p.is_fixed {
                     assert_eq!(*v, p.value, "{init:?} moved fixed slot {}", p.name);
                 } else {
-                    assert!(v.abs() <= RANDOM_INIT_SPREAD, "{init:?} left {} at {v}", p.name);
+                    assert!(v.abs() <= RANDOM_INIT_SPREAD, "{init:?} left {} at {VAL}", p.name);
                 }
             }
         }

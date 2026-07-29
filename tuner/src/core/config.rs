@@ -162,14 +162,6 @@ pub enum KMode {
     },
 }
 
-fn default_k_sweep_interval() -> usize {
-    DEFAULT_K_SWEEP_INTERVAL
-}
-
-fn default_k_lr_mult() -> f64 {
-    DEFAULT_K_LR_MULT
-}
-
 impl Default for KMode {
     fn default() -> Self {
         Self::Sweep { interval: DEFAULT_K_SWEEP_INTERVAL }
@@ -246,64 +238,30 @@ impl LrScheduleConfig {
     /// Apply CLI overrides to the schedule's numeric fields without changing its type.
     pub fn apply_overrides(&mut self, lr: Option<f64>, min_lr: Option<f64>, warmup: Option<f64>, cycles: Option<usize>) {
         match self {
-            Self::Constant { value } => {
-                if let Some(v) = lr {
-                    *value = v;
-                }
-            },
+            Self::Constant { value } => set(value, lr),
             Self::Linear { start, end } => {
-                if let Some(v) = lr {
-                    *start = v;
-                }
-                if let Some(v) = min_lr {
-                    *end = v;
-                }
+                set(start, lr);
+                set(end, min_lr);
             },
-            Self::Cosine { base, min, warmup_ratio, cycles: cycle_count, .. } => {
-                if let Some(v) = lr {
-                    *base = v;
-                }
-                if let Some(v) = min_lr {
-                    *min = v;
-                }
-                if let Some(v) = warmup {
-                    *warmup_ratio = v;
-                }
-                if let Some(v) = cycles {
-                    *cycle_count = v;
-                }
+            Self::Cosine { base, min, warmup_ratio, cycles: count, .. } => {
+                set(base, lr);
+                set(min, min_lr);
+                set(warmup_ratio, warmup);
+                set(count, cycles);
             },
             Self::WarmupStableDecay { base, min, warmup_ratio, .. } => {
-                if let Some(v) = lr {
-                    *base = v;
-                }
-                if let Some(v) = min_lr {
-                    *min = v;
-                }
-                if let Some(v) = warmup {
-                    *warmup_ratio = v;
-                }
+                set(base, lr);
+                set(min, min_lr);
+                set(warmup_ratio, warmup);
             },
             Self::StableDecay { base, min, .. } => {
-                if let Some(v) = lr {
-                    *base = v;
-                }
-                if let Some(v) = min_lr {
-                    *min = v;
-                }
+                set(base, lr);
+                set(min, min_lr);
             },
-            Self::Exponential { start, .. } => {
-                if let Some(v) = lr {
-                    *start = v;
-                }
-            },
+            Self::Exponential { start, .. } => set(start, lr),
             Self::StepDecay { start, step_epochs, .. } => {
-                if let Some(v) = lr {
-                    *start = v;
-                }
-                if let Some(v) = cycles {
-                    *step_epochs = v;
-                }
+                set(start, lr);
+                set(step_epochs, cycles);
             },
         }
     }
@@ -354,17 +312,13 @@ impl WdlScheduleConfig {
         }
 
         match self {
-            Self::Linear { start: start_val, end: end_val }
-            | Self::Cosine { start: start_val, end: end_val }
-            | Self::StableDecay { start: start_val, end: end_val, .. } => {
-                if let Some(v) = start {
-                    *start_val = v;
-                }
-                if let Some(v) = end {
-                    *end_val = v;
-                }
+            Self::Linear { start: from, end: to }
+            | Self::Cosine { start: from, end: to }
+            | Self::StableDecay { start: from, end: to, .. } => {
+                set(from, start);
+                set(to, end);
             },
-            _ => {},
+            Self::Constant { .. } => {},
         }
     }
 }
@@ -486,44 +440,6 @@ pub struct EvalTuneConfig {
     pub phase_target: Option<Vec<f64>>,
 }
 
-fn default_log_path() -> String {
-    "evaltune.jsonl".into()
-}
-
-fn default_patience() -> usize {
-    100
-}
-fn default_ema_decay() -> f64 {
-    0.999
-}
-fn default_true() -> bool {
-    true
-}
-fn default_freeze_start() -> usize {
-    500
-}
-fn default_freeze_cadence() -> usize {
-    100
-}
-fn default_freeze_threshold() -> f64 {
-    1e-7
-}
-fn default_freeze_consecutive() -> usize {
-    2
-}
-fn default_one() -> f64 {
-    1.0
-}
-fn default_lr_material() -> f64 {
-    0.3
-}
-fn default_lr_mobility() -> f64 {
-    0.5
-}
-fn default_phase_balance_cap() -> f64 {
-    8.0
-}
-
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SearchTuneConfig {
@@ -569,25 +485,6 @@ pub struct SearchTuneConfig {
     /// File path for the bounds report, relative to CWD.
     #[serde(default = "default_bounds_report_path")]
     pub bounds_report_path: String,
-}
-
-fn default_bounds_report_interval() -> usize {
-    5
-}
-fn default_bounds_window_gens() -> usize {
-    20
-}
-fn default_bounds_alarm_multiplier() -> f64 {
-    2.0
-}
-fn default_bounds_alarm_floor() -> f64 {
-    0.02
-}
-fn default_bounds_report_path() -> String {
-    "bounds_report.txt".to_string()
-}
-fn default_smoothing_radius() -> f64 {
-    0.1
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -692,6 +589,79 @@ impl Default for TunerConfig {
             },
         }
     }
+}
+
+/// Overwrite a schedule field only where the CLI supplied one,
+/// so a flag the caller left off keeps whatever the config file set.
+fn set<T>(field: &mut T, from: Option<T>) {
+    if let Some(v) = from {
+        *field = v;
+    }
+}
+
+fn default_bounds_report_interval() -> usize {
+    5
+}
+fn default_bounds_window_gens() -> usize {
+    20
+}
+fn default_bounds_alarm_multiplier() -> f64 {
+    2.0
+}
+fn default_bounds_alarm_floor() -> f64 {
+    0.02
+}
+fn default_bounds_report_path() -> String {
+    "bounds_report.txt".to_string()
+}
+fn default_smoothing_radius() -> f64 {
+    0.1
+}
+
+fn default_log_path() -> String {
+    "evaltune.jsonl".into()
+}
+
+fn default_patience() -> usize {
+    100
+}
+fn default_ema_decay() -> f64 {
+    0.999
+}
+fn default_true() -> bool {
+    true
+}
+fn default_freeze_start() -> usize {
+    500
+}
+fn default_freeze_cadence() -> usize {
+    100
+}
+fn default_freeze_threshold() -> f64 {
+    1e-7
+}
+fn default_freeze_consecutive() -> usize {
+    2
+}
+fn default_one() -> f64 {
+    1.0
+}
+fn default_lr_material() -> f64 {
+    0.3
+}
+fn default_lr_mobility() -> f64 {
+    0.5
+}
+fn default_phase_balance_cap() -> f64 {
+    8.0
+}
+
+fn default_k_sweep_interval() -> usize {
+    DEFAULT_K_SWEEP_INTERVAL
+}
+
+fn default_k_lr_mult() -> f64 {
+    DEFAULT_K_LR_MULT
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
 
     for line in reader.lines() {
         let line = line?;
+
         if let Some((board, result)) = parse_epd_str(&line) {
             entries.push(Entry { board, result });
         }
@@ -114,8 +115,10 @@ pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
     for path in paths {
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {
             println!("Loading encoded dataset: {path}");
-            let mut file_entries = load_encoded(path).expect("Failed to load .soul dataset");
-            all_entries.append(&mut file_entries);
+            match load_encoded(path) {
+                Ok(mut file_entries) => all_entries.append(&mut file_entries),
+                Err(e) => eprintln!("Error loading {path}: {e}"),
+            }
         } else if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
             match parse_viri_file(path) {
@@ -172,7 +175,7 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
         }
 
         if paths.is_empty() {
-            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", palette::fg(palette::ALARM));
+            eprintln!("{}Error: No default dataset found in data/ directory.{RESET}", palette::ALARM);
             eprintln!("Please provide a dataset path using --dataset <path>");
             None
         } else {
