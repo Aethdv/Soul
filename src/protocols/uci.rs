@@ -30,7 +30,10 @@ use crate::{
         tt::TranspositionTable,
     },
     numa::NumaTopology,
-    protocols::{notation::parse_uci_move, smp::LazySmpPool},
+    protocols::{
+        notation::parse_uci_move,
+        smp::{LazySmpPool, table_and_pool},
+    },
     tools,
     weave::Vi16x8,
 };
@@ -88,7 +91,7 @@ impl UciState {
         let history = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
-        let tt = Arc::new(TranspositionTable::new(16, 1));
+        let (tt, smp_pool) = table_and_pool(16, 1);
 
         let (tx, rx) = mpsc::channel::<SearchCommand>();
         let (h_tx, h_rx) = mpsc::channel::<History>();
@@ -130,13 +133,13 @@ impl UciState {
             board,
             history,
             persistent_history: History::new(),
-            tt: tt.clone(),
+            tt,
             stop,
             search_tx: tx,
             history_tx: h_tx,
             history_rx: h_rx,
             is_searching,
-            smp_pool: LazySmpPool::new(1, tt),
+            smp_pool,
             threads: 1,
             hash_size: 16,
             overhead: 10,
@@ -624,10 +627,8 @@ where I: Iterator<Item = &'a str> {
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                let mb = mb.clamp(1, 524288);
-                state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
-                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
+                state.hash_size = mb.clamp(1, 524288);
+                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
 

@@ -27,7 +27,10 @@ use crate::{
         search_params::SearchParams,
         tt::TranspositionTable,
     },
-    protocols::{notation::parse_uci_move, smp::LazySmpPool},
+    protocols::{
+        notation::parse_uci_move,
+        smp::{LazySmpPool, table_and_pool},
+    },
     weave::Vi16x8,
 };
 
@@ -86,14 +89,14 @@ impl XBoardState {
     fn new() -> Self {
         let board = Position::from_fen(STARTPOS);
         let history = vec![board.hash];
-        let tt = Arc::new(TranspositionTable::new(16, 1));
+        let (tt, smp_pool) = table_and_pool(16, 1);
 
         Self {
             accumulator: board.get_initial_accumulator(),
             board,
             history,
             persistent_history: Arc::new(Mutex::new(History::new())),
-            tt: tt.clone(),
+            tt,
             mode: Mode::Normal,
             stop_signal: Arc::new(AtomicBool::new(false)),
             search_thread: None,
@@ -105,7 +108,7 @@ impl XBoardState {
             is_frc: false,
             nps: None,
             threads: 1,
-            smp_pool: LazySmpPool::new(1, tt),
+            smp_pool,
         }
     }
 
@@ -284,10 +287,8 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             if let Some(arg) = args.next()
                 && let Ok(mb) = arg.parse::<usize>()
             {
-                let mb = mb.clamp(1, 524288);
-                state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
-                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
+                state.hash_size = mb.clamp(1, 524288);
+                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
 
@@ -468,10 +469,8 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                let mb = mb.clamp(1, 524288);
-                state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
-                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
+                state.hash_size = mb.clamp(1, 524288);
+                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
 
