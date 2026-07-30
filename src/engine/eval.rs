@@ -100,17 +100,17 @@ macro_rules! bonus_terms {
 
     (@emit $mode:ident [$macro:ident] [$($carried:tt)*]) => {
         $crate::bonus_terms! { @$mode [$macro] [$($carried)*]
-            tempo             = scalar(TempoTerm, tempo, tempo_mg, tempo_eg);
-            bishop_pair       = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg);
-            rook_open         = scalar(RookOpenTerm, rook_open_diff, rook_open_mg, rook_open_eg);
-            minor_behind_pawn = scalar(MinorBehindPawnTerm, minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg);
-            doubled_pawn      = scalar(DoubledPawnTerm, doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg);
-            isolated_pawn     = scalar(IsolatedPawnTerm, isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg);
-            backward_pawn     = scalar(BackwardPawnTerm, backward_pawn_diff, backward_pawn_mg, backward_pawn_eg);
-            phalanx           = array(PhalanxTerm, phalanx, phalanx_mg, phalanx_eg, 6);
-            defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6);
-            passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6);
-            enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6);
+            tempo             = scalar(TempoTerm, tempo, tempo_mg, tempo_eg); // ~9 Elo
+            bishop_pair       = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
+            rook_open         = scalar(RookOpenTerm, rook_open_diff, rook_open_mg, rook_open_eg); // ~5 Elo
+            minor_behind_pawn = scalar(MinorBehindPawnTerm, minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg); // ~3 Elo
+            doubled_pawn      = scalar(DoubledPawnTerm, doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg); // ~10 Elo
+            isolated_pawn     = scalar(IsolatedPawnTerm, isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg); // ~8 Elo
+            backward_pawn     = scalar(BackwardPawnTerm, backward_pawn_diff, backward_pawn_mg, backward_pawn_eg); // ~13 Elo
+            phalanx           = array(PhalanxTerm, phalanx, phalanx_mg, phalanx_eg, 6); // ~5 Elo
+            defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6); // ~10 Elo
+            passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6); // ~15 Elo
+            enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6); // ~12 Elo
         }
     };
 
@@ -159,6 +159,8 @@ macro_rules! bonus_terms {
 
 macro_rules! register_bonus {
     ([] $( $block:ident = $kind:ident ( $term:ident, $($spec:tt)* ) ; )*) => {
+        $( pub struct $term; )*
+
         crate::register_terms! {
             mobility::MobilityTerm   => mobility,
             mobility::KingSafetyTerm => king_safety,
@@ -171,19 +173,6 @@ macro_rules! register_bonus {
 bonus_terms!(register_bonus);
 
 pub struct XrayTerm;
-
-pub struct TempoTerm; // ~9 Elo
-pub struct BishopPairTerm; // ~9 Elo
-pub struct RookOpenTerm; // ~5 Elo
-pub struct MinorBehindPawnTerm; // ~3 Elo
-
-pub struct DoubledPawnTerm; // ~10 Elo
-pub struct IsolatedPawnTerm; // ~8 Elo
-pub struct BackwardPawnTerm; // ~13 Elo
-pub struct PhalanxTerm; // ~5 Elo
-pub struct DefendedPawnTerm; // ~10 Elo
-pub struct PassedPawnTerm; // ~15 Elo
-pub struct EnemyKingDistTerm; // ~12 Elo
 
 pub struct DetailedEval {
     pub psqt: i32,
