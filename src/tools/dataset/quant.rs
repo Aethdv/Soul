@@ -107,8 +107,8 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     }
 
     for &(color_idx, sq) in &pending_rooks[..pending_count] {
-        let king_file = u8::from(king_sq[color_idx]) % 8;
-        let rook_file = u8::from(sq) % 8;
+        let king_file = king_sq[color_idx].file();
+        let rook_file = sq.file();
         let is_kingside = rook_file > king_file;
 
         let slot = match (color_idx, is_kingside) {
@@ -178,7 +178,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         } else {
             for (slot, &rook) in castling_rooks.iter().enumerate() {
                 if castling_bits & (1u8 << slot) != 0 {
-                    let file = u8::from(rook) % 8;
+                    let file = rook.file();
                     let base = if slot < 2 { b'A' } else { b'a' };
 
                     fen.push((base + file) as char);

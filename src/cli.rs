@@ -1,9 +1,10 @@
 //! Terminal formatting utilities.
 
+use crate::color::RESET;
+
 pub const HEADER: &str = "\x1b[92m";
 pub const ARG: &str = "\x1b[91m";
 pub const CMD: &str = "\x1b[33m";
-pub const RESET: &str = "\x1b[0m";
 
 pub struct Help {
     width: usize,

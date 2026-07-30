@@ -15,6 +15,7 @@ use std::{
 };
 
 use crate::{
+    color::{BOLD, RESET},
     core::{board::Position, defs::Protocol, util::format_comma},
     engine::{
         history::History,
@@ -24,11 +25,9 @@ use crate::{
 };
 
 const DIM: &str = "\x1b[38;2;108;112;134m";
-const BOLD: &str = "\x1b[1m";
 const LAVENDER: &str = "\x1b[38;2;180;190;254m";
 const TEXT: &str = "\x1b[38;2;205;214;244m";
 const PEACH: &str = "\x1b[38;2;250;179;135m";
-const RESET: &str = "\x1b[0m";
 
 const SPEEDTEST_FENS: &str = include_str!("../data/speedtest.fens");
 

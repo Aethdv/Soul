@@ -8,9 +8,15 @@
 
 pub type Rgb = (u8, u8, u8);
 
+pub const RESET: &str = "\x1b[0m";
+pub const BOLD: &str = "\x1b[1m";
+
 /// Dead-level neutral: the color of exactly zero advantage → `+0.00`.
 /// Engine eval and tuner Elo both paint their zero state with it.
 pub const LEVEL: Rgb = (120, 170, 220);
+
+/// Branding gold: table headers and field labels.
+pub const GOLD: Rgb = (218, 165, 32);
 
 // Advantage-gradient waypoints as (L, C, H°). Authored in OkLCH, never flattened.
 const WIN_GOLD: (f64, f64, f64) = (0.80, 0.13, 92.0);

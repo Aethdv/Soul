@@ -715,7 +715,7 @@ where I: Iterator<Item = &'a str> {
     }
 
     if let Some(tok) = bool_str {
-        let val = matches!(tok.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1");
+        let val = parse_bool(tok);
 
         if target & 0b01 != 0 {
             state.stdout_isatty = Some(val);

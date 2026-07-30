@@ -18,16 +18,13 @@ use std::{
 };
 
 use crate::{
-    color,
+    color::{self, BOLD, GOLD, RESET},
+    core::util::human,
     engine::{
         history::{CORRECTION_LIMIT, CORRECTION_SCALE, CORRECTION_WEIGHT_SCALE},
         search_params::SearchParams,
     },
 };
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const HEADER: color::Rgb = (218, 165, 32);
 
 const TABLES: usize = 3;
 const NAMES: [&str; TABLES] = ["pawn", "minor", "major"];
@@ -110,7 +107,7 @@ pub fn report() {
     let ansi = std::io::stdout().is_terminal();
 
     // Title and column labels in the section-header gold.
-    let gold = if ansi { color::ansi_fg(HEADER) } else { String::new() };
+    let gold = if ansi { color::ansi_fg(GOLD) } else { String::new() };
     let (bold, reset) = if ansi { (BOLD, RESET) } else { ("", "") };
 
     println!("\n{gold}{bold}Correction History stats{reset}");
@@ -164,15 +161,6 @@ fn sat_pct(i: usize) -> f64 {
 fn weights() -> [i32; TABLES] {
     let sp = SearchParams::default();
     [CORRECTION_WEIGHT_SCALE, sp.minor_corr_weight, sp.major_corr_weight]
-}
-
-/// Hooman counters.
-fn human(n: u64) -> String {
-    match n {
-        1_000_000.. => format!("{:.2}M", n as f64 / 1e6),
-        1_000.. => format!("{:.1}K", n as f64 / 1e3),
-        _ => n.to_string(),
-    }
 }
 
 /// Pad `text` to the given column's width and alignment, then wrap in `rgb`

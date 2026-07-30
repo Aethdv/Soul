@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    color::{self, Rgb},
+    color::{self, BOLD, RESET, Rgb},
     core::{board::Position, defs::Protocol},
     engine::{
         history::History,
@@ -25,9 +25,6 @@ use crate::{
 };
 
 const FENS: &str = include_str!("../data/bench.fens");
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
 
 const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 const FPS: u64 = 30;

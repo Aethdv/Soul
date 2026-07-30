@@ -50,6 +50,15 @@ pub fn format_comma(n: u64) -> String {
     buf
 }
 
+/// Hooman counters: 1234 -> "1.2K", 1234567 -> "1.23M".
+pub fn human(n: u64) -> String {
+    match n {
+        1_000_000.. => format!("{:.2}M", n as f64 / 1e6),
+        1_000.. => format!("{:.1}K", n as f64 / 1e3),
+        _ => n.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

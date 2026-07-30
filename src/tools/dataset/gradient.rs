@@ -304,7 +304,7 @@ impl FeatureRecord {
             }
 
             let us_piece = is_black == stm_black;
-            let sq_idx = if is_black { usize::from(sq.0) } else { usize::from(sq.0 ^ 0x38) };
+            let sq_idx = if is_black { sq.as_usize() } else { sq.flip_rank().as_usize() };
 
             self.piece_slot[count] = PieceSlot::new(pt, psqt::mirror_sq(sq_idx));
 

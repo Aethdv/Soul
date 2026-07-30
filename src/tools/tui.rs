@@ -4,7 +4,7 @@
 use std::{fmt::Write, io, io::Write as _};
 
 use crate::{
-    color::{self, Rgb},
+    color::{self, BOLD, GOLD, RESET, Rgb},
     core::{
         board::Position,
         defs::{Color, MATE, MATE_BOUND, PieceType, Protocol, Square},
@@ -17,7 +17,6 @@ use crate::{
     },
 };
 
-const GOLD_DIM: Rgb = (218, 165, 32); // branding
 const GOLD_BRIGHT: Rgb = (255, 215, 0); // branding
 const STEEL: Rgb = (176, 196, 222); // header info
 const SLATE: Rgb = (119, 136, 153); // header dim
@@ -40,9 +39,6 @@ const LOSE_C: Rgb = (224, 105, 100);
 const PV_WHITE: Rgb = (246, 238, 218);
 const PV_BLACK: Rgb = (139, 154, 171);
 const DIM: Rgb = (130, 130, 130); // timestamps, move numbers
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
 
 pub struct SearchInfoData<'a> {
     pub depth: i32,
@@ -125,7 +121,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let reset = ansi_code(RESET, ansi);
     let bold = ansi_code(BOLD, ansi);
     let dim = tui_fg(DIM, ansi);
-    let label = tui_fg(GOLD_DIM, ansi);
+    let label = tui_fg(GOLD, ansi);
 
     // identity, depth/seldepth, clock, nodes, speed, TT fill.
     let t = data.time_ms.try_into().unwrap_or(u64::MAX);
@@ -239,7 +235,7 @@ fn ansi_code(code: &'static str, enabled: bool) -> &'static str {
 /// Maps centipawn score to [0, 1] win probability.
 #[inline]
 fn sigmoid(cp: i32) -> f64 {
-    1.0 / (1.0 + (f64::from(-cp) / 150.0).exp())
+    wdl::sigmoid(f64::from(cp), 1.0 / 150.0)
 }
 
 /// Color for a centipawn score; purple for mate,
@@ -294,7 +290,7 @@ fn wdl_row(label: &str, pct: f32, hue: Rgb, width: usize, enabled: bool) -> Stri
     }
 
     let pct_fg = tui_fg(color::mix(WDL_FLOOR, hue, frac), enabled);
-    format!("  {bold}{}{label:<4}{reset}    [{bars}{reset}] {pct_fg}{pct:>5.1}%{reset}", tui_fg(GOLD_DIM, enabled))
+    format!("  {bold}{}{label:<4}{reset}    [{bars}{reset}] {pct_fg}{pct:>5.1}%{reset}", tui_fg(GOLD, enabled))
 }
 
 fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {

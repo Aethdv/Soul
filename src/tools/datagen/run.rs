@@ -29,6 +29,7 @@ use super::{
 };
 use crate::{
     cli::Help,
+    color::RESET,
     core::{board::STARTPOS, defs::MAX_DEPTH, util::format_comma as format_num},
     tools::dataset::{MAGIC_V6, SoulEntry, append_encoded, load_epd_fens},
 };
@@ -36,7 +37,6 @@ use crate::{
 const GREEN: &str = "\x1b[92m";
 const YELLOW: &str = "\x1b[93m";
 const RED: &str = "\x1b[91m";
-const RESET: &str = "\x1b[0m";
 
 const BADGE_OK: &str = "\x1b[92m[OK]\x1b[0m";
 const BADGE_LOW: &str = "\x1b[93m[LOW]\x1b[0m";
