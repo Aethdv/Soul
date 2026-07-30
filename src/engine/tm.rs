@@ -8,7 +8,7 @@
 //! Budgets are decided by the first matching rule, in this order:
 //!
 //! 1. `infinite`   - search until commanded to stop.
-//! 2. `movetime`   - fixed wall clock per move; soft equals hard.
+//! 2. `movetime`   - the wall the caller named, spent whole; no overhead, no estimate.
 //! 3. unclocked    - no time and no increment; treat as infinite.
 //! 4. clocked play - phase-blended budget for sudden death, or explicit
 //!    remaining moves budget for classical time controls.
@@ -210,7 +210,7 @@ fn compute_budget(
     }
 
     if limits.movetime > 0 {
-        let limit = with_overhead(limits.movetime, overhead);
+        let limit = Duration::from_millis(limits.movetime.max(1));
         return (limit, limit);
     }
 

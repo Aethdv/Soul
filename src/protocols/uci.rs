@@ -220,6 +220,17 @@ pub fn run_commands(lines: &[String]) {
         if !process_command(&mut state, line.trim()) {
             break;
         }
+
+        // `go` hands the search to another thread and returns, so a `quit` on the
+        // next line would stop it before it reported. `cmd_go` raises the flag
+        // before it sends, so this cannot miss the start of a search.
+        while state.is_searching.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+
+        while let Ok(table) = state.history_rx.try_recv() {
+            state.persistent_history = table;
+        }
     }
 }
 

@@ -537,6 +537,10 @@ impl<'cfg> Searcher<'cfg> {
 
             last_iter_elapsed = elapsed;
 
+            // A fixed movetime has no later move to bank unspent budget for,
+            // so check_signals' hard wall is its only stop.
+            let clocked = self.cfg.limits.movetime == 0;
+
             // Between iterations:
             // Bail if soft limits say we probably
             // can't finish the next depth in time.
@@ -549,8 +553,9 @@ impl<'cfg> Searcher<'cfg> {
             // decide when to stop. Main calls the shots.
             if self.cfg.thread_id == 0
                 && depth > 1
-                && (elapsed >= self.tm.soft_limit().as_millis() as u64
-                    || elapsed + (prev_depth_time * sp.tm_iter_scale as u64 / 100) > self.tm.hard_limit().as_millis() as u64
+                && ((clocked
+                    && (elapsed >= self.tm.soft_limit().as_millis() as u64
+                        || elapsed + (prev_depth_time * sp.tm_iter_scale as u64 / 100) > self.tm.hard_limit().as_millis() as u64))
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
             {
                 break;
