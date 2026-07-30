@@ -1,8 +1,8 @@
-//! Serialization layer for `SoulEntry` training data.
+//! Serialization for Soul's own zstd-compressed frames, and the EPD text
+//! parsers beside them.
 //!
-//! Two formats are supported:
-//!   - `SoulEntry`; 32-byte nibble-array frames, zstd-compressed.
-//!   - EPD text; one position per line, with game-result annotations.
+//! EPD arrives for two different jobs: a line carrying a game result becomes a
+//! training entry; lines read for their FEN alone stock an opening book.
 
 use std::{
     fs,

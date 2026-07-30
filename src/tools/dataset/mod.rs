@@ -96,7 +96,6 @@ pub const fn flip_result(result: u8, stm: Color) -> u8 {
 mod tests {
     use super::{Color, flip_result, flip_wdl};
 
-    /// What lets one function serve both directions, and what a double flip breaks.
     #[test]
     fn flipping_twice_returns_the_original() {
         for stm in [Color::White, Color::Black] {
