@@ -359,7 +359,7 @@ fn unpack_safety(raw: [u8; 4]) -> SafetyMetrics {
 /// A record field carries the name of the `SharedFeatures` field it copies, so
 /// one roster column spells both sides.
 macro_rules! record_bonus {
-    ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+    ( [] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
         impl FeatureRecord {
             fn pack_terms(&mut self, sf: &SharedFeatures, sign: i32) {
                 // Xray registers under its own bucket, so no roster row carries it.

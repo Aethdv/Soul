@@ -604,7 +604,7 @@ mod tests {
     /// Every roster term alone, so a scatter drift names the term that caused it
     /// instead of the pipeline.
     macro_rules! bonus_term_oracles {
-        ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+        ( [] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
             #[test]
             fn test_bonus_terms_oracle() {
                 $( bonus_term_oracles!(@one $kind $term, $($spec)*); )*

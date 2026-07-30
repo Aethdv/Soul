@@ -67,10 +67,28 @@ crate::define_tunables! {impl_eval_params}
 
 /// Every consumer works from this list. A term implemented in one place and
 /// registered in another builds clean and stops being evaluated.
+///
+/// Rows reach a consumer behind a bracketed carry slot, so a list declared
+/// elsewhere can chain in through `@tunables` and have its own rows arrive in
+/// front of them. The rewrite into tunable rows lives here rather than beside
+/// the shape it produces, because a consumer travels as a bare ident and
+/// resolves in the scope that named it, while `$crate::` resolves from anywhere.
+///
+/// Every array term is six slots wide, so the width is matched as a literal
+/// rather than captured: one declared wider has no arm and names itself at the
+/// build, where a captured width would scatter past its own block.
 #[macro_export]
 macro_rules! bonus_terms {
-    ($macro:ident) => {
-        $macro! {
+    ($macro:ident $($carried:tt)*) => {
+        $crate::bonus_terms! { @emit direct [$macro] [$($carried)*] }
+    };
+
+    (@tunables $macro:ident, $($carried:tt)*) => {
+        $crate::bonus_terms! { @emit rewrite [$macro] [$($carried)*] }
+    };
+
+    (@emit $mode:ident [$macro:ident] [$($carried:tt)*]) => {
+        $crate::bonus_terms! { @$mode [$macro] [$($carried)*]
             TempoTerm           = scalar(tempo, tempo_mg, tempo_eg, tempo_offset);
             BishopPairTerm      = scalar(bishop_pair_diff, bishop_pair_mg, bishop_pair_eg, bishop_pair_offset);
             RookOpenTerm        = scalar(rook_open_diff, rook_open_mg, rook_open_eg, rook_open_offset);
@@ -84,10 +102,32 @@ macro_rules! bonus_terms {
             EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
         }
     };
+
+    (@direct [$macro:ident] [$($carried:tt)*] $($rows:tt)*) => {
+        $macro! { [$($carried)*] $($rows)* }
+    };
+
+    (@rewrite [$macro:ident] [$($out:tt)*]
+        $term:ident = scalar($feature:ident, $mg:ident, $eg:ident, $off:ident); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! {
+            @rewrite [$macro] [$($out)* ($mg, Scalar, $off, 0), ($eg, Scalar, $off, 1),] $($rest)*
+        }
+    };
+
+    (@rewrite [$macro:ident] [$($out:tt)*]
+        $term:ident = array($feature:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, 6); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! {
+            @rewrite [$macro] [$($out)* ($mg, Array6, $mg_off, 0), ($eg, Array6, $eg_off, 0),] $($rest)*
+        }
+    };
+
+    (@rewrite [$macro:ident] [$($out:tt)*]) => { $macro! { $($out)* } };
 }
 
 macro_rules! register_bonus {
-    ($( $term:ident = $kind:ident ( $($spec:tt)* ) ; )*) => {
+    ([] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )*) => {
         crate::register_terms! {
             mobility::MobilityTerm   => mobility,
             mobility::KingSafetyTerm => king_safety,
@@ -608,7 +648,7 @@ impl term::TermSource<XrayTerm> for SharedFeatures {
 /// Generates `LinearTerm` + `TermSource for SharedFeatures` for a tapered bonus.
 /// `scalar` writes one `(mg, eg)` slot pair; `array` writes MG/EG blocks of `$n` slots.
 macro_rules! tapered_bonus_term {
-    ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+    ( [] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
         $( tapered_bonus_term!(@$kind $term, $($spec)*); )*
     };
 
