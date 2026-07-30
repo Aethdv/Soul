@@ -133,7 +133,7 @@ impl ReplayFilter {
             return true;
         }
 
-        if self.wdl_filtered && rng.f64() < 1.0 - Self::result_chance(eval, material_count(pos), wdl) {
+        if self.wdl_filtered && rng.f64() < 1.0 - Self::result_chance(eval, pos.material_count(), wdl) {
             return true;
         }
 
@@ -179,18 +179,6 @@ impl ReplayFilter {
             _ => loss,
         }
     }
-}
-
-/// Classical 1/3/3/5/9 over both sides, kings excluded: the scale `wdl_model`
-/// clamps into 17..=78.
-fn material_count(pos: &Position) -> u32 {
-    let weighted = pos.piece_count(PieceType::Pawn)
-        + 3 * pos.piece_count(PieceType::Knight)
-        + 3 * pos.piece_count(PieceType::Bishop)
-        + 5 * pos.piece_count(PieceType::Rook)
-        + 9 * pos.piece_count(PieceType::Queen);
-
-    weighted.unsigned_abs()
 }
 
 pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<Vec<SoulEntry>> {
