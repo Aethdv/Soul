@@ -3,6 +3,9 @@
 //! Every module here imports from this file, so the surface between the two is one list
 //! and cannot grow without someone editing it. The test below is what makes that true
 //! rather than intended.
+//!
+//! The dataset formats are in the list because `soul` owns the readers and the
+//! writer, not because the eval needs them.
 
 pub use soul::{
     color::{self, Rgb, ansi_fg},

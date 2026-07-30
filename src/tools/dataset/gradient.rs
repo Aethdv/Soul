@@ -65,13 +65,13 @@ pub struct FeatureRecord {
     /// For volatility filtering at training time.
     pub static_eval: i16,
     pub xray_ortho: i8,
-    pub bishop_pair: i8,
-    pub rook_open: i8,
-    pub doubled_pawn: i8,
-    pub isolated_pawn: i8,
-    pub backward_pawn: i8,
+    pub bishop_pair_diff: i8,
+    pub rook_open_diff: i8,
+    pub doubled_pawn_diff: i8,
+    pub isolated_pawn_diff: i8,
+    pub backward_pawn_diff: i8,
     pub tempo: i8,
-    pub minor_behind_pawn: i8,
+    pub minor_behind_pawn_diff: i8,
     pub piece_count: u8,
 }
 
@@ -358,59 +358,53 @@ fn unpack_safety(raw: [u8; 4]) -> SafetyMetrics {
     }
 }
 
-macro_rules! record_terms {
-    (
-        scalar { $( ($term:ty, $field:ident, $src:ident) ),* $(,)? }
-        array  { $( ($arr_term:ty, $arr_field:ident, $arr_src:ident, $n:literal) ),* $(,)? }
-    ) => {
+/// A record field carries the name of the `SharedFeatures` field it copies, so
+/// one roster column spells both sides.
+macro_rules! record_bonus {
+    ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
         impl FeatureRecord {
             fn pack_terms(&mut self, sf: &SharedFeatures, sign: i32) {
-                $( self.$field = (sf.$src * sign) as i8; )*
-                $(
-                    for i in 0..$n {
-                        self.$arr_field[i] = (sf.$arr_src[i] * sign) as i8;
-                    }
-                )*
+                // Xray registers under its own bucket, so no roster row carries it.
+                self.xray_ortho = (sf.xray_ortho * sign) as i8;
+                $( record_bonus!(@pack $kind self, sf, sign, $($spec)*); )*
             }
         }
 
-        $(
-            impl term::TermSource<$term> for FeatureRecord {
-                type Input = f64;
-                #[inline(always)]
-                fn extract(&self) -> f64 { f64::from(self.$field) }
+        $( record_bonus!(@source $kind $term, $($spec)*); )*
+    };
+
+    (@pack scalar $rec:ident, $sf:ident, $sign:ident, $field:ident, $($rest:tt)*) => {
+        $rec.$field = ($sf.$field * $sign) as i8
+    };
+
+    (@pack array $rec:ident, $sf:ident, $sign:ident, $field:ident, $($rest:tt)*) => {
+        for i in 0..$rec.$field.len() {
+            $rec.$field[i] = ($sf.$field[i] * $sign) as i8;
+        }
+    };
+
+    (@source scalar $term:ident, $field:ident, $($rest:tt)*) => {
+        impl term::TermSource<$term> for FeatureRecord {
+            type Input = f64;
+
+            #[inline(always)]
+            fn extract(&self) -> f64 { f64::from(self.$field) }
+        }
+    };
+
+    (@source array $term:ident, $field:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, $n:literal) => {
+        impl term::TermSource<$term> for FeatureRecord {
+            type Input = [f64; $n];
+
+            #[inline(always)]
+            fn extract(&self) -> [f64; $n] {
+                std::array::from_fn(|i| f64::from(self.$field[i]))
             }
-        )*
-        $(
-            impl term::TermSource<$arr_term> for FeatureRecord {
-                type Input = [f64; $n];
-                #[inline(always)]
-                fn extract(&self) -> [f64; $n] {
-                    std::array::from_fn(|i| f64::from(self.$arr_field[i]))
-                }
-            }
-        )*
+        }
     };
 }
 
-record_terms! {
-    scalar {
-        (XrayTerm, xray_ortho, xray_ortho),
-        (TempoTerm, tempo, tempo),
-        (BishopPairTerm, bishop_pair, bishop_pair_diff),
-        (RookOpenTerm, rook_open, rook_open_diff),
-        (MinorBehindPawnTerm, minor_behind_pawn, minor_behind_pawn_diff),
-        (DoubledPawnTerm, doubled_pawn, doubled_pawn_diff),
-        (IsolatedPawnTerm, isolated_pawn, isolated_pawn_diff),
-        (BackwardPawnTerm, backward_pawn, backward_pawn_diff),
-    }
-    array {
-        (PhalanxTerm, phalanx, phalanx, 6),
-        (DefendedPawnTerm, defended_pawn, defended_pawn, 6),
-        (PassedPawnTerm, passed_pawn, passed_pawn, 6),
-        (EnemyKingDistTerm, enemy_king_dist, enemy_king_dist, 6),
-    }
-}
+crate::bonus_terms!(record_bonus);
 
 impl TermSource<MobilityTerm> for FeatureRecord {
     type Input = MobilityInput;
@@ -435,6 +429,15 @@ impl TermSource<KingSafetyTerm> for FeatureRecord {
     #[inline(always)]
     fn extract(&self) -> KingSafetyInput {
         KingSafetyInput { us: unpack_safety(self.safety_us), them: unpack_safety(self.safety_them) }
+    }
+}
+
+impl TermSource<XrayTerm> for FeatureRecord {
+    type Input = f64;
+
+    #[inline(always)]
+    fn extract(&self) -> f64 {
+        f64::from(self.xray_ortho)
     }
 }
 

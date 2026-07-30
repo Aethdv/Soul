@@ -6,10 +6,10 @@ use std::{
     path::Path,
 };
 
-pub const CONFIG_FILENAME: &str = "genfens_config.json";
+pub const CONFIG_FILENAME: &str = "datagen_config.json";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GenfensConfig {
+pub struct DatagenConfig {
     pub target_count: u64,
     pub output_path: String,
     pub book_paths: Vec<String>,
@@ -48,7 +48,7 @@ pub struct GenfensConfig {
     pub last_update: i64,
 }
 
-impl Default for GenfensConfig {
+impl Default for DatagenConfig {
     fn default() -> Self {
         Self {
             target_count: 8_000_000,
@@ -78,7 +78,7 @@ impl Default for GenfensConfig {
     }
 }
 
-impl GenfensConfig {
+impl DatagenConfig {
     pub fn load() -> Result<Self> {
         let path = CONFIG_FILENAME;
 

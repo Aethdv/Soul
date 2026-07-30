@@ -60,10 +60,10 @@ fn main() {
                 let limit = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                 tools::speedtest::run(limit);
             },
-            "genfens" => {
+            "datagen" => {
                 let stop = Arc::new(AtomicBool::new(false));
-                let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
-                tools::genfens::run(&genfens_args, &stop);
+                let datagen_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+                tools::datagen::run(&datagen_args, &stop);
             },
             "dataset" => {
                 let dataset_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();

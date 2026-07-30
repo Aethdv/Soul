@@ -320,8 +320,8 @@ pub fn print_help(use_ansi: bool) {
     h.command_args("bench", "<N>", "Benchmark to depth N");
     h.command_args("divide", "<N>", "Perft divide test");
     h.command("speedtest", "Run performance test");
+    h.command("datagen", "Generate self-play training data");
     h.command("dataset", "Manage datasets (inspect, info, encode)");
-    h.command("genfens", "Run datagen");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
     h.separator();
@@ -450,7 +450,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "bench" => tools::bench::run(parse_val(&mut tokens), 16),
         "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
         "speedtest" => tools::speedtest::run(0),
-        "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
 
         "gopretty" => {
             state.go_pretty = !state.go_pretty;

@@ -601,90 +601,30 @@ mod tests {
         assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + LAYOUT.xray_len));
     }
 
-    #[test]
-    fn test_bishop_pair_term_oracle() {
-        assert_oracle_matches(
-            "BishopPairTerm alone",
-            &values_in_range(LAYOUT.bishop_pair_offset..LAYOUT.bishop_pair_offset + LAYOUT.bishop_pair_len),
-        );
+    /// Every roster term alone, so a scatter drift names the term that caused it
+    /// instead of the pipeline.
+    macro_rules! bonus_term_oracles {
+        ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+            #[test]
+            fn test_bonus_terms_oracle() {
+                $( bonus_term_oracles!(@one $kind $term, $($spec)*); )*
+            }
+        };
+
+        // A scalar bonus owns one MG slot and the EG slot after it.
+        (@one scalar $term:ident, $field:ident, $mg:ident, $eg:ident, $off:ident) => {
+            assert_oracle_matches(concat!(stringify!($term), " alone"), &values_in_range(LAYOUT.$off..LAYOUT.$off + 2))
+        };
+
+        (@one array $term:ident, $field:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, $n:literal) => {
+            assert_oracle_matches(
+                concat!(stringify!($term), " alone"),
+                &values_in_range(LAYOUT.$mg_off..LAYOUT.$eg_off + $n),
+            )
+        };
     }
 
-    #[test]
-    fn test_rook_open_term_oracle() {
-        assert_oracle_matches(
-            "RookOpenTerm alone",
-            &values_in_range(LAYOUT.rook_open_offset..LAYOUT.rook_open_offset + LAYOUT.rook_open_len),
-        );
-    }
-
-    #[test]
-    fn test_passed_pawn_term_oracle() {
-        assert_oracle_matches(
-            "PassedPawnTerm alone",
-            &values_in_range(LAYOUT.passed_pawn_mg_offset..LAYOUT.passed_pawn_eg_offset + LAYOUT.passed_pawn_eg_len),
-        );
-    }
-
-    #[test]
-    fn test_enemy_king_dist_term_oracle() {
-        assert_oracle_matches(
-            "EnemyKingDistTerm alone",
-            &values_in_range(LAYOUT.enemy_king_dist_mg_offset..LAYOUT.enemy_king_dist_eg_offset + LAYOUT.enemy_king_dist_eg_len),
-        );
-    }
-
-    #[test]
-    fn test_doubled_pawn_term_oracle() {
-        assert_oracle_matches(
-            "DoubledPawnTerm alone",
-            &values_in_range(LAYOUT.doubled_pawn_offset..LAYOUT.doubled_pawn_offset + LAYOUT.doubled_pawn_len),
-        );
-    }
-
-    #[test]
-    fn test_isolated_pawn_term_oracle() {
-        assert_oracle_matches(
-            "IsolatedPawnTerm alone",
-            &values_in_range(LAYOUT.isolated_pawn_offset..LAYOUT.isolated_pawn_offset + LAYOUT.isolated_pawn_len),
-        );
-    }
-
-    #[test]
-    fn test_phalanx_term_oracle() {
-        assert_oracle_matches(
-            "PhalanxTerm alone",
-            &values_in_range(LAYOUT.phalanx_mg_offset..LAYOUT.phalanx_eg_offset + LAYOUT.phalanx_eg_len),
-        );
-    }
-
-    #[test]
-    fn test_defended_pawn_term_oracle() {
-        assert_oracle_matches(
-            "DefendedPawnTerm alone",
-            &values_in_range(LAYOUT.defended_pawn_mg_offset..LAYOUT.defended_pawn_eg_offset + LAYOUT.defended_pawn_eg_len),
-        );
-    }
-
-    #[test]
-    fn test_backward_pawn_term_oracle() {
-        assert_oracle_matches(
-            "BackwardPawnTerm alone",
-            &values_in_range(LAYOUT.backward_pawn_offset..LAYOUT.backward_pawn_offset + LAYOUT.backward_pawn_len),
-        );
-    }
-
-    #[test]
-    fn test_tempo_term_oracle() {
-        assert_oracle_matches("TempoTerm alone", &values_in_range(LAYOUT.tempo_offset..LAYOUT.tempo_offset + LAYOUT.tempo_len));
-    }
-
-    #[test]
-    fn test_minor_behind_pawn_term_oracle() {
-        assert_oracle_matches(
-            "MinorBehindPawnTerm alone",
-            &values_in_range(LAYOUT.minor_behind_pawn_offset..LAYOUT.minor_behind_pawn_offset + LAYOUT.minor_behind_pawn_len),
-        );
-    }
+    crate::bonus_terms!(bonus_term_oracles);
 
     /// `accumulate_record_grad` shares math with the board-based gradient paths.
     /// A drift here corrupts every `run_encoded` session.

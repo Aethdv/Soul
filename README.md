@@ -45,7 +45,7 @@ Soul uses a custom binary format (`.soul.zst`), a zstd-compressed nibble-array l
 Generate self-play data for evaluation tuning:
 
 ```bash
-./soul genfens -t <N> -n <N>
+./soul datagen -t <N> -n <N>
 ```
 
 *Inspect datasets or encode existing EPDs with the built-in utilities (`./soul dataset help`).*

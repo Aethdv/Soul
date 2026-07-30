@@ -67,6 +67,7 @@ crate::define_tunables! {impl_eval_params}
 
 /// Every consumer works from this list. A term implemented in one place and
 /// registered in another builds clean and stops being evaluated.
+#[macro_export]
 macro_rules! bonus_terms {
     ($macro:ident) => {
         $macro! {

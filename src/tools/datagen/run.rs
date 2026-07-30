@@ -1,4 +1,4 @@
-//! Orchestrator for self-play data generation ("genfens").
+//! Orchestrator for self-play data generation.
 //!
 //! Spawns N persistent worker threads, each playing complete games
 //! from book openings, filtering positions by search verification
@@ -23,7 +23,7 @@ use std::{
 };
 
 use super::{
-    config::GenfensConfig,
+    config::DatagenConfig,
     stats::{GlobalStats, get_rss_kb},
     worker::WorkerState,
 };
@@ -459,8 +459,8 @@ fn load_books(paths: &[String]) -> Vec<String> {
 
 /// Resolves the generation config, optionally resuming a previous run by
 /// loading saved state from disk and re-applying the CLI's target and books.
-fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
-    if resume && let Ok(mut cfg) = GenfensConfig::load() {
+fn resolve_config(parsed: DatagenConfig, resume: bool) -> DatagenConfig {
+    if resume && let Ok(mut cfg) = DatagenConfig::load() {
         cfg.target_count = parsed.target_count;
         cfg.book_paths = parsed.book_paths;
         return cfg;
@@ -470,7 +470,7 @@ fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
 }
 
 /// Prints the launch banner: what we're about to do and how.
-fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, start_count: usize) {
+fn print_banner(config: &DatagenConfig, num_threads: usize, book_count: usize, start_count: usize) {
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
     println!("Output: {}", config.output_path);
@@ -518,7 +518,7 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
 
 /// Flushes pending entries to disk and saves config state.
 /// Called periodically during generation and once at the end.
-fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &GenfensConfig) {
+fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &DatagenConfig) {
     if pending.is_empty() {
         return;
     }
@@ -561,7 +561,7 @@ fn print_help() {
     let h = Help::new(22);
 
     h.header("Usage:");
-    println!("  soul genfens [OPTIONS]");
+    println!("  soul datagen [OPTIONS]");
     println!();
 
     h.header("Options:");
@@ -594,11 +594,11 @@ fn print_help() {
     );
 }
 
-fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
-    // Defaults come solely from GenfensConfig::default(); the CLI overrides
+fn parse_args(args: &[&str]) -> (DatagenConfig, bool) {
+    // Defaults come solely from DatagenConfig::default(); the CLI overrides
     // fields in place. depth stays a local Option so the node-limit resolution
     // can run after the loop; resume is a control flag, not config.
-    let mut cfg = GenfensConfig::default();
+    let mut cfg = DatagenConfig::default();
     let mut depth: Option<i32> = None;
     let mut book_override = false;
     let mut resume = false;

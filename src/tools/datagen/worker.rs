@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-use super::{config::GenfensConfig, stats::GlobalStats};
+use super::{config::DatagenConfig, stats::GlobalStats};
 use crate::{
     core::{
         board::Position,
@@ -49,7 +49,7 @@ pub struct WorkerState {
     /// Fully labeled entries, ready for serialization.
     pub confirmed: Vec<SoulEntry>,
     pub book: Arc<Vec<String>>,
-    pub config: GenfensConfig,
+    pub config: DatagenConfig,
     pub rng: fastrand::Rng,
     pub global: Arc<GlobalStats>,
     pub tt: Arc<TranspositionTable>,
@@ -102,7 +102,7 @@ thread_local! {
 }
 
 impl WorkerState {
-    pub fn new(book: Arc<Vec<String>>, config: GenfensConfig, global: Arc<GlobalStats>) -> Self {
+    pub fn new(book: Arc<Vec<String>>, config: DatagenConfig, global: Arc<GlobalStats>) -> Self {
         let board = Position::new();
         Self {
             accumulator: board.get_initial_accumulator(),
