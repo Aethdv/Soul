@@ -16,7 +16,7 @@ use super::{config::DatagenConfig, stats::GlobalStats};
 use crate::{
     core::{
         board::Position,
-        defs::{Color, GameOutcome, PieceType},
+        defs::{Color, GameOutcome},
         moves::Move,
     },
     engine::{
@@ -350,7 +350,7 @@ impl WorkerState {
             // Stochastic subsampling for training diversity.
             let sampled = self.config.sample_rate >= 1.0 || self.rng.f64() < self.config.sample_rate;
 
-            let pieces: u32 = PieceType::ALL.iter().map(|&pt| self.board.piece_count(pt) as u32).sum();
+            let pieces = self.board.occupancy().popcount();
 
             let should_save = should_save && ply >= self.config.min_ply && pieces >= self.config.min_pieces;
 

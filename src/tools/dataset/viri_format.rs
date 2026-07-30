@@ -417,11 +417,13 @@ fn viri_to_soul_move(viri_move: u16, pos: &Position) -> Option<Move> {
         2 => Move::CASTLE,
         3 => {
             // Promotion flag values embed the capture bit in bit 0.
+            let capture_bit = u16::from(capture);
+
             match promo_piece {
-                0 => Move::PROM_N | if capture { 1 } else { 0 },
-                1 => Move::PROM_B | if capture { 1 } else { 0 },
-                2 => Move::PROM_R | if capture { 1 } else { 0 },
-                3 => Move::PROM_Q | if capture { 1 } else { 0 },
+                0 => Move::PROM_N | capture_bit,
+                1 => Move::PROM_B | capture_bit,
+                2 => Move::PROM_R | capture_bit,
+                3 => Move::PROM_Q | capture_bit,
                 _ => return None,
             }
         },

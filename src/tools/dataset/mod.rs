@@ -68,6 +68,13 @@ impl SoulEntry {
     pub fn material_count(&self) -> u32 {
         quant::material_count(self)
     }
+
+    /// Decode back to a board, through a FEN. A nibble decoder would skip the
+    /// string; no caller is hot enough to have wanted one.
+    #[inline]
+    pub fn to_board(&self) -> Position {
+        Position::from_fen(&self.to_fen())
+    }
 }
 
 /// Swaps a WDL between White-relative and side-to-move-relative.

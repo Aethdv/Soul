@@ -10,7 +10,6 @@ use std::array;
 use super::SoulEntry;
 use crate::{
     core::{
-        board::Position,
         defs::{Color, Square, TOTAL_PHASE},
         phase::compute_phase_f64,
         psqt,
@@ -87,11 +86,10 @@ impl FeatureRecord {
         (mg, mg + 32, sign)
     }
 
-    /// Startup cost per entry: FEN round-trip + `SharedFeatures::compute`.
-    /// A nibble→`Position` decoder would skip the string, but the parse is
-    /// negligible next to the feature work. Neither runs in the hot loop.
+    /// Startup cost per entry: the board decode plus `SharedFeatures::compute`,
+    /// the second dwarfing the first. Neither runs in the hot loop.
     pub fn from_entry(entry: &SoulEntry) -> Self {
-        let pos = Position::from_fen(&entry.to_fen());
+        let pos = entry.to_board();
 
         // SharedFeatures is White-relative; the record is STM-relative, so flip
         // perspective here. Side-symmetric metrics (mobility, safety) swap halves

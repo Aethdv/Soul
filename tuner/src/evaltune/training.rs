@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use super::engine::sigmoid;
-use super::engine::{FeatureRecord, LAYOUT, Position, TOTAL_PHASE, eval_f64, eval_params, flip_wdl};
+use super::engine::{FeatureRecord, LAYOUT, TOTAL_PHASE, eval_f64, eval_params, flip_wdl};
 use crate::evaltune::{loader, report::report_phase_balance};
 
 // EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
@@ -296,8 +296,7 @@ impl TunableData for loader::SoulEntry {
     /// Production code uses `eval_record` with a packed `FeatureRecord`.
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {
-        let board = Position::from_fen(&self.to_fen());
-        eval_f64(&board, values)
+        eval_f64(&self.to_board(), values)
     }
 
     #[inline]

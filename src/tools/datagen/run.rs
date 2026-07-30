@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{
     cli::Help,
-    core::{defs::MAX_DEPTH, util::format_comma as format_num},
+    core::{board::STARTPOS, defs::MAX_DEPTH, util::format_comma as format_num},
     tools::dataset::{MAGIC_V6, SoulEntry, append_encoded, load_epd_fens},
 };
 
@@ -54,7 +54,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let (parsed, resume) = parse_args(args);
 
     let book_fens = if parsed.startpos {
-        vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]
+        vec![STARTPOS.to_string()]
     } else {
         let fens = load_books(&parsed.book_paths);
 
