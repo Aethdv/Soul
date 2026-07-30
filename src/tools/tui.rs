@@ -40,7 +40,17 @@ const PV_WHITE: Rgb = (246, 238, 218);
 const PV_BLACK: Rgb = (139, 154, 171);
 const DIM: Rgb = (130, 130, 130); // timestamps, move numbers
 
+/// Whether a reported score is the iteration's answer or only a bound on it,
+/// left behind by a search that broke out of its aspiration window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScoreBound {
+    Exact,
+    Lower,
+    Upper,
+}
+
 pub struct SearchInfoData<'a> {
+    pub bound: ScoreBound,
     pub depth: i32,
     pub sel_depth: i32,
     pub score: i32,
@@ -150,7 +160,15 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let bar_width = 50;
     let (wf, df, lf) = wdl::wdl_model(data.score, data.material);
 
-    println!("  {bold}{label}Eval{reset}    {bold}{}{reset}\x1b[K", fmt_score_colored(data.score, 0, ansi));
+    // Two columns wide even when exact, so the score holds its place as frames
+    // redraw over each other.
+    let bound = match data.bound {
+        ScoreBound::Exact => "  ".to_string(),
+        ScoreBound::Lower => format!("{}≥{reset} ", tui_fg(SLATE, ansi)),
+        ScoreBound::Upper => format!("{}≤{reset} ", tui_fg(SLATE, ansi)),
+    };
+
+    println!("  {bold}{label}Eval{reset}    {bound}{bold}{}{reset}\x1b[K", fmt_score_colored(data.score, 0, ansi));
     println!("{}", wdl_row("Win", (wf * 100.0) as f32, WIN_C, bar_width, ansi));
     println!("{}", wdl_row("Draw", (df * 100.0) as f32, color::LEVEL, bar_width, ansi));
     println!("{}\n", wdl_row("Lose", (lf * 100.0) as f32, LOSE_C, bar_width, ansi));
@@ -407,11 +425,26 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
         String::new()
     };
 
+    // UCI puts the bound on the score itself: score cp 22 lowerbound.
+    let bound = match data.bound {
+        ScoreBound::Exact => "",
+        ScoreBound::Lower => " lowerbound",
+        ScoreBound::Upper => " upperbound",
+    };
+
     if pretty {
         let t = data.time_ms.try_into().unwrap_or(u64::MAX);
 
+        // One column, taken from the padding the score already carried, so the
+        // columns after it stay where they were.
+        let mark = match data.bound {
+            ScoreBound::Exact => " ".to_string(),
+            ScoreBound::Lower => format!("{}≥{}", tui_fg(SLATE, data.use_ansi), ansi_code(RESET, data.use_ansi)),
+            ScoreBound::Upper => format!("{}≤{}", tui_fg(SLATE, data.use_ansi), ansi_code(RESET, data.use_ansi)),
+        };
+
         print!(
-            "info depth {:>2} seldepth {:>2} score {}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
+            "info depth {:>2} seldepth {:>2} score {mark}{}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
             data.depth,
             data.sel_depth,
             fmt_score_colored(data.score, 7, data.use_ansi),
@@ -423,10 +456,11 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
         );
     } else {
         print!(
-            "info depth {} seldepth {} score {}{} nodes {} nps {} time {} hashfull {} pv",
+            "info depth {} seldepth {} score {}{}{} nodes {} nps {} time {} hashfull {} pv",
             data.depth,
             data.sel_depth,
             fmt_score_uci(data.score),
+            bound,
             wdl_str,
             data.nodes,
             data.nps,

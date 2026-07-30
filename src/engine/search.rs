@@ -591,8 +591,10 @@ impl<'cfg> Searcher<'cfg> {
                 };
 
                 if score <= alpha {
+                    self.print_bound(depth, score, tui::ScoreBound::Upper);
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
+                    self.print_bound(depth, score, tui::ScoreBound::Lower);
                     beta = (score + delta).min(INF);
                 } else {
                     break;
@@ -819,6 +821,7 @@ impl<'cfg> Searcher<'cfg> {
         let nps = (u128::from(total) * 1000) / ms;
 
         tui::SearchInfoData {
+            bound: tui::ScoreBound::Exact,
             depth,
             score,
             pv,
@@ -844,6 +847,36 @@ impl<'cfg> Searcher<'cfg> {
 
         let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
         let data = self.search_info_data(depth, score, pv, &history_vec);
+
+        if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
+            tui::print_pretty_search_info(&data);
+        } else {
+            tui::print_search_info(self.cfg.limits.protocol, &data, self.cfg.display.pretty_print);
+        }
+    }
+
+    /// Reports a score that left its aspiration window, before the re-search
+    /// settles it.
+    ///
+    /// Skipped for mate scores, where a bound reads as a mate claim the search
+    /// has not made.
+    #[cold]
+    fn print_bound(&self, depth: i32, score: i32, bound: tui::ScoreBound) {
+        if self.cfg.limits.silent || is_mate(score) {
+            return;
+        }
+
+        // A bound is a claim about the position, not about the move that broke the
+        // window, so it reports the line the engine currently believes. There is
+        // none to report until an iteration has completed one.
+        if self.prev_pv.len == 0 {
+            return;
+        }
+
+        let history: Vec<_> = self.pv_history.iter().copied().collect();
+        let mut data = self.search_info_data(depth, score, &self.prev_pv, &history);
+
+        data.bound = bound;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
             tui::print_pretty_search_info(&data);
