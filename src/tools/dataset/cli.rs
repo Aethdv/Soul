@@ -68,7 +68,8 @@ pub fn run(args: &[&str]) {
 
 fn load_any_dataset(path: &str) -> io::Result<Vec<SoulEntry>> {
     if path.ends_with(".viri") || path.ends_with(".vf") {
-        dataset::parse_viri_file(path)
+        // Inspection reports the file, so it reads every position in it.
+        dataset::parse_viri_file(path, &dataset::ReplayFilter::default())
     } else {
         dataset::load_encoded(path)
     }

@@ -6,7 +6,7 @@
 
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, BufRead, Read, Write},
 };
 
 use zerocopy::IntoBytes;
@@ -142,6 +142,30 @@ pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
 
     Some(SoulEntry::from_board(&board, stm_wdl, None))
+}
+
+/// Loads opening positions from an EPD file, falling back to raw FEN parsing.
+/// Both formats are common in the chess datagen ecosystem.
+pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
+    let file = fs::File::open(path)?;
+    let reader = io::BufReader::new(file);
+    let mut fens = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if let Some((board, _)) = parse_epd_str(&line) {
+            // EPD parsed successfully: re-export as FEN to normalize formatting.
+            fens.push(board.as_fen());
+        } else if Position::try_from_fen(&line).is_ok() {
+            // Fallback: raw FEN line (no EPD operations field).
+            fens.push(line);
+        }
+        // Lines that fail both parses are silently skipped,
+        // they're comments, blank lines, or corrupted entries.
+    }
+
+    Ok(fens)
 }
 
 fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {

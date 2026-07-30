@@ -15,8 +15,8 @@ use std::{
 };
 
 pub use super::engine::{
-    FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str, parse_viri_file,
-    save_encoded,
+    FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str,
+    parse_viri_file, save_encoded,
 };
 use super::{
     engine::{Color, Position as Board},
@@ -109,7 +109,10 @@ fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
 ///
 /// `.soul` / `.soul.zst` → [`load_encoded`]; `.viri` / `.vf` → [`parse_viri_file`];
 /// anything else → [`load_epd`] + [`SoulEntry::from_board`].
-pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
+///
+/// `filter` reaches the viriformat path alone; the other two store positions
+/// without the ply or the played move its gates read.
+pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> Vec<SoulEntry> {
     let mut all_entries = Vec::new();
 
     for path in paths {
@@ -121,7 +124,7 @@ pub fn load_datasets(paths: &[String]) -> Vec<SoulEntry> {
             }
         } else if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
-            match parse_viri_file(path) {
+            match parse_viri_file(path, filter) {
                 Ok(mut viri_entries) => all_entries.append(&mut viri_entries),
                 Err(e) => eprintln!("Error loading {path}: {e}"),
             }

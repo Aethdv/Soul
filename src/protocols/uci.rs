@@ -206,6 +206,20 @@ pub fn main_loop(initial_command: Option<String>) {
     }
 }
 
+/// Runs each argument as one protocol line, with no stdin listener behind it.
+///
+/// A test runner spawns the engine with its commands as arguments rather than on
+/// stdin, and `quit` ends the sequence early.
+pub fn run_commands(lines: &[String]) {
+    let mut state = UciState::new();
+
+    for line in lines {
+        if !process_command(&mut state, line.trim()) {
+            break;
+        }
+    }
+}
+
 pub fn run_cli_go(args: &[String]) {
     let state = UciState::new();
     let board = state.board;
@@ -322,6 +336,7 @@ pub fn print_help(use_ansi: bool) {
     h.command("speedtest", "Run performance test");
     h.command("datagen", "Generate self-play training data");
     h.command("dataset", "Manage datasets (inspect, info, encode)");
+    h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
     h.separator();
@@ -451,6 +466,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
         "speedtest" => tools::speedtest::run(0),
         "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {
             state.go_pretty = !state.go_pretty;

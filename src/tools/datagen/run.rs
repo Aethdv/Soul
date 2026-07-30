@@ -9,7 +9,7 @@
 
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read, Result, Write, stdout},
+    io::{BufReader, Read, Write, stdout},
     num::NonZero,
     path::Path,
     process,
@@ -29,8 +29,8 @@ use super::{
 };
 use crate::{
     cli::Help,
-    core::{board::Position, defs::MAX_DEPTH, util::format_comma as format_num},
-    tools::dataset::{MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
+    core::{defs::MAX_DEPTH, util::format_comma as format_num},
+    tools::dataset::{MAGIC_V6, SoulEntry, append_encoded, load_epd_fens},
 };
 
 const GREEN: &str = "\x1b[92m";
@@ -707,28 +707,4 @@ fn parse_suffix(s: &str) -> Option<u64> {
 
     // No suffix: strip commas and parse directly.
     s.replace(',', "").parse().ok()
-}
-
-/// Loads opening positions from an EPD file, falling back to raw FEN parsing.
-/// Both formats are common in the chess datagen ecosystem.
-fn load_epd_fens(path: &str) -> Result<Vec<String>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut fens = Vec::new();
-
-    for line in reader.lines() {
-        let line = line?;
-
-        if let Some((board, _)) = parse_epd_str(&line) {
-            // EPD parsed successfully: re-export as FEN to normalize formatting.
-            fens.push(board.as_fen());
-        } else if Position::try_from_fen(&line).is_ok() {
-            // Fallback: raw FEN line (no EPD operations field).
-            fens.push(line);
-        }
-        // Lines that fail both parses are silently skipped,
-        // they're comments, blank lines, or corrupted entries.
-    }
-
-    Ok(fens)
 }

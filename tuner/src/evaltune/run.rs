@@ -22,7 +22,7 @@ use super::{
     engine::{FeatureRecord, LAYOUT, Tunable, color, eval_params},
     groups::{GROUP_NAMES, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
     lion::{GateCensus, Lion, build_beta2_mask},
-    loader::{self, dataset_fingerprint, resolve_dataset_paths},
+    loader::{self, ReplayFilter, dataset_fingerprint, resolve_dataset_paths},
     palette,
     probes::{curvature_report, gather_cost, val_cost},
     report::*,
@@ -229,7 +229,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         return None;
     };
 
-    let all_entries = loader::load_datasets(&paths);
+    let all_entries = loader::load_datasets(&paths, &replay_filter(config));
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
@@ -242,6 +242,28 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
     best_val
+}
+
+/// The filter file, or every position when none was named. A named file that will
+/// not read is fatal: training on the whole set instead of the asked-for subset
+/// would silently answer a different question.
+fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
+    let Some(path) = config.replay_filter.as_deref() else {
+        return ReplayFilter::UNRESTRICTED;
+    };
+
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("{}[!] Cannot read replay filter {path}: {e}{RESET}", palette::ALARM);
+        std::process::exit(1);
+    });
+
+    let filter: ReplayFilter = toml::from_str(&text).unwrap_or_else(|e| {
+        eprintln!("{}[!] Cannot parse replay filter {path}: {e}{RESET}", palette::ALARM);
+        std::process::exit(1);
+    });
+
+    println!("Replay filter: {path}");
+    filter
 }
 
 fn train_entries(
@@ -1014,6 +1036,38 @@ fn train_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shipped filter spells viriformat's defaults out, so it has to parse and
+    /// to agree with them. A field renamed on either side shows up here.
+    #[test]
+    fn the_shipped_filter_file_is_the_defaults() {
+        let text = std::fs::read_to_string("replay_filter.toml").expect("replay_filter.toml must exist");
+        let filter: ReplayFilter = toml::from_str(&text).expect("replay_filter.toml must parse");
+        let defaults = ReplayFilter::default();
+
+        assert_eq!(filter.min_ply, defaults.min_ply);
+        assert_eq!(filter.min_pieces, defaults.min_pieces);
+        assert_eq!(filter.max_eval, defaults.max_eval);
+        assert_eq!(filter.filter_tactical, defaults.filter_tactical);
+        assert_eq!(filter.filter_check, defaults.filter_check);
+        assert_eq!(filter.filter_castling, defaults.filter_castling);
+        assert_eq!(filter.max_eval_incorrectness, defaults.max_eval_incorrectness);
+        assert_eq!(filter.wdl_filtered, defaults.wdl_filtered);
+        assert_eq!(filter.random_fen_skipping, defaults.random_fen_skipping);
+        assert_eq!(filter.material_count_filtered, defaults.material_count_filtered);
+    }
+
+    /// Matching viriformat's field names means its files parse here unchanged,
+    /// partial ones included.
+    #[test]
+    fn a_partial_filter_file_fills_from_the_defaults() {
+        let filter: ReplayFilter = toml::from_str("min_ply = 24\nfilter_castling = true\n").expect("a partial filter file parses");
+
+        assert_eq!(filter.min_ply, 24);
+        assert!(filter.filter_castling);
+        assert_eq!(filter.min_pieces, 4, "an unnamed field keeps viriformat's default");
+        assert!(filter.filter_tactical, "and so does an unnamed flag");
+    }
 
     #[test]
     fn a_cold_start_leaves_the_fixed_slots_alone() {

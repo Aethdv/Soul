@@ -412,6 +412,11 @@ pub struct EvalTuneConfig {
     /// Number of consecutive checks before freezing. Default: 2.
     #[serde(default = "default_freeze_consecutive")]
     pub freeze_consecutive: usize,
+    /// Path to a viriformat filter file, gating which replayed positions load.
+    /// Absent loads every position, so changing this moves the dataset
+    /// fingerprint and a checkpoint from another setting will not resume.
+    #[serde(default)]
+    pub replay_filter: Option<String>,
     /// Volatility filter threshold in centipawns. 0 = disabled.
     /// Positions where |static_eval - search_eval| exceeds this are skipped.
     #[serde(default)]
@@ -539,6 +544,7 @@ impl Default for TunerConfig {
                 freeze_cadence: 100,
                 freeze_threshold: 1e-7,
                 freeze_consecutive: 2,
+                replay_filter: None,
                 volatility_threshold: 0,
                 volatility_adaptive: true,
                 phase_balance: false,

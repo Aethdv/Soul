@@ -65,6 +65,10 @@ fn main() {
                 let datagen_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::datagen::run(&datagen_args, &stop);
             },
+            "genfens" => {
+                let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+                tools::genfens::run(&genfens_args);
+            },
             "dataset" => {
                 let dataset_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::dataset::cli::run(&dataset_args);
@@ -89,6 +93,13 @@ fn main() {
                 if let Some(best_move) = searcher.best_move() {
                     println!("bestmove {}", best_move.to_uci(board.is_frc));
                 }
+            },
+            // A whole command in one argument is how a runner spawns an engine,
+            // soul "genfens 8 seed 42 book None" "quit", so it goes to the
+            // protocol rather than the subcommand table. A single word that
+            // matched nothing above is a typo and still says so.
+            _ if args[1].contains(' ') => {
+                protocols::uci::run_commands(&args[1..]);
             },
             _ => {
                 eprintln!("Unknown command. Try 'help' for usage.");

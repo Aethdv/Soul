@@ -34,6 +34,11 @@ loss = "sce" # ce / focal / mse
 volatility_threshold = 0 # skip positions where |static - search| exceeds threshold (cp).
 volatility_adaptive = true # scales with piece count.
 
+# Gates which positions a viriformat game replays into.
+# In the shape the viriformat crate defines, so the same file drives bullet.
+# a checkpoint taken under a different setting will not resume.
+# replay_filter = "replay_filter.toml"
+
 # Phase-stratified gradient balancing.
 # Re-weights each training sample by the inverse frequency of its game-phase
 # bucket (0..24), so rare endgame phases aren't drowned by the midgame-heavy
