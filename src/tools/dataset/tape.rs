@@ -49,7 +49,7 @@ mod scatter {
 }
 
 macro_rules! impl_scatter {
-    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
+    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr, $konst:expr) ),* $(,)?) => {
         paste::paste! {
             impl DualEvalResult {
                 pub fn scatter_dynamic(&self, outer_deriv: f64, param_grads: &mut [f64]) {

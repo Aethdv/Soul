@@ -18,9 +18,8 @@ use crate::{
         autograd::EvalMath,
         combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
         eval_params::{
-            self, ATTACKER, BACKWARD_PAWN, BISHOP_PAIR, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG, DOUBLED_PAWN, EG_MOBILITY_CLOSED,
-            EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG, ISOLATED_PAWN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED,
-            MG_MOBILITY_OPEN, MINOR_BEHIND_PAWN, PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG, ROOK_OPEN, TEMPO, XRAY,
+            self, ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
+            XRAY,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -36,9 +35,17 @@ use crate::{
 /// - For the tuner: `EvalParams::<DualNode>::load_tunable()` seeds each weight as a
 ///   dual variable (`grad[slot] = 1`), so a gradient flows back to its slot.
 macro_rules! impl_eval_params {
-    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
+    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr, $konst:expr) ),* $(,)?) => {
         pub struct EvalParams<T: EvalMath> {
             $( pub $name: <T as EvalMath>::$ty, )*
+        }
+
+        impl EvalParams<i32> {
+            /// Load from compile-time const arrays. The compiler inlines this entirely.
+            #[inline(always)]
+            pub fn from_const() -> Self {
+                Self { $( $name: $konst, )* }
+            }
         }
 
         impl<T: EvalMath<Scalar = T>> EvalParams<T> {
@@ -115,7 +122,10 @@ macro_rules! bonus_terms {
         $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
-            @rewrite [$macro] [$($out)* ($mg, Scalar, [<$block _offset>], 0), ($eg, Scalar, [<$block _offset>], 1),] $($rest)*
+            @rewrite [$macro] [$($out)*
+                ($mg, Scalar, [<$block _offset>], 0, $crate::engine::eval_params::[<$block:upper>][0]),
+                ($eg, Scalar, [<$block _offset>], 1, $crate::engine::eval_params::[<$block:upper>][1]),
+            ] $($rest)*
         }
     };
 
@@ -123,7 +133,10 @@ macro_rules! bonus_terms {
         $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
-            @rewrite [$macro] [$($out)* ($mg, Array6, [<$block _mg_offset>], 0), ($eg, Array6, [<$block _eg_offset>], 0),] $($rest)*
+            @rewrite [$macro] [$($out)*
+                ($mg, Array6, [<$block _mg_offset>], 0, $crate::engine::eval_params::[<$block:upper _MG>]),
+                ($eg, Array6, [<$block _eg_offset>], 0, $crate::engine::eval_params::[<$block:upper _EG>]),
+            ] $($rest)*
         }
     };
 
@@ -304,47 +317,6 @@ pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
 #[inline(always)]
 pub fn extract_phase(acc: &Vi16x8) -> i32 {
     i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE)
-}
-
-impl EvalParams<i32> {
-    /// Load from compile-time const arrays. The compiler inlines this entirely.
-    #[inline(always)]
-    pub fn from_const() -> Self {
-        Self {
-            mg_mob_open: MG_MOBILITY_OPEN,
-            mg_mob_closed: MG_MOBILITY_CLOSED,
-            eg_mob_open: EG_MOBILITY_OPEN,
-            eg_mob_closed: EG_MOBILITY_CLOSED,
-            w_shield: KING_SAFETY[0],
-            w_ortho: KING_SAFETY[1],
-            w_diag: KING_SAFETY[2],
-            atk_weights: ATTACKER,
-            w_xray_ortho: XRAY[0],
-            w_king_danger: KING_DANGER[0],
-            tempo_mg: TEMPO[0],
-            tempo_eg: TEMPO[1],
-            bishop_pair_mg: BISHOP_PAIR[0],
-            bishop_pair_eg: BISHOP_PAIR[1],
-            rook_open_mg: ROOK_OPEN[0],
-            rook_open_eg: ROOK_OPEN[1],
-            minor_behind_pawn_mg: MINOR_BEHIND_PAWN[0],
-            minor_behind_pawn_eg: MINOR_BEHIND_PAWN[1],
-            doubled_pawn_mg: DOUBLED_PAWN[0],
-            doubled_pawn_eg: DOUBLED_PAWN[1],
-            isolated_pawn_mg: ISOLATED_PAWN[0],
-            isolated_pawn_eg: ISOLATED_PAWN[1],
-            backward_pawn_mg: BACKWARD_PAWN[0],
-            backward_pawn_eg: BACKWARD_PAWN[1],
-            phalanx_mg: PHALANX_MG,
-            phalanx_eg: PHALANX_EG,
-            defended_pawn_mg: DEFENDED_PAWN_MG,
-            defended_pawn_eg: DEFENDED_PAWN_EG,
-            passed_pawn_mg: PASSED_PAWN_MG,
-            passed_pawn_eg: PASSED_PAWN_EG,
-            enemy_king_dist_mg: ENEMY_KING_DIST_MG,
-            enemy_king_dist_eg: ENEMY_KING_DIST_EG,
-        }
-    }
 }
 
 /// Cached on `pawn_key`; the passed-span scan is the hot part of

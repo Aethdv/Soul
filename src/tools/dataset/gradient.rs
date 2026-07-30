@@ -16,11 +16,7 @@ use crate::{
     },
     engine::{
         combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
-        eval::{
-            BackwardPawnTerm, BishopPairTerm, DefendedPawnTerm, DoubledPawnTerm, EnemyKingDistTerm, IsolatedPawnTerm,
-            MinorBehindPawnTerm, PassedPawnTerm, PhalanxTerm, RookOpenTerm, SharedFeatures, TempoTerm, XrayTerm, apply_all_inputs,
-            evaluate_fast, extract_phase, scatter_all_terms,
-        },
+        eval::{SharedFeatures, XrayTerm, apply_all_inputs, evaluate_fast, extract_phase, scatter_all_terms},
         eval_params::LAYOUT,
         mobility::{
             KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, SideMetrics, compute_openness_raw,
@@ -382,7 +378,7 @@ macro_rules! record_bonus {
     };
 
     (@source scalar $term:ident, $field:ident, $($rest:tt)*) => {
-        impl term::TermSource<$term> for FeatureRecord {
+        impl term::TermSource<$crate::engine::eval::$term> for FeatureRecord {
             type Input = f64;
 
             #[inline(always)]
@@ -391,7 +387,7 @@ macro_rules! record_bonus {
     };
 
     (@source array $term:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
-        impl term::TermSource<$term> for FeatureRecord {
+        impl term::TermSource<$crate::engine::eval::$term> for FeatureRecord {
             type Input = [f64; $n];
 
             #[inline(always)]

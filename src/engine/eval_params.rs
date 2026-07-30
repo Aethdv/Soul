@@ -19,7 +19,7 @@ macro_rules! slot_width {
 /// Sum the dual-AD footprint over the tunable list; 2 accumulator lanes (MG/EG)
 /// plus one slot per scalar weight.
 macro_rules! count_dual_slots {
-    ($( ($name:ident, $ty:ident, $off:ident, $extra:expr) ),* $(,)?) => {
+    ($( ($name:ident, $ty:ident, $off:ident, $extra:expr, $konst:expr) ),* $(,)?) => {
         2usize $( + slot_width!($ty) )*
     };
 }
@@ -409,16 +409,16 @@ macro_rules! define_weight_params {
 macro_rules! define_tunables {
     ($macro:ident) => {
         $crate::bonus_terms! { @tunables $macro,
-            (mg_mob_open,   Vec4,   mobility_open_offset,   0),
-            (eg_mob_open,   Vec4,   mobility_open_offset,   4),
-            (mg_mob_closed, Vec4,   mobility_closed_offset, 0),
-            (eg_mob_closed, Vec4,   mobility_closed_offset, 4),
-            (w_shield,      Scalar, king_safety_offset,     0),
-            (w_ortho,       Scalar, king_safety_offset,     1),
-            (w_diag,        Scalar, king_safety_offset,     2),
-            (atk_weights,   Array6, attacker_offset,        0),
-            (w_xray_ortho,  Scalar, xray_offset,            0),
-            (w_king_danger, Scalar, king_danger_offset,     0),
+            (mg_mob_open,   Vec4,   mobility_open_offset,   0, MG_MOBILITY_OPEN),
+            (eg_mob_open,   Vec4,   mobility_open_offset,   4, EG_MOBILITY_OPEN),
+            (mg_mob_closed, Vec4,   mobility_closed_offset, 0, MG_MOBILITY_CLOSED),
+            (eg_mob_closed, Vec4,   mobility_closed_offset, 4, EG_MOBILITY_CLOSED),
+            (w_shield,      Scalar, king_safety_offset,     0, KING_SAFETY[0]),
+            (w_ortho,       Scalar, king_safety_offset,     1, KING_SAFETY[1]),
+            (w_diag,        Scalar, king_safety_offset,     2, KING_SAFETY[2]),
+            (atk_weights,   Array6, attacker_offset,        0, ATTACKER),
+            (w_xray_ortho,  Scalar, xray_offset,            0, XRAY[0]),
+            (w_king_danger, Scalar, king_danger_offset,     0, KING_DANGER[0]),
         }
     };
 }
