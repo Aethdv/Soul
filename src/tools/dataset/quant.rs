@@ -201,6 +201,25 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     fen
 }
 
+/// Weighted material over both sides, the scale `wdl_model` clamps into 17..=78.
+///
+/// The king weighs nothing and the castling-rook encoding weighs a rook, the two
+/// cases [`to_fen`] also has to unpack.
+pub fn material_count(entry: &SoulEntry) -> u32 {
+    const WEIGHTS: [u32; 7] = [1, 3, 3, 5, 9, 0, 5];
+
+    let mut total = 0;
+    let mut idx = 0usize;
+    let mut occ = entry.occupancy;
+
+    while occ != 0 {
+        occ &= occ - 1;
+        total += WEIGHTS[usize::from(next_nibble(&entry.pieces, &mut idx) & 0x07)];
+    }
+
+    total
+}
+
 #[inline]
 pub(super) fn next_nibble(pieces: &[u8; 16], idx: &mut usize) -> u8 {
     let i = *idx;
@@ -224,5 +243,24 @@ mod tests {
         assert_eq!(from_board(&board, 0.5, None).score, SoulEntry::NO_SCORE);
         assert_eq!(from_board(&board, 0.5, Some(0)).score, 0);
         assert_eq!(from_board(&board, 0.5, Some(-42)).score, -42);
+    }
+
+    /// Counting from the nibbles has to land where counting from the board does,
+    /// including the castling rooks the packing stores under their own code.
+    #[test]
+    fn material_counted_from_the_nibbles_matches_the_board() {
+        for fen in [
+            STARTPOS,
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+            "8/2k5/8/4q3/8/3N4/5PPP/6K1 b - - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        ] {
+            let board = Position::from_fen(fen);
+
+            assert_eq!(from_board(&board, 0.5, None).material_count(), board.material_count(), "{fen}");
+        }
+
+        assert_eq!(Position::from_fen(STARTPOS).material_count(), 78, "the scale wdl_model was fitted on");
     }
 }

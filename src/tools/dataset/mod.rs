@@ -62,4 +62,10 @@ impl SoulEntry {
     pub fn to_fen(&self) -> String {
         quant::to_fen(self)
     }
+
+    /// Weighted 1/3/3/5/9 material, matching [`Position::material_count`].
+    #[inline]
+    pub fn material_count(&self) -> u32 {
+        quant::material_count(self)
+    }
 }

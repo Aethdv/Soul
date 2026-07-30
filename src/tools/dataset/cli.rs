@@ -120,7 +120,7 @@ fn inspect(path: &str, count: usize) {
         let result = entry.result;
         let piece_count = entry.occupancy.count_ones();
 
-        let (w, d, l) = wdl_model(i32::from(score), piece_count);
+        let (w, d, l) = wdl_model(i32::from(score), entry.material_count());
         let wdl_str = format!("W:{:.1}% D:{:.1}% L:{:.1}%", w * 100.0, d * 100.0, l * 100.0);
 
         let _ = writeln!(out, "[{i:05}] {fen}");
