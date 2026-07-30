@@ -468,7 +468,9 @@ macro_rules! define_layout {
     };
 }
 
-define_layout! {
+// The core blocks, then one per bonus term: a scalar owns a block under its own
+// name, an array owns an MG and an EG block.
+crate::bonus_terms! { @blocks define_layout,
     psqt,
     material,
     mobility_open,
@@ -478,21 +480,6 @@ define_layout! {
     attacker,
     xray,
     king_danger,
-    tempo,
-    bishop_pair,
-    rook_open,
-    minor_behind_pawn,
-    doubled_pawn,
-    isolated_pawn,
-    backward_pawn,
-    phalanx_mg,
-    phalanx_eg,
-    defended_pawn_mg,
-    defended_pawn_eg,
-    passed_pawn_mg,
-    passed_pawn_eg,
-    enemy_king_dist_mg,
-    enemy_king_dist_eg,
 }
 
 /// Concatenates the groups into the parameter vector `LAYOUT` describes. A

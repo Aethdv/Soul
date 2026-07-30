@@ -604,23 +604,30 @@ mod tests {
     /// Every roster term alone, so a scatter drift names the term that caused it
     /// instead of the pipeline.
     macro_rules! bonus_term_oracles {
-        ( [] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+        ( [] $( $block:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
             #[test]
             fn test_bonus_terms_oracle() {
-                $( bonus_term_oracles!(@one $kind $term, $($spec)*); )*
+                $( bonus_term_oracles!(@one $kind $block, $($spec)*); )*
             }
         };
 
         // A scalar bonus owns one MG slot and the EG slot after it.
-        (@one scalar $term:ident, $field:ident, $mg:ident, $eg:ident, $off:ident) => {
-            assert_oracle_matches(concat!(stringify!($term), " alone"), &values_in_range(LAYOUT.$off..LAYOUT.$off + 2))
+        (@one scalar $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident) => {
+            paste::paste! {
+                assert_oracle_matches(
+                    concat!(stringify!($term), " alone"),
+                    &values_in_range(LAYOUT.[<$block _offset>]..LAYOUT.[<$block _offset>] + 2),
+                )
+            }
         };
 
-        (@one array $term:ident, $field:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, $n:literal) => {
-            assert_oracle_matches(
-                concat!(stringify!($term), " alone"),
-                &values_in_range(LAYOUT.$mg_off..LAYOUT.$eg_off + $n),
-            )
+        (@one array $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
+            paste::paste! {
+                assert_oracle_matches(
+                    concat!(stringify!($term), " alone"),
+                    &values_in_range(LAYOUT.[<$block _mg_offset>]..LAYOUT.[<$block _eg_offset>] + $n),
+                )
+            }
         };
     }
 

@@ -69,10 +69,10 @@ crate::define_tunables! {impl_eval_params}
 /// registered in another builds clean and stops being evaluated.
 ///
 /// Rows reach a consumer behind a bracketed carry slot, so a list declared
-/// elsewhere can chain in through `@tunables` and have its own rows arrive in
-/// front of them. The rewrite into tunable rows lives here rather than beside
-/// the shape it produces, because a consumer travels as a bare ident and
-/// resolves in the scope that named it, while `$crate::` resolves from anywhere.
+/// elsewhere can chain in through `@tunables` or `@blocks` and have its own rows
+/// arrive in front of them. Both rewrites live here rather than beside the
+/// shapes they produce, because a consumer travels as a bare ident and resolves
+/// in the scope that named it, while `$crate::` resolves from anywhere.
 ///
 /// Every array term is six slots wide, so the width is matched as a literal
 /// rather than captured: one declared wider has no arm and names itself at the
@@ -87,19 +87,23 @@ macro_rules! bonus_terms {
         $crate::bonus_terms! { @emit rewrite [$macro] [$($carried)*] }
     };
 
+    (@blocks $macro:ident, $($carried:tt)*) => {
+        $crate::bonus_terms! { @emit blocks [$macro] [$($carried)*] }
+    };
+
     (@emit $mode:ident [$macro:ident] [$($carried:tt)*]) => {
         $crate::bonus_terms! { @$mode [$macro] [$($carried)*]
-            TempoTerm           = scalar(tempo, tempo_mg, tempo_eg, tempo_offset);
-            BishopPairTerm      = scalar(bishop_pair_diff, bishop_pair_mg, bishop_pair_eg, bishop_pair_offset);
-            RookOpenTerm        = scalar(rook_open_diff, rook_open_mg, rook_open_eg, rook_open_offset);
-            MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg, minor_behind_pawn_offset);
-            DoubledPawnTerm     = scalar(doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg, doubled_pawn_offset);
-            IsolatedPawnTerm    = scalar(isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg, isolated_pawn_offset);
-            BackwardPawnTerm    = scalar(backward_pawn_diff, backward_pawn_mg, backward_pawn_eg, backward_pawn_offset);
-            PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
-            DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
-            PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
-            EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
+            tempo             = scalar(TempoTerm, tempo, tempo_mg, tempo_eg);
+            bishop_pair       = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg);
+            rook_open         = scalar(RookOpenTerm, rook_open_diff, rook_open_mg, rook_open_eg);
+            minor_behind_pawn = scalar(MinorBehindPawnTerm, minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg);
+            doubled_pawn      = scalar(DoubledPawnTerm, doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg);
+            isolated_pawn     = scalar(IsolatedPawnTerm, isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg);
+            backward_pawn     = scalar(BackwardPawnTerm, backward_pawn_diff, backward_pawn_mg, backward_pawn_eg);
+            phalanx           = array(PhalanxTerm, phalanx, phalanx_mg, phalanx_eg, 6);
+            defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6);
+            passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6);
+            enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6);
         }
     };
 
@@ -108,26 +112,40 @@ macro_rules! bonus_terms {
     };
 
     (@rewrite [$macro:ident] [$($out:tt)*]
-        $term:ident = scalar($feature:ident, $mg:ident, $eg:ident, $off:ident); $($rest:tt)*
+        $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
-            @rewrite [$macro] [$($out)* ($mg, Scalar, $off, 0), ($eg, Scalar, $off, 1),] $($rest)*
+            @rewrite [$macro] [$($out)* ($mg, Scalar, [<$block _offset>], 0), ($eg, Scalar, [<$block _offset>], 1),] $($rest)*
         }
     };
 
     (@rewrite [$macro:ident] [$($out:tt)*]
-        $term:ident = array($feature:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, 6); $($rest:tt)*
+        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
-            @rewrite [$macro] [$($out)* ($mg, Array6, $mg_off, 0), ($eg, Array6, $eg_off, 0),] $($rest)*
+            @rewrite [$macro] [$($out)* ($mg, Array6, [<$block _mg_offset>], 0), ($eg, Array6, [<$block _eg_offset>], 0),] $($rest)*
         }
     };
 
-    (@rewrite [$macro:ident] [$($out:tt)*]) => { $macro! { $($out)* } };
+    (@rewrite [$macro:ident] [$($out:tt)*]) => { paste::paste! { $macro! { $($out)* } } };
+
+    (@blocks [$macro:ident] [$($out:tt)*]
+        $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! { @blocks [$macro] [$($out)* $block,] $($rest)* }
+    };
+
+    (@blocks [$macro:ident] [$($out:tt)*]
+        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! { @blocks [$macro] [$($out)* [<$block _mg>], [<$block _eg>],] $($rest)* }
+    };
+
+    (@blocks [$macro:ident] [$($out:tt)*]) => { paste::paste! { $macro! { $($out)* } } };
 }
 
 macro_rules! register_bonus {
-    ([] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )*) => {
+    ([] $( $block:ident = $kind:ident ( $term:ident, $($spec:tt)* ) ; )*) => {
         crate::register_terms! {
             mobility::MobilityTerm   => mobility,
             mobility::KingSafetyTerm => king_safety,
@@ -648,11 +666,11 @@ impl term::TermSource<XrayTerm> for SharedFeatures {
 /// Generates `LinearTerm` + `TermSource for SharedFeatures` for a tapered bonus.
 /// `scalar` writes one `(mg, eg)` slot pair; `array` writes MG/EG blocks of `$n` slots.
 macro_rules! tapered_bonus_term {
-    ( [] $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
-        $( tapered_bonus_term!(@$kind $term, $($spec)*); )*
+    ( [] $( $block:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+        $( tapered_bonus_term!(@$kind $block, $($spec)*); )*
     };
 
-    (@scalar $term:ident, $sf_field:ident, $mg:ident, $eg:ident, $off:ident) => {
+    (@scalar $block:ident, $term:ident, $sf_field:ident, $mg:ident, $eg:ident) => {
         impl term::LinearTerm for $term {
             type Upstream = term::TaperPair;
             type Input = f64;
@@ -667,14 +685,14 @@ macro_rules! tapered_bonus_term {
 
             #[inline(always)]
             fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
-                let off = eval_params::LAYOUT.$off;
+                let off = paste::paste!(eval_params::LAYOUT.[<$block _offset>]);
                 acc.bonus_mg += values[off] * feature;
                 acc.bonus_eg += values[off + 1] * feature;
             }
 
             #[inline(always)]
             fn scatter(feature: f64, upstream: term::TaperPair, grads: &mut [f64]) {
-                let off = eval_params::LAYOUT.$off;
+                let off = paste::paste!(eval_params::LAYOUT.[<$block _offset>]);
                 grads[off] += upstream.d_mg * feature;
                 grads[off + 1] += upstream.d_eg * feature;
             }
@@ -688,7 +706,7 @@ macro_rules! tapered_bonus_term {
         }
     };
 
-    (@array $term:ident, $sf_field:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, $n:literal) => {
+    (@array $block:ident, $term:ident, $sf_field:ident, $mg:ident, $eg:ident, $n:literal) => {
         impl term::LinearTerm for $term {
             type Upstream = term::TaperPair;
             type Input = [f64; $n];
@@ -704,8 +722,8 @@ macro_rules! tapered_bonus_term {
 
             #[inline(always)]
             fn apply_input(features: [f64; $n], values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
-                let mg = eval_params::LAYOUT.$mg_off;
-                let eg = eval_params::LAYOUT.$eg_off;
+                let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
+                let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
 
                 for i in 0..$n {
                     acc.bonus_mg += values[mg + i] * features[i];
@@ -715,8 +733,8 @@ macro_rules! tapered_bonus_term {
 
             #[inline(always)]
             fn scatter(features: [f64; $n], upstream: term::TaperPair, grads: &mut [f64]) {
-                let mg = eval_params::LAYOUT.$mg_off;
-                let eg = eval_params::LAYOUT.$eg_off;
+                let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
+                let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
 
                 for i in 0..$n {
                     grads[mg + i] += upstream.d_mg * features[i];
