@@ -20,8 +20,8 @@ pub use soul::{
         wdl::sigmoid,
     },
     tools::dataset::{
-        FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str,
-        parse_viri_file, save_encoded, tape::eval_f64,
+        FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl, load_encoded,
+        parse_epd_str, parse_viri_file, save_encoded, tape::eval_f64,
     },
 };
 

@@ -19,10 +19,10 @@ use palette::{BRAND, CLEAR_LINE, DIM, LAB, RESET, VAL};
 use rayon::prelude::*;
 
 use super::{
-    engine::{FeatureRecord, LAYOUT, Tunable, color, eval_params},
+    engine::{Color, FeatureRecord, LAYOUT, Tunable, color, eval_params},
     groups::{GROUP_NAMES, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
     lion::{GateCensus, Lion, build_beta2_mask},
-    loader::{self, ReplayFilter, dataset_fingerprint, resolve_dataset_paths},
+    loader::{self, ReplayFilter, dataset_fingerprint, flip_wdl, resolve_dataset_paths},
     palette,
     probes::{curvature_report, gather_cost, val_cost},
     report::*,
@@ -319,9 +319,9 @@ fn train_entries(
     let (train, val) = entries.split_at(train_count);
 
     print_dataset_stats(train, val, entries.len(), |e: &loader::SoulEntry| {
-        let stm_white = (e.stm_and_ep & 0x80) == 0;
-        let r = f64::from(e.result) / 2.0;
-        if stm_white { r } else { 1.0 - r }
+        let stm = if (e.stm_and_ep & 0x80) == 0 { Color::White } else { Color::Black };
+
+        flip_wdl(f64::from(e.result) / 2.0, stm)
     });
 
     // Weight loss too, not just gradient, or selection fights training.

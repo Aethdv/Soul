@@ -5,7 +5,7 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-use crate::core::board::Position;
+use crate::core::{board::Position, defs::Color};
 
 pub mod cli;
 mod gradient;
@@ -67,5 +67,47 @@ impl SoulEntry {
     #[inline]
     pub fn material_count(&self) -> u32 {
         quant::material_count(self)
+    }
+}
+
+/// Swaps a WDL between White-relative and side-to-move-relative.
+///
+/// An involution, so one function serves both directions and only the call site
+/// says which one it meant.
+#[inline]
+pub fn flip_wdl(wdl: f64, stm: Color) -> f64 {
+    if stm == Color::Black { 1.0 - wdl } else { wdl }
+}
+
+/// The same swap over a packed `0 = loss, 1 = draw, 2 = win` result.
+#[inline]
+pub const fn flip_result(result: u8, stm: Color) -> u8 {
+    if matches!(stm, Color::Black) { 2 - result } else { result }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Color, flip_result, flip_wdl};
+
+    /// What lets one function serve both directions, and what a double flip breaks.
+    #[test]
+    fn flipping_twice_returns_the_original() {
+        for stm in [Color::White, Color::Black] {
+            for result in 0..=2u8 {
+                assert_eq!(flip_result(flip_result(result, stm), stm), result, "{result} under {stm:?}");
+            }
+
+            for wdl in [0.0, 0.25, 0.5, 1.0] {
+                assert!((flip_wdl(flip_wdl(wdl, stm), stm) - wdl).abs() < f64::EPSILON, "{wdl} under {stm:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn white_is_the_identity() {
+        assert_eq!(flip_result(2, Color::White), 2);
+        assert_eq!(flip_result(2, Color::Black), 0);
+        assert!((flip_wdl(1.0, Color::White) - 1.0).abs() < f64::EPSILON);
+        assert!(flip_wdl(1.0, Color::Black).abs() < f64::EPSILON);
     }
 }

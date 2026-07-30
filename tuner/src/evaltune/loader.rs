@@ -15,11 +15,11 @@ use std::{
 };
 
 pub use super::engine::{
-    FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, load_encoded, parse_epd_str,
-    parse_viri_file, save_encoded,
+    FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl, load_encoded,
+    parse_epd_str, parse_viri_file, save_encoded,
 };
 use super::{
-    engine::{Color, Position as Board},
+    engine::Position as Board,
     palette::{self, RESET},
 };
 use crate::core::fnv::Fnv1a;
@@ -70,8 +70,7 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
         };
 
         // Result is white-relative in EPD, we need STM-relative.
-        let stm_result = if board.stm == Color::Black { 1.0 - result } else { result };
-        encoded.push(SoulEntry::from_board(&board, stm_result, None));
+        encoded.push(SoulEntry::from_board(&board, flip_wdl(result, board.stm), None));
 
         if last_print.elapsed().as_millis() > 500 {
             print!("\r\x1b[K  Processed {} positions...", encoded.len());
@@ -133,8 +132,7 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> Vec<SoulEntry> 
             match load_epd(path) {
                 Ok(epd_entries) => {
                     for e in &epd_entries {
-                        let stm_result = if e.board.stm == Color::Black { 1.0 - e.result } else { e.result };
-                        all_entries.push(SoulEntry::from_board(&e.board, stm_result, None));
+                        all_entries.push(SoulEntry::from_board(&e.board, flip_wdl(e.result, e.board.stm), None));
                     }
                 },
                 Err(e) => eprintln!("Error loading {path}: {e}"),

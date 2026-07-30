@@ -12,8 +12,8 @@ use std::{
 use zerocopy::IntoBytes;
 
 use crate::{
-    core::{board::Position, defs::Color},
-    tools::dataset::SoulEntry,
+    core::board::Position,
+    tools::dataset::{SoulEntry, flip_wdl},
 };
 
 pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
@@ -53,6 +53,8 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
 
             entries.resize(base + count, SoulEntry::default());
             decoder.read_exact(entries[base..].as_mut_bytes())?;
+
+            check_results(&entries[base..], base)?;
         } else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
         }
@@ -139,9 +141,8 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 /// the training pipeline expects.
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
-    let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
 
-    Some(SoulEntry::from_board(&board, stm_wdl, None))
+    Some(SoulEntry::from_board(&board, flip_wdl(wdl, board.stm), None))
 }
 
 /// Loads opening positions from an EPD file, falling back to raw FEN parsing.
@@ -168,6 +169,18 @@ pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
     Ok(fens)
 }
 
+/// The result byte is whatever the file says. Past 2 it underflows [`flip_result`]
+/// and reads as a win in the stats tally, so it stops at the read.
+fn check_results(entries: &[SoulEntry], base: usize) -> io::Result<()> {
+    match entries.iter().position(|e| e.result > 2) {
+        Some(i) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("entry {} carries result {}, outside 0..=2", base + i, entries[i].result),
+        )),
+        None => Ok(()),
+    }
+}
+
 fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
     let mut enc = zstd::Encoder::new(writer, 3)?;
 
@@ -177,4 +190,45 @@ fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
     enc.finish()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SoulEntry, load_encoded, save_encoded};
+    use crate::core::board::{Position, STARTPOS};
+
+    fn temp(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("soul_{name}_{}.soul.zst", std::process::id()))
+            .display()
+            .to_string()
+    }
+
+    /// A dataset is bytes off a disk, and every consumer reads the result byte as
+    /// one of three values.
+    #[test]
+    fn a_result_byte_past_two_fails_the_load() {
+        let good = temp("io_good");
+        let bad = temp("io_bad");
+
+        let board = Position::from_fen(STARTPOS);
+        let mut entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
+
+        save_encoded(&good, &entries).expect("writing a good frame");
+        assert_eq!(load_encoded(&good).expect("reading it back").len(), 4);
+
+        entries[2].result = 3;
+        save_encoded(&bad, &entries).expect("writing the tampered frame");
+
+        // expect_err would need SoulEntry: Debug to format the Ok side.
+        let Err(err) = load_encoded(&bad) else {
+            panic!("a result past 2 must fail the load");
+        };
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("entry 2"), "the error must name the entry: {err}");
+
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&bad);
+    }
 }

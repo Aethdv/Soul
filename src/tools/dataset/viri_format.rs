@@ -16,7 +16,7 @@ use std::{
 
 use fastrand::Rng;
 
-use super::SoulEntry;
+use super::{SoulEntry, flip_result};
 use crate::{
     core::{
         board::{BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO},
@@ -167,9 +167,10 @@ impl ReplayFilter {
 
     /// How likely the eval said this game's actual result was.
     ///
-    /// Both arguments are White-relative, and the model is symmetric in the score's
-    /// sign, so reading the White-side probability against the White-side outcome is
-    /// consistent without a flip.
+    /// `wdl_model` is written for an STM-relative score, and gets a White-relative
+    /// one here. It is sign-symmetric, so negating the score swaps win and loss:
+    /// a White-relative score yields White-relative probabilities, which is the
+    /// perspective `wdl` is already in.
     fn result_chance(eval: i32, material: u32, wdl: u8) -> f64 {
         let (win, draw, loss) = wdl_model(eval, material);
 
@@ -221,7 +222,7 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<Vec<Soul
             if !filter.should_filter(&position, soul_move, i32::from(viri_score), game_result, ply, &mut rng) {
                 entries.push(SoulEntry::from_board(
                     &position,
-                    f64::from(stm_result(game_result, position.stm)) / 2.0,
+                    f64::from(flip_result(game_result, position.stm)) / 2.0,
                     Some(relative_score(viri_score, position.stm)),
                 ));
             }
@@ -240,12 +241,6 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<Vec<Soul
 fn relative_score(viri_score: i16, stm: Color) -> i32 {
     let s = i32::from(viri_score);
     if stm == Color::Black { -s } else { s }
-}
-
-/// Convert a white-relative viri result (0=black win, 1=draw, 2=white win)
-/// to an STM-relative result (0=loss, 1=draw, 2=win).
-fn stm_result(viri_result: u8, stm: Color) -> u8 {
-    if stm == Color::Black { 2 - viri_result } else { viri_result }
 }
 
 /// Also returns the opening's ply, since `min_ply` counts from the start of chess

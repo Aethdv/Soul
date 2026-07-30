@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use super::engine::sigmoid;
-use super::engine::{Color, FeatureRecord, LAYOUT, Position, TOTAL_PHASE, eval_f64, eval_params};
+use super::engine::{FeatureRecord, LAYOUT, Position, TOTAL_PHASE, eval_f64, eval_params, flip_wdl};
 use crate::evaltune::{loader, report::report_phase_balance};
 
 // EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
@@ -314,10 +314,8 @@ impl TunableData for loader::Entry {
 
     #[inline]
     fn result(&self) -> f64 {
-        // EPD results are from White's perspective.
-        // The eval produces a score relative to the side-to-move,
-        // so we flip for Black.
-        if self.board.stm == Color::Black { 1.0 - self.result } else { self.result }
+        // EPD gives the result White-relative.
+        flip_wdl(self.result, self.board.stm)
     }
 }
 

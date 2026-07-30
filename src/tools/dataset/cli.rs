@@ -11,8 +11,9 @@ use std::{
 
 use crate::{
     cli::Help,
+    core::defs::Color,
     engine::wdl::wdl_model,
-    tools::dataset::{self, SoulEntry},
+    tools::dataset::{self, SoulEntry, flip_result},
 };
 
 // SAFETY: Both byte arrays consist entirely of valid 7-bit ASCII characters (= and -).
@@ -160,7 +161,7 @@ fn info(path: &str) {
 
         // Result: 0=loss, 1=draw, 2=win from side-to-move perspective.
         // Convert to white-relative for the breakdown.
-        let white_result = if stm_white { result } else { 2 - result };
+        let white_result = flip_result(result, if stm_white { Color::White } else { Color::Black });
 
         if white_result >= 2 {
             white_wins += 1;
