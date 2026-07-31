@@ -731,8 +731,8 @@ mod tests {
         }
     }
 
-    /// Workload half of `make flops`, which runs it twice and differences a FLOP
-    /// counter across the two, pricing the gradient on its own.
+    /// Workload for `make flops`, which runs it once per mode and differences a
+    /// FLOP counter across the runs.
     ///
     /// The bench positions rather than `FENS`: op count scales with the pieces on
     /// the board, and `FENS` leans on sparse endgames chosen to isolate terms.
@@ -746,15 +746,24 @@ mod tests {
 
         let values = default_values(&collect_parameters());
         let boards: Vec<Position> = BENCH.lines().filter(|line| !line.trim().is_empty()).map(Position::from_fen).collect();
+        let records: Vec<FeatureRecord> =
+            boards.iter().map(|board| FeatureRecord::from_entry(&SoulEntry::from_board(board, TARGET, Some(20)))).collect();
         let mut grads = vec![0.0f64; values.len()];
         let mut sink = 0.0;
 
         for _ in 0..iters {
-            for board in &boards {
+            for (board, record) in boards.iter().zip(&records) {
                 sink += match mode.as_str() {
                     "grad" => eval_linear_grad(black_box(board), black_box(&values), TARGET, K, black_box(&mut grads)),
-                    // Eval plus the loss the gradient path also pays for, so the
-                    // scatter is what separates this mode from `grad`.
+                    // The cached twin, what an epoch runs.
+                    "record" => eval_record(black_box(record), black_box(&values)),
+                    "recordgrad" => {
+                        let eval = eval_record_full(black_box(record), black_box(&values));
+
+                        accumulate_record_grad(black_box(record), &eval, 1.0, black_box(&mut grads));
+                        eval.score
+                    },
+                    // The loss `grad` also pays, so `grad` minus this is the scatter.
                     "loss" => {
                         let err = sigmoid(black_box(eval_f64(black_box(board), black_box(&values))), K) - TARGET;
                         err * err

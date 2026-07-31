@@ -128,8 +128,10 @@ A term can no longer be half-declared. Every list that could once disagree with 
 
 ## Performance notes
 
-The direct path rides on the eval: `eval_f64` for the score, the feature coefficients derived alongside.
-`make flops` prices it, differencing a retired-FLOP counter across two runs of the same bench positions, one scoring only and one scoring plus scattering. The gradient costs 317 ops and ~90 ns per position against the eval's own 334 and ~170 ns; the scatter is 292 of those ops and the sigmoid with its loss derivative the other 25. Ops there are FLOPs, so an FMA or a packed lane counts per element.
+The direct path reuses the eval: `eval_f64` for the score, the feature coefficients derived alongside.
+`make flops` prices it, differencing a retired-FLOP counter across runs of the same bench positions, scoring only against scoring plus scattering. The gradient costs 317 ops and ~90 ns per position against the eval's own 334 and ~170 ns; the scatter is 292 of those ops and the sigmoid with its loss derivative the other 25. Ops there are FLOPs, so an FMA or a packed lane counts per element.
+
+The same run prices the cached twin, the one an epoch actually pays for: 368 ops and ~90 ns to score a record, 291 ops and ~36 ns more to scatter it. More arithmetic than the board path in half the time, since the record arrives with the feature extraction already done. Op count is not what binds the epoch loop, and `evaltune gather-cost` measures what does.
 
 Subnormals are kept out of the hot loop by construction rather than by MXCSR flags. `sigmoid` clamps its exponent to ±700, short of libm's very slow subnormal fallback between −708 and −744, which ignores FTZ/DAZ anyway; Lion hard-zeroes momentum once both it and the gradient fall under 1e-9; and the decaying EMAs start at zero for exactly the parameters whose gradients go quiet.
 Setting FTZ/DAZ instead would be immediate UB: Rust assumes the floating-point environment is in its default state and optimizes on that, whether or not the register is restored afterwards.
