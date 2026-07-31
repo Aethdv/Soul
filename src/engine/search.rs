@@ -633,14 +633,14 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            if self.is_stopped() {
+            if self.may_stop() {
                 break;
             }
 
             // best move floats to front, feeding the next iteration's ordering.
             self.root_moves.sort_by_key(|m| Reverse(m.score));
 
-            if self.is_stopped() {
+            if self.may_stop() {
                 break;
             }
 
@@ -807,7 +807,10 @@ impl<'cfg> Searcher<'cfg> {
             || (self.cfg.limits.nodes > 0 && self.node_count() >= self.cfg.limits.nodes)
         {
             self.cfg.stop.store(true, Ordering::Release);
-            return true;
+
+            // The flag is stored either way, so the pool stops on time; this thread
+            // carries its first iteration to the end, where `may_stop` picks it up.
+            return self.iter_depth > 1;
         }
 
         if self.cfg.display.go_pretty && self.nodes.is_multiple_of(NODE_CHECK_INTERVAL) {
@@ -822,6 +825,14 @@ impl<'cfg> Searcher<'cfg> {
         false
     }
 
+    /// A stop is only allowed to end the loop once an iteration has published a
+    /// line. Leaving before that hands `bestmove` whatever movegen listed first.
+    #[inline]
+    fn may_stop(&self) -> bool {
+        self.is_stopped() && self.prev_pv.len > 0
+    }
+
+    #[inline]
     fn is_stopped(&self) -> bool {
         self.cfg.stop.load(Ordering::Acquire)
     }
@@ -2149,5 +2160,21 @@ mod tests {
 
         let tweaked = SearchParams { lmr_base: 0, lmr_divisor: 350, rfp_margin: 400, ..SearchParams::default() };
         assert_ne!(run(SearchParams::default()), run(tweaked), "params didn't reach search");
+    }
+
+    /// A `stop` landing before the first iteration ends: `bestmove` still has to
+    /// name a move the search looked at, not the first one movegen listed.
+    #[test]
+    fn a_stop_before_the_first_iteration_still_leaves_a_line() {
+        let board = Position::from_fen(STARTPOS);
+        let limits = Limits { depth: 32, silent: true, protocol: Protocol::Uci, ..Default::default() };
+        let cfg = SearchConfig::new(limits, Instant::now(), Arc::new(AtomicBool::new(true)), 0, SearchParams::default());
+
+        let mut searcher = Searcher::new(&cfg, &board, &[board.hash], Arc::new(TranspositionTable::new(16, 1)));
+
+        searcher.iterative_deepening(&mut History::new());
+
+        assert!(searcher.prev_pv.len > 0, "the first iteration was abandoned");
+        assert_eq!(searcher.best_move(), searcher.prev_pv.get(0), "the move played is not the one searched");
     }
 }
