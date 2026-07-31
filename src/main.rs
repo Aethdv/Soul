@@ -90,9 +90,6 @@ fn main() {
                 let mut history_table = History::new();
                 let mut searcher = Searcher::new(&cfg, &board, &[], Arc::new(TranspositionTable::new(16, 1)));
                 searcher.iterative_deepening(&mut history_table);
-                if let Some(best_move) = searcher.best_move() {
-                    println!("bestmove {}", best_move.to_uci(board.is_frc));
-                }
             },
             // A whole command in one argument is how a runner spawns an engine,
             // soul "genfens 8 seed 42 book None" "quit", so it goes to the

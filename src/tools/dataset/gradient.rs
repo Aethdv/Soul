@@ -26,7 +26,7 @@ use crate::{
     weave::Vf64x4,
 };
 
-/// All tuner-side features for one position, packed into a 104-byte record
+/// All tuner-side features for one position, packed into a 100-byte record
 /// (two to three cache lines) so the hot loop reads one record instead of
 /// streaming a dozen arrays. Computed once at startup ([`FeatureRecord::from_entry`]);
 /// only `values` changes across epochs. The PSQT gather index is pre-resolved
@@ -51,9 +51,6 @@ pub struct FeatureRecord {
     pub mat_diffs: [i8; 6],
     /// Piece counts per type, for the tapered phase weight.
     pub phase_counts: [u8; 6],
-    /// Bit `i` set means slot `i` is theirs and subtracts. Sits here so its
-    /// alignment costs no padding.
-    pub piece_signs: u32,
     /// Raw `compute_openness_raw` result; openness = `open_raw / OPEN_UNITY`.
     /// Stored raw (not as a float) to keep the openness math bit-exact.
     pub open_raw: i32,
@@ -68,18 +65,18 @@ pub struct FeatureRecord {
     pub tempo: i8,
     pub minor_behind_pawn_diff: i8,
     pub piece_count: u8,
+    /// Slots below this are ours and add; the rest are theirs and subtract.
+    pub us_count: u8,
 }
 
-const _: () = assert!(size_of::<FeatureRecord>() == 104);
+const _: () = assert!(size_of::<FeatureRecord>() == 100);
 
 impl FeatureRecord {
-    /// `(mg_index, eg_index, sign)` for the `i`th piece of the gather.
+    /// The gather, split into the slots that add and the slots that subtract.
+    /// One place owns that boundary, so no consumer can read it differently.
     #[inline(always)]
-    fn piece(&self, i: usize) -> (usize, usize, f64) {
-        let mg = self.piece_slot[i].mg_index();
-        let sign = if self.piece_signs & (1 << i) == 0 { 1.0 } else { -1.0 };
-
-        (mg, mg + 32, sign)
+    fn gather(&self) -> (&[PieceSlot], &[PieceSlot]) {
+        self.piece_slot[..self.piece_count as usize].split_at(self.us_count as usize)
     }
 
     /// Startup cost per entry: the board decode plus `SharedFeatures::compute`,
@@ -156,30 +153,41 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     let phase_counts: [f64; 6] = array::from_fn(|i| f64::from(record.phase_counts[i]));
     let phase = compute_phase_f64(&phase_counts, values);
 
-    let mut lane_mg = 0.0;
-    let mut lane_eg = 0.0;
+    // PSQT: a data-dependent gather over the 384-entry table, the one index that
+    // can't be proven in bounds, over a body that runs up to 32× per position.
+    // Ours and theirs are packed apart, so the side is the slice a slot sits in
+    // and each half sums on its own before the two meet.
+    let (ours, theirs) = record.gather();
 
-    // PSQT: a data-dependent gather over the 384-entry table, the one loop whose
-    // index can't be proven in bounds and whose body runs up to 32× per position.
-    for i in 0..record.piece_count as usize {
-        let (mg_idx, eg_idx, sign) = record.piece(i);
+    let sum = |slots: &[PieceSlot]| {
+        slots.iter().fold((0.0, 0.0), |(mg, eg), slot| {
+            let (mg_idx, eg_idx) = slot.indices();
 
-        // SAFETY: a slot comes from `PieceSlot::new`, which takes a piece type ≤ 5 with a
-        // mirrored square ≤ 31, or from `Default`, which is slot zero. Either way
-        // `mg_index() ≤ 5·64+31 = 351` and `eg_idx = mg_idx+32 ≤ 383`, both inside the
-        // 384-entry PSQT block.
-        unsafe {
-            lane_mg += sign * *values.get_unchecked(mg_idx);
-            lane_eg += sign * *values.get_unchecked(eg_idx);
-        }
-    }
+            // SAFETY: a slot comes from `PieceSlot::new`, which takes a piece type ≤ 5 with a
+            // mirrored square ≤ 31, or from `Default`, which is slot zero. Either way
+            // `mg_index() ≤ 5·64+31 = 351` and `eg_idx = mg_idx+32 ≤ 383`, both inside the
+            // 384-entry PSQT block.
+            unsafe { (mg + *values.get_unchecked(mg_idx), eg + *values.get_unchecked(eg_idx)) }
+        })
+    };
 
-    // Zero diff adds nothing, so eval omits the zero-diff guard the gradient scatter keeps.
+    let (us_mg, us_eg) = sum(ours);
+    let (them_mg, them_eg) = sum(theirs);
+
+    let mut lane_mg = us_mg - them_mg;
+    let mut lane_eg = us_eg - them_eg;
+
+    // Most types are level in most positions, so skipping the zero products beats
+    // paying for them; the gradient scatter guards the same way.
     let mat = l.material_offset;
 
     for pt in 0..6 {
-        lane_mg += f64::from(record.mat_diffs[pt]) * values[mat + pt];
-        lane_eg += f64::from(record.mat_diffs[pt]) * values[mat + 6 + pt];
+        let diff = f64::from(record.mat_diffs[pt]);
+
+        if diff != 0.0 {
+            lane_mg += diff * values[mat + pt];
+            lane_eg += diff * values[mat + 6 + pt];
+        }
     }
 
     let mut buckets = Accumulators::<f64> {
@@ -209,15 +217,26 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
 
     let l = &LAYOUT;
 
-    for i in 0..record.piece_count as usize {
-        let (mg_idx, eg_idx, sign) = record.piece(i);
+    // One product per lane for the whole gather, now that the sign is the slice:
+    // ours take the step, theirs take its negation.
+    let (ours, theirs) = record.gather();
+    let mut scatter = |slots: &[PieceSlot], mg_step: f64, eg_step: f64| {
+        for slot in slots {
+            let (mg_idx, eg_idx) = slot.indices();
 
-        // SAFETY: as in `eval_record_full`, the bound is `PieceSlot`'s to keep.
-        unsafe {
-            *grads.get_unchecked_mut(mg_idx) += gradient * sign * mg_w;
-            *grads.get_unchecked_mut(eg_idx) += gradient * sign * eg_w;
+            // SAFETY: as in `eval_record_full`, the bound is `PieceSlot`'s to keep.
+            unsafe {
+                *grads.get_unchecked_mut(mg_idx) += mg_step;
+                *grads.get_unchecked_mut(eg_idx) += eg_step;
+            }
         }
-    }
+    };
+
+    let mg_step = gradient * mg_w;
+    let eg_step = gradient * eg_w;
+
+    scatter(ours, mg_step, eg_step);
+    scatter(theirs, -mg_step, -eg_step);
 
     let mat = l.material_offset;
 
@@ -266,16 +285,26 @@ impl PieceSlot {
 
         slot + (slot & !31)
     }
+
+    /// Both lanes of this piece: the EG table sits 32 slots past the MG one.
+    #[inline(always)]
+    const fn indices(self) -> (usize, usize) {
+        let mg = self.mg_index();
+
+        (mg, mg + 32)
+    }
 }
 
 impl FeatureRecord {
-    /// Walks the entry's pieces once, filling the gather slots, their signs, the
-    /// material differentials, the phase counts and the raw openness.
+    /// Walks the entry's pieces once, filling the gather slots ours before theirs,
+    /// the material differentials, the phase counts and the raw openness.
     ///
     /// Mirrors the encoder's nibble layout: bits 0-2 = type, bit 3 = color. An
     /// unmoved-rook code (6) folds back to a rook (3).
     fn pack_board(&mut self, entry: &SoulEntry) {
         let mut count = 0usize;
+        let mut them = [PieceSlot::default(); 32];
+        let mut them_count = 0usize;
         let mut mat_diffs = [0i32; 6];
         let mut phase_counts = [0u8; 6];
         let mut white_pawns = 0u64;
@@ -302,12 +331,17 @@ impl FeatureRecord {
             let us_piece = is_black == stm_black;
             let sq_idx = if is_black { sq.as_usize() } else { sq.flip_rank().as_usize() };
 
-            self.piece_slot[count] = PieceSlot::new(pt, psqt::mirror_sq(sq_idx));
+            let slot = PieceSlot::new(pt, psqt::mirror_sq(sq_idx));
 
-            if !us_piece {
-                self.piece_signs |= 1 << count;
+            // Ours in front, theirs behind, so the gather loops carry the sign
+            // instead of every piece paying a multiply for it.
+            if us_piece {
+                self.piece_slot[count] = slot;
+                count += 1;
+            } else {
+                them[them_count] = slot;
+                them_count += 1;
             }
-            count += 1;
 
             mat_diffs[pt] += if us_piece { 1 } else { -1 };
             phase_counts[pt] += 1;
@@ -323,7 +357,9 @@ impl FeatureRecord {
             }
         }
 
-        self.piece_count = count as u8;
+        self.piece_slot[count..count + them_count].copy_from_slice(&them[..them_count]);
+        self.us_count = count as u8;
+        self.piece_count = (count + them_count) as u8;
         self.mat_diffs = array::from_fn(|i| mat_diffs[i] as i8);
         self.phase_counts = phase_counts;
         self.open_raw = compute_openness_raw(white_pawns, black_pawns);

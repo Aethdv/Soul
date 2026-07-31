@@ -746,32 +746,51 @@ mod tests {
 
         let values = default_values(&collect_parameters());
         let boards: Vec<Position> = BENCH.lines().filter(|line| !line.trim().is_empty()).map(Position::from_fen).collect();
-        let records: Vec<FeatureRecord> =
-            boards.iter().map(|board| FeatureRecord::from_entry(&SoulEntry::from_board(board, TARGET, Some(20)))).collect();
+        let records: Vec<FeatureRecord> = boards
+            .iter()
+            .map(|board| FeatureRecord::from_entry(&SoulEntry::from_board(board, TARGET, Some(20))))
+            .collect();
         let mut grads = vec![0.0f64; values.len()];
-        let mut sink = 0.0;
 
-        for _ in 0..iters {
-            for (board, record) in boards.iter().zip(&records) {
-                sink += match mode.as_str() {
-                    "grad" => eval_linear_grad(black_box(board), black_box(&values), TARGET, K, black_box(&mut grads)),
-                    // The cached twin, what an epoch runs.
-                    "record" => eval_record(black_box(record), black_box(&values)),
-                    "recordgrad" => {
-                        let eval = eval_record_full(black_box(record), black_box(&values));
+        // Generic rather than `dyn`, so each mode gets its own loop instead of an
+        // indirect call per position.
+        fn drive(iters: usize, n: usize, mut body: impl FnMut(usize) -> f64) -> f64 {
+            let mut sink = 0.0;
 
-                        accumulate_record_grad(black_box(record), &eval, 1.0, black_box(&mut grads));
-                        eval.score
-                    },
-                    // The loss `grad` also pays, so `grad` minus this is the scatter.
-                    "loss" => {
-                        let err = sigmoid(black_box(eval_f64(black_box(board), black_box(&values))), K) - TARGET;
-                        err * err
-                    },
-                    _ => eval_f64(black_box(board), black_box(&values)),
-                };
+            for _ in 0..iters {
+                for i in 0..n {
+                    sink += body(i);
+                }
             }
+
+            sink
         }
+
+        let n = boards.len();
+
+        // Once, out here: matching the mode inside the loop times a string compare
+        // alongside the work.
+        let sink = match mode.as_str() {
+            "grad" => drive(iters, n, |i| {
+                eval_linear_grad(black_box(&boards[i]), black_box(&values), TARGET, K, black_box(&mut grads))
+            }),
+            // The cached twin, what an epoch runs.
+            "record" => drive(iters, n, |i| eval_record(black_box(&records[i]), black_box(&values))),
+            "recordgrad" => drive(iters, n, |i| {
+                let record = black_box(&records[i]);
+                let eval = eval_record_full(record, black_box(&values));
+
+                accumulate_record_grad(record, &eval, 1.0, black_box(&mut grads));
+                eval.score
+            }),
+            // The loss `grad` also pays, so `grad` minus this is the scatter.
+            "loss" => drive(iters, n, |i| {
+                let err = sigmoid(black_box(eval_f64(black_box(&boards[i]), black_box(&values))), K) - TARGET;
+
+                err * err
+            }),
+            _ => drive(iters, n, |i| eval_f64(black_box(&boards[i]), black_box(&values))),
+        };
 
         black_box(sink);
         println!("positions {}", iters * boards.len());

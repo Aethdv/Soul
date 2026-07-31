@@ -23,7 +23,7 @@ The eval is linear in its parameters, king danger aside: every weight shows up a
 So a weight's gradient is just its feature coefficient: no calculus at runtime, only bookkeeping.
 If `score = 3·w_shield + 7·w_mobility + …`, then `∂score/∂w_shield = 3`, and that `3` is a fact about the board, not about the weight's value.
 
-**Direct (`eval_linear_grad`): the reference.** Evaluate the position, read each feature coefficient straight off the board, phase, and openness, scatter `outer_deriv · coefficient` into the gradient vector. Around 320 f64 ops and 90 ns per position on top of the eval itself, priced by `make flops`. It has one caller, the oracle test; what runs every epoch is the cached twin below.
+**Direct (`eval_linear_grad`): the reference.** Evaluate the position, read each feature coefficient straight off the board, phase, and openness, scatter `outer_deriv · coefficient` into the gradient vector. Around 270 f64 ops and 510 cycles per position on top of the eval itself, priced by `make flops`. It has one caller, the oracle test; what runs every epoch is the cached twin below.
 
 **Dual (`eval_dual_fused`): the oracle.** Forward-mode autodiff: every number carries its gradient vector, the product rule fires on each multiply, the chain rule falls out for free.
 It handles any function, linear or not: drop a `sigmoid(w₁·w₂)` into the eval and it still returns the right gradient where the direct path would quietly hand you a wrong one.
@@ -129,9 +129,11 @@ A term can no longer be half-declared. Every list that could once disagree with 
 ## Performance notes
 
 The direct path reuses the eval: `eval_f64` for the score, the feature coefficients derived alongside.
-`make flops` prices it, differencing a retired-FLOP counter across runs of the same bench positions, scoring only against scoring plus scattering. The gradient costs 317 ops and ~90 ns per position against the eval's own 334 and ~170 ns; the scatter is 292 of those ops and the sigmoid with its loss derivative the other 25. Ops there are FLOPs, so an FMA or a packed lane counts per element.
+`make flops` prices it, differencing retired FLOPs and cycles across runs of the same bench positions, scoring only against scoring plus scattering. The gradient costs 272 ops and 510 cycles per position against the eval's own 334 and 676; 25 of those ops are the sigmoid and its loss derivative, the rest the scatter. Ops there are FLOPs, so an FMA or a packed lane counts per element.
 
-The same run prices the cached twin, the one an epoch actually pays for: 368 ops and ~90 ns to score a record, 291 ops and ~36 ns more to scatter it. More arithmetic than the board path in half the time, since the record arrives with the feature extraction already done. Op count is not what binds the epoch loop, and `evaltune gather-cost` measures what does.
+The same run prices the cached twin, the one an epoch pays for: 267 ops and 254 cycles to score a record, 205 ops and 138 cycles more to scatter it. Three times the board path's speed for four fifths of its arithmetic, since a record arrives with the feature extraction already done.
+
+Read the cycles column, not the clock: boost state moves wall time 10% between runs on the same binary, which is enough to read a warm laptop as a regression. And neither column is what binds the epoch loop, which is gathers; `evaltune gather-cost` measures those.
 
 Subnormals are kept out of the hot loop by construction rather than by MXCSR flags. `sigmoid` clamps its exponent to ±700, short of libm's very slow subnormal fallback between −708 and −744, which ignores FTZ/DAZ anyway; Lion hard-zeroes momentum once both it and the gradient fall under 1e-9; and the decaying EMAs start at zero for exactly the parameters whose gradients go quiet.
 Setting FTZ/DAZ instead would be immediate UB: Rust assumes the floating-point environment is in its default state and optimizes on that, whether or not the register is restored afterwards.
