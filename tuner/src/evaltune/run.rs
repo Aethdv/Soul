@@ -967,12 +967,19 @@ fn train_loop(
     // A cold start was left to find its own scale, so its output is normalized
     // here instead: the search reads centipawns, and nothing else would put the
     // run's eval back on the scale `search_params` was written against.
-    let landed = if hold_scale {
-        1.0 / gauge.applied
+    //
+    // K is the other half of that scale and takes the same correction: a report
+    // pairing moved parameters with the K they moved away from reads the mismatch
+    // rather than the model. `Gauge::restore` pays it on a held run.
+    let (landed, report_k) = if hold_scale {
+        (1.0 / gauge.applied, k_ctrl.k())
     } else {
         gauge.normalize(&mut ema_values);
         gauge.normalize(&mut best_train_params);
-        1.0 / gauge.normalize(&mut best_val_params)
+
+        let factor = gauge.normalize(&mut best_val_params);
+
+        (1.0 / factor, k_ctrl.k() / factor)
     };
 
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
@@ -980,7 +987,7 @@ fn train_loop(
     let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
     let off_scale = off_scale_warning(Gauge::measure(&gauge.probe, &ema_values) / gauge.reference);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
-    let calibration = calibration_report(ctx, &best_val_params, k_ctrl.k());
+    let calibration = calibration_report(ctx, &best_val_params, report_k);
     let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
     let clip = clip_report(&all_params, optimizer.clipped(), batches_run);
 
