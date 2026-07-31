@@ -108,6 +108,9 @@ define_weight_params! {
 }
 ```
 
+Rows within a section are comma-separated and the last one takes the semicolon.
+Sections are what the paste-back reprints the blank lines between, so the row goes in beside its neighbors rather than at the end of the block.
+
 This block is machine-written: `write_params` renders it and `the_paste_block_reproduces_eval_params` diffs the render against the file, so the trailing comment has to match what the printer emits.
 No `define_layout!` row, no `define_tunables!` rows, no `from_const` line. The roster supplies all three.
 

@@ -319,7 +319,7 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
+    use std::{env, hint::black_box, ops::Range};
 
     use super::*;
     use crate::{
@@ -729,5 +729,42 @@ mod tests {
 
             assert!((board - cached).abs() < 1e-9, "board {board} vs cached {cached} on '{fen}'");
         }
+    }
+
+    /// Workload half of `make flops`, which runs it twice and differences a FLOP
+    /// counter across the two, pricing the gradient on its own.
+    ///
+    /// The bench positions rather than `FENS`: op count scales with the pieces on
+    /// the board, and `FENS` leans on sparse endgames chosen to isolate terms.
+    #[test]
+    #[ignore]
+    fn measure_gradient_ops() {
+        const BENCH: &str = include_str!("../../data/bench.fens");
+
+        let iters: usize = env::var("SOUL_OPS_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
+        let mode = env::var("SOUL_OPS_MODE").unwrap_or_default();
+
+        let values = default_values(&collect_parameters());
+        let boards: Vec<Position> = BENCH.lines().filter(|line| !line.trim().is_empty()).map(Position::from_fen).collect();
+        let mut grads = vec![0.0f64; values.len()];
+        let mut sink = 0.0;
+
+        for _ in 0..iters {
+            for board in &boards {
+                sink += match mode.as_str() {
+                    "grad" => eval_linear_grad(black_box(board), black_box(&values), TARGET, K, black_box(&mut grads)),
+                    // Eval plus the loss the gradient path also pays for, so the
+                    // scatter is what separates this mode from `grad`.
+                    "loss" => {
+                        let err = sigmoid(black_box(eval_f64(black_box(board), black_box(&values))), K) - TARGET;
+                        err * err
+                    },
+                    _ => eval_f64(black_box(board), black_box(&values)),
+                };
+            }
+        }
+
+        black_box(sink);
+        println!("positions {}", iters * boards.len());
     }
 }

@@ -30,7 +30,7 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune searchtune test oracle seeformat format clippy profile etprofile \
+        evaltune searchtune test oracle flops seeformat format clippy profile etprofile \
         releases avx2 avx2-bmi2 avx512 corrstats movepicker
 
 all: openbench
@@ -186,6 +186,32 @@ test: ## Run test suite
 
 oracle: ## Run the eval gradient oracle tests
 	@RUSTFLAGS="-C target-cpu=native" cargo test --workspace --release oracle
+
+# Needs perf and jq. AMD retired-FLOP counter; on Intel override with
+# FLOP_EVENT=fp_arith_inst_retired.scalar_double.
+FLOP_EVENT ?= fp_ret_sse_avx_ops.all
+
+flops: ## f64 ops the gradient costs per position, differenced under perf
+	@set -e; \
+	bin=$$(RUSTFLAGS="-C target-cpu=native" cargo test --release -p soul --no-run --message-format=json 2>/dev/null \
+		| jq -r 'select(.executable != null and .target.kind[0] == "lib") | .executable' | tail -1); \
+	[ -n "$$bin" ] || { echo "no lib test binary; cargo test --no-run built nothing" >&2; exit 1; }; \
+	measure() { \
+		SOUL_OPS_MODE=$$1 perf stat -x, -e $(FLOP_EVENT),task-clock "$$bin" measure_gradient_ops --ignored --nocapture 2>&1 \
+			| awk -F, '/$(FLOP_EVENT)/ { ops = $$1 } /task-clock/ { ms = $$1 } \
+				/^positions/ { split($$0, count, " "); pos = count[2] } END { print ops, ms, pos }'; \
+	}; \
+	set -- $$(measure eval); a=$$1; ta=$$2; pos=$$3; \
+	set -- $$(measure loss); b=$$1; tb=$$2; \
+	set -- $$(measure grad); c=$$1; tc=$$2; \
+	awk -v p="$$pos" -v a="$$a" -v b="$$b" -v c="$$c" -v ta="$$ta" -v tb="$$tb" -v tc="$$tc" \
+		'BEGIN { \
+			if (p + 0 <= 0 || a + 0 <= 0 || c + 0 <= 0) { \
+				print "no usable counts: check perf_event_paranoid and whether this CPU has $(FLOP_EVENT)" > "/dev/stderr"; \
+				exit 1; \
+			} \
+			printf "%s positions, per position\n  eval          %7.1f ops  %7.1f ns\n  + loss        %7.1f ops  %7.1f ns\n  + gradient    %7.1f ops  %7.1f ns\n  gradient path %7.1f ops  %7.1f ns over the eval alone\n", \
+				p, a/p, ta*1e6/p, b/p, tb*1e6/p, c/p, tc*1e6/p, (c-a)/p, (tc-ta)*1e6/p }'
 
 seeformat: ## Check formatting
 	@cargo fmt --check
