@@ -24,7 +24,7 @@ weight_decay = 0.00001
 # 15M        131,072   114
 # 26M        262,144   100
 # 52M        524,288   100
-batch_size = 131072
+batch_size = 65536
 
 shuffle_block = 4
 

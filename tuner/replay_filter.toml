@@ -16,7 +16,7 @@ max_eval_incorrectness = 4294967295
 # Plain decimation. The probability is the chance a position is *dropped*, drawn
 # per epoch rather than at load. Everything above decides what loads at all.
 random_fen_skipping = true
-random_fen_skip_probability = 0.5
+random_fen_skip_probability = 0.25
 
 # Skip a position with probability 1 - P(its game's result | eval, material),
 # thinning positions whose result the eval already predicted. The model is Soul's
