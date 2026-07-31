@@ -565,6 +565,14 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
+            // A root move composes its line only when it becomes the new best, so
+            // one that never does keeps whatever it found at an earlier depth.
+            // Clearing here means a line still standing afterwards was built by
+            // this iteration.
+            for rm in &mut self.root_moves {
+                rm.pv.len = 0;
+            }
+
             // ── Aspiration Windows (~42 Elo)
             // A score rarely lurches between iterations, so we bracket the last
             // one in a narrow window instead of searching (-INF, INF). Tighter
@@ -916,14 +924,18 @@ impl<'cfg> Searcher<'cfg> {
         println!("info depth {depth} currmove {} currmovenumber {move_number}", mv.to_uci(self.root_pos.is_frc));
     }
 
+    /// Redraws the panel mid-iteration: counters live, score and line from the
+    /// last completed depth. `root_moves` is still in the previous iteration's
+    /// order while this one overwrites its scores in place, so its head can pair
+    /// a fresh score with a line from an older depth.
     #[cold]
     fn print_realtime(&mut self) {
-        if self.cfg.limits.silent {
+        if self.cfg.limits.silent || self.prev_pv.len == 0 {
             return;
         }
+
         let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
-        let best = &self.root_moves[0];
-        let data = self.search_info_data(self.iter_depth, best.score, &best.pv, &history_vec);
+        let data = self.search_info_data(self.iter_depth, self.prev_score, &self.prev_pv, &history_vec);
 
         tui::print_pretty_search_info(&data);
     }
@@ -1775,8 +1787,7 @@ impl Worker<'_> {
             if N::ROOT
                 && let Some(i) = root_idx
             {
-                let child_pv = self.stack[ply + 1].pv; // Root copy is fine, happens rarely
-                searcher.root_moves[i].pv.compose(mv, &child_pv);
+                searcher.root_moves[i].pv.compose(mv, &self.stack[ply + 1].pv);
             }
 
             if eval > res.alpha {
@@ -1787,13 +1798,8 @@ impl Worker<'_> {
                 // through two separate borrows of self.stack, so split_at_mut
                 // gives us two non-overlapping slices as proof.
                 let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
-                let child_pv = &next_stack[0].pv;
-                let child_len = child_pv.len.min(MAX_PLY - 1);
-                let current_pv = &mut current_stack[ply].pv;
 
-                current_pv.moves[0] = mv;
-                current_pv.moves[1..=child_len].copy_from_slice(&child_pv.moves[..child_len]);
-                current_pv.len = child_len + 1;
+                current_stack[ply].pv.compose(mv, &next_stack[0].pv);
             }
         }
 

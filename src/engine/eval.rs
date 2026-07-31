@@ -683,6 +683,10 @@ macro_rules! tapered_bonus_term {
 
             #[inline(always)]
             fn apply_input(features: [f64; $n], values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+                if features.iter().all(|f| *f == 0.0) {
+                    return;
+                }
+
                 let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
                 let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
 
@@ -694,6 +698,10 @@ macro_rules! tapered_bonus_term {
 
             #[inline(always)]
             fn scatter(features: [f64; $n], upstream: term::TaperPair, grads: &mut [f64]) {
+                if features.iter().all(|f| *f == 0.0) {
+                    return;
+                }
+
                 let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
                 let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
 
