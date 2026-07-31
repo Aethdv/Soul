@@ -86,7 +86,7 @@ stable_ratio = 0.75
 
 [evaltune.wdl_schedule]
 type = "constant"
-value = 0.5 # 0.0 = the game result, 1.0 = the search score
+value = 0.0 # 0.0 = the game result, 1.0 = the search score
 
 #start = 0.4
 #end = 0.1
