@@ -15,67 +15,27 @@
 
 use super::*;
 
-/// Kogge-Stone occluded fill: left shift variant (North, East, NE, NW).
+/// Kogge-Stone occluded fill.
 ///
 /// `generator`: sliding pieces,
 /// `propagator`: empty squares.
 /// Returns the fill including the generator squares.
-macro_rules! kogge_fill_left {
-    ($name:ident, $s1:expr, $s2:expr, $s3:expr) => {
+///
+/// Three doubling steps reach all seven distances, `shl` walking north and east,
+/// `shr` south and west. A wrap mask, where given, is cleared from the propagator
+/// before the walk.
+macro_rules! kogge_fill {
+    ($name:ident, $shift:ident, $s1:expr, $s2:expr, $s3:expr $(, $wrap:expr)?) => {
         #[inline(always)]
         pub fn $name(mut generator: Vu64x4, mut propagator: Vu64x4) -> Vu64x4 {
-            generator |= propagator & generator.shl::<$s1>();
-            propagator &= propagator.shl::<$s1>();
-            generator |= propagator & generator.shl::<$s2>();
-            propagator &= propagator.shl::<$s2>();
-            generator |= propagator & generator.shl::<$s3>();
-            generator
-        }
-    };
-}
+            $( propagator = Vu64x4::splat($wrap).andnot(propagator); )?
 
-/// Kogge-Stone occluded fill: left shift variant with file mask.
-macro_rules! kogge_fill_left_masked {
-    ($name:ident, $s1:expr, $s2:expr, $s3:expr, $mask:expr) => {
-        #[inline(always)]
-        pub fn $name(mut generator: Vu64x4, propagator: Vu64x4) -> Vu64x4 {
-            let mut propagator = Vu64x4::splat($mask).andnot(propagator);
-            generator |= propagator & generator.shl::<$s1>();
-            propagator &= propagator.shl::<$s1>();
-            generator |= propagator & generator.shl::<$s2>();
-            propagator &= propagator.shl::<$s2>();
-            generator |= propagator & generator.shl::<$s3>();
-            generator
-        }
-    };
-}
+            generator |= propagator & generator.$shift::<$s1>();
+            propagator &= propagator.$shift::<$s1>();
+            generator |= propagator & generator.$shift::<$s2>();
+            propagator &= propagator.$shift::<$s2>();
+            generator |= propagator & generator.$shift::<$s3>();
 
-/// Kogge-Stone occluded fill: right shift variant (South, West, SE, SW).
-macro_rules! kogge_fill_right {
-    ($name:ident, $s1:expr, $s2:expr, $s3:expr) => {
-        #[inline(always)]
-        pub fn $name(mut generator: Vu64x4, mut propagator: Vu64x4) -> Vu64x4 {
-            generator |= propagator & generator.shr::<$s1>();
-            propagator &= propagator.shr::<$s1>();
-            generator |= propagator & generator.shr::<$s2>();
-            propagator &= propagator.shr::<$s2>();
-            generator |= propagator & generator.shr::<$s3>();
-            generator
-        }
-    };
-}
-
-/// Kogge-Stone occluded fill; right shift variant with file mask.
-macro_rules! kogge_fill_right_masked {
-    ($name:ident, $s1:expr, $s2:expr, $s3:expr, $mask:expr) => {
-        #[inline(always)]
-        pub fn $name(mut generator: Vu64x4, propagator: Vu64x4) -> Vu64x4 {
-            let mut propagator = Vu64x4::splat($mask).andnot(propagator);
-            generator |= propagator & generator.shr::<$s1>();
-            propagator &= propagator.shr::<$s1>();
-            generator |= propagator & generator.shr::<$s2>();
-            propagator &= propagator.shr::<$s2>();
-            generator |= propagator & generator.shr::<$s3>();
             generator
         }
     };
@@ -84,22 +44,17 @@ macro_rules! kogge_fill_right_masked {
 pub const FILE_A: u64 = 0x0101_0101_0101_0101;
 pub const FILE_H: u64 = 0x8080_8080_8080_8080;
 
-// North (+8): no file mask needed
-kogge_fill_left!(fill_north, 8, 16, 32);
-// South (-8): no file mask needed
-kogge_fill_right!(fill_south, 8, 16, 32);
-// East (+1): mask FILE_A on propagator (prevents H→A wrap on left shift)
-kogge_fill_left_masked!(fill_east, 1, 2, 4, FILE_A);
-// West (-1): mask FILE_H on propagator (prevents A→H wrap on right shift)
-kogge_fill_right_masked!(fill_west, 1, 2, 4, FILE_H);
-// NorthEast (+9): mask FILE_A
-kogge_fill_left_masked!(fill_northeast, 9, 18, 36, FILE_A);
-// NorthWest (+7): mask FILE_H
-kogge_fill_left_masked!(fill_northwest, 7, 14, 28, FILE_H);
-// SouthEast (-7): mask FILE_A
-kogge_fill_right_masked!(fill_southeast, 7, 14, 28, FILE_A);
-// SouthWest (-9): mask FILE_H
-kogge_fill_right_masked!(fill_southwest, 9, 18, 36, FILE_H);
+// A file step off the h-file reappears on the a-file, so every eastward walk
+// masks FILE_A and every westward one FILE_H. The vertical pair shifts straight
+// off the end of the board and needs no mask.
+kogge_fill!(fill_north, shl, 8, 16, 32);
+kogge_fill!(fill_south, shr, 8, 16, 32);
+kogge_fill!(fill_east, shl, 1, 2, 4, FILE_A);
+kogge_fill!(fill_west, shr, 1, 2, 4, FILE_H);
+kogge_fill!(fill_northeast, shl, 9, 18, 36, FILE_A);
+kogge_fill!(fill_northwest, shl, 7, 14, 28, FILE_H);
+kogge_fill!(fill_southeast, shr, 7, 14, 28, FILE_A);
+kogge_fill!(fill_southwest, shr, 9, 18, 36, FILE_H);
 
 impl Vu64x4 {
     #[inline(always)]

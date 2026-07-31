@@ -771,9 +771,9 @@ mod tests {
         // Once, out here: matching the mode inside the loop times a string compare
         // alongside the work.
         let sink = match mode.as_str() {
-            "grad" => drive(iters, n, |i| {
-                eval_linear_grad(black_box(&boards[i]), black_box(&values), TARGET, K, black_box(&mut grads))
-            }),
+            "grad" => {
+                drive(iters, n, |i| eval_linear_grad(black_box(&boards[i]), black_box(&values), TARGET, K, black_box(&mut grads)))
+            },
             // The cached twin, what an epoch runs.
             "record" => drive(iters, n, |i| eval_record(black_box(&records[i]), black_box(&values))),
             "recordgrad" => drive(iters, n, |i| {
