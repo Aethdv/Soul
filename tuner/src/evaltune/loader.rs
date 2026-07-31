@@ -111,8 +111,13 @@ fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
 ///
 /// `filter` reaches the viriformat path alone; the other two store positions
 /// without the ply or the played move its gates read.
-pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> Vec<SoulEntry> {
+///
+/// The second return is one weight per position, empty unless a viriformat file
+/// brought weighting gates. Files that bring none contribute ones, so the weights
+/// stay aligned with the entries whatever the paths mix.
+pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>, Vec<f32>) {
     let mut all_entries = Vec::new();
+    let mut all_weights: Vec<f32> = Vec::new();
 
     for path in paths {
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {
@@ -124,7 +129,14 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> Vec<SoulEntry> 
         } else if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
             match parse_viri_file(path, filter) {
-                Ok(mut viri_entries) => all_entries.append(&mut viri_entries),
+                Ok((mut viri_entries, weights)) => {
+                    if !weights.is_empty() {
+                        all_weights.resize(all_entries.len(), 1.0);
+                        all_weights.extend(weights);
+                    }
+
+                    all_entries.append(&mut viri_entries);
+                },
                 Err(e) => eprintln!("Error loading {path}: {e}"),
             }
         } else {
@@ -140,7 +152,11 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> Vec<SoulEntry> 
         }
     }
 
-    all_entries
+    if !all_weights.is_empty() {
+        all_weights.resize(all_entries.len(), 1.0);
+    }
+
+    (all_entries, all_weights)
 }
 
 /// Hashed before shuffle: identifies loaded contents, not a permutation.

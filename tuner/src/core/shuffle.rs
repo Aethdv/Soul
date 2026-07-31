@@ -66,8 +66,13 @@ impl Shuffler {
     ///
     /// What it buys is sequential reads. The gather over `FeatureRecord`s is DRAM latency per
     /// record, and a block turns that back into a stream the prefetcher can follow.
-    pub fn fill_blocked(&mut self, out: &mut [u32], seed: u64, block: usize) {
+    ///
+    /// `take` stops the expansion there, leaving the rest of `out` alone. The order is still
+    /// drawn over every block, so the result is a uniform sample and not the front of a shorter
+    /// draw; the last block written is cut to length.
+    pub fn fill_blocked(&mut self, out: &mut [u32], seed: u64, block: usize, take: usize) {
         let n = out.len();
+        let take = take.min(n);
         let blocks = n.div_ceil(block.max(1));
 
         // Lifted out so the block permutation can borrow the same `ids` scratch, and put
@@ -79,10 +84,14 @@ impl Shuffler {
 
         let mut w = 0;
 
-        for &b in &order[..blocks] {
+        'expand: for &b in &order[..blocks] {
             let start = b as usize * block;
 
             for i in start..(start + block).min(n) {
+                if w == take {
+                    break 'expand;
+                }
+
                 out[w] = i as u32;
                 w += 1;
             }
@@ -212,7 +221,7 @@ mod tests {
     fn blocked_fill_is_still_a_permutation() {
         for (n, block) in [(1000usize, 64usize), (1000, 7), (64, 64), (5, 8), (1, 4)] {
             let mut out = vec![0u32; n];
-            Shuffler::new(n).fill_blocked(&mut out, 0x5EED, block);
+            Shuffler::new(n).fill_blocked(&mut out, 0x5EED, block, n);
 
             let mut seen = out.clone();
             seen.sort_unstable();
@@ -222,9 +231,30 @@ mod tests {
     }
 
     #[test]
+    fn a_take_is_the_prefix_of_the_whole_draw() {
+        const N: usize = 4096;
+        const TAKE: usize = 300;
+
+        let mut whole = vec![0u32; N];
+        let mut part = vec![0u32; N];
+
+        Shuffler::new(N).fill_blocked(&mut whole, 0xC0FF_EE00, 8, N);
+        Shuffler::new(N).fill_blocked(&mut part, 0xC0FF_EE00, 8, TAKE);
+
+        assert_eq!(part[..TAKE], whole[..TAKE], "the take diverged from the draw it is a prefix of");
+        assert!(part[TAKE..].iter().all(|&i| i == 0), "the expansion wrote past its take");
+
+        let mut sorted = part[..TAKE].to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+
+        assert_eq!(sorted.len(), TAKE, "the sample repeats a position");
+    }
+
+    #[test]
     fn blocked_fill_keeps_each_block_in_order() {
         let mut out = vec![0u32; 512];
-        Shuffler::new(512).fill_blocked(&mut out, 0x5EED, 64);
+        Shuffler::new(512).fill_blocked(&mut out, 0x5EED, 64, 512);
 
         for run in out.chunks(64) {
             assert!(run.windows(2).all(|w| w[1] == w[0] + 1), "a block came apart: {run:?}");
@@ -248,8 +278,8 @@ mod tests {
         // The blocked path reuses one scratch buffer across calls, so its determinism is a
         // property of that reuse rather than of the algorithm alone. A resume draws its
         // batches from the seed and nothing else.
-        shuffler.fill_blocked(&mut first, 7, 4);
-        shuffler.fill_blocked(&mut second, 7, 4);
+        shuffler.fill_blocked(&mut first, 7, 4, RAGGED);
+        shuffler.fill_blocked(&mut second, 7, 4, RAGGED);
 
         assert_eq!(first, second, "same seed gave a different blocked permutation");
     }

@@ -229,7 +229,17 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         return None;
     };
 
-    let all_entries = loader::load_datasets(&paths, &replay_filter(config));
+    let filter = replay_filter(config);
+    let replays = paths.iter().any(|p| p.ends_with(".vf") || p.ends_with(".viri"));
+
+    if replays && config.replay_filter.is_none() {
+        eprintln!(
+            "{}[!] No replay_filter named: every replayed position trains, tactical and in-check ones included.{RESET}",
+            palette::ALARM,
+        );
+    }
+
+    let (all_entries, sample_weights) = loader::load_datasets(&paths, &filter);
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
@@ -237,11 +247,39 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
     }
 
     let dataset_label = paths.join(", ");
-    let best_val = train_entries(all_entries, &dataset_label, config, resume_path, task);
+    let keep = epoch_keep_fraction(config, &filter, replays);
+    let best_val = train_entries(all_entries, sample_weights, &dataset_label, config, resume_path, task, keep);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
     best_val
+}
+
+/// The share of the training split one epoch draws.
+///
+/// The filter's drop chance is a statement about a replay, so it reaches only a
+/// dataset that came from one; `epoch_sample` is the general knob and wins
+/// wherever it is set.
+fn epoch_keep_fraction(config: &EvalTuneConfig, filter: &ReplayFilter, replays: bool) -> f64 {
+    if let Some(sample) = config.epoch_sample {
+        return sample.clamp(0.0, 1.0);
+    }
+
+    if replays && filter.random_fen_skipping {
+        1.0 - filter.random_fen_skip_probability.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+/// The permutation is fresh each epoch, so a prefix of it is a fresh draw. Under
+/// `shuffle_block` it permutes blocks, and the prefix takes whole ones.
+fn epoch_sample_len(train_len: usize, keep: f64) -> usize {
+    if train_len == 0 {
+        return 0;
+    }
+
+    ((train_len as f64 * keep).round() as usize).clamp(1, train_len)
 }
 
 /// The filter file, or every position when none was named. A named file that will
@@ -268,10 +306,12 @@ fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
 
 fn train_entries(
     mut entries: Vec<loader::SoulEntry>,
+    mut sample_weights: Vec<f32>,
     dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     task: Task,
+    epoch_keep: f64,
 ) -> Option<f64> {
     let dataset_fnv = dataset_fingerprint(&entries);
 
@@ -309,12 +349,16 @@ fn train_entries(
     // tenth and no two validation losses compare.
     fastrand::Rng::with_seed(split_seed).shuffle(&mut entries);
 
+    // Same seed over a slice of the same length walks the same swaps, so the
+    // weights land beside the positions they were computed for.
+    fastrand::Rng::with_seed(split_seed).shuffle(&mut sample_weights);
+
     // One-time cost: training reads FeatureRecords straight through.
     // Parallel because entries are independent.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
 
-    let val_count = entries.len() / 10;
+    let val_count = (entries.len() / 10).min(config.val_max.unwrap_or(usize::MAX));
     let train_count = entries.len() - val_count;
     let (train, val) = entries.split_at(train_count);
 
@@ -330,6 +374,8 @@ fn train_entries(
     } else {
         Vec::new()
     };
+
+    let phase_weights = merge_weights(phase_weights, &sample_weights);
 
     let ctx = TrainerContext {
         train,
@@ -363,7 +409,7 @@ fn train_entries(
 
     let seeds = Seeds { rng_seed, split_seed };
 
-    Some(train_loop(train.len(), "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx))
+    Some(train_loop(train.len(), epoch_keep, "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx))
 }
 
 /// `Name (detail)` with the name in the value color. Both schedulers and `KMode`
@@ -385,6 +431,7 @@ fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Ve
 
 fn train_loop(
     train_len: usize,
+    epoch_keep: f64,
     mode_label: &str,
     dataset_label: &str,
     config: &EvalTuneConfig,
@@ -538,6 +585,11 @@ fn train_loop(
     // batch loop, worth 12% of epoch time at 32.8M positions.
     let mut indices = vec![0u32; train_len];
     let mut shuffler = Shuffler::new(train_len);
+    let epoch_sample = epoch_sample_len(train_len, epoch_keep);
+
+    if epoch_sample < train_len {
+        println!("Sampling {epoch_sample} of {train_len} training positions per epoch, redrawn each one");
+    }
 
     let mut ema_values = resume.as_ref().map_or_else(|| values.clone(), |d| d.ema.clone());
     let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
@@ -635,7 +687,7 @@ fn train_loop(
 
         let t_shuffle = Instant::now();
         if config.shuffle_block > 0 {
-            shuffler.fill_blocked(&mut indices, rng.u64(..), config.shuffle_block);
+            shuffler.fill_blocked(&mut indices, rng.u64(..), config.shuffle_block, epoch_sample);
         } else {
             shuffler.fill(&mut indices, rng.u64(..));
         }
@@ -647,7 +699,7 @@ fn train_loop(
 
         let t_grad = Instant::now();
 
-        for batch in indices.chunks(config.batch_size) {
+        for batch in indices[..epoch_sample].chunks(config.batch_size) {
             batches_run += 1;
 
             let (mut grads, k_grad, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k_ctrl.k(), blend);
@@ -1044,24 +1096,77 @@ fn train_loop(
 mod tests {
     use super::*;
 
-    /// The shipped filter spells viriformat's defaults out, so it has to parse and
-    /// to agree with them. A field renamed on either side shows up here.
+    /// Positions and weights are shuffled in two calls, and must walk the same swaps.
     #[test]
-    fn the_shipped_filter_file_is_the_defaults() {
-        let text = std::fs::read_to_string("replay_filter.toml").expect("replay_filter.toml must exist");
-        let filter: ReplayFilter = toml::from_str(&text).expect("replay_filter.toml must parse");
-        let defaults = ReplayFilter::default();
+    fn one_seed_permutes_two_slices_alike() {
+        let mut left: Vec<u32> = (0..5000).collect();
+        let mut right: Vec<u32> = (0..5000).collect();
 
-        assert_eq!(filter.min_ply, defaults.min_ply);
-        assert_eq!(filter.min_pieces, defaults.min_pieces);
-        assert_eq!(filter.max_eval, defaults.max_eval);
-        assert_eq!(filter.filter_tactical, defaults.filter_tactical);
-        assert_eq!(filter.filter_check, defaults.filter_check);
-        assert_eq!(filter.filter_castling, defaults.filter_castling);
-        assert_eq!(filter.max_eval_incorrectness, defaults.max_eval_incorrectness);
-        assert_eq!(filter.wdl_filtered, defaults.wdl_filtered);
-        assert_eq!(filter.random_fen_skipping, defaults.random_fen_skipping);
-        assert_eq!(filter.material_count_filtered, defaults.material_count_filtered);
+        fastrand::Rng::with_seed(0xA11CE).shuffle(&mut left);
+        fastrand::Rng::with_seed(0xA11CE).shuffle(&mut right);
+
+        assert_eq!(left, right);
+        assert_ne!(left, (0..5000).collect::<Vec<u32>>(), "the shuffle did nothing");
+    }
+
+    #[test]
+    fn merged_weights_keep_the_gradient_scale() {
+        let sample = vec![0.25f32, 0.75, 1.0, 0.5];
+        let merged = merge_weights(Vec::new(), &sample);
+        let mean = merged.iter().sum::<f64>() / merged.len() as f64;
+
+        assert!((mean - 1.0).abs() < 1e-12, "mean {mean} is not one");
+        assert!(merged[1] / merged[0] - 3.0 < 1e-12, "the ratio between two weights moved");
+
+        let phase = vec![2.0, 2.0, 1.0, 1.0];
+        let both = merge_weights(phase.clone(), &sample);
+        let both_mean = both.iter().sum::<f64>() / both.len() as f64;
+
+        assert!((both_mean - 1.0).abs() < 1e-12);
+        assert_eq!(merge_weights(phase.clone(), &[]), phase, "no sampling weights leaves the phase ones alone");
+        assert!(merge_weights(Vec::new(), &[]).is_empty());
+    }
+
+    #[test]
+    fn decimation_thins_the_epoch_and_not_the_dataset() {
+        let mut config = crate::core::config::TunerConfig::default().evaltune;
+        let ninety = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
+        let off = ReplayFilter { random_fen_skipping: false, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
+
+        assert!((epoch_keep_fraction(&config, &ninety, true) - 0.1).abs() < 1e-12);
+        assert!((epoch_keep_fraction(&config, &off, true) - 1.0).abs() < 1e-12, "the flag gates the probability");
+
+        // The drop chance describes a replay, so an EPD or .soul dataset never sees it.
+        assert!((epoch_keep_fraction(&config, &ninety, false) - 1.0).abs() < 1e-12);
+
+        config.epoch_sample = Some(0.25);
+
+        for replays in [true, false] {
+            assert!((epoch_keep_fraction(&config, &ninety, replays) - 0.25).abs() < 1e-12, "the config knob wins");
+        }
+
+        assert_eq!(epoch_sample_len(32_800_000, 0.1), 3_280_000);
+        assert_eq!(epoch_sample_len(32_800_000, 1.0), 32_800_000);
+        assert_eq!(epoch_sample_len(4, 0.0), 1, "rounding must not empty an epoch");
+        assert_eq!(epoch_sample_len(0, 0.5), 0);
+    }
+
+    /// A key the struct does not have parses as nothing, since every absent field
+    /// fills from the defaults, so a rename on either side would go unnoticed until
+    /// a run quietly ignored half the file. Values are the run's to choose; names
+    /// are not.
+    #[test]
+    fn the_shipped_filter_file_names_only_real_fields() {
+        let text = std::fs::read_to_string("replay_filter.toml").expect("replay_filter.toml must exist");
+        let shipped: toml::Table = toml::from_str(&text).expect("replay_filter.toml must parse");
+        let rendered = toml::to_string(&ReplayFilter::default()).expect("the filter must serialize");
+        let known: toml::Table = toml::from_str(&rendered).expect("its own render must parse");
+
+        let _: ReplayFilter = toml::from_str(&text).expect("replay_filter.toml must parse as a filter");
+
+        for key in shipped.keys() {
+            assert!(known.contains_key(key), "`{key}` is not a ReplayFilter field");
+        }
     }
 
     /// Matching viriformat's field names means its files parse here unchanged,

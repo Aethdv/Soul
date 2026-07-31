@@ -24,7 +24,7 @@ weight_decay = 0.00001
 # 15M        131,072   114
 # 26M        262,144   100
 # 52M        524,288   100
-batch_size = 65536
+batch_size = 131072
 
 shuffle_block = 4
 
@@ -36,8 +36,21 @@ volatility_adaptive = true # scales with piece count.
 
 # Gates which positions a viriformat game replays into.
 # In the shape the viriformat crate defines, so the same file drives bullet.
-# a checkpoint taken under a different setting will not resume.
-# replay_filter = "replay_filter.toml"
+# Its quiet gates decide which positions load, so a checkpoint taken under
+# different ones will not resume; the drop chance only thins each epoch and can
+# change freely.
+replay_filter = "replay_filter.toml"
+
+# Share of the training split each epoch draws, redrawn every epoch. Unset takes
+# the replay filter's drop chance on a viriformat dataset and the whole split on
+# any other; set here it applies to every format and wins over the filter.
+# epoch_sample = 0.1
+
+# Cap on the validation split, a tenth of the dataset otherwise. Worth setting
+# past a few million positions, where that tenth costs every epoch and resolves a
+# loss the first few hundred thousand already resolved. It moves the split, so
+# `best_val` stops comparing against runs recorded without it.
+val_max = 500000
 
 # Phase-stratified gradient balancing.
 # Re-weights each training sample by the inverse frequency of its game-phase

@@ -363,6 +363,8 @@ mod tests {
         "8/3p2k1/2p5/4p3/2P1P3/3P4/K7/8 w - - 0 1",
         // Minor behind pawn
         "4k3/5p2/5n2/8/4P3/4N3/8/4K3 w - - 0 1",
+        // King under attack, where the danger curve is nonzero
+        "r4rk1/pp3ppp/3p4/2pb4/3n2nq/N1NP4/PPPB1PPP/R2Q1RK1 w - - 0 1",
     ];
 
     const TARGET: f64 = 0.5;

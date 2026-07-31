@@ -14,8 +14,6 @@ use std::{
     io::{self, Read},
 };
 
-use fastrand::Rng;
-
 use super::{SoulEntry, flip_result};
 use crate::{
     core::{
@@ -38,11 +36,10 @@ const WDL_WIN: u8 = 2;
 /// module already walks.
 ///
 /// Field names, defaults and predicate order follow that crate, so a filter file
-/// written for it reads here. Three departures: the WDL gate asks Soul's own
-/// model rather than carrying a foreign fit, so the four coefficient fields are
-/// gone; the sampling draws are seeded rather than thread-local, so a config and
-/// a file pin the same set; and the 33-entry table is a `Vec` because serde stops
-/// deriving at 32.
+/// written for it reads here. Three departures: the WDL gate asks Soul's own model
+/// rather than carrying a foreign fit, so the four coefficient fields are gone;
+/// the two gates that reshape the mix weight a position instead of dropping it;
+/// and the 33-entry table is a `Vec` because serde stops deriving at 32.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ReplayFilter {
@@ -53,6 +50,8 @@ pub struct ReplayFilter {
     pub filter_check: bool,
     pub filter_castling: bool,
     pub max_eval_incorrectness: u32,
+    /// Applied per epoch by the tuner's sampler, not during the replay: a drop
+    /// decided at load would take that share away for the whole run.
     pub random_fen_skipping: bool,
     pub random_fen_skip_probability: f64,
     pub wdl_filtered: bool,
@@ -60,7 +59,7 @@ pub struct ReplayFilter {
     /// Skip probability per piece count, indexed 0..=32. Short tables read as
     /// zero, so a file may stop early.
     pub material_count_probabilities: Vec<f64>,
-    /// Seeds every probabilistic gate.
+    /// Read so a filter written for viriformat parses; nothing here draws.
     pub seed: u64,
 }
 
@@ -104,7 +103,7 @@ impl ReplayFilter {
 
     /// `eval` and `wdl` are White-relative, as they sit in the file. The STM flip
     /// happens after a position survives, so it cannot reach the predicates.
-    fn should_filter(&self, pos: &Position, mv: Move, eval: i32, wdl: u8, ply: u32, rng: &mut Rng) -> bool {
+    fn should_filter(&self, pos: &Position, mv: Move, eval: i32, wdl: u8, ply: u32) -> bool {
         if ply < self.min_ply {
             return true;
         }
@@ -129,23 +128,31 @@ impl ReplayFilter {
             return true;
         }
 
-        if self.random_fen_skipping && rng.f64() < self.random_fen_skip_probability {
-            return true;
-        }
+        self.eval_is_incorrect(eval, wdl)
+    }
 
-        if self.wdl_filtered && rng.f64() < 1.0 - Self::result_chance(eval, pos.material_count(), wdl) {
-            return true;
+    /// How much a kept position counts for, from the gates that reshape the mix.
+    ///
+    /// Keeping it with chance `p` and counting it once is, in expectation, counting
+    /// it `p`; the weight is that without the variance, and without the loss.
+    fn sample_weight(&self, pos: &Position, eval: i32, wdl: u8) -> f64 {
+        let mut weight = 1.0;
+
+        if self.wdl_filtered {
+            weight *= Self::result_chance(eval, pos.material_count(), wdl);
         }
 
         if self.material_count_filtered {
             let index = pos.occupancy().popcount().min(32) as usize;
 
-            if rng.f64() < self.material_count_probabilities.get(index).copied().unwrap_or(0.0) {
-                return true;
-            }
+            weight *= 1.0 - self.material_count_probabilities.get(index).copied().unwrap_or(0.0);
         }
 
-        self.eval_is_incorrect(eval, wdl)
+        weight
+    }
+
+    pub fn weights_positions(&self) -> bool {
+        self.wdl_filtered || self.material_count_filtered
     }
 
     /// A draw scored far from a draw, or a winner whose eval went negative by more
@@ -182,14 +189,16 @@ impl ReplayFilter {
     }
 }
 
-pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<Vec<SoulEntry>> {
+/// The weights are one per kept position, empty when no gate weighs anything.
+pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<SoulEntry>, Vec<f32>)> {
     let mut file = fs::File::open(path)?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
     let mut entries = Vec::new();
+    let mut weights = Vec::new();
     let mut pos = 0usize;
-    let mut rng = Rng::with_seed(filter.seed);
+    let mut seen = 0usize;
 
     while pos + PACKED_BOARD_SIZE <= data.len() {
         let header = &data[pos..pos + PACKED_BOARD_SIZE];
@@ -219,12 +228,18 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<Vec<Soul
                 break;
             };
 
-            if !filter.should_filter(&position, soul_move, i32::from(viri_score), game_result, ply, &mut rng) {
+            seen += 1;
+
+            if !filter.should_filter(&position, soul_move, i32::from(viri_score), game_result, ply) {
                 entries.push(SoulEntry::from_board(
                     &position,
                     f64::from(flip_result(game_result, position.stm)) / 2.0,
                     Some(relative_score(viri_score, position.stm)),
                 ));
+
+                if filter.weights_positions() {
+                    weights.push(filter.sample_weight(&position, i32::from(viri_score), game_result) as f32);
+                }
             }
 
             ply += 1;
@@ -234,7 +249,11 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<Vec<Soul
         }
     }
 
-    Ok(entries)
+    let share = if seen == 0 { 0.0 } else { 100.0 * entries.len() as f64 / seen as f64 };
+
+    println!("  Replayed {seen} positions, kept {} ({share:.1}%)", entries.len());
+
+    Ok((entries, weights))
 }
 
 /// Convert a white-relative viri score to STM-relative `i32`.
@@ -435,7 +454,7 @@ fn viri_to_soul_move(viri_move: u16, pos: &Position) -> Option<Move> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Move, Position, ReplayFilter, Rng, WDL_DRAW, WDL_WIN};
+    use super::{Move, Position, ReplayFilter, WDL_DRAW, WDL_WIN};
     use crate::engine::movegen::gen_legal_moves;
 
     /// White to move with Bxf7+ available and the short castle still legal, so one
@@ -460,7 +479,7 @@ mod tests {
     fn keeps(filter: &ReplayFilter, fen: &str, mv: Move, eval: i32, wdl: u8, ply: u32) -> bool {
         let pos = Position::from_fen(fen);
 
-        !filter.should_filter(&pos, mv, eval, wdl, ply, &mut Rng::with_seed(1))
+        !filter.should_filter(&pos, mv, eval, wdl, ply)
     }
 
     fn quiet_move(fen: &str) -> Move {
@@ -545,34 +564,37 @@ mod tests {
     }
 
     #[test]
-    fn skipping_probabilities_read_as_drop_chances() {
+    fn decimation_does_not_reach_the_replay() {
         let quiet = quiet_move(OPEN);
+        let certain = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 1.0, ..ReplayFilter::UNRESTRICTED };
 
-        let always = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 1.0, ..ReplayFilter::UNRESTRICTED };
-        let never = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 0.0, ..ReplayFilter::UNRESTRICTED };
+        assert!(keeps(&certain, OPEN, quiet, 0, WDL_DRAW, 0), "a drop chance of 1.0 must still load");
+    }
 
-        assert!(!keeps(&always, OPEN, quiet, 0, WDL_DRAW, 0), "probability 1.0 drops");
-        assert!(keeps(&never, OPEN, quiet, 0, WDL_DRAW, 0), "probability 0.0 keeps");
-
+    #[test]
+    fn the_reshaping_gates_weight_instead_of_dropping() {
+        let quiet = quiet_move(OPEN);
         let table = ReplayFilter {
             material_count_filtered: true,
-            material_count_probabilities: vec![1.0; 33],
+            material_count_probabilities: vec![0.75; 33],
             ..ReplayFilter::UNRESTRICTED
         };
 
-        assert!(!keeps(&table, OPEN, quiet, 0, WDL_DRAW, 0));
+        assert!(keeps(&table, OPEN, quiet, 0, WDL_DRAW, 0), "a reshaping gate must not drop");
+        assert!((table.sample_weight(&Position::from_fen(OPEN), 0, WDL_DRAW) - 0.25).abs() < 1e-12);
+        assert!((ReplayFilter::UNRESTRICTED.sample_weight(&Position::from_fen(OPEN), 0, WDL_DRAW) - 1.0).abs() < 1e-12);
     }
 
-    /// The gate reads the outcome the game actually had, so a won game scored as
-    /// winning is near-certain and survives, while the same score against a loss is
-    /// a near-zero chance and does not.
     #[test]
-    fn the_wdl_gate_keeps_what_the_eval_predicted() {
+    fn the_wdl_gate_weighs_what_the_eval_predicted() {
         let filter = ReplayFilter { wdl_filtered: true, ..ReplayFilter::UNRESTRICTED };
-        let quiet = quiet_move(OPEN);
+        let pos = Position::from_fen(OPEN);
 
-        assert!(keeps(&filter, OPEN, quiet, 2000, WDL_WIN, 0), "a won game scored as won");
-        assert!(!keeps(&filter, OPEN, quiet, 2000, WDL_LOSS, 0), "the same score against a loss");
+        let won = filter.sample_weight(&pos, 2000, WDL_WIN);
+        let lost = filter.sample_weight(&pos, 2000, WDL_LOSS);
+
+        assert!(won > 0.9, "a won game scored as won weighed {won}");
+        assert!(lost < 0.1, "the same score against a loss weighed {lost}");
     }
 
     #[test]

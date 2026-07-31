@@ -180,6 +180,32 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
     weights
 }
 
+/// Folds the loader's per-position weights into the phase ones, back to mean 1.
+///
+/// Either source can be empty, and both normalize the same way, so the gradient
+/// keeps the scale an unweighted run has whichever of them is on.
+pub fn merge_weights(phase: Vec<f64>, sample: &[f32]) -> Vec<f64> {
+    if sample.is_empty() {
+        return phase;
+    }
+
+    let mut weights = if phase.is_empty() { vec![1.0; sample.len()] } else { phase };
+
+    for (w, s) in weights.iter_mut().zip(sample) {
+        *w *= f64::from(*s);
+    }
+
+    let mean = weights.iter().sum::<f64>() / weights.len() as f64;
+
+    if mean > 0.0 {
+        for w in &mut weights {
+            *w /= mean;
+        }
+    }
+
+    weights
+}
+
 impl GradientStats {
     #[must_use]
     pub fn new(window: usize) -> Self {

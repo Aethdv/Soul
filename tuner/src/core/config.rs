@@ -1,6 +1,6 @@
 //! Global configuration structures for the tuning pipeline.
 
-use std::{error::Error, fs};
+use std::{error::Error, fs, path::Path};
 
 use serde::{
     Deserialize,
@@ -438,6 +438,15 @@ pub struct EvalTuneConfig {
     /// frequency, the default). Applies only when `phase_balance` is on.
     #[serde(default)]
     pub phase_target: Option<Vec<f64>>,
+    /// Share of the training split each epoch draws, redrawn every epoch. `None`
+    /// takes the replay filter's drop chance on a viriformat dataset, and the whole
+    /// split otherwise; a value here applies to any format and wins over both.
+    #[serde(default)]
+    pub epoch_sample: Option<f64>,
+    /// Cap on the validation split, otherwise a tenth of the dataset. Capping it
+    /// renumbers `best_val` for anything above the cap.
+    #[serde(default)]
+    pub val_max: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -505,10 +514,18 @@ impl TunerConfig {
             e
         })?;
 
-        let config: Self = toml::from_str(&contents).map_err(|e| {
+        let mut config: Self = toml::from_str(&contents).map_err(|e| {
             eprintln!("\x1b[31m[!] Failed to parse TOML from '{}': {}\x1b[0m", path, e);
             e
         })?;
+
+        // Relative to the config, not to the working directory: the shipped config
+        // sits in `tuner/` and runs start from the repo root.
+        if let (Some(dir), Some(filter)) = (Path::new(path).parent(), config.evaltune.replay_filter.as_ref())
+            && Path::new(filter).is_relative()
+        {
+            config.evaltune.replay_filter = Some(dir.join(filter).to_string_lossy().into_owned());
+        }
 
         Ok(config)
     }
@@ -550,6 +567,8 @@ impl Default for TunerConfig {
                 phase_balance: false,
                 phase_balance_cap: 8.0,
                 phase_target: None,
+                epoch_sample: None,
+                val_max: None,
                 lr_psqt: 1.0,
                 lr_material: 1.0,
                 lr_mobility: 1.0,
