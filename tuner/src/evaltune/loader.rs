@@ -9,7 +9,7 @@ use std::{
     fs::File,
     io,
     io::{BufRead, BufReader, Write},
-    mem, path,
+    iter, mem, path,
     path::Path,
     time::Instant,
 };
@@ -115,11 +115,19 @@ fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
 /// The second return is one weight per position, empty unless a viriformat file
 /// brought weighting gates. Files that bring none contribute ones, so the weights
 /// stay aligned with the entries whatever the paths mix.
-pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>, Vec<f32>) {
+///
+/// The third is the group sizes the split holds out together, summing to the entries: a game where
+/// the format records one, a lone position where it does not. Split by position, a held-out ply
+/// keeps its siblings in train, one move away and carrying the same label, and `L_val` flatters.
+pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>, Vec<f32>, Vec<u32>) {
     let mut all_entries = Vec::new();
     let mut all_weights: Vec<f32> = Vec::new();
+    let mut all_groups: Vec<u32> = Vec::new();
 
     for path in paths {
+        let before = all_entries.len();
+        let mut grouped = 0usize;
+
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {
             println!("Loading encoded dataset: {path}");
             match load_encoded(path) {
@@ -129,13 +137,15 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
         } else if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
             match parse_viri_file(path, filter) {
-                Ok((mut viri_entries, weights)) => {
+                Ok((mut viri_entries, weights, games)) => {
                     if !weights.is_empty() {
                         all_weights.resize(all_entries.len(), 1.0);
                         all_weights.extend(weights);
                     }
 
                     all_entries.append(&mut viri_entries);
+                    grouped = games.iter().sum::<u32>() as usize;
+                    all_groups.extend(games);
                 },
                 Err(e) => eprintln!("Error loading {path}: {e}"),
             }
@@ -150,13 +160,16 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                 Err(e) => eprintln!("Error loading {path}: {e}"),
             }
         }
+
+        // A format that records no games contributes one group per position.
+        all_groups.extend(iter::repeat_n(1u32, all_entries.len() - before - grouped));
     }
 
     if !all_weights.is_empty() {
         all_weights.resize(all_entries.len(), 1.0);
     }
 
-    (all_entries, all_weights)
+    (all_entries, all_weights, all_groups)
 }
 
 /// Hashed before shuffle: identifies loaded contents, not a permutation.

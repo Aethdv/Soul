@@ -189,14 +189,17 @@ impl ReplayFilter {
     }
 }
 
-/// The weights are one per kept position, empty when no gate weighs anything.
-pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<SoulEntry>, Vec<f32>)> {
+/// The weights are one per kept position, empty when no gate weighs anything. The third return is
+/// one count per game that kept anything, in file order and summing to the entries: a game is the
+/// independent unit of a replay, and only this walk knows where one ends.
+pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<SoulEntry>, Vec<f32>, Vec<u32>)> {
     let mut file = fs::File::open(path)?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
     let mut entries = Vec::new();
     let mut weights = Vec::new();
+    let mut games = Vec::new();
     let mut pos = 0usize;
     let mut seen = 0usize;
 
@@ -207,6 +210,8 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
         let Some((mut position, game_result, mut ply)) = parse_packed_board(header) else {
             break;
         };
+
+        let kept_before = entries.len();
 
         loop {
             if pos + 4 > data.len() {
@@ -247,13 +252,17 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
             let mut acc = Vi16x8::zero();
             position.make_move(soul_move, &mut acc);
         }
+
+        if entries.len() > kept_before {
+            games.push((entries.len() - kept_before) as u32);
+        }
     }
 
     let share = if seen == 0 { 0.0 } else { 100.0 * entries.len() as f64 / seen as f64 };
 
-    println!("  Replayed {seen} positions, kept {} ({share:.1}%)", entries.len());
+    println!("  Replayed {seen} positions, kept {} ({share:.1}%) from {} games", entries.len(), games.len());
 
-    Ok((entries, weights))
+    Ok((entries, weights, games))
 }
 
 /// How the games in a replay end, which the stream of positions cannot say.

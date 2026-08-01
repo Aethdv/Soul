@@ -239,7 +239,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         );
     }
 
-    let (all_entries, sample_weights) = loader::load_datasets(&paths, &filter);
+    let (all_entries, sample_weights, groups) = loader::load_datasets(&paths, &filter);
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
@@ -248,11 +248,93 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 
     let dataset_label = paths.join(", ");
     let keep = epoch_keep_fraction(config, &filter, replays);
-    let best_val = train_entries(all_entries, sample_weights, &dataset_label, config, resume_path, task, keep);
+    let best_val = train_entries(all_entries, sample_weights, groups, &dataset_label, config, resume_path, task, keep);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
     best_val
+}
+
+/// Permutes whole groups, so a game leaves for the holdout entire, and returns the group sizes in
+/// their new order.
+///
+/// The weights ride the same permutation, so a position keeps the weight computed for it.
+fn shuffle_groups(
+    mut entries: Vec<loader::SoulEntry>,
+    mut weights: Vec<f32>,
+    groups: &[u32],
+    seed: u64,
+) -> (Vec<loader::SoulEntry>, Vec<f32>, Vec<u32>) {
+    // One group per position means nothing here records games, so the entries shuffle directly and
+    // such a set keeps the holdout its earlier runs measured against.
+    if groups.len() == entries.len() {
+        fastrand::Rng::with_seed(seed).shuffle(&mut entries);
+        fastrand::Rng::with_seed(seed).shuffle(&mut weights);
+
+        return (entries, weights, groups.to_vec());
+    }
+
+    let mut starts = Vec::with_capacity(groups.len());
+    let mut offset = 0usize;
+
+    for &size in groups {
+        starts.push(offset);
+        offset += size as usize;
+    }
+
+    debug_assert_eq!(offset, entries.len(), "the loader left positions outside every group");
+
+    let mut order: Vec<u32> = (0..groups.len() as u32).collect();
+    fastrand::Rng::with_seed(seed).shuffle(&mut order);
+
+    let mut shuffled = Vec::with_capacity(entries.len());
+    let mut shuffled_weights = Vec::with_capacity(weights.len());
+    let mut sizes = Vec::with_capacity(groups.len());
+
+    for &group in &order {
+        let start = starts[group as usize];
+        let size = groups[group as usize] as usize;
+
+        shuffled.extend_from_slice(&entries[start..start + size]);
+
+        if !weights.is_empty() {
+            shuffled_weights.extend_from_slice(&weights[start..start + size]);
+        }
+
+        sizes.push(size as u32);
+    }
+
+    (shuffled, shuffled_weights, sizes)
+}
+
+/// Holdout positions and the groups they came from, taking whole groups off the tail.
+///
+/// A group is indivisible, so the target is a wish: the last one is taken when it lands the holdout
+/// no farther from the target than leaving it would, which centers the miss instead of always
+/// overshooting by part of a game. Picking groups by size to hit the target exactly would hold out
+/// short games in preference to long ones, and a holdout drawn on length is not a sample of the set.
+///
+/// One group always stays behind, since a run needs something to train on.
+fn holdout(sizes: &[u32], total: usize, target: usize) -> (usize, usize) {
+    let mut positions = 0usize;
+    let mut groups = 0usize;
+
+    for &size in sizes.iter().rev() {
+        let taken = positions + size as usize;
+
+        if positions >= target || taken >= total {
+            break;
+        }
+
+        if taken > target && taken - target > target - positions {
+            break;
+        }
+
+        positions = taken;
+        groups += 1;
+    }
+
+    (positions, groups)
 }
 
 /// The share of the training split one epoch draws.
@@ -305,8 +387,9 @@ pub fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
 }
 
 fn train_entries(
-    mut entries: Vec<loader::SoulEntry>,
-    mut sample_weights: Vec<f32>,
+    entries: Vec<loader::SoulEntry>,
+    sample_weights: Vec<f32>,
+    groups: Vec<u32>,
     dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
@@ -347,20 +430,45 @@ fn train_entries(
     // Games sit contiguously in the file, so the split needs a shuffle rather than a cut, and the
     // shuffle needs a seed of its own: under the training seed, each run holds out a different
     // tenth and no two validation losses compare.
-    fastrand::Rng::with_seed(split_seed).shuffle(&mut entries);
-
-    // Same seed over a slice of the same length walks the same swaps, so the
-    // weights land beside the positions they were computed for.
-    fastrand::Rng::with_seed(split_seed).shuffle(&mut sample_weights);
+    let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &groups, split_seed);
 
     // One-time cost: training reads FeatureRecords straight through.
     // Parallel because entries are independent.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
 
-    let val_count = (entries.len() / 10).min(config.val_max.unwrap_or(usize::MAX));
+    let target = (entries.len() / 10).min(config.val_max.unwrap_or(usize::MAX));
+    let (mut val_count, val_groups) = holdout(&sizes, entries.len(), target);
+
+    if val_groups < val_count {
+        println!("Holding out {val_groups} whole games, {val_count} positions");
+    }
+
+    // A file of one game has none to spare, and an empty holdout is worse than a contaminated one:
+    // `val_eval` averages nothing, reports zero, and `best_val` never improves on it again. The
+    // position cut is the honest fallback, since it says what it costs.
+    if val_count == 0 && target > 0 {
+        eprintln!(
+            "{}[!] No game can leave without taking the file with it. Falling back to a position cut,\n\
+             [!] so train and validation will share games and L_val will read low.{RESET}",
+            palette::ALARM,
+        );
+
+        val_count = target;
+    }
+
     let train_count = entries.len() - val_count;
     let (train, val) = entries.split_at(train_count);
+
+    // A file with a handful of long games cannot spare a tenth of itself without spending most of
+    // its independent samples, so the split keeps them and says so: `L_val` is then an estimate
+    // over that many games, and `best_val` selection is choosing on it.
+    if val_count * 2 < target {
+        eprintln!(
+            "{}[!] The holdout came to {val_count} positions against a target of {target}: too few games to cut a tenth.{RESET}",
+            palette::ALARM,
+        );
+    }
 
     print_dataset_stats(train, val, entries.len(), |e: &loader::SoulEntry| {
         let stm = if (e.stm_and_ep & 0x80) == 0 { Color::White } else { Color::Black };
@@ -1108,6 +1216,24 @@ fn train_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_holdout_takes_whole_groups_and_lands_nearest_the_target() {
+        // Tail first: 40 alone misses 100 by 60, and 40 + 80 overshoots it by 20, so both go.
+        assert_eq!(holdout(&[100, 80, 40], 220, 100), (120, 2));
+
+        // Taking the 200 would miss by 140 where stopping misses by 60, so it stays.
+        assert_eq!(holdout(&[100, 200, 40], 340, 100), (40, 1));
+
+        // Positions of their own hit the target exactly, as they did before groups existed.
+        assert_eq!(holdout(&[1; 100], 100, 10), (10, 10));
+
+        // Two games, and the one that would take the whole file with it cannot leave.
+        assert_eq!(holdout(&[95, 5], 100, 10), (5, 1));
+
+        // Equally far either way, and a holdout of six beats a holdout of nothing.
+        assert_eq!(holdout(&[18, 6], 24, 3), (6, 1));
+    }
 
     /// Positions and weights are shuffled in two calls, and must walk the same swaps.
     #[test]

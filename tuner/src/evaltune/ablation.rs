@@ -33,7 +33,7 @@ pub fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
             }
         } else if path.ends_with(".vf") || path.ends_with(".viri") {
             match loader::parse_viri_file(path, filter) {
-                Ok((batch, _)) => soul_entries.extend(batch),
+                Ok((batch, ..)) => soul_entries.extend(batch),
                 Err(e) => eprintln!("Skipping {path}: {e}"),
             }
         } else if path.ends_with(".epd") || path.ends_with(".txt") {

@@ -87,7 +87,7 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
             continue;
         };
 
-        let (mut entries, _) = load_datasets(&paths, &filter);
+        let (mut entries, ..) = load_datasets(&paths, &filter);
 
         if entries.is_empty() {
             eprintln!("{ALARM}[!] No positions loaded from {dataset}.{RESET}");
