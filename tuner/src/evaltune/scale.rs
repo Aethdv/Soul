@@ -109,7 +109,12 @@ impl KController {
         let eff_lr = lr * lr_mult;
         let c = self.beta1.mul_add(self.momentum, (1.0 - self.beta1) * kg);
 
-        self.k -= eff_lr * (c.signum() + weight_decay * self.k);
+        // `sign(0.0)` is 1.0: a cold start's zero eval keeps the blended direction
+        // at exactly zero, and without the gate K would walk down by `eff_lr`
+        // every batch. Only the sign step is dead; decay still fires.
+        let direction = if c.abs() < 1e-9 { 0.0 } else { c.signum() };
+
+        self.k -= eff_lr * (direction + weight_decay * self.k);
         self.momentum = self.beta2.mul_add(self.momentum, (1.0 - self.beta2) * kg);
         self.k = self.k.clamp(self.k_min, self.k_max);
     }
@@ -538,5 +543,64 @@ mod tests {
         }
 
         assert!(gauge.holds(&seed_values(&params, Init::Default, 7)), "a warm start must");
+    }
+
+    #[test]
+    fn a_zero_gradient_does_not_walk_learned_k() {
+        let mut ctrl = KController {
+            k: 0.01,
+            k_ref: 0.005,
+            mode: KMode::Learned { lr_mult: 0.001 },
+            k_min: 0.001,
+            k_max: 0.020,
+            beta1: 0.9,
+            beta2: 0.99,
+            momentum: 0.0,
+        };
+
+        for _ in 0..100 {
+            ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.0);
+        }
+
+        assert_eq!(ctrl.k, 0.01, "zero gradient on fresh momentum must not move K");
+    }
+
+    #[test]
+    fn a_zero_gradient_still_steps_with_momentum() {
+        let mut ctrl = KController {
+            k: 0.01,
+            k_ref: 0.005,
+            mode: KMode::Learned { lr_mult: 0.001 },
+            k_min: 0.001,
+            k_max: 0.020,
+            beta1: 0.9,
+            beta2: 0.99,
+            momentum: 0.5,
+        };
+
+        ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.0);
+
+        let expected = 0.01 - 0.01 * 0.001; // eff_lr = lr · lr_mult
+        assert!((ctrl.k - expected).abs() < 1e-15, "momentum should still step K: {} against {expected}", ctrl.k);
+    }
+
+    #[test]
+    fn a_zero_gradient_still_decays_k() {
+        let mut ctrl = KController {
+            k: 0.01,
+            k_ref: 0.005,
+            mode: KMode::Learned { lr_mult: 0.001 },
+            k_min: 0.001,
+            k_max: 0.020,
+            beta1: 0.9,
+            beta2: 0.99,
+            momentum: 0.0,
+        };
+
+        let before = ctrl.k;
+        ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.00001);
+
+        let expected = before - (0.01 * 0.001) * (0.00001 * before);
+        assert!((ctrl.k - expected).abs() < 1e-16, "decay must fire in the dead zone: {} against {expected}", ctrl.k);
     }
 }

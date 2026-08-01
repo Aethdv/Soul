@@ -803,6 +803,7 @@ mod tests {
     /// there is the same class of silent drift in K.
     #[test]
     fn grad_target_matches_a_finite_difference_of_the_loss() {
+        #[rustfmt::skip]
         let losses = [
             LossFn::CrossEntropy,
             LossFn::MeanSquaredError,

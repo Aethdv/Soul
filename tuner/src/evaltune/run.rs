@@ -1408,11 +1408,8 @@ mod tests {
             vol_adaptive: true,
         };
 
-        let entry = |occ: u32, score: i16| loader::SoulEntry {
-            occupancy: (1u64 << occ) - 1,
-            score,
-            ..loader::SoulEntry::default()
-        };
+        let entry =
+            |occ: u32, score: i16| loader::SoulEntry { occupancy: (1u64 << occ) - 1, score, ..loader::SoulEntry::default() };
 
         // occ 2 once added 16 to i16::MAX and occ 32 adds 44; both saturate now.
         assert!(ctx.passes_vol_filter(&entry(2, 0), 30_000), "a sparse position saturates the add");
@@ -1462,10 +1459,7 @@ mod tests {
         let h = 1e-6;
         let numeric = (loss_at(k + h) - loss_at(k - h)) / (2.0 * h);
 
-        assert!(
-            (k_g - numeric).abs() < 1e-6 * (1.0 + numeric.abs()),
-            "batch k_g {k_g} against FD {numeric}"
-        );
+        assert!((k_g - numeric).abs() < 1e-6 * (1.0 + numeric.abs()), "batch k_g {k_g} against FD {numeric}");
     }
 
     #[test]
