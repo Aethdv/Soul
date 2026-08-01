@@ -77,12 +77,16 @@ impl TrainerContext<'_> {
             return true;
         }
 
+        // Piece count scales the threshold, so complex positions get the wider net.
+        // The floor is the guard: a negative threshold makes `|static - score| <= t`
+        // impossible and silently drops every position.
         let t = if self.vol_adaptive {
-            let short = 10i16.saturating_sub(entry.occupancy.count_ones() as i16);
-            self.vol_threshold + short.saturating_mul(2)
+            let occ = entry.occupancy.count_ones() as i16;
+            self.vol_threshold.saturating_add((occ - 10).saturating_mul(2))
         } else {
             self.vol_threshold
-        };
+        }
+        .max(0);
 
         (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
     }
@@ -1325,6 +1329,94 @@ mod tests {
         assert!(filter.filter_castling);
         assert_eq!(filter.min_pieces, 4, "an unnamed field keeps viriformat's default");
         assert!(filter.filter_tactical, "and so does an unnamed flag");
+    }
+
+    /// The threshold scales with complexity per the config doc: dense middlegames
+    /// get the wide net, sparse endgames the tight one, and the fixed form ignores
+    /// occupancy entirely.
+    #[test]
+    fn the_volatility_filter_scales_with_complexity() {
+        let make_ctx = |adaptive: bool| TrainerContext {
+            train: &[],
+            val: &[],
+            records: &[],
+            train_count: 0,
+            phase_weights: &[],
+            loss_fn: LossFn::CrossEntropy,
+            vol_threshold: 40,
+            vol_adaptive: adaptive,
+        };
+
+        let entry = |occ: u32| loader::SoulEntry { occupancy: (1u64 << occ) - 1, ..loader::SoulEntry::default() };
+
+        let ctx = make_ctx(true);
+        assert!(ctx.passes_vol_filter(&entry(32), 80), "occ 32: t = 84 accepts an 80 cp disagreement");
+        assert!(!ctx.passes_vol_filter(&entry(32), 100), "occ 32: t = 84 rejects a 100 cp disagreement");
+        assert!(ctx.passes_vol_filter(&entry(8), 30), "occ 8: t = 36 accepts a 30 cp disagreement");
+        assert!(!ctx.passes_vol_filter(&entry(8), 50), "occ 8: t = 36 rejects a 50 cp disagreement");
+
+        let ctx = make_ctx(false);
+        assert!(ctx.passes_vol_filter(&entry(32), 40), "fixed: the threshold ignores occupancy");
+        assert!(!ctx.passes_vol_filter(&entry(32), 41), "fixed: the threshold ignores occupancy");
+    }
+
+    /// The old formula subtracted the piece count, so a dense position pushed the
+    /// threshold negative and every position, perfect matches included, fell out.
+    /// The floor is what makes the clamp half of that impossible to reintroduce.
+    #[test]
+    fn the_volatility_filter_floor_never_rejects_a_whole_position_class() {
+        let ctx = TrainerContext {
+            train: &[],
+            val: &[],
+            records: &[],
+            train_count: 0,
+            phase_weights: &[],
+            loss_fn: LossFn::CrossEntropy,
+            vol_threshold: 8,
+            vol_adaptive: true,
+        };
+
+        let entry = |occ: u32| loader::SoulEntry { occupancy: (1u64 << occ) - 1, ..loader::SoulEntry::default() };
+
+        // occ 6: (6 − 10) · 2 = −8, floored to 0. A perfect match still passes and
+        // any disagreement fails, which is the tight endgame the doc describes.
+        assert!(ctx.passes_vol_filter(&entry(6), 0), "a floored threshold passes a perfect match");
+        assert!(!ctx.passes_vol_filter(&entry(6), 1), "a floored threshold rejects any disagreement");
+
+        // occ 31 with t0 40 was −2 before the flip, dropping even a perfect match;
+        // the flipped arithmetic leaves 82 and the floor guarantees no revisit.
+        let ctx = TrainerContext { vol_threshold: 40, ..ctx };
+        assert!(ctx.passes_vol_filter(&entry(31), 0), "a dense position passes a perfect match");
+        assert!(ctx.passes_vol_filter(&entry(31), 80), "occ 31: t = 82 accepts an 80 cp disagreement");
+        assert!(!ctx.passes_vol_filter(&entry(31), 100), "occ 31: t = 82 rejects a 100 cp disagreement");
+    }
+
+    /// A huge threshold plus the occupancy margin used to overflow the i16 add,
+    /// panicking in debug and wrapping negative in release. The saturating add
+    /// turns that into a threshold like any other.
+    #[test]
+    fn a_huge_volatility_threshold_saturates_instead_of_overflowing() {
+        let ctx = TrainerContext {
+            train: &[],
+            val: &[],
+            records: &[],
+            train_count: 0,
+            phase_weights: &[],
+            loss_fn: LossFn::CrossEntropy,
+            vol_threshold: i16::MAX,
+            vol_adaptive: true,
+        };
+
+        let entry = |occ: u32, score: i16| loader::SoulEntry {
+            occupancy: (1u64 << occ) - 1,
+            score,
+            ..loader::SoulEntry::default()
+        };
+
+        // occ 2 once added 16 to i16::MAX and occ 32 adds 44; both saturate now.
+        assert!(ctx.passes_vol_filter(&entry(2, 0), 30_000), "a sparse position saturates the add");
+        assert!(ctx.passes_vol_filter(&entry(32, 0), 30_000), "a dense position saturates the add");
+        assert!(!ctx.passes_vol_filter(&entry(32, -1), 32_767), "32768 is past the saturated 32767");
     }
 
     #[test]
