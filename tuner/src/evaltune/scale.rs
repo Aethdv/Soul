@@ -123,6 +123,7 @@ impl KController {
         self.momentum *= f;
     }
 }
+
 /// Folds each piece's mean PSQT into its material term.
 ///
 /// `material[p] + psqt[p][sq]` is the whole of a piece's contribution, so a
