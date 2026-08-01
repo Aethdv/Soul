@@ -221,7 +221,7 @@ impl GradientStats {
         self.count += 1;
 
         // ── Online 95th percentile estimation.
-        // We move up by (1-p) when norm > p95, and down by p when norm < p95.
+        // We move up by p when norm > p95, and down by (1-p) when norm < p95.
         // Balancing: 0.05 · 0.95 (up) + 0.95 · -0.05 (down) = 0.
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
 
