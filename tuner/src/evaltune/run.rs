@@ -106,7 +106,7 @@ impl TrainerContext<'_> {
                             continue;
                         }
 
-                        let target = wdl_target(entry, k, blend);
+                        let (target, dt_dk) = wdl_target(entry, k, blend);
                         let eval = loader::eval_record_full(record, values);
                         let sig = sigmoid(eval.score, k);
                         let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
@@ -115,10 +115,11 @@ impl TrainerContext<'_> {
                         loss += w * self.loss_fn.loss(sig, target);
                         loader::accumulate_record_grad(record, &eval, gs * w, &mut g);
 
-                        // gs is ∂L/∂score = K · (sig - target) · dσ/dscore.
-                        // We need ∂L/∂K = score · (sig - target) · dσ/dscore.
-                        // So ∂L/∂K = (gs / K) · score.
-                        k_g += (gs / k) * eval.score * w;
+                        // ∂L/∂K = (gs / K) · score + ∂L/∂target · dt/dK.
+                        // The first term scales the eval's own sigmoid; the second
+                        // is the WDL target moving with K, and it vanishes when the
+                        // blend is off or the target is the bare game result.
+                        k_g += ((gs / k) * eval.score + self.loss_fn.grad_target(sig, target) * dt_dk) * w;
 
                         count += 1;
                     }
@@ -159,7 +160,7 @@ impl TrainerContext<'_> {
 
                     for (sum, &(k, blend)) in wsum.iter_mut().zip(&probes) {
                         let sig = sigmoid(score, k);
-                        let target = wdl_target(entry, k, blend);
+                        let (target, _) = wdl_target(entry, k, blend);
 
                         *sum += w * self.loss_fn.loss(sig, target);
                     }
@@ -1417,6 +1418,54 @@ mod tests {
         assert!(ctx.passes_vol_filter(&entry(2, 0), 30_000), "a sparse position saturates the add");
         assert!(ctx.passes_vol_filter(&entry(32, 0), 30_000), "a dense position saturates the add");
         assert!(!ctx.passes_vol_filter(&entry(32, -1), 32_767), "32768 is past the saturated 32767");
+    }
+
+    /// The batch K-gradient is the derivative of the batch loss in K, WDL target
+    /// included: a finite difference of the loss closes to the analytic value only
+    /// when `grad_target · dt_dk` rides along. The old code dropped the target
+    /// term, and at this blend the missing piece is a hundred times the tolerance.
+    #[test]
+    fn the_k_gradient_matches_a_finite_difference_of_the_batch_loss() {
+        use super::super::engine::{Position, SoulEntry};
+
+        let params = eval_params::collect_parameters();
+        let values = eval_params::default_values(&params);
+
+        let entry = SoulEntry::from_board(
+            &Position::from_fen("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"),
+            2.0,
+            Some(55),
+        );
+        let record = FeatureRecord::from_entry(&entry);
+
+        let ctx = TrainerContext {
+            train: std::slice::from_ref(&entry),
+            val: &[],
+            records: std::slice::from_ref(&record),
+            train_count: 1,
+            phase_weights: &[],
+            loss_fn: LossFn::CrossEntropy,
+            vol_threshold: 0,
+            vol_adaptive: true,
+        };
+
+        let k = 0.005;
+        let blend = 0.3;
+        let (_, k_g, ..) = ctx.batch_grad(&[0], &values, k, blend);
+
+        let loss_at = |kk: f64| {
+            let (target, _) = wdl_target(&entry, kk, blend);
+            let eval = loader::eval_record_full(&record, &values);
+            ctx.loss_fn.loss(sigmoid(eval.score, kk), target)
+        };
+
+        let h = 1e-6;
+        let numeric = (loss_at(k + h) - loss_at(k - h)) / (2.0 * h);
+
+        assert!(
+            (k_g - numeric).abs() < 1e-6 * (1.0 + numeric.abs()),
+            "batch k_g {k_g} against FD {numeric}"
+        );
     }
 
     #[test]

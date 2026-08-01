@@ -161,6 +161,44 @@ impl LossFn {
             },
         }
     }
+
+    /// Inner derivative ∂L/∂target.
+    ///
+    /// The K gradient needs it once the WDL blend makes the target a function of
+    /// K: the target side of `dL/dK` is `grad_target · dt/dK`, and the parameter
+    /// gradient stays on `grad_scale` because the target never depends on them.
+    pub fn grad_target(self, sig: f64, target: f64) -> f64 {
+        match self {
+            // dJ/dT = −2·(S − T)
+            Self::MeanSquaredError => -2.0 * (sig - target),
+            // dL/dT = −ln S + ln(1 − S)
+            Self::CrossEntropy => {
+                let s = sig.clamp(1e-7, 1.0 - 1e-7);
+                (1.0 - s).ln() - s.ln()
+            },
+            // dFL/dT = −γ·|s-T|^(γ-1)·sign(s-T)·CE + |s-T|^γ·dL/dT(CE)
+            Self::Focal { gamma } => {
+                let prob = sig.clamp(1e-7, 1.0 - 1e-7);
+                let ce = Self::CrossEntropy.loss(sig, target);
+                let diff = prob - target;
+                // The floor exists for γ ≤ 1, where the exponent γ − 1 is
+                // non-positive and a zero base would blow up. For γ > 1 the
+                // derivative is genuinely 0 at the coincidence point, and the
+                // floor would fake a step there.
+                let base = diff.abs();
+                let powered = if gamma <= 1.0 { base.max(1e-12) } else { base };
+                let ce_grad = base.powf(gamma) * Self::CrossEntropy.grad_target(sig, target);
+                let focal_grad = -gamma * powered.powf(gamma - 1.0) * diff.signum() * ce;
+
+                ce_grad + focal_grad
+            },
+            // ∂SCE/∂T = CE_grad_T(s, T·(1-ε) + 0.5·ε) · (1−ε)
+            Self::SmoothedCE { epsilon } => {
+                let t = target * (1.0 - epsilon) + 0.5 * epsilon;
+                Self::CrossEntropy.grad_target(sig, t) * (1.0 - epsilon)
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
@@ -757,5 +795,29 @@ mod tests {
         let error = toml::from_str::<TunerConfig>(&doc).expect_err("an unknown key must fail the load");
 
         assert!(error.to_string().contains("log_levle"), "the error must name the offending key: {error}");
+    }
+
+    /// The target derivative is a closed form, so the same finite difference that
+    /// would catch a sign slip in `grad_scale` catches one here. The K gradient
+    /// mixes `grad_target` with the target's own K-derivative, and a sign error
+    /// there is the same class of silent drift in K.
+    #[test]
+    fn grad_target_matches_a_finite_difference_of_the_loss() {
+        let losses = [
+            LossFn::CrossEntropy,
+            LossFn::MeanSquaredError,
+            LossFn::Focal { gamma: 1.5 },
+            LossFn::SmoothedCE { epsilon: 0.01 },
+        ];
+
+        for loss in losses {
+            for (sig, target) in [(0.3, 0.2), (0.5, 0.5), (0.8, 0.9), (0.1, 0.9), (0.9999, 0.5)] {
+                let h = 1e-7;
+                let numeric = (loss.loss(sig, target + h) - loss.loss(sig, target - h)) / (2.0 * h);
+                let closed = loss.grad_target(sig, target);
+
+                assert!((numeric - closed).abs() < 1e-6, "{loss:?} at ({sig}, {target}): {closed} against FD {numeric}");
+            }
+        }
     }
 }

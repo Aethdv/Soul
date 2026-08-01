@@ -47,23 +47,32 @@ pub trait TunableData: Sync + Send {
     fn result(&self) -> f64;
 }
 
-/// WDL-blended training target. Near-zero search scores (low engine confidence)
-/// fall back to the game result; high-magnitude scores trust the eval fully.
-/// `wdl_blend >= 1.0` bypasses instance scaling for random-restart data: the
-/// target is pure `sigmoid(score)`. 400 cp is the empirical saturation point.
-pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> f64 {
+/// WDL-blended training target, and its K-derivative.
+///
+/// Near-zero search scores (low engine confidence) fall back to the game result;
+/// high-magnitude scores trust the eval fully. `wdl_blend >= 1.0` bypasses
+/// instance scaling for random-restart data: the target is pure `sigmoid(score)`.
+/// 400 cp is the empirical saturation point.
+///
+/// The derivative is the target's own response to a K move, `instance_blend ·
+/// σ_e(1 − σ_e) · score`, zero when the target is the bare game result.
+/// The K gradient needs it once the loss is a function of a blended target.
+pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> (f64, f64) {
     const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
     if entry.score == loader::SoulEntry::NO_SCORE {
-        return f64::from(entry.result) / 2.0;
+        return (f64::from(entry.result) / 2.0, 0.0);
     }
+
     let score = f64::from(entry.score);
-
     let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / CONFIDENCE_THRESHOLD).min(1.0) };
-
     let expected = sigmoid(score, k);
+
     // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
-    (1.0 - instance_blend).mul_add(f64::from(entry.result) / 2.0, instance_blend * expected)
+    let target = (1.0 - instance_blend).mul_add(f64::from(entry.result) / 2.0, instance_blend * expected);
+    let dt_dk = instance_blend * expected * (1.0 - expected) * score;
+
+    (target, dt_dk)
 }
 
 /// Overfitting detector: fit still improving while generalization degrades.
