@@ -1118,6 +1118,13 @@ fn train_loop(
     // K is the other half of that scale and takes the same correction: a report
     // pairing moved parameters with the K they moved away from reads the mismatch
     // rather than the model. `Gauge::restore` pays it on a held run.
+    //
+    // The off-scale ratio is measured before the cold-start normalization that
+    // follows: it reads the scale the run actually found, and measured afterwards
+    // it would sit at exactly 1.0, silencing the warning on the one path whose
+    // scale can wander.
+    let off_scale_ratio = Gauge::measure(&gauge.probe, &ema_values) / gauge.reference;
+
     let (landed, report_k) = if hold_scale {
         (1.0 / gauge.applied, k_ctrl.k())
     } else {
@@ -1158,7 +1165,7 @@ fn train_loop(
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
 
     let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
-    let off_scale = off_scale_warning(Gauge::measure(&gauge.probe, &ema_values) / gauge.reference);
+    let off_scale = off_scale_warning(off_scale_ratio);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
     let calibration = calibration_report(ctx, &best_val_params, report_k);
     let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
