@@ -586,10 +586,20 @@ fn train_loop(
     let mut indices = vec![0u32; train_len];
     let mut shuffler = Shuffler::new(train_len);
     let epoch_sample = epoch_sample_len(train_len, epoch_keep);
+    let steps_per_epoch = epoch_sample.div_ceil(config.batch_size);
 
     if epoch_sample < train_len {
         println!("Sampling {epoch_sample} of {train_len} training positions per epoch, redrawn each one");
     }
+
+    // An epoch is not a unit of training: the share drawn and the batch size decide what one is
+    // worth, and a skip probability moves the share by an order of magnitude. Two runs compare only
+    // at equal steps.
+    println!(
+        "{LAB}Steps:{RESET}      {VAL}{}{RESET} over {} epochs, {steps_per_epoch} per epoch",
+        steps_per_epoch * config.epochs,
+        config.epochs,
+    );
 
     let mut ema_values = resume.as_ref().map_or_else(|| values.clone(), |d| d.ema.clone());
     let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
@@ -993,29 +1003,6 @@ fn train_loop(
         }
     }
 
-    // The JSON log opens in append mode, so a seed sweep writes every run's final params into
-    // one file for reading the spread directly.
-    if let Some(ref l) = json_logger {
-        quantize(&best_val_params, &mut quantized);
-
-        l.log(
-            "final",
-            &serde_json::json!({
-                "seed": rng_seed,
-                "split_seed": split_seed,
-                "epochs": epochs_run,
-                "best_val_loss": progress.best_val_loss,
-                "best_val_epoch": progress.best_val_epoch,
-                "best_train_loss": progress.best_train_loss,
-                "best_train_epoch": progress.best_train_epoch,
-                // Named for the vector it is: the run also ships `ema_values`,
-                // and a spread measured over one of them says nothing about the other.
-                "best_val_params": quantized,
-                "sensitivity": grad_ema_per_param,
-            }),
-        );
-    }
-
     // A cold start was left to find its own scale, so its output is normalized
     // here instead: the search reads centipawns, and nothing else would put the
     // run's eval back on the scale `search_params` was written against.
@@ -1033,6 +1020,32 @@ fn train_loop(
 
         (1.0 / factor, k_ctrl.k() / factor)
     };
+
+    // The JSON log opens in append mode, so a seed sweep writes every run's final params into
+    // one file for reading the spread directly. It has to sit below the normalization: a cold
+    // start's vector is off the centipawn scale until then, and the spread would be read in a unit
+    // the run invented for itself.
+    if let Some(ref l) = json_logger {
+        quantize(&best_val_params, &mut quantized);
+
+        l.log(
+            "final",
+            &serde_json::json!({
+                "seed": rng_seed,
+                "split_seed": split_seed,
+                "epochs": epochs_run,
+                "steps": batches_run,
+                "best_val_loss": progress.best_val_loss,
+                "best_val_epoch": progress.best_val_epoch,
+                "best_train_loss": progress.best_train_loss,
+                "best_train_epoch": progress.best_train_epoch,
+                // Named for the vector it is: the run also ships `ema_values`,
+                // and a spread measured over one of them says nothing about the other.
+                "best_val_params": quantized,
+                "sensitivity": grad_ema_per_param,
+            }),
+        );
+    }
 
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
 

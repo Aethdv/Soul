@@ -239,10 +239,13 @@ fn assay(config_path: &str, datasets: &[String], report: Assay, sample: Option<u
     evaltune::assay::run(&report, datasets, &load_config(config_path).evaltune, sample);
 }
 
+/// A config that will not read is fatal, as the replay filter it names already is: a fallback to
+/// defaults runs under a different filter and a different split, answering a different question
+/// than the one asked.
 fn load_config(path: &str) -> TunerConfig {
-    TunerConfig::from_file(path).unwrap_or_else(|e| {
-        eprintln!("Warning: Failed to load config '{path}': {e}. Using defaults.");
-        TunerConfig::default()
+    TunerConfig::from_file(path).unwrap_or_else(|_| {
+        eprintln!("Error: defaults would answer a different question. Fix the path, or run from the repo root.");
+        process::exit(1);
     })
 }
 
@@ -250,7 +253,7 @@ fn load_config(path: &str) -> TunerConfig {
 fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
     match name {
         None => Some(LossFn::CrossEntropy),
-        Some("config") => Some(TunerConfig::from_file(config_path).map(|cfg| cfg.evaltune.loss).unwrap_or_default()),
+        Some("config") => Some(load_config(config_path).evaltune.loss),
         Some(other) => other.parse().ok().or_else(|| {
             eprintln!("Unknown --loss '{other}'; expected config or one of {:?}", LossFn::NAMES);
             None
@@ -365,10 +368,7 @@ fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize
 }
 
 fn run_evaltune(args: Args) -> bool {
-    let mut tuner_config = TunerConfig::from_file(&args.config).unwrap_or_else(|e| {
-        eprintln!("Warning: Failed to load config '{}': {e}. Using defaults.", args.config);
-        TunerConfig::default()
-    });
+    let mut tuner_config = load_config(&args.config);
 
     if let Some(epochs) = args.epochs {
         tuner_config.evaltune.epochs = epochs;
