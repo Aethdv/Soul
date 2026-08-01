@@ -1,4 +1,5 @@
 pub mod ablation;
+pub mod assay;
 pub mod correlation;
 pub mod curvature;
 pub mod engine;

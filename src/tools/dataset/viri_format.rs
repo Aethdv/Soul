@@ -18,7 +18,7 @@ use super::{SoulEntry, flip_result};
 use crate::{
     core::{
         board::{BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO},
-        defs::{Color, PieceType, Square},
+        defs::{Color, MATE_BOUND, PieceType, Square},
         moves::Move,
     },
     engine::wdl::wdl_model,
@@ -254,6 +254,108 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
     println!("  Replayed {seen} positions, kept {} ({share:.1}%)", entries.len());
 
     Ok((entries, weights))
+}
+
+/// How the games in a replay end, which the stream of positions cannot say.
+///
+/// A file whose games stop in the middlegame holds no endgames and few material
+/// imbalances, so a fit against outcomes has nothing to sit on.
+///
+/// The three ending counts bucket a game by its last recorded score, and a game in none
+/// of them stopped for a reason that was not its score.
+pub struct GameScan {
+    pub games: usize,
+    pub plies: u64,
+    /// Pieces standing at each game's last position, summed.
+    pub pieces_left: u64,
+    /// Outcomes by the header's white-relative WDL code.
+    pub results: [usize; 3],
+    pub mate_endings: usize,
+    pub decisive_endings: usize,
+    pub quiet_endings: usize,
+}
+
+/// A last score this far from equality means the generator stopped on a won position.
+pub const DECISIVE_ENDING: i32 = 1000;
+
+/// A last score this near equality means the generator stopped on a drawn one.
+pub const QUIET_ENDING: i32 = 50;
+
+/// Walk every game for its ending, filter ignored: a scan describes the file as it is.
+///
+/// # Errors
+/// Returns an error if the file cannot be read.
+pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
+    let mut file = fs::File::open(path)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+
+    let mut scan = GameScan {
+        games: 0,
+        plies: 0,
+        pieces_left: 0,
+        results: [0; 3],
+        mate_endings: 0,
+        decisive_endings: 0,
+        quiet_endings: 0,
+    };
+
+    let mut pos = 0usize;
+
+    while pos + PACKED_BOARD_SIZE <= data.len() {
+        let header = &data[pos..pos + PACKED_BOARD_SIZE];
+        pos += PACKED_BOARD_SIZE;
+
+        let Some((mut position, game_result, _)) = parse_packed_board(header) else {
+            break;
+        };
+
+        let mut last_score = 0i32;
+        let mut plies = 0u64;
+
+        loop {
+            if pos + 4 > data.len() {
+                break;
+            }
+
+            let candidate = &data[pos..pos + 4];
+
+            if candidate == SENTINEL {
+                pos += 4;
+                break;
+            }
+
+            let viri_move = u16::from_le_bytes([candidate[0], candidate[1]]);
+            last_score = i32::from(i16::from_le_bytes([candidate[2], candidate[3]]));
+            pos += 4;
+
+            let Some(soul_move) = viri_to_soul_move(viri_move, &position) else {
+                break;
+            };
+
+            plies += 1;
+
+            let mut acc = Vi16x8::zero();
+            position.make_move(soul_move, &mut acc);
+        }
+
+        scan.games += 1;
+        scan.plies += plies;
+        scan.pieces_left += u64::from(position.occupancy().popcount());
+        scan.results[usize::from(game_result.min(2))] += 1;
+
+        let magnitude = last_score.abs();
+
+        if magnitude >= MATE_BOUND {
+            scan.mate_endings += 1;
+        } else if magnitude >= DECISIVE_ENDING {
+            scan.decisive_endings += 1;
+        } else if magnitude <= QUIET_ENDING {
+            scan.quiet_endings += 1;
+        }
+    }
+
+    Ok(scan)
 }
 
 /// Convert a white-relative viri score to STM-relative `i32`.

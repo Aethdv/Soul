@@ -12,6 +12,7 @@ pub use soul::{
     core::{
         board::Position,
         defs::{Color, PieceType, TOTAL_PHASE},
+        util::format_comma,
     },
     engine::{
         eval_params::{
@@ -20,8 +21,10 @@ pub use soul::{
         wdl::sigmoid,
     },
     tools::dataset::{
-        FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl, load_encoded,
-        parse_epd_str, parse_viri_file, save_encoded, tape::eval_f64,
+        FeatureRecord, GameScan, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl,
+        load_encoded, parse_epd_str, parse_viri_file, save_encoded, scan_viri_games,
+        tape::eval_f64,
+        viri_format::{DECISIVE_ENDING, QUIET_ENDING},
     },
 };
 

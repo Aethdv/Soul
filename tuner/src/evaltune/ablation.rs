@@ -2,7 +2,7 @@
 //! against the baseline.
 //!
 //! Groups are defined by layout ranges (PSQT per piece type, then each
-//! eval term). Uses [`TunableData`] to run on both `.soul` and raw EPD.
+//! eval term). Uses [`TunableData`] to run on packed datasets and raw EPD alike.
 
 use std::{mem, ops::Range};
 
@@ -13,11 +13,11 @@ use super::{
     scale::golden_search_k,
 };
 use crate::evaltune::{
-    loader::{self, Entry, SoulEntry},
+    loader::{self, Entry, ReplayFilter, SoulEntry},
     training::{self, TunableData},
 };
 
-pub fn run_ablation(dataset_paths: &[String]) {
+pub fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
     let values = eval_params::default_values(&eval_params::collect_parameters());
 
     println!("Loading dataset...");
@@ -29,6 +29,11 @@ pub fn run_ablation(dataset_paths: &[String]) {
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {
             match loader::load_encoded(path) {
                 Ok(batch) => soul_entries.extend(batch),
+                Err(e) => eprintln!("Skipping {path}: {e}"),
+            }
+        } else if path.ends_with(".vf") || path.ends_with(".viri") {
+            match loader::parse_viri_file(path, filter) {
+                Ok((batch, _)) => soul_entries.extend(batch),
                 Err(e) => eprintln!("Skipping {path}: {e}"),
             }
         } else if path.ends_with(".epd") || path.ends_with(".txt") {
@@ -44,7 +49,7 @@ pub fn run_ablation(dataset_paths: &[String]) {
     let mut ran = false;
 
     if !soul_entries.is_empty() {
-        println!("  {} positions (.soul)", soul_entries.len());
+        println!("  {} positions (packed)", soul_entries.len());
         run_generic(&soul_entries, &values);
         ran = true;
     }

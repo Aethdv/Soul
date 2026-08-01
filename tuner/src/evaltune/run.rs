@@ -285,7 +285,7 @@ fn epoch_sample_len(train_len: usize, keep: f64) -> usize {
 /// The filter file, or every position when none was named. A named file that will
 /// not read is fatal: training on the whole set instead of the asked-for subset
 /// would silently answer a different question.
-fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
+pub fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
     let Some(path) = config.replay_filter.as_deref() else {
         return ReplayFilter::UNRESTRICTED;
     };

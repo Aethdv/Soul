@@ -3,9 +3,15 @@ use std::process;
 use clap::{Parser, Subcommand};
 use soul::cli::Help;
 use tuner::{
-    core::config::{Init, KMode, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
+    core::config::{Init, KMode, LossFn, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
     evaltune,
-    evaltune::{ablation, correlation, loader, run::Task, seeds},
+    evaltune::{
+        ablation,
+        assay::Assay,
+        correlation, loader,
+        run::{Task, replay_filter},
+        seeds,
+    },
 };
 
 #[derive(Parser)]
@@ -71,6 +77,8 @@ enum Commands {
     Ablation {
         #[arg(short, long, value_delimiter = ',', num_args = 1..)]
         data: Vec<String>,
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
     },
     #[command(name = "correlation")]
     Correlation,
@@ -103,6 +111,41 @@ enum Commands {
         #[arg(short, long, default_value = "tuner/tuner_config.toml")]
         config: String,
         dataset: String,
+    },
+    #[command(name = "score")]
+    Score {
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        #[arg(long)]
+        sample: Option<usize>,
+        #[arg(short, long)]
+        params: Vec<String>,
+        #[arg(short, long)]
+        loss: Option<String>,
+        #[arg(long, default_value = "shipped")]
+        shipped: String,
+        #[arg(required = true, num_args = 1..)]
+        datasets: Vec<String>,
+    },
+    #[command(name = "material")]
+    Material {
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        #[arg(long)]
+        sample: Option<usize>,
+        #[arg(long, default_value = "shipped")]
+        shipped: String,
+        #[arg(required = true, num_args = 1..)]
+        datasets: Vec<String>,
+    },
+    #[command(name = "profile")]
+    Profile {
+        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        config: String,
+        #[arg(long)]
+        sample: Option<usize>,
+        #[arg(required = true, num_args = 1..)]
+        datasets: Vec<String>,
     },
     #[command(name = "sweep-lr-mult")]
     SweepLrMult {
@@ -143,8 +186,8 @@ fn main() {
                 process::exit(1);
             }
         },
-        Some(Commands::Ablation { data }) => {
-            ablation::run_ablation(&data);
+        Some(Commands::Ablation { data, config: config_path }) => {
+            ablation::run_ablation(&data, &replay_filter(&load_config(&config_path).evaltune));
         },
         Some(Commands::Correlation) => {
             correlation::run_correlation();
@@ -160,6 +203,19 @@ fn main() {
         },
         Some(Commands::ValCost { config: config_path, dataset }) => {
             probe(&config_path, &dataset, Task::ValCost);
+        },
+        Some(Commands::Score { config: config_path, sample, params, loss, shipped, datasets }) => {
+            let Some(loss) = parse_loss(loss.as_deref(), &config_path) else {
+                return;
+            };
+
+            assay(&config_path, &datasets, Assay::Score { params, loss, shipped }, sample);
+        },
+        Some(Commands::Material { config: config_path, sample, shipped, datasets }) => {
+            assay(&config_path, &datasets, Assay::Material { shipped }, sample);
+        },
+        Some(Commands::Profile { config: config_path, sample, datasets }) => {
+            assay(&config_path, &datasets, Assay::Profile, sample);
         },
         Some(Commands::SweepLrMult { values, min, max, count, config: config_path, epochs, refine_rounds, seed, dataset }) => {
             let grid = match values {
@@ -177,14 +233,34 @@ fn main() {
     }
 }
 
+/// One row per dataset, so an assay runs beside the trainer rather than through it: the split, the
+/// sample weights and the merge into one pool all describe a training run.
+fn assay(config_path: &str, datasets: &[String], report: Assay, sample: Option<usize>) {
+    evaltune::assay::run(&report, datasets, &load_config(config_path).evaltune, sample);
+}
+
+fn load_config(path: &str) -> TunerConfig {
+    TunerConfig::from_file(path).unwrap_or_else(|e| {
+        eprintln!("Warning: Failed to load config '{path}': {e}. Using defaults.");
+        TunerConfig::default()
+    })
+}
+
+/// The yardstick's own loss, `config` for whatever the config file trains under, or a name.
+fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
+    match name {
+        None => Some(LossFn::CrossEntropy),
+        Some("config") => Some(TunerConfig::from_file(config_path).map(|cfg| cfg.evaltune.loss).unwrap_or_default()),
+        Some(other) => other.parse().ok().or_else(|| {
+            eprintln!("Unknown --loss '{other}'; expected config or one of {:?}", LossFn::NAMES);
+            None
+        }),
+    }
+}
+
 /// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
 fn probe(config_path: &str, dataset: &str, task: Task) {
-    let cfg = TunerConfig::from_file(config_path).unwrap_or_else(|e| {
-        eprintln!("Warning: Failed to load config '{config_path}': {e}. Using defaults.");
-        TunerConfig::default()
-    });
-
-    evaltune::run(Some(dataset), &cfg.evaltune, None, task);
+    evaltune::run(Some(dataset), &load_config(config_path).evaltune, None, task);
 }
 
 fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
@@ -416,6 +492,9 @@ fn print_help() {
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
+    h.command_args("score", "<dataset...> [-p <ckpt>]", "Loss of each parameter vector on each set, at its own K");
+    h.command_args("material", "<dataset...>", "Material-only logistic fit against the shipped table");
+    h.command_args("profile", "<dataset...>", "Labels, imbalances, phase, and how the games ended");
     h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs shuffled");
     h.command_args("val-cost", "<dataset>", "Time the fused validation pass against two separate ones");
     h.command_args("seed-spread", "<dataset> [options]", "Run N seeds of one config, report where they land");
@@ -438,4 +517,6 @@ fn print_help() {
     h.option("--split-seed", "<u64>", "Reseed the validation holdout, fixed by default");
     h.option("--lr-mult", "<f64>", "Learning-rate multiplier");
     h.option_default("--init", "<mode>", "Starting weights [default|zero|random]", "default");
+    h.option("--sample", "<N>", "Assay N positions taken evenly, not the whole set");
+    h.option("--loss", "<name>", "Score under [ce|sce|mse|focal] or config");
 }

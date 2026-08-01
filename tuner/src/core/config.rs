@@ -51,13 +51,7 @@ impl<'de> Visitor<'de> for LossFnVisitor {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<LossFn, E> {
-        match value {
-            "ce" => Ok(LossFn::CrossEntropy),
-            "mse" => Ok(LossFn::MeanSquaredError),
-            "focal" => Ok(LossFn::Focal { gamma: 2.0 }),
-            "sce" => Ok(LossFn::SmoothedCE { epsilon: 0.01 }),
-            _ => Err(de::Error::unknown_variant(value, &["ce", "mse", "focal", "sce"])),
-        }
+        value.parse().map_err(|_| de::Error::unknown_variant(value, LossFn::NAMES))
     }
 
     /// The parameter names the variant, so two of them name two losses.
@@ -84,7 +78,35 @@ impl<'de> Deserialize<'de> for LossFn {
     }
 }
 
+impl std::str::FromStr for LossFn {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "ce" => Ok(Self::CrossEntropy),
+            "mse" => Ok(Self::MeanSquaredError),
+            "focal" => Ok(Self::Focal { gamma: 2.0 }),
+            "sce" => Ok(Self::SmoothedCE { epsilon: 0.01 }),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for LossFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::CrossEntropy => f.write_str("cross-entropy"),
+            Self::MeanSquaredError => f.write_str("mean squared error"),
+            Self::Focal { gamma } => write!(f, "focal, γ {gamma}"),
+            Self::SmoothedCE { epsilon } => write!(f, "smoothed cross-entropy, ε {epsilon}"),
+        }
+    }
+}
+
 impl LossFn {
+    /// The spellings a config file and `--loss` both accept.
+    pub const NAMES: &'static [&'static str] = &["ce", "mse", "focal", "sce"];
+
     /// Returns `L(sig, target)` for the configured loss function.
     pub fn loss(self, sig: f64, target: f64) -> f64 {
         match self {

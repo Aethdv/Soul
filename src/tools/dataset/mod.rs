@@ -16,7 +16,7 @@ pub mod viri_format;
 
 pub use gradient::{FeatureRecord, RecordEval, accumulate_record_grad, eval_record, eval_record_full};
 pub use io::{MAGIC_V6, append_encoded, load_encoded, load_epd_fens, parse_epd_entry, parse_epd_str, save_encoded};
-pub use viri_format::{ReplayFilter, parse_viri_file};
+pub use viri_format::{GameScan, ReplayFilter, parse_viri_file, scan_viri_games};
 
 /// 32-byte entry, minimal ground truth: board state + labels.
 ///
