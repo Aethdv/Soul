@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn the_fit_recovers_the_values_it_was_generated_from() {
         let planted_weights = [100.0, 370.0, 382.0, 471.0, 752.0, 162.0, 513.0, 550.0, 970.0, 1897.0];
-        let (fitted, loss, steps) = newton_fit(&planted(&planted_weights));
+        let (fitted, _, steps) = newton_fit(&planted(&planted_weights));
 
         assert!(steps < FIT_STEPS, "the fit ran out of Newton steps");
 
