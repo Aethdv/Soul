@@ -492,9 +492,6 @@ fn print_help() {
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
-    h.command_args("score", "<dataset...> [-p <ckpt>]", "Loss of each parameter vector on each set, at its own K");
-    h.command_args("material", "<dataset...>", "Material-only logistic fit against the shipped table");
-    h.command_args("profile", "<dataset...>", "Labels, imbalances, phase, and how the games ended");
     h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs shuffled");
     h.command_args("val-cost", "<dataset>", "Time the fused validation pass against two separate ones");
     h.command_args("seed-spread", "<dataset> [options]", "Run N seeds of one config, report where they land");
@@ -517,6 +514,25 @@ fn print_help() {
     h.option("--split-seed", "<u64>", "Reseed the validation holdout, fixed by default");
     h.option("--lr-mult", "<f64>", "Learning-rate multiplier");
     h.option_default("--init", "<mode>", "Starting weights [default|zero|random]", "default");
-    h.option("--sample", "<N>", "Assay N positions taken evenly, not the whole set");
-    h.option("--loss", "<name>", "Score under [ce|sce|mse|focal] or config");
+    h.separator();
+
+    h.header("Assays: what a dataset says before anything trains on it");
+    h.command_args("score", "<dataset...>", "Loss of each parameter vector on each set, at its own K");
+    h.subcommand("-p, --params", "<checkpoint>", "Score this run too, at its best-validation vector");
+    h.subcommand_default("-l, --loss", "<name>", "[ce|sce|mse|focal], or config for the one training uses", "ce");
+    h.subcommand_default("--shipped", "<label>", "Name the reference row", "shipped");
+    h.command_args("material", "<dataset...>", "Ten piece values fitted to the labels alone");
+    h.subcommand_default("--shipped", "<label>", "Name the reference row", "shipped");
+    h.command_args("profile", "<dataset...>", "Labels, imbalances, phase, and how the games ended");
+    h.separator();
+
+    h.header("Assay options, on all three");
+    h.option("--sample", "<N>", "Every nth position, for sets too large to hold whole");
+    h.option("-c, --config", "<path>", "Where the replay filter for a .vf set is named");
+    h.separator();
+
+    h.header("Examples");
+    h.example("evaltune material data/big3.txt data/viriformat-3419.vf");
+    h.example("evaltune score -p evaltune_checkpoint.json data/big3.txt");
+    h.example("evaltune profile --sample 400000 data/omni-wahver-0.vf");
 }
