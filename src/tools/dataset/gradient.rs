@@ -118,6 +118,8 @@ impl FeatureRecord {
             mobility,
             safety_us: pack_safety(saf_us),
             safety_them: pack_safety(saf_them),
+            // The accumulator sums at most 32 PSQT entries, each ≤ 128, so the i16
+            // truncation cannot wrap.
             static_eval: evaluate_fast(&pos, &acc, phase) as i16,
             ..Default::default()
         };
@@ -360,6 +362,8 @@ impl FeatureRecord {
         self.piece_slot[count..count + them_count].copy_from_slice(&them[..them_count]);
         self.us_count = count as u8;
         self.piece_count = (count + them_count) as u8;
+        // Per-type us−them diffs; a side caps at ten rooks (two originals plus
+        // eight promotions), so the i8 cast is lossless.
         self.mat_diffs = array::from_fn(|i| mat_diffs[i] as i8);
         self.phase_counts = phase_counts;
         self.open_raw = compute_openness_raw(white_pawns, black_pawns);
@@ -371,6 +375,8 @@ impl FeatureRecord {
 fn pack_safety(m: &SafetyMetrics) -> [u8; 4] {
     [
         m.attackers as u8,
+        // The clamp keeps the value inside i8, so the `as i8 as u8` round trip
+        // restores the sign instead of wrapping.
         m.weak.clamp(-128, 127) as i8 as u8,
         m.shield.clamp(-128, 127) as i8 as u8,
         ((m.ortho_exposure.clamp(0, 15) as u8) << 4) | (m.diag_exposure.clamp(0, 15) as u8),
@@ -394,7 +400,9 @@ macro_rules! record_bonus {
     ( [] $( $block:ident = $kind:ident ( $term:ident, $($spec:tt)* ) ; )* ) => {
         impl FeatureRecord {
             fn pack_terms(&mut self, sf: &SharedFeatures, sign: i32) {
-                // Xray registers under its own bucket, so no roster row carries it.
+                // Xray registers under its own bucket, so no roster row carries it. The
+                // pack is lossless: xray is ±8 (popcounts across two ≤8-square
+                // rings) and every roster field is a small count or difference.
                 self.xray_ortho = (sf.xray_ortho * sign) as i8;
                 $( record_bonus!(@pack $kind self, sf, sign, $($spec)*); )*
             }
@@ -474,6 +482,7 @@ impl TermSource<XrayTerm> for FeatureRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{board::Position, defs::PieceType};
 
     /// The bound the PSQT gather's `get_unchecked` rests on, over every slot that
     /// can exist.
@@ -486,6 +495,33 @@ mod tests {
                 assert_eq!(mg, pt * 64 + sq, "slot ({pt}, {sq}) lands on the wrong entry");
                 assert!(mg + 32 < 384, "slot ({pt}, {sq}) reaches past the table");
             }
+        }
+    }
+
+    /// The packed counts must agree with an independent recount, side and all:
+    /// a swapped us/them split or a missed black flip shows up as a sign error.
+    #[test]
+    fn packed_differentials_recount_from_a_fresh_board() {
+        use crate::tools::dataset::quant;
+
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+            "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1",
+        ];
+
+        for fen in fens {
+            let pos = Position::from_fen(fen);
+            let entry = quant::from_board(&pos, 0.0, None);
+            let record = FeatureRecord::from_entry(&entry);
+
+            for pt in PieceType::ALL {
+                let us = pos.pieces(pt, pos.stm).popcount() as i32;
+                let them = pos.pieces(pt, pos.stm.opposite()).popcount() as i32;
+                assert_eq!(i32::from(record.mat_diffs[pt.as_usize()]), us - them, "{fen}");
+            }
+
+            assert_eq!(i32::from(record.piece_count), pos.occupancy().popcount() as i32, "{fen}");
         }
     }
 }

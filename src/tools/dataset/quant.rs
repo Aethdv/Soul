@@ -50,7 +50,11 @@ pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> S
     SoulEntry {
         occupancy: board.occ.0,
         pieces,
-        score: search_score.map_or(SoulEntry::NO_SCORE, |s| s.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
+        score: search_score.map_or(SoulEntry::NO_SCORE, |s| {
+            // One short of i16::MAX, so a clamped score can never become the
+            // NO_SCORE sentinel; real search scores cap at MATE anyway.
+            s.clamp(i16::MIN as i32, i16::MAX as i32 - 1) as i16
+        }),
         result: (result * 2.0) as u8,
         stm_and_ep: (u8::from(board.stm == Color::Black) << 7) | (board.en_passant.map_or(64, |sq| sq.0) & 0x7F),
         castling: board.castling_rights,

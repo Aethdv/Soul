@@ -509,7 +509,7 @@ fn print_help() {
     h.option("--lr-schedule", "<type>", "[cosine|linear|constant|wsd|sd]");
     h.option("--wdl-start", "<ratio>", "WDL blend start (scheduled)");
     h.option("--wdl-end", "<ratio>", "WDL blend end (scheduled)");
-    h.option("--wdl-schedule", "<type>", "[constant|linear|cosine]");
+    h.option("--wdl-schedule", "<type>", "[constant|linear|cosine|stable-decay]");
     h.option("--seed", "<u64>", "Fixed RNG seed for reproducible training");
     h.option("--split-seed", "<u64>", "Reseed the validation holdout, fixed by default");
     h.option("--lr-mult", "<f64>", "Learning-rate multiplier");

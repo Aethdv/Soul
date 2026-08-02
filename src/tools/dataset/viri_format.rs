@@ -22,7 +22,6 @@ use crate::{
         moves::Move,
     },
     engine::wdl::wdl_model,
-    weave::Vi16x8,
 };
 
 const PACKED_BOARD_SIZE: usize = 32;
@@ -211,6 +210,9 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
             break;
         };
 
+        // `make_move` updates the accumulator as deltas off its current value, so
+        // the base has to be the real accumulator, not a zero.
+        let mut acc = position.get_initial_accumulator();
         let kept_before = entries.len();
 
         loop {
@@ -249,7 +251,6 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
 
             ply += 1;
 
-            let mut acc = Vi16x8::zero();
             position.make_move(soul_move, &mut acc);
         }
 
@@ -319,6 +320,7 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
             break;
         };
 
+        let mut acc = position.get_initial_accumulator();
         let mut last_score = 0i32;
         let mut plies = 0u64;
 
@@ -344,7 +346,6 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
 
             plies += 1;
 
-            let mut acc = Vi16x8::zero();
             position.make_move(soul_move, &mut acc);
         }
 
@@ -403,12 +404,8 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8, u32)> {
     pos.stm = stm;
     pos.en_passant = en_passant;
 
-    // Set castling-rook home squares for standard chess (FRC handled later).
-    pos.castling_rooks[ROOK_W_KS] = Square(7); // h1
-    pos.castling_rooks[ROOK_W_QS] = Square(0); // a1
-    pos.castling_rooks[ROOK_B_KS] = Square(63); // h8
-    pos.castling_rooks[ROOK_B_QS] = Square(56); // a8
-
+    // Slots start unset and only the type-6 markers below fill them, so a slot
+    // no marker reaches is a right that died.
     let mut white_king = None;
     let mut black_king = None;
     let mut unmoved_rooks: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
@@ -457,7 +454,9 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8, u32)> {
         }
     }
 
-    // Reconstruct castling rights from unmoved rooks relative to kings.
+    // Reconstruct rights from the type-6 markers: the writer only marks a rook
+    // while its right is live, so the marker's file against the king's decides
+    // the side exactly.
     let mut set_castling_rights = 0u8;
 
     if let Some(king_sq) = white_king {
@@ -490,11 +489,12 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8, u32)> {
 
     pos.castling_rights = set_castling_rights;
 
-    // Mark as FRC if any castling rook is off its standard home square.
-    pos.is_frc = pos.castling_rooks[ROOK_W_KS] != Square(7)
-        || pos.castling_rooks[ROOK_W_QS] != Square(0)
-        || pos.castling_rooks[ROOK_B_KS] != Square(63)
-        || pos.castling_rooks[ROOK_B_QS] != Square(56);
+    // An unmarked slot holds Square(0), which is not a castling rook, so the
+    // off-home test only applies to slots whose right bit is set.
+    pos.is_frc = (pos.castling_rights & WHITE_OO != 0 && pos.castling_rooks[ROOK_W_KS] != Square(7))
+        || (pos.castling_rights & WHITE_OOO != 0 && pos.castling_rooks[ROOK_W_QS] != Square(0))
+        || (pos.castling_rights & BLACK_OO != 0 && pos.castling_rooks[ROOK_B_KS] != Square(63))
+        || (pos.castling_rights & BLACK_OOO != 0 && pos.castling_rooks[ROOK_B_QS] != Square(56));
 
     pos.hash = pos.calc_zobrist();
     pos.pawn_key = pos.calc_pawn_hash();
@@ -565,8 +565,15 @@ fn viri_to_soul_move(viri_move: u16, pos: &Position) -> Option<Move> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Move, Position, ReplayFilter, WDL_DRAW, WDL_WIN};
-    use crate::engine::movegen::gen_legal_moves;
+    use super::{Move, Position, ReplayFilter, WDL_DRAW, WDL_WIN, parse_packed_board, viri_to_soul_move};
+    use crate::{
+        core::{
+            board::{ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO},
+            defs::{Color, PieceType, Square},
+        },
+        engine::movegen::gen_legal_moves,
+        tools::dataset::{SoulEntry, quant},
+    };
 
     /// White to move with Bxf7+ available and the short castle still legal, so one
     /// position offers a capture, a castle and many quiet moves.
@@ -718,5 +725,141 @@ mod tests {
         assert!(filter.filter_tactical && filter.filter_check && !filter.filter_castling);
         assert_eq!(filter.max_eval_incorrectness, u32::MAX);
         assert!(!filter.wdl_filtered && !filter.material_count_filtered && !filter.random_fen_skipping);
+    }
+
+    fn wire_from_entry(entry: &SoulEntry, halfmove: u8, fullmove: u16, extra: u8) -> [u8; 32] {
+        let mut wire = [0u8; 32];
+        wire[0..8].copy_from_slice(&entry.occupancy.to_le_bytes());
+        wire[8..24].copy_from_slice(&entry.pieces);
+        wire[24] = entry.stm_and_ep;
+        wire[25] = halfmove;
+        wire[26..28].copy_from_slice(&fullmove.to_le_bytes());
+        wire[28..30].copy_from_slice(&entry.score.to_le_bytes());
+        wire[30] = entry.result;
+        wire[31] = extra;
+        wire
+    }
+
+    fn assert_position_equal(a: &Position, b: &Position) {
+        assert_eq!(a.stm, b.stm);
+        assert_eq!(a.en_passant, b.en_passant);
+        assert_eq!(a.castling_rights, b.castling_rights);
+        assert_eq!(a.castling_rooks, b.castling_rooks);
+        assert_eq!(a.is_frc, b.is_frc);
+        assert_eq!(a.occupancy(), b.occupancy());
+
+        for sq_idx in 0..64 {
+            let sq = Square(sq_idx as u8);
+            assert_eq!(a.piece_at(sq), b.piece_at(sq), "piece on {sq:?}");
+            assert_eq!(a.color_at(sq), b.color_at(sq), "color on {sq:?}");
+        }
+    }
+
+    /// Packs through the production [`quant::from_board`], so the round trip covers
+    /// the real writer as well as the decoder.
+    fn assert_wire_roundtrip(fen: &str, result: f64, score: i32, halfmove: u8, fullmove: u16) {
+        let pos = Position::from_fen(fen);
+        let entry = quant::from_board(&pos, result, Some(score));
+
+        let (decoded, game_result, ply) =
+            parse_packed_board(&wire_from_entry(&entry, halfmove, fullmove, 0)).expect("a test-written wire decodes");
+
+        assert_position_equal(&pos, &decoded);
+        assert_eq!(game_result, (result * 2.0) as u8);
+        let expected_ply = (u32::from(fullmove) - 1) * 2 + u32::from(decoded.stm == Color::Black);
+        assert_eq!(ply, expected_ply);
+    }
+
+    #[test]
+    fn packed_board_round_trips_through_the_decoder() {
+        // All four rights and an en-passant target.
+        assert_wire_roundtrip("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3", 1.0, 120, 0, 32);
+        // Black to move.
+        assert_wire_roundtrip("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1", 0.5, -40, 7, 9);
+        // No rights at all.
+        assert_wire_roundtrip("4k3/8/8/8/8/8/P6p/4K3 w - - 0 1", 1.0, 10_000, 3, 44);
+    }
+
+    #[test]
+    fn unmoved_rooks_rebuild_frc_rights_slots() {
+        // King d1 with rooks b1 and f1: neither sits on a home square, so the
+        // file-vs-king comparison alone has to assign both slots.
+        let mut pos = Position::new();
+        pos.add_piece(Square(1), PieceType::Rook, Color::White);
+        pos.add_piece(Square(3), PieceType::King, Color::White);
+        pos.add_piece(Square(5), PieceType::Rook, Color::White);
+        pos.add_piece(Square(60), PieceType::King, Color::Black);
+        pos.stm = Color::White;
+        pos.castling_rights = WHITE_OO | WHITE_OOO;
+        pos.castling_rooks[ROOK_W_QS] = Square(1);
+        pos.castling_rooks[ROOK_W_KS] = Square(5);
+        pos.is_frc = true;
+
+        let entry = quant::from_board(&pos, 1.0, Some(0));
+        let (decoded, ..) = parse_packed_board(&wire_from_entry(&entry, 0, 3, 0)).expect("well-formed wire");
+
+        assert_position_equal(&pos, &decoded);
+        assert_eq!(decoded.castling_rights, WHITE_OO | WHITE_OOO);
+        assert_eq!(decoded.castling_rooks[ROOK_W_QS], Square(1));
+        assert_eq!(decoded.castling_rooks[ROOK_W_KS], Square(5));
+    }
+
+    const EN_PASSANT: &str = "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3";
+    const PROMOTES: &str = "1n5k/P7/8/8/8/8/8/K7 w - - 0 1";
+
+    /// A move and the position it is legal in.
+    fn move_shape(fen: &str, want: impl Fn(Move) -> bool) -> (Position, Move) {
+        let pos = Position::from_fen(fen);
+        let mv = gen_legal_moves(&pos)
+            .iter()
+            .find(|&&m| want(m))
+            .copied()
+            .expect("a move of the asked shape");
+
+        (pos, mv)
+    }
+
+    /// Encode a Soul move by the format's bit layout, decode it back, and
+    /// require the same move.
+    fn assert_move_roundtrip(fen: &str, want: impl Fn(Move) -> bool) {
+        let (pos, mv) = move_shape(fen, want);
+        let promo = mv.promo().map_or(0, |p| match p {
+            PieceType::Knight => 0,
+            PieceType::Bishop => 1,
+            PieceType::Rook => 2,
+            _ => 3,
+        });
+        let (ty, promo_bits) = if mv.is_castling() {
+            (2u16, 0u16)
+        } else if mv.is_en_passant() {
+            (1, 0)
+        } else if mv.is_promotion() {
+            (3, promo)
+        } else {
+            (0, 0)
+        };
+
+        let wire = u16::from(mv.from().0) | (u16::from(mv.to().0) << 6) | (promo_bits << 12) | (ty << 14);
+        assert_eq!(viri_to_soul_move(wire, &pos), Some(mv), "round trip of {mv:?}");
+    }
+
+    #[test]
+    fn viri_moves_round_trip_through_every_flag() {
+        assert_move_roundtrip(OPEN, |m| !m.is_tactical() && !m.is_castling());
+        assert_move_roundtrip(OPEN, Move::is_tactical);
+        assert_move_roundtrip(OPEN, Move::is_castling);
+        assert_move_roundtrip(EN_PASSANT, |m| m.is_en_passant());
+        assert_move_roundtrip("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", |m| m.is_double_push());
+        assert_move_roundtrip(PROMOTES, |m| m.is_promotion() && m.promo() == Some(PieceType::Queen));
+        assert_move_roundtrip(PROMOTES, |m| m.is_promotion() && m.is_tactical() && m.promo() == Some(PieceType::Bishop));
+    }
+
+    /// The capture flag is derived from the board, not the encoded type, so a
+    /// Black capture proves the decoder sees the side as well.
+    #[test]
+    fn capture_flag_derives_from_the_black_board() {
+        let (pos, mv) = move_shape("4k3/4P3/8/8/8/8/8/4K3 b - - 0 1", |m| m.is_tactical());
+        let wire = u16::from(mv.from().0) | (u16::from(mv.to().0) << 6);
+        assert_eq!(viri_to_soul_move(wire, &pos), Some(mv));
     }
 }
