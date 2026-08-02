@@ -72,6 +72,11 @@ pub struct TrainerContext<'a> {
 }
 
 impl TrainerContext<'_> {
+    /// The configured loss, for probes that read its Hessian.
+    pub fn loss_fn(&self) -> LossFn {
+        self.loss_fn
+    }
+
     pub fn passes_vol_filter(&self, entry: &loader::SoulEntry, static_eval: i16) -> bool {
         if self.vol_threshold == 0 || entry.score == loader::SoulEntry::NO_SCORE {
             return true;

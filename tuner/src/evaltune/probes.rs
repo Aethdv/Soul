@@ -14,7 +14,7 @@ use super::{
     palette::{DIM, LAB, RESET, VAL},
     run::TrainerContext,
     scale::KController,
-    training::sigmoid,
+    training::{sigmoid, wdl_target},
 };
 use crate::core::{config::EvalTuneConfig, shuffle::Shuffler};
 
@@ -45,6 +45,7 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
                 if ctx.passes_vol_filter(entry, record.static_eval) {
                     let eval = loader::eval_record_full(record, &values);
                     let p = sigmoid(eval.score, k);
+                    let (target, _) = wdl_target(entry, k, blend);
                     let w = if ctx.phase_weights.is_empty() { 1.0 } else { ctx.phase_weights[i] };
 
                     accumulate_record_grad(record, &eval, 1.0, &mut scratch);
@@ -63,7 +64,7 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
                         }
                     }
 
-                    acc.add_outer(k * k * w * p * (1.0 - p), &nonzeros);
+                    acc.add_outer(w * ctx.loss_fn().hessian_scale(p, target, k), &nonzeros);
                 }
 
                 (acc, scratch, nonzeros)

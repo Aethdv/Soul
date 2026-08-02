@@ -1,15 +1,18 @@
 //! What the data actually determines: the curvature of the training objective.
 //!
-//! For fixed K the loss is a GLM on a canonical link, so its Hessian is not an approximation:
+//! At fixed K the Hessian is built exactly, its per-position weight read from
+//! `LossFn::hessian_scale` so it can never disagree with the loss the run trains.
+//! For the canonical logit link, CE's weight is the clean closed form:
 //!
 //! ```text
 //! H = k² · Σ_i w_i · p_i(1 − p_i) · a_i a_iᵀ
 //! ```
 //!
 //! where `a_i` is the eval's gradient at position i, the same sparse coefficient vector the
-//! training scatter already produces, and `p_i` is the predicted win probability. One power of
-//! `p(1 − p)`, not two: two is the Gauss-Newton diagonal for squared error on probabilities, which
-//! is a different objective from the one being trained.
+//! training scatter already produces, and `p_i` is the predicted win probability. The naive
+//! squared-error guess of `p²(1 − p)²` is wrong even for MSE: its exact weight carries the
+//! residual cross-term and can go negative, the loss's own non-convexity showing up where a
+//! Gauss-Newton approximation would hide it.
 //!
 //! At 490 parameters it is a two-megabyte object, so it can simply be built: how many directions
 //! the data constrains, which combinations it leaves free, and how much of one parameter's column

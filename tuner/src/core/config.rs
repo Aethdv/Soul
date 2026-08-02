@@ -162,6 +162,46 @@ impl LossFn {
         }
     }
 
+    /// Second derivative ∂²L/∂score². `k` is the sigmoid scaling constant.
+    ///
+    /// The curvature probe accumulates `∂²L/∂θ² = Σ_i w_i · H · a_i a_iᵀ` with `H`
+    /// from here, so the Hessian is defined by the same match as the gradient: a
+    /// loss added to the enum grows its Hessian arm beside the gradient arm, and
+    /// the probe cannot drift to a different loss than the run trains.
+    pub fn hessian_scale(self, sig: f64, target: f64, k: f64) -> f64 {
+        match self {
+            // d²J/dx² = 2K²·S(1−S)·[S(1−S) + (S−T)(1−2S)]
+            Self::MeanSquaredError => {
+                let u = sig * (1.0 - sig);
+                2.0 * k * k * u * (u + (sig - target) * (1.0 - 2.0 * sig))
+            },
+            // d²L/dx² = K²·S(1−S)
+            Self::CrossEntropy => k * k * sig * (1.0 - sig),
+            // d²FL/dx² = K²·[(2γ+1)·u·b^γ + γ(γ−1)·u²·CE·b^(γ−2)
+            //            + γ·sign(S−T)·u·(1−2S)·CE·b^(γ−1)], u = S(1−S), b = |S−T|.
+            // FL = b^γ·CE; differentiating the product twice by the product rule
+            // yields three terms, and the two that come from the |S−T| factor's
+            // own second derivative are the ones a CE-shaped guess would drop.
+            Self::Focal { gamma } => {
+                let prob = sig.clamp(1e-7, 1.0 - 1e-7);
+                let u = prob * (1.0 - prob);
+                let ce = Self::CrossEntropy.loss(sig, target);
+                let diff = prob - target;
+                let base = diff.abs().max(1e-12);
+                let b_gamma = base.powf(gamma);
+                let h = (2.0 * gamma + 1.0) * u * b_gamma
+                    + gamma * (gamma - 1.0) * u * u * ce * base.powf(gamma - 2.0)
+                    + gamma * diff.signum() * u * (1.0 - 2.0 * prob) * ce * base.powf(gamma - 1.0);
+                k * k * h
+            },
+            // ∂²SCE/∂x² = CE_hess(s, T·(1-ε) + 0.5·ε)
+            Self::SmoothedCE { epsilon } => {
+                let t = target * (1.0 - epsilon) + 0.5 * epsilon;
+                Self::CrossEntropy.hessian_scale(sig, t, k)
+            },
+        }
+    }
+
     /// Inner derivative ∂L/∂target.
     ///
     /// The K gradient needs it once the WDL blend makes the target a function of
@@ -757,6 +797,52 @@ mod tests {
         }
 
         toml::from_str::<Wrap>(&format!("loss = {spec}")).map(|w| w.loss)
+    }
+
+    /// The plain logistic link, the engine's `sigmoid(score, k)` minus its exponent
+    /// clamp, which never triggers in this test's domain; `core` must not reach
+    /// into the engine for a test.
+    fn sigmoid(score: f64, k: f64) -> f64 {
+        1.0 / (1.0 + (-k * score).exp())
+    }
+
+    #[test]
+    fn hessian_matches_finite_differences_of_the_gradient() {
+        // hessian_scale is d/dscore of grad_scale; the check is central differences
+        // in score space, so a wrong sign or a dropped term in any arm fails loudly.
+        let losses = [
+            LossFn::CrossEntropy,
+            LossFn::MeanSquaredError,
+            LossFn::Focal { gamma: 0.5 },
+            LossFn::Focal { gamma: 1.5 },
+            LossFn::Focal { gamma: 2.0 },
+            LossFn::SmoothedCE { epsilon: 0.1 },
+        ];
+
+        for loss in losses {
+            for &k in &[0.002, 0.005] {
+                for &s in &[-400.0, 0.0, 400.0] {
+                    for &t in &[0.0, 0.3, 1.0] {
+                        let sig = sigmoid(s, k);
+
+                        // Focal's weight is singular (γ ≠ 1) or discontinuous (γ = 1)
+                        // at the coincidence point for γ < 2, so the closed form and
+                        // the finite difference only agree away from it.
+                        if (sig - t).abs() < 0.05 {
+                            continue;
+                        }
+
+                        let delta = 1e-3;
+                        let h = loss.hessian_scale(sig, t, k);
+                        let fd = (loss.grad_scale(sigmoid(s + delta, k), t, k) - loss.grad_scale(sigmoid(s - delta, k), t, k))
+                            / (2.0 * delta);
+
+                        let tol = 1e-4 * h.abs().max(1e-9) + 1e-12;
+                        assert!((h - fd).abs() <= tol, "{loss:?} at s={s} t={t} k={k}: closed {h:.6e} vs fd {fd:.6e}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
