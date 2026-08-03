@@ -53,7 +53,7 @@ pub struct MobilityData {
 
 /// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.
 ///
-/// - `mobility`: safe squares controlled, with contested squares counted twice.
+/// - `mobility`: safe squares controlled, with exclusive squares counted twice.
 /// - `shadow_mobility`: safe x-ray (battery) squares we control.
 /// - `threats`: enemy pieces our direct attacks touch.
 /// - `shadow_threats`: enemy pieces our x-rays touch.

@@ -213,7 +213,7 @@ fn dump_scores(path: &str) {
 ///
 /// Performance on large-scale conversion (100M+ positions):
 /// - Line buffer is reused across iterations: zero per-line allocation.
-/// - UTF-8 validation is skipped: EPD is pure 7-bit ASCII by definition.
+/// - Malformed lines are counted and skipped, so no line stops the pass.
 /// - Entry vector is pre-sized from file metadata to minimize growth.
 fn encode(input: &str, output: &str) {
     println!("Encoding {input} -> {output}...");
@@ -271,9 +271,7 @@ fn encode(input: &str, output: &str) {
             buf.pop();
         }
 
-        // SAFETY: EPD/FEN is strictly 7-bit ASCII: piece chars (KQRBNPkqrbnp),
-        // coordinates (a-h, 1-8), digits, slashes, spaces, and annotation tokens.
-        // Multi-byte UTF-8 codepoints are structurally impossible.
+        // Strip a possible BOM before validating.
         let buf = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);
         let Ok(line) = std::str::from_utf8(buf) else {
             line_idx += 1;
