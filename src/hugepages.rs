@@ -32,17 +32,6 @@ pub enum PageKind {
     Base,
 }
 
-impl fmt::Display for PageKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            PageKind::Huge1G => "1G",
-            PageKind::Huge2M => "2M",
-            PageKind::Thp => "THP",
-            PageKind::Base => "4K",
-        })
-    }
-}
-
 /// An owned region of `len` `T`s, backed by the largest huge page the OS will
 /// give. Derefs to `[T]`, so it stands in for a `Box<[T]>` at the call site.
 pub struct HugePages<T> {
@@ -54,6 +43,17 @@ pub struct HugePages<T> {
     bytes: usize,
     kind: PageKind,
     _marker: PhantomData<T>,
+}
+
+impl fmt::Display for PageKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            PageKind::Huge1G => "1G",
+            PageKind::Huge2M => "2M",
+            PageKind::Thp => "THP",
+            PageKind::Base => "4K",
+        })
+    }
 }
 
 // SAFETY: HugePages owns a unique mapping for its whole lifetime; whether the
@@ -75,7 +75,6 @@ impl<T> HugePages<T> {
     /// The OS zeroes each page at fault time and no constructor runs.
     pub unsafe fn mapped(min_bytes: usize) -> Self {
         let (ptr, bytes, kind) = map(min_bytes.max(mem::size_of::<T>()));
-
         Self { ptr: ptr.cast(), len: bytes / mem::size_of::<T>(), bytes, kind, _marker: PhantomData }
     }
 
@@ -88,15 +87,10 @@ impl<T> HugePages<T> {
     pub unsafe fn zeroed(min_bytes: usize) -> Self {
         // SAFETY: caller's contract on T.
         let pages = unsafe { Self::mapped(min_bytes) };
-
-        // Pre-fault the whole table now so the search runs hot from its first node.
-        // mmap hands the pages out lazily, and faulting them mid-search would stall
-        // on the clock with no ucinewgame to absorb it. That is the regression we
-        // refuse.
-        //
+        // mmap hands the pages out lazily, and faulting them mid-search would stall on
+        // the clock, with no ucinewgame to absorb it.
         // SAFETY: a fresh exclusive mapping of bytes, nothing aliases it.
         unsafe { zero_region(pages.ptr.cast::<u8>().as_ptr(), pages.bytes) };
-
         pages
     }
 
@@ -179,29 +173,24 @@ mod linux {
     pub fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
         // 1GB only past a gigabyte, or rounding up to the boundary is mostly waste.
         if min_bytes >= GB {
-            let len = round_up(min_bytes, GB);
-
+            let len = min_bytes.next_multiple_of(GB);
             if let Some(p) = mmap(len, MAP_HUGETLB | MAP_HUGE_1GB) {
                 return (p, len, PageKind::Huge1G);
             }
         }
 
-        let len_2m = round_up(min_bytes, MB2);
-
-        if let Some(p) = mmap(len_2m, MAP_HUGETLB | MAP_HUGE_2MB) {
-            return (p, len_2m, PageKind::Huge2M);
+        let len = min_bytes.next_multiple_of(MB2);
+        if let Some(p) = mmap(len, MAP_HUGETLB | MAP_HUGE_2MB) {
+            return (p, len, PageKind::Huge2M);
         }
-
-        // Round to 2MB, and align the base to 2MB. THP only fills a 2MB-aligned
+        // The base needs the same 2MB alignment. THP only fills a 2MB-aligned
         // span; a mapping that starts mid-page loses both ends back to 4KB, and
         // under madvise policy the kernel can't pre-align, since the hint lands
         // after it has already picked the address.
-        let len = round_up(min_bytes, MB2);
         let p = mmap_aligned(len, MB2);
         // SAFETY: p/len name the mapping just returned. madvise reports whether the
         // hint was accepted at all (it is rejected only when THP is compiled out).
         let kind = if unsafe { madvise(p, len, MADV_HUGEPAGE) } { PageKind::Thp } else { PageKind::Base };
-
         (p, len, kind)
     }
 
@@ -215,7 +204,6 @@ mod linux {
     fn mmap(len: usize, extra_flags: usize) -> Option<NonNull<u8>> {
         // SAFETY: anonymous mapping (fd = -1, offset = 0); all arguments are kernel-checked.
         let ret = unsafe { syscall6(SYS_MMAP, 0, len, PROT_RW, MAP_PRIVATE_ANON | extra_flags, usize::MAX, 0) };
-
         // Failure returns -errno in -4095..=-1; success returns a user address.
         if (-4095..0).contains(&ret) { None } else { NonNull::new(ret as *mut u8) }
     }
@@ -227,20 +215,18 @@ mod linux {
     fn mmap_aligned(len: usize, align: usize) -> NonNull<u8> {
         let over = mmap(len + align, 0).expect("mmap failed for the transposition table");
         let base = over.as_ptr() as usize;
-        let head = round_up(base, align) - base;
+        let head = base.next_multiple_of(align) - base;
 
         // SAFETY: over maps len + align bytes. head and head + len stay inside it,
         // both are page multiples, so each partial munmap splits the VMA on a page
         // boundary and frees only the slack; the [aligned, aligned + len) span stays.
         unsafe {
             let aligned = over.as_ptr().add(head);
-
             if head > 0 {
                 unmap(over, head);
             }
 
             let tail = align - head;
-
             if tail > 0 {
                 unmap(NonNull::new_unchecked(aligned.add(len)), tail);
             }
@@ -253,10 +239,6 @@ mod linux {
     unsafe fn madvise(ptr: NonNull<u8>, len: usize, advice: usize) -> bool {
         // SAFETY: caller contract.
         unsafe { syscall6(SYS_MADVISE, ptr.as_ptr() as usize, len, advice, 0, 0, 0) == 0 }
-    }
-
-    const fn round_up(x: usize, align: usize) -> usize {
-        (x + align - 1) & !(align - 1)
     }
 
     /// # Safety
@@ -298,11 +280,10 @@ mod portable {
     const PAGE: usize = 4096;
 
     pub fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
-        let bytes = round_up(min_bytes, PAGE);
+        let bytes = min_bytes.next_multiple_of(PAGE);
         let layout = Layout::from_size_align(bytes, PAGE).unwrap();
         // SAFETY: layout is non-zero (min_bytes >= size_of::<T>() >= 1).
         let ptr = unsafe { alloc::alloc_zeroed(layout) };
-
         (NonNull::new(ptr).expect("allocation failed for the transposition table"), bytes, PageKind::Base)
     }
 
@@ -312,9 +293,5 @@ mod portable {
         let layout = Layout::from_size_align(bytes, PAGE).unwrap();
         // SAFETY: layout matches the one map allocated with.
         unsafe { alloc::dealloc(ptr.as_ptr(), layout) };
-    }
-
-    const fn round_up(x: usize, align: usize) -> usize {
-        (x + align - 1) & !(align - 1)
     }
 }
