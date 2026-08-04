@@ -111,30 +111,24 @@ struct EvalCtx {
     us: Bitboard,
     them: Bitboard,
     occ: Bitboard,
-
     // Piece + pawn attacks, excluding king.
     // Used for danger assessment: your own king's reach
     // doesn't help assault the opponent's king zone.
     atk_us: Bitboard,
     atk_them: Bitboard,
-
     // piece + pawn + king attacks.
     // Used for mobility and piece-protection calculations
     // where the king's influence matters.
     area_us: Bitboard,
     area_them: Bitboard,
-
     // Pawn-only attack maps, cached to avoid recomputation.
     pawn_atk_us: Bitboard,
     pawn_atk_them: Bitboard,
-
     ksq_us: Square,
     ksq_them: Square,
-
     // Pawn occupancy (used for shield evaluation, not attacks).
     pawn_us: Bitboard,
     pawn_them: Bitboard,
-
     // Shadow/X-ray attack maps.
     xray_us: Bitboard,
     xray_them: Bitboard,
@@ -146,7 +140,6 @@ impl SafetyMetrics {
     pub fn shelter<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T) -> T {
         let shelter = T::from_i32(self.shield) * w_shield;
         let exposure = T::from_i32(self.ortho_exposure) * w_ortho + T::from_i32(self.diag_exposure) * w_diag;
-
         shelter - exposure
     }
 
@@ -179,14 +172,11 @@ impl Mobility {
     #[inline]
     pub fn compute_all(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> MobilityData {
         let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
-
         // King safety: analyzed once per side, stored raw for both consumers.
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
-
         let metrics_us = score_side(ctx.them, ctx.atk_us, ctx.area_us, ctx.area_them, ctx.pawn_atk_them, ctx.xray_us);
         let metrics_them = score_side(ctx.us, ctx.atk_them, ctx.area_them, ctx.area_us, ctx.pawn_atk_us, ctx.xray_them);
-
         MobilityData { metrics_us, metrics_them, safety_us, safety_them }
     }
 
@@ -212,11 +202,9 @@ impl Mobility {
         let o = T::Vec4::splat(openness);
         let c = T::Vec4::splat(OPEN_UNITY - openness);
         let half = T::Vec4::splat(OPEN_UNITY / 2); // rounding bias
-
         // Interpolate the open/closed weight vectors by openness.
         let w_mg = (w_mg_o * o + w_mg_c * c + half).srai::<10>();
         let w_eg = (w_eg_o * o + w_eg_c * c + half).srai::<10>();
-
         // SIMD dot-product diff against the MG and EG weights.
         let w_packed = w_mg.pack_i16(w_eg);
         let diff_packed = diff.pack_i16(diff);
@@ -227,7 +215,6 @@ impl Mobility {
 
         let t_total_phase = T::from_i32(TOTAL_PHASE);
         let t_eg_phase = t_total_phase - phase;
-
         // Integer division truncates for the engine; the tuner's f64 has to be told.
         ((mg_sum * phase + eg_sum * t_eg_phase) / t_total_phase).trunc()
     }
@@ -267,7 +254,6 @@ impl LinearTerm for MobilityTerm {
         let c_frac = 1.0 - o_frac;
 
         let mut diff = [0.0f64; 4];
-
         // SAFETY: `diff` is exactly the 4 lanes `storeu` writes.
         unsafe { input.diff.storeu(diff.as_mut_ptr()) };
 
@@ -277,7 +263,6 @@ impl LinearTerm for MobilityTerm {
 
         let mut mg_sum = 0.0;
         let mut eg_sum = 0.0;
-
         for (i, d) in diff.iter().enumerate() {
             mg_sum += d * blend(lo + i, lc + i);
             eg_sum += d * blend(lo + 4 + i, lc + 4 + i);
@@ -296,7 +281,6 @@ impl LinearTerm for MobilityTerm {
     fn scatter(input: MobilityInput, upstream: TaperPair, grads: &mut [f64]) {
         let lo = LAYOUT.mobility_open_offset;
         let lc = LAYOUT.mobility_closed_offset;
-
         assert!(grads.len() >= lc + 8, "MobilityTerm::scatter: grads too short");
 
         let o_frac = input.openness as f64 * INV_OPEN_UNITY;
@@ -367,7 +351,6 @@ impl LinearTerm for KingSafetyTerm {
         let ao = LAYOUT.attacker_offset;
         let w_atk_us = values[ao + input.us.attackers.min(ATTACKER.len() - 1)];
         let w_atk_them = values[ao + input.them.attackers.min(ATTACKER.len() - 1)];
-
         acc.safety_us = input.us.shelter(values[ks], values[ks + 1], values[ks + 2]);
         acc.safety_them = input.them.shelter(values[ks], values[ks + 1], values[ks + 2]);
         acc.danger_us = input.us.pressure(w_atk_us);
@@ -378,14 +361,12 @@ impl LinearTerm for KingSafetyTerm {
     fn scatter(input: KingSafetyInput, upstream: KingSafetyUpstream, grads: &mut [f64]) {
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
-
         grads[ks] += upstream.shelter * f64::from(input.us.shield - input.them.shield);
         grads[ks + 1] -= upstream.shelter * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
         grads[ks + 2] -= upstream.shelter * f64::from(input.us.diag_exposure - input.them.diag_exposure);
 
         let idx_us = input.us.attackers.min(ATTACKER.len() - 1);
         let idx_them = input.them.attackers.min(ATTACKER.len() - 1);
-
         grads[ao + idx_us] += upstream.danger_us * (f64::from(input.us.weak) / 10.0);
         grads[ao + idx_them] += upstream.danger_them * (f64::from(input.them.weak) / 10.0);
     }
@@ -426,18 +407,16 @@ impl EvalCtx {
         let ksq_us = king_sq(kings & us);
         let ksq_them = king_sq(kings & them);
 
-        // Knights: pinned = zero mobility.
-        let mut knight_atk_us = Bitboard(0);
+        let knight_attacks = |side: Bitboard, pinned: Bitboard| {
+            let mut atk = Bitboard(0);
+            for sq in (knights & side) & !pinned {
+                atk |= atk_knight(sq);
+            }
+            atk
+        };
 
-        for sq in (knights & us) & !pinned_w {
-            knight_atk_us |= atk_knight(sq);
-        }
-
-        let mut knight_atk_them = Bitboard(0);
-
-        for sq in (knights & them) & !pinned_b {
-            knight_atk_them |= atk_knight(sq);
-        }
+        let knight_atk_us = knight_attacks(us, pinned_w);
+        let knight_atk_them = knight_attacks(them, pinned_b);
 
         // Sliders: Use SpatialTensor for direct attacks (pinned pieces are natively excluded).
         //
@@ -457,15 +436,12 @@ impl EvalCtx {
 
         let inject_pinned = |pinned: Bitboard, ksq: Square| {
             let mut atk = Bitboard(0);
-
             for sq in pinned & rq {
                 atk |= atk_rook(sq, occ) & line_bb(ksq, sq);
             }
-
             for sq in pinned & bq {
                 atk |= atk_bishop(sq, occ) & line_bb(ksq, sq);
             }
-
             atk
         };
 
