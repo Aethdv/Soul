@@ -61,16 +61,6 @@ pub enum Assay {
     Profile,
 }
 
-/// One dataset argument, loaded and featurized.
-struct Set {
-    label: String,
-    paths: Vec<String>,
-    entries: Vec<SoulEntry>,
-    records: Vec<FeatureRecord>,
-    /// Positions the file yielded, which `entries` stops holding once a sample is taken.
-    loaded: usize,
-}
-
 /// Load each argument as its own set, then report.
 ///
 /// One argument is one row, so a comma-joined argument loads as one set: the spelling that trains
@@ -113,6 +103,165 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
     }
 }
 
+/// One dataset argument, loaded and featurized.
+struct Set {
+    label: String,
+    paths: Vec<String>,
+    entries: Vec<SoulEntry>,
+    records: Vec<FeatureRecord>,
+    /// Positions the file yielded, which `entries` stops holding once a sample is taken.
+    loaded: usize,
+}
+
+/// Everything one pass over the positions counts.
+#[derive(Default)]
+struct Counts {
+    results: [usize; 3],
+    scored: usize,
+    score_sum: f64,
+    contradictions: usize,
+    phase_sum: f64,
+    phase_low: usize,
+    phase_high: usize,
+    pieces: u64,
+    unequal: [usize; 5],
+    unequal_phase: [f64; 5],
+}
+
+/// Right-aligned columns under their headers, one row per dataset or candidate.
+struct Table {
+    corner: String,
+    columns: Vec<String>,
+    rows: Vec<Row>,
+    /// Column the gap widens before, for a table read in two halves.
+    split: Option<usize>,
+}
+
+struct Row {
+    label: String,
+    cells: Vec<String>,
+    /// Context rather than a result: the reference the other rows are read against.
+    reference: bool,
+}
+
+impl Counts {
+    fn observe(&mut self, entry: &SoulEntry, record: &FeatureRecord, phase_w: &[f64; 6]) {
+        self.results[usize::from(entry.result.min(2))] += 1;
+
+        if entry.score != SoulEntry::NO_SCORE {
+            self.scored += 1;
+            self.score_sum += f64::from(entry.score.abs());
+
+            // Both are STM-relative, so a winner the search scored below zero is a position whose
+            // label and whose eval disagree about who stands better.
+            let winner = i32::from(entry.result) - 1;
+            if winner != 0 && i32::from(entry.score) * winner < 0 {
+                self.contradictions += 1;
+            }
+        }
+
+        let phase = f64::from(phase_of(record, phase_w) as u32);
+        self.phase_sum += phase;
+        self.pieces += u64::from(entry.occupancy.count_ones());
+
+        if phase < 12.0 {
+            self.phase_low += 1;
+        } else if phase >= 20.0 {
+            self.phase_high += 1;
+        }
+
+        for pt in 0..5 {
+            if record.mat_diffs[pt] != 0 {
+                self.unequal[pt] += 1;
+                self.unequal_phase[pt] += phase;
+            }
+        }
+    }
+
+    fn merged(mut self, other: Self) -> Self {
+        for i in 0..3 {
+            self.results[i] += other.results[i];
+        }
+        for i in 0..5 {
+            self.unequal[i] += other.unequal[i];
+            self.unequal_phase[i] += other.unequal_phase[i];
+        }
+        self.scored += other.scored;
+        self.score_sum += other.score_sum;
+        self.contradictions += other.contradictions;
+        self.phase_sum += other.phase_sum;
+        self.phase_low += other.phase_low;
+        self.phase_high += other.phase_high;
+        self.pieces += other.pieces;
+        self
+    }
+}
+
+impl Table {
+    const GAP: usize = 3;
+
+    fn new(corner: &str, columns: Vec<String>) -> Self {
+        Self { corner: corner.to_string(), columns, rows: Vec::new(), split: None }
+    }
+
+    fn push(&mut self, label: &str, cells: Vec<String>) {
+        self.rows.push(Row { label: label.to_string(), cells, reference: false });
+    }
+    fn push_dim(&mut self, label: &str, cells: Vec<String>) {
+        self.rows.push(Row { label: label.to_string(), cells, reference: true });
+    }
+
+    fn print(&self) {
+        let label_width = self
+            .rows
+            .iter()
+            .map(|row| row.label.chars().count())
+            .chain([self.corner.chars().count()])
+            .max()
+            .unwrap_or_default();
+
+        let widths: Vec<usize> = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, head)| {
+                self.rows
+                    .iter()
+                    .filter_map(|row| row.cells.get(i))
+                    .map(|cell| cell.chars().count())
+                    .chain([head.chars().count()])
+                    .max()
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        let mut out = format!("  {LAB}{:<label_width$}", self.corner);
+
+        for (i, head) in self.columns.iter().enumerate() {
+            out.push_str(&self.gap_before(i));
+            out.push_str(&format!("{head:>width$}", width = widths[i]));
+        }
+
+        out.push_str(RESET);
+
+        for row in &self.rows {
+            let pen = if row.reference { DIM } else { VAL };
+            let name = if row.reference { DIM } else { LAB };
+
+            out.push_str(&format!("\n  {name}{:<label_width$}{RESET}", row.label));
+            for (i, cell) in row.cells.iter().enumerate() {
+                out.push_str(&self.gap_before(i));
+                out.push_str(&format!("{pen}{cell:>width$}{RESET}", width = widths[i]));
+            }
+        }
+        println!("{out}");
+    }
+
+    fn gap_before(&self, column: usize) -> String {
+        " ".repeat(if self.split == Some(column) { Self::GAP * 2 } else { Self::GAP })
+    }
+}
+
 /// Parameter vectors against datasets, each cell at the K that suits that pair best.
 ///
 /// Refitting K per cell is what makes the numbers comparable: a cold-start run lands on whatever
@@ -123,12 +272,10 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
     let tunables = collect_parameters();
     let defaults = default_values(&tunables);
     let mut candidates = vec![(shipped.to_string(), defaults.clone())];
-
     for path in params {
         match load_checkpoint(path, &tunables, &defaults) {
             Ok(data) => {
                 let values = if data.best_val_params.len() == tunables.len() { data.best_val_params } else { data.values };
-
                 candidates.push((label_for(std::slice::from_ref(path)), values));
             },
             Err(e) => eprintln!("{ALARM}[!] Cannot read parameters from {path}: {e}{RESET}"),
@@ -140,7 +287,6 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
     // there is no column for it to sit in.
     let single = sets.len() == 1;
     let mut columns: Vec<String> = sets.iter().map(|set| set.label.clone()).collect();
-
     if single {
         columns.push("K".to_string());
         columns.push("ln2 − L".to_string());
@@ -161,7 +307,6 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
             cells.push(format!("{:.6}", last.0));
             cells.push(format!("{:.6}", COIN_FLIP - last.1));
         }
-
         table.push(name, cells);
     }
 
@@ -194,7 +339,6 @@ fn material(sets: &[Set], shipped: &str) {
 
     for set in sets {
         let (weights, loss, steps) = newton_fit(&material_rows(set));
-
         if weights[0].abs() < 1e-12 {
             eprintln!("{ALARM}[!] {}: the fit puts a midgame pawn at zero, so nothing normalizes.{RESET}", set.label);
             continue;
@@ -228,7 +372,6 @@ fn material(sets: &[Set], shipped: &str) {
     println!();
 
     let width = notes.iter().map(|(label, _)| label.chars().count()).max().unwrap_or_default();
-
     for (label, note) in notes {
         println!("  {LAB}{label:<width$}{RESET}  {note}");
     }
@@ -270,7 +413,6 @@ fn profile(sets: &[Set]) {
         ]);
 
         imbalance.push(&set.label, (0..5).map(|pt| pct(counts.unequal[pt])).collect());
-
         at_phase.push(
             &set.label,
             (0..5)
@@ -286,7 +428,6 @@ fn profile(sets: &[Set]) {
     labels.print();
     println!("\n{LAB}Positions{RESET}");
     design.print();
-
     // A coefficient is fitted on the positions where its piece count differs, so a set with no
     // queen imbalances has nothing to say about a queen however many positions it holds.
     println!("\n{LAB}Imbalance: the share of positions where the count differs{RESET}");
@@ -327,7 +468,6 @@ fn print_games(sets: &[Set]) {
     for (set, scan) in &scans {
         let n = scan.games as f64;
         let pct = |count: usize| format!("{:.1}%", 100.0 * count as f64 / n);
-
         games.push(&set.label, vec![
             format_comma(scan.games as u64),
             format!("{:.1}", scan.plies as f64 / n),
@@ -339,7 +479,6 @@ fn print_games(sets: &[Set]) {
             pct(scan.quiet_endings),
         ]);
     }
-
     println!("\n{LAB}Games, unfiltered: the replay's independent unit{RESET}");
     games.print();
     println!("{DIM}  The last three are what the final score said; a game in none of them stopped for");
@@ -365,7 +504,6 @@ fn best_loss(set: &Set, values: &[f64], loss: LossFn) -> (f64, f64) {
 
     let (k_min, k_max) = SCORE_K;
     let k = golden_search_k(k_min, k_max, 1e-6 * (k_max - k_min), loss_at);
-
     if k <= k_min * 1.01 || k >= k_max * 0.99 {
         eprintln!(
             "{ALARM}[!] K stopped at the edge of its bracket on {}: this loss is not the candidate's best.{RESET}",
@@ -379,17 +517,14 @@ fn best_loss(set: &Set, values: &[f64], loss: LossFn) -> (f64, f64) {
 /// an endgame half, against the STM-relative outcome.
 fn material_rows(set: &Set) -> Vec<([f64; 10], f64)> {
     let phase_w = phase_weights();
-
     set.records
         .par_iter()
         .zip(&set.entries)
         .map(|(record, entry)| {
             let mg = f64::from(phase_of(record, &phase_w) as u32) / f64::from(TOTAL_PHASE);
             let mut design = [0.0; 10];
-
             for pt in 0..5 {
                 let diff = f64::from(record.mat_diffs[pt]);
-
                 design[pt] = diff * mg;
                 design[pt + 5] = diff * (1.0 - mg);
             }
@@ -520,7 +655,6 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
             for k in 0..10 {
                 a.swap(col * 10 + k, pivot * 10 + k);
             }
-
             b.swap(col, pivot);
         }
 
@@ -542,7 +676,6 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
 
     for row in (0..10).rev() {
         let known: f64 = (row + 1..10).map(|k| a[row * 10 + k] * x[k]).sum();
-
         x[row] = (b[row] - known) / a[row * 10 + row];
     }
     Some(x)
@@ -550,7 +683,6 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
 
 fn count(set: &Set) -> Counts {
     let phase_w = phase_weights();
-
     set.records
         .par_iter()
         .zip(&set.entries)
@@ -590,7 +722,6 @@ fn label_for(paths: &[String]) -> String {
 
     let stem = |path: &String| {
         let mut name = Path::new(path).file_name().unwrap_or_default().to_string_lossy().into_owned();
-
         while let Some(shorter) = SUFFIXES.iter().find_map(|suffix| name.strip_suffix(suffix)) {
             name = shorter.to_string();
         }
@@ -606,159 +737,6 @@ fn label_for(paths: &[String]) -> String {
 
 fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
-}
-
-/// Everything one pass over the positions counts.
-#[derive(Default)]
-struct Counts {
-    results: [usize; 3],
-    scored: usize,
-    score_sum: f64,
-    contradictions: usize,
-    phase_sum: f64,
-    phase_low: usize,
-    phase_high: usize,
-    pieces: u64,
-    unequal: [usize; 5],
-    unequal_phase: [f64; 5],
-}
-
-impl Counts {
-    fn observe(&mut self, entry: &SoulEntry, record: &FeatureRecord, phase_w: &[f64; 6]) {
-        self.results[usize::from(entry.result.min(2))] += 1;
-
-        if entry.score != SoulEntry::NO_SCORE {
-            self.scored += 1;
-            self.score_sum += f64::from(entry.score.abs());
-
-            // Both are STM-relative, so a winner the search scored below zero is a position whose
-            // label and whose eval disagree about who stands better.
-            let winner = i32::from(entry.result) - 1;
-            if winner != 0 && i32::from(entry.score) * winner < 0 {
-                self.contradictions += 1;
-            }
-        }
-
-        let phase = f64::from(phase_of(record, phase_w) as u32);
-
-        self.phase_sum += phase;
-        self.pieces += u64::from(entry.occupancy.count_ones());
-
-        if phase < 12.0 {
-            self.phase_low += 1;
-        } else if phase >= 20.0 {
-            self.phase_high += 1;
-        }
-
-        for pt in 0..5 {
-            if record.mat_diffs[pt] != 0 {
-                self.unequal[pt] += 1;
-                self.unequal_phase[pt] += phase;
-            }
-        }
-    }
-
-    fn merged(mut self, other: Self) -> Self {
-        for i in 0..3 {
-            self.results[i] += other.results[i];
-        }
-
-        for i in 0..5 {
-            self.unequal[i] += other.unequal[i];
-            self.unequal_phase[i] += other.unequal_phase[i];
-        }
-
-        self.scored += other.scored;
-        self.score_sum += other.score_sum;
-        self.contradictions += other.contradictions;
-        self.phase_sum += other.phase_sum;
-        self.phase_low += other.phase_low;
-        self.phase_high += other.phase_high;
-        self.pieces += other.pieces;
-        self
-    }
-}
-
-/// Right-aligned columns under their headers, one row per dataset or candidate.
-struct Table {
-    corner: String,
-    columns: Vec<String>,
-    rows: Vec<Row>,
-    /// Column the gap widens before, for a table read in two halves.
-    split: Option<usize>,
-}
-
-struct Row {
-    label: String,
-    cells: Vec<String>,
-    /// Context rather than a result: the reference the other rows are read against.
-    reference: bool,
-}
-
-impl Table {
-    const GAP: usize = 3;
-
-    fn new(corner: &str, columns: Vec<String>) -> Self {
-        Self { corner: corner.to_string(), columns, rows: Vec::new(), split: None }
-    }
-
-    fn push(&mut self, label: &str, cells: Vec<String>) {
-        self.rows.push(Row { label: label.to_string(), cells, reference: false });
-    }
-    fn push_dim(&mut self, label: &str, cells: Vec<String>) {
-        self.rows.push(Row { label: label.to_string(), cells, reference: true });
-    }
-
-    fn print(&self) {
-        let label_width = self
-            .rows
-            .iter()
-            .map(|row| row.label.chars().count())
-            .chain([self.corner.chars().count()])
-            .max()
-            .unwrap_or_default();
-
-        let widths: Vec<usize> = self
-            .columns
-            .iter()
-            .enumerate()
-            .map(|(i, head)| {
-                self.rows
-                    .iter()
-                    .filter_map(|row| row.cells.get(i))
-                    .map(|cell| cell.chars().count())
-                    .chain([head.chars().count()])
-                    .max()
-                    .unwrap_or_default()
-            })
-            .collect();
-
-        let mut out = format!("  {LAB}{:<label_width$}", self.corner);
-
-        for (i, head) in self.columns.iter().enumerate() {
-            out.push_str(&self.gap_before(i));
-            out.push_str(&format!("{head:>width$}", width = widths[i]));
-        }
-
-        out.push_str(RESET);
-
-        for row in &self.rows {
-            let pen = if row.reference { DIM } else { VAL };
-            let name = if row.reference { DIM } else { LAB };
-
-            out.push_str(&format!("\n  {name}{:<label_width$}{RESET}", row.label));
-
-            for (i, cell) in row.cells.iter().enumerate() {
-                out.push_str(&self.gap_before(i));
-                out.push_str(&format!("{pen}{cell:>width$}{RESET}", width = widths[i]));
-            }
-        }
-        println!("{out}");
-    }
-
-    fn gap_before(&self, column: usize) -> String {
-        " ".repeat(if self.split == Some(column) { Self::GAP * 2 } else { Self::GAP })
-    }
 }
 
 #[cfg(test)]
