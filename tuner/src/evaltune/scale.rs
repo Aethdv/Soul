@@ -24,7 +24,6 @@ pub const GAUGE_PROBE: usize = 1024;
 /// the lift itself exact.
 const MEASURE_GAIN: f64 = 4096.0;
 
-/// State machine for K.
 pub struct KController {
     k: f64,
     k_ref: f64,
@@ -195,6 +194,7 @@ pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
         }
     }
 }
+
 /// Holds the eval's overall scale still.
 ///
 /// The score is homogeneous of degree one in every parameter outside the phase
