@@ -29,6 +29,7 @@ wdl_filtered = false
 material_count_filtered = false
 material_count_probabilities = []
 
-# Seeds every probabilistic gate above. Soul draws seeded rather than from a
-# thread-local generator, so one file and one dataset pin the same subset.
+# Carried for parity with viriformat's own filter; nothing here reads it. The one
+# probabilistic gate, random_fen_skipping, drops its share per epoch from the run's
+# own seed, so --seed is what pins the draw.
 seed = 0

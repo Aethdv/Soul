@@ -429,20 +429,36 @@ pub struct TunerConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct EvalTuneConfig {
-    pub lr_schedule: LrScheduleConfig,
-    pub wdl_schedule: WdlScheduleConfig,
     pub beta1: f64,
     pub beta2: f64,
     pub weight_decay: f64,
-    /// Default is MSE.
+    /// Decay rate for Polyak averaging (Chronological EMA). Default: 0.999.
+    ///
+    /// Applied once per batch, so the window is 1000 updates rather than 1000 epochs. Updates are
+    /// the right unit, since one Lion step displaces `eff_lr` whatever the epoch length, but it
+    /// does mean the tail average that decides what ships covers fewer epochs as a dataset grows.
+    #[serde(default = "default_ema_decay")]
+    pub ema_decay: f64,
+    pub grad_clip: f64,
+    pub k_min: f64,
+    pub k_max: f64,
+    #[serde(default)]
+    pub k_mode: KMode,
     #[serde(default)]
     pub loss: LossFn,
-    /// Smaller batches = more updates/epoch = better generalization
-    /// at the cost of slower per-epoch wall time.
-    /// 32k-131k is the sweet spot for 2-15M positions.
-    /// Handwavy; Below 50: overfit. Above 300: diminishing returns.
     pub batch_size: usize,
     pub epochs: usize,
+    /// Share of the training split each epoch draws, redrawn every epoch. `None`
+    /// takes the replay filter's drop chance on a viriformat dataset, and the whole
+    /// split otherwise; a value here applies to any format and wins over both.
+    #[serde(default)]
+    pub epoch_sample: Option<f64>,
+    /// Epoch at which to unfreeze non-material parameters (mobility, king safety, etc.).
+    /// During epochs 0..unfreeze_epoch only PSQT and material values train; the rest
+    /// are held at their initial values. After unfreeze_epoch, all trainable parameters
+    /// participate normally. 0 disables progressive unfreeze. Default: 0.
+    #[serde(default)]
+    pub unfreeze_epoch: usize,
     /// Records per shuffled block, or 0 for a full permutation. Blocks trade the
     /// fresh partition an epoch's reshuffle buys for sequential reads.
     #[serde(default)]
@@ -451,34 +467,16 @@ pub struct EvalTuneConfig {
     /// file, and whatever reads it then has to choose between them.
     #[serde(default = "default_log_path")]
     pub log_path: String,
-    pub grad_clip: f64,
-    pub k_min: f64,
-    pub k_max: f64,
-    #[serde(default)]
-    pub k_mode: KMode,
     /// Plateau patience epochs before halving lr_scale. Default: 100.
     #[serde(default = "default_patience")]
     pub patience: usize,
-    /// Decay rate for Polyak averaging (Chronological EMA). Default: 0.999.
-    ///
-    /// Applied once per batch, so the window is 1000 updates rather than 1000 epochs: about ten
-    /// epochs of a 7.1M-position set at batch 65536, about two of a 32.8M one. Updates are the
-    /// right unit, since one Lion step displaces `eff_lr` whatever the epoch length, but it does
-    /// mean the tail average that decides what ships covers fewer epochs as a dataset grows.
-    #[serde(default = "default_ema_decay")]
-    pub ema_decay: f64,
-    /// Epoch at which to unfreeze non-material parameters (mobility, king safety, etc.).
-    /// During epochs 0..unfreeze_epoch only PSQT and material values train; the rest
-    /// are held at their initial values. After unfreeze_epoch, all trainable parameters
-    /// participate normally. 0 disables progressive unfreeze. Default: 0.
-    #[serde(default)]
-    pub unfreeze_epoch: usize,
-    /// Per-group LR multipliers for Lion sign-step scaling.
+    pub lr_schedule: LrScheduleConfig,
+    pub wdl_schedule: WdlScheduleConfig,
     #[serde(default = "default_one")]
     pub lr_psqt: f64,
-    #[serde(default = "default_lr_material")]
+    #[serde(default = "default_one")]
     pub lr_material: f64,
-    #[serde(default = "default_lr_mobility")]
+    #[serde(default = "default_one")]
     pub lr_mobility: f64,
     #[serde(default = "default_one")]
     pub lr_other: f64,
@@ -538,11 +536,6 @@ pub struct EvalTuneConfig {
     /// frequency, the default). Applies only when `phase_balance` is on.
     #[serde(default)]
     pub phase_target: Option<Vec<f64>>,
-    /// Share of the training split each epoch draws, redrawn every epoch. `None`
-    /// takes the replay filter's drop chance on a viriformat dataset, and the whole
-    /// split otherwise; a value here applies to any format and wins over both.
-    #[serde(default)]
-    pub epoch_sample: Option<f64>,
     /// Cap on the validation split, otherwise a tenth of the dataset. Capping it
     /// renumbers `best_val` for anything above the cap.
     #[serde(default)]
@@ -766,12 +759,7 @@ fn default_freeze_consecutive() -> usize {
 fn default_one() -> f64 {
     1.0
 }
-fn default_lr_material() -> f64 {
-    0.3
-}
-fn default_lr_mobility() -> f64 {
-    0.5
-}
+
 fn default_phase_balance_cap() -> f64 {
     8.0
 }

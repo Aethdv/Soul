@@ -63,7 +63,7 @@ pub struct ReplayFilter {
     /// Skip probability per piece count, indexed 0..=32. Short tables read as
     /// zero, so a file may stop early.
     pub material_count_probabilities: Vec<f64>,
-    /// Read so a filter written for viriformat parses; nothing here draws.
+    /// Carried for parity with the reference `Filter`; nothing here draws from it.
     pub seed: u64,
 }
 
