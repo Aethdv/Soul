@@ -51,7 +51,7 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
                     accumulate_record_grad(record, &eval, 1.0, &mut scratch);
 
                     // One walk drains the buffer and collects it, so the next position starts from
-                    // zero without paying to clear all 490 slots again.
+                    // zero without paying to clear all slots again.
                     nonzeros.clear();
 
                     for (j, coefficient) in scratch.iter_mut().enumerate() {

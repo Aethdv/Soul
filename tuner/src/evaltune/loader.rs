@@ -72,7 +72,7 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
             continue;
         };
 
-        // Result is white-relative in EPD, we need STM-relative.
+        // Result is white-relative in EPD, STM-relative from here on.
         encoded.push(SoulEntry::from_board(&board, flip_wdl(result, board.stm), None));
 
         if last_print.elapsed().as_millis() > 500 {
@@ -235,7 +235,7 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
     }
 }
 
-// Opens a file for buffered line reading, transparently decompressing zstd if needed.
+/// Opens a file for buffered line reading, transparently decompressing zstd if needed.
 fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
     if path.extension().is_some_and(|e| e == "zst") {
         Ok(Box::new(BufReader::new(zstd::Decoder::new(file)?)))

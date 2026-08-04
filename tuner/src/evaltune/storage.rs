@@ -237,8 +237,8 @@ pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
     fnv.digest()
 }
 
-// Missing parameters keep their `fallback` (current code value), so new tunables
-// don't silently zero out on resume.
+/// Missing parameters keep their `fallback` (current code value), so new tunables
+/// don't silently zero out on resume.
 fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunables: &[Tunable], fallback: &[f64]) -> Vec<f64> {
     let saved: BTreeMap<&str, f64> = checkpoint_names.iter().zip(checkpoint_vals).map(|(n, &v)| (n.as_str(), v)).collect();
 
