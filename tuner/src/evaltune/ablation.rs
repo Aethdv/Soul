@@ -87,20 +87,15 @@ fn run_generic<T: TunableData>(entries: &[T], values: &[f64]) {
 
     let mut params = values.to_vec();
     let mut results: Vec<AblationResult> = Vec::with_capacity(groups.len());
-
     for group in &groups {
         // Zero this group, measure impact, restore.
         let orig: Vec<f64> = group.range.clone().map(|i| mem::replace(&mut params[i], 0.0)).collect();
-
         let delta = compute_loss(entries, &params, k) - baseline;
-
         for (i, v) in group.range.clone().zip(orig) {
             params[i] = v;
         }
-
         results.push(AblationResult { name: group.name.clone(), delta });
     }
-
     results.sort_by(|a, b| b.delta.total_cmp(&a.delta));
     print_report(&results);
 }
@@ -147,20 +142,17 @@ fn build_groups() -> Vec<Group> {
 
 fn title_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
-
     for word in name.split('_') {
         if !out.is_empty() {
             out.push(' ');
         }
 
         let mut chars = word.chars();
-
         if let Some(first) = chars.next() {
             out.extend(first.to_uppercase());
             out.push_str(chars.as_str());
         }
     }
-
     out
 }
 
@@ -184,14 +176,12 @@ mod tests {
     #[test]
     fn groups_tile_the_parameter_vector() {
         let mut covered = vec![false; eval_params::LAYOUT.total];
-
         for g in build_groups() {
             for i in g.range {
                 assert!(!covered[i], "slot {i} sits in two ablation groups");
                 covered[i] = true;
             }
         }
-
         if let Some(i) = covered.iter().position(|&c| !c) {
             panic!("slot {i} sits in no ablation group, so its term never appears in the report");
         }
