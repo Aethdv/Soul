@@ -14,7 +14,7 @@
 //! residual cross-term and can go negative, the loss's own non-convexity showing up where a
 //! Gauss-Newton approximation would hide it.
 //!
-//! At 490 parameters it is a two-megabyte object, so it can simply be built: how many directions
+//! At 491 parameters it is a two-megabyte object, so it can simply be built: how many directions
 //! the data constrains, which combinations it leaves free, and how much of one parameter's column
 //! another already explains. A seed sweep sees those flat directions from the outside, as
 //! parameters that disagree at equal loss; this sees them from the inside and can name them.
@@ -48,7 +48,6 @@ pub struct Curvature {
 /// The correlation form rather than the raw matrix, because parameters range from a tempo bonus
 /// near 30 to a queen near 1000, and raw eigenvectors would rank directions by their units.
 pub struct Spectrum {
-    /// Eigenvalues.
     values: Vec<f64>,
     /// Eigenvectors as columns: component `i` of eigenvector `j` at `i · live.len() + j`.
     vectors: Vec<f64>,
@@ -57,7 +56,8 @@ pub struct Spectrum {
     /// Raw curvature diagonal, over every free parameter. This is the figure a freeze threshold
     /// wants to normalize against.
     diagonal: Vec<f64>,
-    /// Free parameters whose curvature is exactly zero: the data cannot see them at all.
+    /// Free parameters with no positive curvature. Zero is the data never touching them;
+    /// negative is `MeanSquaredError`, whose residual cross-term can outweigh `S(1−S)`.
     untouched: Vec<usize>,
 }
 
@@ -351,7 +351,6 @@ fn jacobi(a: &mut [f64], vectors: &mut [f64], n: usize) {
 mod tests {
     use super::*;
 
-    /// Eigen-decomposition of a matrix whose answer is known by hand.
     #[test]
     fn jacobi_diagonalizes_a_known_matrix() {
         // [[2, 1], [1, 2]] has eigenvalues 3 and 1 on (1, 1)/√2 and (1, −1)/√2.
