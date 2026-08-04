@@ -38,8 +38,6 @@ pub struct GradientStats {
     count: usize,
 }
 
-/// Read-only evaluation trait: can compute a score and knows the game result.
-///
 /// Implemented by both `Entry` (raw EPD) and `SoulEntry` (encoded); the ablation
 /// tool is generic over it.
 pub trait TunableData: Sync + Send {
@@ -161,9 +159,7 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
         .map(|rec| {
             let p = phase_of(rec, &phase_w);
             let raw = match target {
-                // Uniform: inverse frequency, lifting sparse phases toward even weight.
                 None => avg / hist[p] as f64,
-                // Custom: importance weight toward the target density `t`.
                 Some(t) => {
                     let observed = hist[p] as f64 / n;
                     if observed > 0.0 { (t.get(p).copied().unwrap_or(0.0) / target_sum) / observed } else { 0.0 }
@@ -178,7 +174,6 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
         })
         .collect();
 
-    // Mean-1 normalization keeps the gradient scale equal to an unweighted run.
     let mean = weights.iter().sum::<f64>() / weights.len() as f64;
 
     for w in &mut weights {
@@ -229,20 +224,15 @@ impl GradientStats {
         }
         self.count += 1;
 
-        // ── Online 95th percentile estimation.
-        // We move up by p when norm > p95, and down by (1-p) when norm < p95.
-        // Balancing: 0.05 · 0.95 (up) + 0.95 · -0.05 (down) = 0.
+        // Up by p over the estimate, down by (1 - p) under it, which balances where
+        // the estimate sits at the 95th percentile: 0.05 · 0.95 + 0.95 · -0.05 = 0.
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
 
-        // Update in log-space. Stays positive regardless of how
-        // small norms get, and the multiplicative step scales with
-        // the current magnitude. This eliminates the need for a floor
-        // at initialization or late in training.
+        // The multiplicative step scales with the current magnitude, so nothing needs a
+        // floor at initialization or once the norms have decayed.
         self.p95 *= (self.alpha * step).exp();
     }
 
-    /// Returns the estimated 95th percentile of recent gradient norms.
-    ///
     /// Falls back to `default` until 10 observations are collected:
     /// estimating a distribution from fewer points is noise, not signal.
     #[must_use]
@@ -294,7 +284,6 @@ impl Default for Progress {
 }
 
 impl Progress {
-    /// Reports whether this epoch set a training record.
     pub fn record_train(&mut self, epoch: usize, loss: f64) -> bool {
         self.train_smooth = smooth(self.train_smooth, loss);
 
