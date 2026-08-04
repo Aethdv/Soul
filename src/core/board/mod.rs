@@ -157,12 +157,6 @@ pub struct Position {
     pub fullmove_number: u16,
 }
 
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Fen(self))
-    }
-}
-
 /// The irreversible state needed to undo a move: stack-allocated, snapshotted per move.
 ///
 /// A move destroys castling rights, the fifty-move counter, en passant availability and the
@@ -193,6 +187,12 @@ impl Default for StateInfo {
             captured: PieceType::None,
             halfmove_clock: 0,
         }
+    }
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Fen(self))
     }
 }
 
@@ -274,7 +274,6 @@ impl Position {
         self.stm = self.stm.opposite();
         self.hash ^= zobrist::key_side();
         self.halfmove_clock += 1;
-
         info
     }
 
@@ -342,11 +341,9 @@ impl Position {
 
         let limit = history.len().saturating_sub(self.halfmove_clock as usize + 1);
         let mut count = 1; // Current position
-
         for &h in history[limit..].iter().rev().skip(2).step_by(2) {
             if h == self.hash {
                 count += 1;
-
                 if count >= 3 {
                     return true;
                 }
@@ -375,7 +372,6 @@ impl Position {
 
         // Only kings and minor pieces remain. A lone minor can't deliver mate.
         let minors = self.role_bb[PieceType::Knight as usize].popcount() + self.role_bb[PieceType::Bishop as usize].popcount();
-
         minors <= 1
     }
 
@@ -442,7 +438,6 @@ impl Position {
             if sq == ksq.0 || sq == rsq.0 {
                 continue;
             }
-
             if occ.check_bit(Square(sq)) {
                 return false;
             }
@@ -461,7 +456,6 @@ impl Position {
                 return false;
             }
         }
-
         true
     }
 
@@ -519,7 +513,6 @@ impl Position {
         let b = self.role_bb[PieceType::Bishop as usize].popcount();
         let r = self.role_bb[PieceType::Rook as usize].popcount();
         let q = self.role_bb[PieceType::Queen as usize].popcount();
-
         p + 3 * n + 3 * b + 5 * r + 9 * q
     }
 
@@ -575,14 +568,13 @@ impl Position {
         let us = self.side_bb[color];
         let empty = Vu64x4::splat(!self.occ.0);
 
-        let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
-        let bq = ((self.role_bb[PieceType::Bishop] | self.role_bb[PieceType::Queen]) & us).0;
         let knights = (self.role_bb[PieceType::Knight] & us).0;
+        let bq = ((self.role_bb[PieceType::Bishop] | self.role_bb[PieceType::Queen]) & us).0;
+        let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
         let king = (self.role_bb[PieceType::King] & us).0;
 
         let sliders = spatial::atk_rook(Vu64x4::splat(rq), empty) | spatial::atk_bishop(Vu64x4::splat(bq), empty);
         let leapers = spatial::atk_knight(Vu64x4::splat(knights)) | spatial::atk_king(Vu64x4::splat(king));
-
         Bitboard((sliders | leapers).extract::<0>()) | self.pawn_attacks(color)
     }
 
@@ -649,7 +641,6 @@ impl Position {
     /// debug verification against the incrementally maintained `self.hash`.
     pub fn calc_zobrist(&self) -> u64 {
         let mut key = 0u64;
-
         for sq in self.occ {
             key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
         }
@@ -665,7 +656,6 @@ impl Position {
         if let Some(ep) = self.en_passant {
             key ^= zobrist::key_ep(ep);
         }
-
         key
     }
 
