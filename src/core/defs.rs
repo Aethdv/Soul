@@ -35,7 +35,6 @@ pub const LANE_MG: usize = 0;
 pub const LANE_EG: usize = 1;
 /// Tapered-eval phase counter
 pub const LANE_PHASE: usize = 2;
-
 /// |score| < this for N plies → Draw
 pub const ADJ_DRAW_SCORE: i32 = 10;
 /// |score| < ADJ_DRAW_SCORE for this many consecutive plies

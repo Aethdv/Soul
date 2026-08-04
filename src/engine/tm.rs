@@ -147,7 +147,6 @@ impl Clock {
     /// early, fewer late.
     fn moves_to_go(&self, phase: i32, params: &SearchParams) -> f64 {
         if self.movestogo > 0 {
-            // Classical time control.
             return (self.movestogo as f64 - 0.5).max(1.0);
         }
 

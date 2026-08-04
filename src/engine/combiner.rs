@@ -135,7 +135,7 @@ impl Combiner for LinearCombiner {
     ) -> BucketUpstreams {
         let t_mg = phase / f64::from(TOTAL_PHASE);
         let t_eg = 1.0 - t_mg;
-        let taper = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };
+        let taper_pair = TaperPair { d_mg: d_loss * t_mg, d_eg: d_loss * t_eg };
         let safety_block = d_loss * t_mg;
         let scale = f64::from(DANGER_SCALE);
 
@@ -151,6 +151,6 @@ impl Combiner for LinearCombiner {
         let (us, them) = (buckets.danger_us, buckets.danger_them);
         grads[LAYOUT.king_danger_offset] += safety_block * (them * them - us * us) / scale;
 
-        BucketUpstreams { mg_eg: taper, mobility: taper, bonus: taper, king_safety, xray: safety_block }
+        BucketUpstreams { mg_eg: taper_pair, mobility: taper_pair, bonus: taper_pair, king_safety, xray: safety_block }
     }
 }
