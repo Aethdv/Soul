@@ -94,9 +94,8 @@ impl KController {
             return None;
         }
 
-        self.k = golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| {
-            ctx.k_fit_eval(ema_values, kk, blend)
-        });
+        self.k =
+            golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| ctx.k_fit_eval(ema_values, kk, blend));
 
         Some(self.k)
     }

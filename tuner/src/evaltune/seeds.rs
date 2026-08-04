@@ -9,7 +9,13 @@
 //! A floor is expected rather than zero. Parameters parked near a rounding boundary flip on
 //! nothing, so disagreement of ±1 on a minority of them is the resolution of the instrument.
 
-use std::{cmp::Reverse, env, fs, process::Command, time::Instant};
+use std::{
+    cmp::Reverse,
+    env, fs,
+    path::PathBuf,
+    process::{self, Command},
+    time::Instant,
+};
 
 use serde::Deserialize;
 
@@ -17,6 +23,7 @@ use super::{
     engine::eval_params,
     palette::{LAB, RESET, VAL},
     report::fmt_loss,
+    run::ARTIFACT_DIR,
 };
 
 /// How many of the most load-bearing parameters get their own line in the report. A spread
@@ -52,7 +59,11 @@ pub fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: u
         let ok = spawn_trial(dataset, config_path, epochs, log_path, &[("--seed", seed.to_string())]);
         let elapsed = start.elapsed().as_secs_f32();
 
-        let kept = if ok { fs::copy("evaltune_best.txt", format!("seed_{seed}_best.txt")).is_ok() } else { false };
+        let kept = if ok {
+            fs::copy(trial_dir().join("evaltune_best.txt"), format!("seed_{seed}_best.txt")).is_ok()
+        } else {
+            false
+        };
 
         let status = if ok { "done" } else { "FAILED" };
         let note = if ok && !kept { "  (no evaltune_best.txt to keep)" } else { "" };
@@ -81,11 +92,19 @@ pub fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &s
         return false;
     };
 
-    let quiet = env::temp_dir().join(format!("evaltune_trial_{}.txt", std::process::id()));
+    let work = trial_dir();
+
+    if let Err(e) = fs::create_dir_all(&work) {
+        eprintln!("Cannot create the trial directory {}: {e}", work.display());
+        return false;
+    }
+
+    let quiet = env::temp_dir().join(format!("evaltune_trial_{}.txt", process::id()));
     let Ok(sink) = fs::File::create(&quiet) else { return false };
 
     let mut cmd = Command::new(exe);
 
+    cmd.env(ARTIFACT_DIR, &work);
     cmd.arg("--dataset").arg(dataset);
     cmd.arg("--config").arg(config_path);
     cmd.arg("--epochs").arg(epochs.to_string());
@@ -99,6 +118,13 @@ pub fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &s
     let _ = fs::remove_file(&quiet);
 
     status.is_ok_and(|s| s.success())
+}
+
+/// Where a trial's artifacts land. Every run writes its checkpoint and its reports under fixed
+/// names, so trials sharing the parent's directory would leave `--resume` pointing at the last
+/// of them, carrying whatever the sweep was varying.
+fn trial_dir() -> PathBuf {
+    env::temp_dir().join(format!("evaltune_trial_{}", process::id()))
 }
 
 /// What the last run in `log_path` reached, for a caller spawning one trial at a time.
@@ -258,9 +284,11 @@ fn report(runs: &[Final]) {
     println!(
         "\n  {LAB}Furthest pair{RESET}  {VAL}{}{RESET} and {VAL}{}{RESET}, {VAL}{distance}{RESET} apart, \
          L_val {} vs {}\n  paste seed_{}_best.txt against seed_{}_best.txt",
-        runs[a].seed, runs[b].seed,
+        runs[a].seed,
+        runs[b].seed,
         fmt_loss(runs[a].best_val_loss),
         fmt_loss(runs[b].best_val_loss),
-        runs[a].seed, runs[b].seed
+        runs[a].seed,
+        runs[b].seed
     );
 }

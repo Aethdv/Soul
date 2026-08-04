@@ -12,6 +12,7 @@
 use std::{
     fs,
     io::{BufWriter, Write},
+    path::PathBuf,
     time::Instant,
 };
 
@@ -239,6 +240,18 @@ pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
             Init::Random => (rng.f64() * 2.0 - 1.0) * RANDOM_INIT_SPREAD,
         })
         .collect()
+}
+
+/// Names the directory a run writes its checkpoint and reports into. Set by a parent process
+/// that spawns trials, so a sweep cannot overwrite the artifacts of the run that launched it.
+pub const ARTIFACT_DIR: &str = "EVALTUNE_ARTIFACT_DIR";
+
+/// A run's artifact by name, under [`ARTIFACT_DIR`] when a parent named one.
+pub fn artifact(name: &str) -> String {
+    match std::env::var_os(ARTIFACT_DIR) {
+        Some(dir) => PathBuf::from(dir).join(name).display().to_string(),
+        None => name.to_string(),
+    }
 }
 
 /// What a run leaves behind for a caller that ranks runs.
@@ -700,7 +713,7 @@ fn train_loop(
     println!("{LAB}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
     println!("{LAB}Optimizer:{RESET}  {VAL}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
-    let log_file = fs::OpenOptions::new().create(true).append(true).open("evaltune_log.txt").ok();
+    let log_file = fs::OpenOptions::new().create(true).append(true).open(artifact("evaltune_log.txt")).ok();
     let mut logger = log_file.map(BufWriter::new);
 
     if let Some(ref mut w) = logger {
@@ -1181,7 +1194,7 @@ fn train_loop(
                 print_params(&all_params, &initial_values, &ema_values);
             }
 
-            if let Err(e) = save_checkpoint("evaltune_checkpoint.json", &all_params, &TrainerState {
+            if let Err(e) = save_checkpoint(&artifact("evaltune_checkpoint.json"), &all_params, &TrainerState {
                 run: RunState {
                     epoch: epoch + 1, // resume starts here; the current epoch is already done
                     lr_scale,

@@ -15,7 +15,7 @@ use super::{
     groups::GROUP_NAMES,
     lion::GateCensus,
     loader,
-    run::TrainerContext,
+    run::{TrainerContext, artifact},
     training::{phase_of, phase_weights, sigmoid},
 };
 use crate::{
@@ -93,7 +93,7 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
     );
     print_params(all_params, initial_values, final_ema);
 
-    if let Ok(mut f) = File::create("evaltune_best.txt") {
+    if let Ok(mut f) = File::create(artifact("evaltune_best.txt")) {
         let mut w = BufWriter::new(&mut f);
 
         // Without a holdout the val block is the train block: selection fell back to it.
@@ -106,13 +106,7 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
 
         writeln!(w, "\nBest L_train: {:.6} (Epoch {})", best.best_train_loss, best.best_train_epoch).ok();
         write_params(&mut w, all_params, best.best_train_params, None);
-        writeln!(
-            w,
-            "\nFinal epoch {final_epoch}:  L_val {}  L_train {}",
-            fmt_loss(best.last_val),
-            fmt_loss(best.last_train),
-        )
-        .ok();
+        writeln!(w, "\nFinal epoch {final_epoch}:  L_val {}  L_train {}", fmt_loss(best.last_val), fmt_loss(best.last_train),).ok();
         write_params(&mut w, all_params, final_ema, None);
     }
 }
@@ -580,7 +574,7 @@ pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String 
 }
 
 pub fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
-    let Ok(mut f) = fs::File::create("sensitivity-report.txt") else { return };
+    let Ok(mut f) = fs::File::create(artifact("sensitivity-report.txt")) else { return };
     let mut w = io::BufWriter::new(&mut f);
 
     writeln!(w, "Sensitivity Analysis").ok();
