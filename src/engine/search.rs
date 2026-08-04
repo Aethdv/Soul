@@ -8,10 +8,10 @@
 //!
 //! Lazy SMP is a parallel search algorithm that never divides the work. Each
 //! thread runs its own iterative-deepening search on the same root position,
-//! sharing only the transposition table and a stop flag. Their trees drift apart
-//! on their own, because each thread reaches a given position at a different
-//! depth and leaves its findings in the table for another to stumble onto and
-//! follow.
+//! sharing only the transposition table, a stop flag and the node counters.
+//! Their trees drift apart on their own: thread A writes an entry at the edge of
+//! what it can reach, thread B probes it mid-search and redirects its tree along a
+//! branch A already explored. The TT is the coordination surface.
 //!
 //! State splits into two entities per thread:
 //! - `Searcher`: Owns global engine state (time management, history table, root moves).
@@ -83,7 +83,7 @@ pub const LMR_SCALE: i32 = 1024;
 ///
 /// By encoding these as types rather than runtime flags, the compiler
 /// monomorphizes negamax into three tight variants with dead branches
-/// eliminated entirely. Zero-cost polymorphism.
+/// eliminated entirely.
 pub trait NodeType {
     const PV: bool;
     const ROOT: bool;
@@ -121,18 +121,6 @@ impl NodeType for NonPvNode {
     const ROOT: bool = false;
     type Next = NonPvNode;
 }
-
-// ──────── Searcher & Worker ────────
-//
-// Searcher owns the global search state: root moves, node counter,
-// time management, zobrist trail. One per thread.
-//
-// Worker owns the mutable board that changes as we descend the tree:
-// position, accumulator, per-ply stack.
-//
-// Each thread gets its own Searcher+Worker pair. Threads share only
-// the TT, the stop flag, and the node counter; everything else is
-// thread-private.
 
 pub struct Searcher<'cfg> {
     pub cfg: &'cfg SearchConfig,
@@ -231,7 +219,6 @@ pub struct RootMove {
     pub nodes: u64,
 }
 
-// ── Principal Variation Line
 /// The PV is our predicted best play for both sides.
 /// When a new best move is found at any ply, we compose the line:
 /// this move first, then the child's continuation, bubbling the full
@@ -516,12 +503,6 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         // ── Lazy SMP
-        // Every thread searches every depth, sharing only the TT and
-        // the stop flag. Diversity is emergent: thread A writes an entry at
-        // the edge of what it can reach, thread B probes it mid-search and
-        // redirects its tree along a branch A already explored. The TT is
-        // the coordination surface.
-        //
         // Helpers search the full depth ladder alongside main. The only
         // asymmetry is soft time management: main alone decides when to stop
         // starting iterations. Helpers still honor the global flag and the
