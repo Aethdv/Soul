@@ -41,6 +41,10 @@ const SEE_VALUE: [i32; 8] = {
     v
 };
 
+/// Capture order for the exchange loop: cheapest first, the king left out because
+/// reaching it ends the chain rather than continuing it.
+const LVA_ORDER: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen];
+
 /// Is the static exchange on `mv`'s destination square at least
 /// `threshold` centipawns for the side making `mv`?
 ///
@@ -138,21 +142,8 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
             return !us;
         }
 
-        // Pick the least-valuable attacker. A match cascade is the
-        // cleanest shape: each arm does exactly the work its piece
-        // type requires, and the compiler turns the chain into a tight
-        // priority-decoder on the bitboards.
-        let (lva, lva_sq) = if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Pawn]) {
-            (PieceType::Pawn, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Knight]) {
-            (PieceType::Knight, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Bishop]) {
-            (PieceType::Bishop, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Rook]) {
-            (PieceType::Rook, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Queen]) {
-            (PieceType::Queen, sq)
-        } else {
+        // Pick the least-valuable attacker.
+        let Some((lva, lva_sq)) = LVA_ORDER.into_iter().find_map(|pt| lsb_of(mine & pos.role_bb[pt]).map(|sq| (pt, sq))) else {
             // Only the king is left to capture. If the opposing side
             // still has any attacker on to, the king capture would
             // move the king into check, illegal, so the chain stops

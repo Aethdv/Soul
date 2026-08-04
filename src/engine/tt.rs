@@ -178,8 +178,8 @@ impl TtEntry {
         Some(Decoded {
             key: key16,
             mv: self.mv.load(Ordering::Relaxed),
-            score: self.score.load(Ordering::Relaxed) as i16,
-            eval: self.eval.load(Ordering::Relaxed) as i16,
+            score: self.score.load(Ordering::Relaxed).cast_signed(),
+            eval: self.eval.load(Ordering::Relaxed).cast_signed(),
             depth: packed_depth(packed),
             bound,
             age: packed_age(packed),
@@ -191,8 +191,8 @@ impl TtEntry {
     fn load(&self) -> Decoded {
         let key = self.key.load(Ordering::Acquire);
         let mv = self.mv.load(Ordering::Relaxed);
-        let score = self.score.load(Ordering::Relaxed) as i16;
-        let eval = self.eval.load(Ordering::Relaxed) as i16;
+        let score = self.score.load(Ordering::Relaxed).cast_signed();
+        let eval = self.eval.load(Ordering::Relaxed).cast_signed();
         let packed = self.packed.load(Ordering::Relaxed);
         Decoded {
             key,
@@ -210,8 +210,8 @@ impl TtEntry {
     fn store(&self, d: Decoded) {
         let packed = pack(d.depth, d.bound, d.pv, d.age);
         self.mv.store(d.mv, Ordering::Relaxed);
-        self.score.store(d.score as u16, Ordering::Relaxed);
-        self.eval.store(d.eval as u16, Ordering::Relaxed);
+        self.score.store(d.score.cast_unsigned(), Ordering::Relaxed);
+        self.eval.store(d.eval.cast_unsigned(), Ordering::Relaxed);
         self.packed.store(packed, Ordering::Relaxed);
         // key goes last. A reader that Acquire-loads this new key is then
         // guaranteed the four payload writes above, released before it.
