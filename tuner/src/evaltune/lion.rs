@@ -1,36 +1,15 @@
 //! Lion: "Evolved Sign Momentum".
 //!
 //! Unlike Adam, which carefully tracks variance to scale every step,
-//! Lion asks a simpler question: "Where do momentum and gradient agree?"
-//! It takes the sign of their blend to step parameters at a uniform rate,
-//! damping noise whenever the signals clash.
+//! Lion takes the sign of a blend of momentum and gradient to step
+//! parameters at a uniform rate. Ours asks a further question first,
+//! "Where do momentum and gradient agree?", holding the step where they
+//! clash; the exact rule is on [`Lion::gate`].
 //!
 //! *Ref: Xiangning Chen, Chen Liang, Da Huang, Esteban Real, Kaiyuan Wang,
 //! Yao Liu, Hieu Pham, Xuanyi Dong, Thang Luong, Cho-Jui Hsieh, Yifeng Lu, Quoc V. Le*
 //! Symbolic Discovery of Optimization Algorithms. NeurIPS 2023.
 //! <https://arxiv.org/abs/2302.06675v4>
-//!
-//! The update rule consists of four steps per iteration t.
-//!
-//! 1. Interpolation (Search Direction):
-//!    Combine current gradient (g) and previous momentum (m).
-//!    c = β₁ · m + (1 - β₁) · g
-//!
-//! 2. Parameter Update:
-//!    Update parameters (θ) using the sign of c.
-//!    θ = θ - lr · (sign(c) + wd · θ)
-//!
-//!    NOTE: The update magnitude is uniform (lr) across all dimensions, determined
-//!    solely by the sign.
-//!
-//! 3. Weight clipping:
-//!    Clamp θ into its own configured range, unbounded for most parameters
-//!    and ±100 for mobility, whose features have no ceiling of their own.
-//!
-//! 4. Momentum Tracking:
-//!    Update the stored momentum (m) for the next step.
-//!    m = β₂ · m + (1 - β₂) · g,
-//!    where β₂ is per-parameter (PSQT 0.995, mobility 0.95, default 0.99).
 
 use std::ops::Range;
 
@@ -47,9 +26,7 @@ pub struct Lion {
     /// reads as a converged one, and `Δp` agrees.
     clipped: Vec<u64>,
     /// Σ of the `eff_lr` every sign step spent, since the last read. Gate width and step
-    /// length are the same lever, `‖Δθ‖₁ = eff_lr · (stepping count)`, which is what made
-    /// two cautious-mask retunes unreadable: the candidate arm stepped further as well as
-    /// differently, and nothing printed the difference.
+    /// length are the same lever, `‖Δθ‖₁ = eff_lr · (stepping count)`.
     step_l1: f64,
 }
 
@@ -85,13 +62,11 @@ impl Lion {
         Self { interp, lr, wd, momentum: vec![0.0; slots], clipped: vec![0; slots], step_l1: 0.0 }
     }
 
-    /// The momentum trail, for a checkpoint to persist and hand back.
     #[must_use]
     pub fn momentum(&self) -> &[f64] {
         &self.momentum
     }
 
-    /// How often each slot's update was truncated by its clip bound, over the run.
     #[must_use]
     pub fn clipped(&self) -> &[u64] {
         &self.clipped
@@ -195,12 +170,14 @@ impl Lion {
             let d = decay_mask[i];
             let eff_lr = self.lr * lr_mask[i];
 
-            // 1. Interpolation, and the gate's verdict on it.
+            // 1. Interpolation, the search direction: c = β₁ · m + (1 - β₁) · g, and the
+            //    gate's verdict on it.
             let (c, verdict) = self.gate(m, g);
 
-            // 2. Parameter update. Decay fires whatever the gate says: a converged
-            // parameter without gradient signal should not lose its regularization
-            // pressure along with its step.
+            // 2. Parameter update: θ = θ - lr · (sign(c) + wd · θ). The magnitude is lr in
+            //    every dimension, the sign alone decides direction. Decay fires whatever the
+            //    gate says: a converged parameter without gradient signal should not lose its
+            //    regularization pressure along with its step.
             let decayed = eff_lr.mul_add(-self.wd * d * p, p);
 
             let updated = if verdict == Gate::Step {
@@ -210,17 +187,17 @@ impl Lion {
                 decayed
             };
 
-            // 3. Weight clipping
+            // 3. Weight clipping, into the slot's own range: unbounded for most parameters
+            //    and ±100 for mobility, whose features have no ceiling of their own.
             let (min, max) = clip_mask[i];
             let clamped = updated.clamp(min, max);
 
             self.clipped[i] += u64::from(clamped != updated);
             params[i] = clamped;
 
-            // 4. Momentum: m = β₂ · m + (1 - β₂) · g
-            // Hard-zero momentum when both gradient and current momentum are essentially zero.
-            // Without this, floating-point residuals in m can accumulate and trigger sign updates
-            // on perfectly converged parameters: a kind of ghost-gradient effect.
+            // 4. Momentum tracking for the next step: m = β₂ · m + (1 - β₂) · g, β₂ per
+            //    parameter. Hard-zero when both are essentially zero: floating-point residue
+            //    in m otherwise accumulates and triggers sign steps on converged parameters.
             self.momentum[i] = if g.abs() < 1e-9 && m.abs() < 1e-9 { 0.0 } else { beta2[i].mul_add(m, (1.0 - beta2[i]) * g) };
         }
     }
@@ -314,7 +291,6 @@ impl GateCensus {
         if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 }
     }
 
-    /// The same share as a percentage, the unit both readouts print it in.
     #[must_use]
     pub fn percent(&self, count: u64) -> f64 {
         100.0 * self.share(count)
@@ -340,7 +316,7 @@ impl GateCensus {
 ///   there: longer momentum smooths sparse signal across positions.
 /// - Mobility (0.95): features are computed every position; shorter momentum
 ///   lets weights track the faster dynamics without lag.
-/// - Everything else (0.99): the existing default from the config.
+/// - Everything else: the configured default.
 pub fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
     (0..slots)
         .map(|i| match param_group(i) {
