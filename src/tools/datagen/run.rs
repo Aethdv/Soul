@@ -8,8 +8,7 @@
 //! the conductor: load books, dispatch work, flush to disk, print stats.
 
 use std::{
-    fs::File,
-    io::{BufReader, Read, Write, stdout},
+    io::{Write, stdout},
     num::NonZero,
     path::Path,
     process,
@@ -31,7 +30,7 @@ use crate::{
     cli::Help,
     color::RESET,
     core::{board::STARTPOS, defs::MAX_DEPTH, util::format_comma as format_num},
-    tools::dataset::{MAGIC_V6, SoulEntry, append_encoded, load_epd_fens},
+    tools::dataset::{SoulEntry, append_encoded, count_encoded, load_epd_fens},
 };
 
 const GREEN: &str = "\x1b[92m";
@@ -532,29 +531,17 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Datag
 }
 
 /// Reads the position count from a V5/V6 header. Unknown formats return 0.
+/// A resume appends to this file and counts up from what it already holds, so a count that
+/// cannot be read ends the run rather than generating the whole target on top of it.
 fn load_existing_count(path: &str) -> usize {
     if !Path::new(path).exists() {
         return 0;
     }
 
-    let Ok(file) = File::open(path) else { return 0 };
-    let mut reader = BufReader::new(file);
-
-    let mut magic = [0u8; 8];
-
-    if reader.read_exact(&mut magic).is_err() {
-        return 0;
-    }
-
-    if &magic == MAGIC_V6 {
-        let mut buf = [0u8; 8];
-
-        if reader.read_exact(&mut buf).is_ok() {
-            return u64::from_le_bytes(buf) as usize;
-        }
-    }
-
-    0
+    count_encoded(path).unwrap_or_else(|e| {
+        eprintln!("{RED}Error: cannot resume {path}: {e}{RESET}");
+        process::exit(1);
+    })
 }
 
 fn print_help() {

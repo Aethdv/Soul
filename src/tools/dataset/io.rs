@@ -7,6 +7,7 @@
 use std::{
     fs,
     io::{self, BufRead, Read, Write},
+    mem,
 };
 
 use zerocopy::IntoBytes;
@@ -61,6 +62,43 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
     }
 
     Ok(entries)
+}
+
+/// Positions in a dataset, without decoding any of them.
+///
+/// The same frame walk as [`load_encoded`], reading each count and skipping its payload, so an
+/// append-only file reports everything it holds rather than what its first frame holds.
+pub fn count_encoded(path: &str) -> io::Result<usize> {
+    let file = fs::File::open(path)?;
+    let mut decoder = zstd::Decoder::new(file)?;
+
+    let mut total = 0usize;
+
+    loop {
+        let mut magic = [0u8; 8];
+        if decoder.read_exact(&mut magic).is_err() {
+            break;
+        }
+
+        if magic != *MAGIC_V6 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
+        }
+
+        let mut buf = [0u8; 8];
+        decoder.read_exact(&mut buf)?;
+
+        let count = u64::from_le_bytes(buf) as usize;
+        let payload = (count * mem::size_of::<SoulEntry>()) as u64;
+        let skipped = io::copy(&mut Read::by_ref(&mut decoder).take(payload), &mut io::sink())?;
+
+        if skipped != payload {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame ends before its count"));
+        }
+
+        total += count;
+    }
+
+    Ok(total)
 }
 
 /// Creates (or overwrites) a compressed dataset file.
@@ -194,7 +232,7 @@ fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SoulEntry, load_encoded, save_encoded};
+    use super::{SoulEntry, append_encoded, count_encoded, load_encoded, save_encoded};
     use crate::core::board::{Position, STARTPOS};
 
     fn temp(name: &str) -> String {
@@ -230,5 +268,20 @@ mod tests {
 
         let _ = std::fs::remove_file(&good);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn counting_frames_matches_loading_them() {
+        let path = temp("io_count");
+        let board = Position::from_fen(STARTPOS);
+        let entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
+
+        save_encoded(&path, &entries).expect("writing the first frame");
+        append_encoded(&path, &entries[..3]).expect("appending a second");
+
+        assert_eq!(count_encoded(&path).expect("counting the frames"), 7);
+        assert_eq!(load_encoded(&path).expect("loading the frames").len(), 7);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
