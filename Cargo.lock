@@ -531,6 +531,7 @@ dependencies = [
  "soul",
  "thiserror",
  "toml",
+ "zerocopy",
  "zstd",
 ]
 

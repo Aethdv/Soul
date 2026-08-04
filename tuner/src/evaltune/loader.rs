@@ -14,6 +14,9 @@ use std::{
     time::Instant,
 };
 
+use rayon::prelude::*;
+use zerocopy::IntoBytes;
+
 pub use super::engine::{
     FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl, load_encoded,
     parse_epd_str, parse_viri_file, save_encoded,
@@ -166,15 +169,26 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
 /// Hashed before shuffle: identifies loaded contents, not a permutation.
 /// A checkpoint's split seed replays the same split only over the same entries.
 pub fn dataset_fingerprint(entries: &[SoulEntry]) -> u64 {
+    /// Fixed, so the digest is the file's and not the machine's thread count.
+    const CHUNK: usize = 1 << 16;
+
+    // Every byte of every entry: a hash over a sample, or over a subset of the fields, passes a
+    // dataset the checkpoint never trained on, and the resume it clears reads its own val split.
+    let digests: Vec<u64> = entries
+        .par_chunks(CHUNK)
+        .map(|chunk| {
+            let mut fnv = Fnv1a::new();
+            fnv.write_bytes(chunk.as_bytes());
+
+            fnv.digest()
+        })
+        .collect();
+
     let mut fnv = Fnv1a::new();
     fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
 
-    let stride = (entries.len() / 1024).max(1);
-
-    for e in entries.iter().step_by(stride) {
-        fnv.write_bytes(&e.occupancy.to_le_bytes());
-        fnv.write_bytes(&e.score.to_le_bytes());
-        fnv.write_bytes(&[e.result, e.stm_and_ep]);
+    for d in &digests {
+        fnv.write_bytes(&d.to_le_bytes());
     }
 
     fnv.digest()
@@ -235,4 +249,20 @@ fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
 fn bail_dataset(path: &str, e: &dyn fmt::Display) -> ! {
     eprintln!("{}[!] Cannot read dataset {path}: {e}{RESET}", palette::ALARM);
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SoulEntry, dataset_fingerprint};
+
+    #[test]
+    fn every_field_of_every_entry_reaches_the_fingerprint() {
+        let entries = vec![SoulEntry::default(); 70_000];
+
+        let mut edited = entries.clone();
+        edited[69_000].castling = 0b1010;
+
+        assert_eq!(dataset_fingerprint(&entries), dataset_fingerprint(&entries), "the same entries must hash the same");
+        assert_ne!(dataset_fingerprint(&entries), dataset_fingerprint(&edited));
+    }
 }
