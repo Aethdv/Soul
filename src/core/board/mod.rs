@@ -163,12 +163,11 @@ impl fmt::Display for Position {
     }
 }
 
-// Moves that destroy information:
-// castling rights, the fifty-move counter, en passant availability, captured pieces.
-// We snapshot these irreversible fields before each move so unmake_move
-// can restore them perfectly: no costly recalculation, just a memcpy.
-
 /// The irreversible state needed to undo a move: stack-allocated, snapshotted per move.
+///
+/// A move destroys castling rights, the fifty-move counter, en passant availability and the
+/// captured piece. Snapshotting them before the move makes `unmake_move` a memcpy rather
+/// than a recalculation.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StateInfo {
@@ -268,12 +267,10 @@ impl Position {
             halfmove_clock: self.halfmove_clock,
         };
 
-        // Clear en passant
         if let Some(ep) = self.en_passant.take() {
             self.hash ^= zobrist::key_ep(ep);
         }
 
-        // Flip side
         self.stm = self.stm.opposite();
         self.hash ^= zobrist::key_side();
         self.halfmove_clock += 1;
@@ -333,7 +330,6 @@ impl Position {
     /// explicitly need 3-fold counts). Contrast with `Worker::is_repetition`
     /// which scans every ply for early draw detection in search.
     ///
-    /// The iterator logic:
     /// - `rev()`: scan backward from the most recent position.
     /// - `skip(2)`: the tail entry is the current position (count starts at 1),
     ///   and the position one ply back has the opponent to move, so both are skipped.
