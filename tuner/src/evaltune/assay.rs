@@ -663,17 +663,14 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
             if factor == 0.0 {
                 continue;
             }
-
             for k in col..10 {
                 a[row * 10 + k] -= factor * a[col * 10 + k];
             }
-
             b[row] -= factor * b[col];
         }
     }
 
     let mut x = [0.0f64; 10];
-
     for row in (0..10).rev() {
         let known: f64 = (row + 1..10).map(|k| a[row * 10 + k] * x[k]).sum();
         x[row] = (b[row] - known) / a[row * 10 + row];
@@ -750,13 +747,11 @@ mod tests {
     /// leaves is the solver's and not the sample's.
     fn planted(weights: &[f64; 10]) -> Vec<([f64; 10], f64)> {
         let mut rows = Vec::new();
-
         for phase in 0..=24 {
             for piece in 0..5 {
                 for diff in [-2.0, -1.0, 1.0, 2.0] {
                     let mg = f64::from(phase) / f64::from(TOTAL_PHASE);
                     let mut design = [0.0; 10];
-
                     design[piece] = diff * mg;
                     design[piece + 5] = diff * (1.0 - mg);
                     rows.push((design, sigmoid(dot(&design, weights), FIT_K)));
@@ -770,9 +765,7 @@ mod tests {
     fn the_fit_recovers_the_values_it_was_generated_from() {
         let planted_weights = [100.0, 370.0, 382.0, 471.0, 752.0, 162.0, 513.0, 550.0, 970.0, 1897.0];
         let (fitted, _, steps) = newton_fit(&planted(&planted_weights));
-
         assert!(steps < FIT_STEPS, "the fit ran out of Newton steps");
-
         for (fitted, planted) in fitted.iter().zip(&planted_weights) {
             assert!((fitted - planted).abs() < 1.0, "fitted {fitted:.1} against a planted {planted:.1}");
         }
@@ -784,7 +777,6 @@ mod tests {
     fn a_piece_that_never_varies_gets_no_opinion() {
         let mut rows = planted(&[100.0, 370.0, 382.0, 471.0, 752.0, 162.0, 513.0, 550.0, 970.0, 1897.0]);
         rows.retain(|(design, _)| design[4] == 0.0 && design[9] == 0.0);
-
         let (fitted, ..) = newton_fit(&rows);
         assert!(fitted[4].abs() < 1e-6, "a queen nothing constrains came out at {}", fitted[4]);
         assert!(fitted[9].abs() < 1e-6, "a queen nothing constrains came out at {}", fitted[9]);
