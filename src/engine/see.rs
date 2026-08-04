@@ -77,10 +77,10 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
     let to = mv.to();
 
     // Resolve the initial exchange into two scalars:
-    //   gain      - material that moves into our column this ply
-    //               (captured piece + promotion upgrade, if any)
-    //   attacker  - piece sitting on to after our move, whose value
-    //               will be lost if the opponent recaptures
+    //   gain     - material that moves into our column this ply
+    //              (captured piece + promotion upgrade, if any)
+    //   attacker - piece sitting on to after our move, whose value
+    //              will be lost if the opponent recaptures
     let (gain, attacker) = if mv.is_en_passant() {
         (val(PieceType::Pawn), PieceType::Pawn)
     } else if let Some(promo) = mv.promo() {
@@ -177,12 +177,9 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
         // Negamax flip: the next player's running deficit is this
         // attacker's value minus the previous player's deficit.
         balance = val(lva) - balance;
-
-        // Asymmetric break encoding the tie-break rule. See module docs.
         if balance < i32::from(us) {
             return us;
         }
-
         us = !us;
     }
 }
