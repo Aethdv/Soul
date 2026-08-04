@@ -29,6 +29,9 @@ pub const CORRECTION_WEIGHT_SCALE: i32 = 256;
 
 const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 
+/// Which `cont` table each continuation distance reads, in n-1, n-2, n-4 order.
+const CONT_SLOTS: [usize; 3] = [0, 1, 1];
+
 /// Per-table soft-gravity saturation caps, refreshed from `SearchParams` each
 /// search. A table pulls its entries toward ±cap; the same value bounds the
 /// entry and divides the gravity term, so the two move as one. Must stay in
@@ -42,23 +45,6 @@ pub struct HistoryCaps {
     pub capt: i32,
 }
 
-impl From<&SearchParams> for HistoryCaps {
-    fn from(sp: &SearchParams) -> Self {
-        Self {
-            quiet: sp.quiet_hist_cap,
-            butterfly: sp.butterfly_hist_cap,
-            cont: sp.cont_hist_cap,
-            capt: sp.capt_hist_cap,
-        }
-    }
-}
-
-impl Default for HistoryCaps {
-    fn default() -> Self {
-        Self::from(&SearchParams::default())
-    }
-}
-
 /// Combined history tables for move ordering.
 #[derive(Clone)]
 pub struct History {
@@ -66,8 +52,8 @@ pub struct History {
     table: [[[i16; 64]; 6]; 2],
     /// `[side][from_atk][to_atk][from · 64 + to]`: bounds ±cap
     butterfly: [[[[i16; 4096]; 2]; 2]; 2], // ~35 Elo
-    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`. Two slots, three distances:
-    /// n-1 owns slot 0, while n-2 and n-4 deliberately share slot 1, pooling into one table.
+    /// `[ply_offset][side][prev_piece][prev_to][piece][to]`. Two tables, three distances:
+    /// n-2 and n-4 pool into one on purpose.
     cont: [ContinuationHistory; 2], // n-1 (~13 Elo), n-2 (~3 Elo), n-4 (~3 Elo)
     /// `[side][pawn_hash & 0x3FFF]`
     correction: CorrectionHistory, // ~53 Elo
@@ -123,6 +109,23 @@ pub struct CaptureHistory {
 #[derive(Clone)]
 pub struct CorrectionHistory {
     data: Box<[i32]>,
+}
+
+impl From<&SearchParams> for HistoryCaps {
+    fn from(sp: &SearchParams) -> Self {
+        Self {
+            quiet: sp.quiet_hist_cap,
+            butterfly: sp.butterfly_hist_cap,
+            cont: sp.cont_hist_cap,
+            capt: sp.capt_hist_cap,
+        }
+    }
+}
+
+impl Default for HistoryCaps {
+    fn default() -> Self {
+        Self::from(&SearchParams::default())
+    }
 }
 
 impl Default for ContContext {
@@ -238,7 +241,6 @@ impl CorrectionHistory {
         let entry = &mut self.data[Self::idx(stm, pawn_hash)];
         let weight = ((1 + depth) * (1 + depth) / 4).min(32);
         let scaled = i64::from(raw_diff) * i64::from(CORRECTION_SCALE);
-
         // Re-clamped to ±CORRECTION_LIMIT, so the cast back can't truncate.
         let blended = (i64::from(*entry) * i64::from(256 - weight) + scaled * i64::from(weight)) / 256;
         *entry = blended.clamp(-i64::from(CORRECTION_LIMIT), i64::from(CORRECTION_LIMIT)) as i32;
@@ -292,17 +294,13 @@ impl History {
     ) -> i32 {
         let from_atk = threats.check_bit(from) as usize;
         let to_atk = threats.check_bit(to) as usize;
-        let mut score = i32::from(self.table[stm][pt][to])
-            + i32::from(self.butterfly[stm][from_atk][to_atk][(from.0 as usize) * 64 + (to.0 as usize)]);
+        let mut score =
+            i32::from(self.table[stm][pt][to]) + i32::from(self.butterfly[stm][from_atk][to_atk][butterfly_idx(from, to)]);
 
-        if cont1.pt != PieceType::None {
-            score += i32::from(self.cont[0].get(stm, cont1.pt, cont1.to, pt, to));
-        }
-        if cont2.pt != PieceType::None {
-            score += i32::from(self.cont[1].get(stm, cont2.pt, cont2.to, pt, to));
-        }
-        if cont4.pt != PieceType::None {
-            score += i32::from(self.cont[1].get(stm, cont4.pt, cont4.to, pt, to));
+        for (slot, ctx) in CONT_SLOTS.into_iter().zip([cont1, cont2, cont4]) {
+            if ctx.pt != PieceType::None {
+                score += i32::from(self.cont[slot].get(stm, ctx.pt, ctx.to, pt, to));
+            }
         }
         score
     }
@@ -317,9 +315,8 @@ impl History {
     /// the same move that failed at depth 8; large bonuses accelerate convergence
     /// both toward and away from extreme values.
     ///
-    /// This mechanism, sometimes called "history aging" or "soft clamping",
-    /// ensures the table stays within `i16` bounds without hard-clipping
-    /// destroying the relative ordering of values near the attractor limit.
+    /// It also holds the table inside `i16` without hard clipping, which would flatten
+    /// the ordering of everything sitting near the cap.
     #[inline(always)]
     pub fn update(
         &mut self,
@@ -336,11 +333,7 @@ impl History {
         let from_atk = threats.check_bit(from) as usize;
         let to_atk = threats.check_bit(to) as usize;
         Self::update_entry(&mut self.table[stm][pt][to], bonus, self.caps.quiet);
-        Self::update_entry(
-            &mut self.butterfly[stm][from_atk][to_atk][(from.0 as usize) * 64 + (to.0 as usize)],
-            bonus,
-            self.caps.butterfly,
-        );
+        Self::update_entry(&mut self.butterfly[stm][from_atk][to_atk][butterfly_idx(from, to)], bonus, self.caps.butterfly);
 
         self.update_conthist(stm, pt, to, cont1, cont2, cont4, bonus);
     }
@@ -356,20 +349,17 @@ impl History {
         cont4: ContContext,
         bonus: i32,
     ) {
-        if cont1.pt != PieceType::None {
-            Self::update_entry(self.cont[0].get_mut(stm, cont1.pt, cont1.to, pt, to), bonus, self.caps.cont);
-        }
-        if cont2.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont2.pt, cont2.to, pt, to), bonus, self.caps.cont);
-        }
-        if cont4.pt != PieceType::None {
-            Self::update_entry(self.cont[1].get_mut(stm, cont4.pt, cont4.to, pt, to), bonus, self.caps.cont);
+        for (slot, ctx) in CONT_SLOTS.into_iter().zip([cont1, cont2, cont4]) {
+            if ctx.pt != PieceType::None {
+                Self::update_entry(self.cont[slot].get_mut(stm, ctx.pt, ctx.to, pt, to), bonus, self.caps.cont);
+            }
         }
     }
 
     /// Single soft-gravity update step.
     #[inline(always)]
     fn update_entry(entry: &mut i16, bonus: i32, cap: i32) {
+        debug_assert!(cap > 0, "a zero cap divides by zero in the gravity term");
         let e = i32::from(*entry);
         *entry = (e + bonus - e * bonus.abs() / cap).clamp(-cap, cap) as i16;
     }
@@ -456,4 +446,9 @@ impl Default for History {
             caps: HistoryCaps::default(),
         }
     }
+}
+
+#[inline(always)]
+fn butterfly_idx(from: Square, to: Square) -> usize {
+    from.0 as usize * 64 + to.0 as usize
 }
