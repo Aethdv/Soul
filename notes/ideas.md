@@ -59,7 +59,7 @@ Known (TD-leaf, KnightCap), just nobody bothers in hand-crafted tuning.
 
 ### L-BFGS / second-order
 
-490 HCE params, near-convex, tiny.
+491 HCE params, near-convex, tiny.
 Full-batch L-BFGS lands a sharper optimum in tens of iterations where Lion takes thousands of noisy minibatch steps.
 And the catch: `.trunc()` is non-smooth, the phase taper is bilinear not convex, and the SGD noise + EMA are doing implicit regularization a sharp fit throws away.
 Better train loss, and maybe worse Elo.

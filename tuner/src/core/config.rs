@@ -10,7 +10,7 @@ use serde::{
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
 pub const DEFAULT_WDL_END: f64 = 0.3;
-pub const DEFAULT_K_LR_MULT: f64 = 0.01;
+pub const DEFAULT_K_LR_MULT: f64 = 0.001;
 pub const DEFAULT_K_SWEEP_INTERVAL: usize = 200;
 
 /// Half-width of the uniform draw for [`Init::Random`]. Small against every

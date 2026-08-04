@@ -163,6 +163,16 @@ pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
                 continue;
             }
 
+            // The fold shifts material for every square, so a fixed square keeps its value while
+            // a piece standing there collects the shift. Only the pawn ranks nobody can occupy
+            // are fixed, which is what makes the fold invisible to the score.
+            debug_assert!(
+                (table..table + squares)
+                    .filter(|&i| params[i].is_fixed)
+                    .all(|i| piece == PieceType::Pawn as usize && (i - table < 4 || i - table >= squares - 4)),
+                "a fixed PSQT square a piece can stand on takes the fold's shift"
+            );
+
             let n = free().count();
 
             if n == 0 {
