@@ -610,10 +610,10 @@ impl<'cfg> Searcher<'cfg> {
                     //
                     // The cutoff broke the move loop, so moves before the culprit
                     // scored under beta this iteration and moves after it still hold
-                    // the previous depth's score. Only the culprit can equal the score
-                    // that came back, and rotating keeps the rest in the order the last
-                    // completed iteration left them, where a sort would rank this
-                    // depth's scores against the previous one's.
+                    // the previous depth's score. The culprit is the first that can carry
+                    // this score, and rotating keeps the rest in the order the last
+                    // completed iteration left them, where a sort would rank this depth's
+                    // scores against the previous one's.
                     if let Some(i) = self.root_moves.iter().position(|rm| rm.score == score) {
                         self.root_moves[..=i].rotate_right(1);
                     }

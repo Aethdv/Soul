@@ -244,6 +244,7 @@ impl LossFn {
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum KMode {
+    /// Refits K by golden search every `interval` epochs.
     Sweep {
         #[serde(default = "default_k_sweep_interval")]
         interval: usize,

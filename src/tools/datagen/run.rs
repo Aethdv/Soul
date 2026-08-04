@@ -530,7 +530,6 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Datag
     let _ = config.save();
 }
 
-/// Reads the position count from a V5/V6 header. Unknown formats return 0.
 /// A resume appends to this file and counts up from what it already holds, so a count that
 /// cannot be read ends the run rather than generating the whole target on top of it.
 fn load_existing_count(path: &str) -> usize {
