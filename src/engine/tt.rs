@@ -61,6 +61,21 @@ pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
     bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
 }
 
+/// The static eval clamped into the range a stored score proves.
+///
+/// A lower bound puts a floor under the truth, so it can only lift an eval sitting
+/// below it; an upper bound is the ceiling and can only pull one down. An eval already
+/// inside the proven range stands, since the bound contradicts nothing.
+#[inline(always)]
+pub fn clamp_to_bound(bound: u8, score: i32, eval: i32) -> i32 {
+    match bound {
+        BOUND_EXACT => score,
+        BOUND_LOWER => eval.max(score),
+        BOUND_UPPER => eval.min(score),
+        _ => eval,
+    }
+}
+
 /// One slot, five `AtomicU16` words. The atomics let Lazy SMP threads share
 /// the table without locks; 16-bit words keep the entry at 10 bytes and align 2,
 /// where a single `AtomicU32` would force align 4 and pad it back out,

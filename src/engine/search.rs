@@ -1092,17 +1092,8 @@ impl Worker<'_> {
                 .is_none_or(|past| static_eval > past);
 
         // ── TT-Adjusted Eval
-        // The bound must back the direction the score moved from static eval:
-        // a score above eval needs a lower bound (truth is higher still), one
-        // below needs an upper bound. An exact bound backs either.
-        let tt_backs_eval = match tt_bound {
-            tt::BOUND_EXACT => true,
-            tt::BOUND_LOWER => tt_score > static_eval,
-            tt::BOUND_UPPER => tt_score < static_eval,
-            _ => false, // BOUND_NONE
-        };
-
-        let tt_adjusted_eval = if tt_backs_eval && !is_mate(tt_score) { tt_score } else { static_eval };
+        // A mate score is a distance, not a valuation, so it never stands in for one.
+        let tt_adjusted_eval = if is_mate(tt_score) { static_eval } else { tt::clamp_to_bound(tt_bound, tt_score, static_eval) };
 
         // ── Reverse Futility Pruning (~52 Elo)
         // Position is already so good that even after subtracting a generous
