@@ -5,7 +5,7 @@
 //! [`eval_record`]) through [`super::engine`].
 
 use std::{
-    fs,
+    fmt, fs,
     fs::File,
     io,
     io::{BufRead, BufReader, Write},
@@ -95,15 +95,6 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
     Ok(())
 }
 
-// Opens a file for buffered line reading, transparently decompressing zstd if needed.
-fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
-    if path.extension().is_some_and(|e| e == "zst") {
-        Ok(Box::new(BufReader::new(zstd::Decoder::new(file)?)))
-    } else {
-        Ok(Box::new(BufReader::new(file)))
-    }
-}
-
 /// Load all dataset files by format, dispatching on extension.
 ///
 /// `.soul` / `.soul.zst` → [`load_encoded`]; `.viri` / `.vf` → [`parse_viri_file`];
@@ -132,7 +123,7 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
             println!("Loading encoded dataset: {path}");
             match load_encoded(path) {
                 Ok(mut file_entries) => all_entries.append(&mut file_entries),
-                Err(e) => eprintln!("Error loading {path}: {e}"),
+                Err(e) => bail_dataset(path, &e),
             }
         } else if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
@@ -147,7 +138,7 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                     grouped = games.iter().sum::<u32>() as usize;
                     all_groups.extend(games);
                 },
-                Err(e) => eprintln!("Error loading {path}: {e}"),
+                Err(e) => bail_dataset(path, &e),
             }
         } else {
             println!("Loading raw dataset: {path}");
@@ -157,7 +148,7 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                         all_entries.push(SoulEntry::from_board(&e.board, flip_wdl(e.result, e.board.stm), None));
                     }
                 },
-                Err(e) => eprintln!("Error loading {path}: {e}"),
+                Err(e) => bail_dataset(path, &e),
             }
         }
 
@@ -228,4 +219,20 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
 
         Some(paths)
     }
+}
+
+// Opens a file for buffered line reading, transparently decompressing zstd if needed.
+fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
+    if path.extension().is_some_and(|e| e == "zst") {
+        Ok(Box::new(BufReader::new(zstd::Decoder::new(file)?)))
+    } else {
+        Ok(Box::new(BufReader::new(file)))
+    }
+}
+
+/// A file that cannot be read would train the run on less data than it was asked for, and the
+/// shortfall reaches the fingerprint, the split and `L_val` with nothing left to say why.
+fn bail_dataset(path: &str, e: &dyn fmt::Display) -> ! {
+    eprintln!("{}[!] Cannot read dataset {path}: {e}{RESET}", palette::ALARM);
+    std::process::exit(1);
 }
