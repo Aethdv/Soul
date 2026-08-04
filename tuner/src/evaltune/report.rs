@@ -56,34 +56,63 @@ const ANNOTATIONS: &[(&str, &str)] = &[
 
 pub struct BestEpochs<'a> {
     pub best_val_params: &'a [f64],
-    pub best_val_loss: f64,
+    /// `None` when the run had no holdout: nothing validated, so nothing ranks.
+    pub best_val_loss: Option<f64>,
     pub best_val_epoch: usize,
     pub best_train_params: &'a [f64],
     pub best_train_loss: f64,
     pub best_train_epoch: usize,
-    pub last_val: f64,
-    pub last_train: f64,
+    pub last_val: Option<f64>,
+    pub last_train: Option<f64>,
+}
+
+/// `0.123456` for a loss, `—` for a run that had no holdout.
+pub(super) fn fmt_loss(v: Option<f64>) -> String {
+    match v {
+        Some(l) => format!("{l:.6}"),
+        None => "—".to_string(),
+    }
 }
 
 /// Final epoch is printed; all three go to `evaltune_best.txt`.
 pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: &[f64], best: &BestEpochs, final_epoch: usize) {
     println!();
-    println!("{BRAND}Best L_val: {:.6} (Epoch {}){RESET}", best.best_val_loss, best.best_val_epoch);
+
+    match best.best_val_loss {
+        Some(l) => println!("{BRAND}Best L_val: {:.6} (Epoch {}){RESET}", l, best.best_val_epoch),
+        None => println!("{BRAND}Best L_val: — (no holdout){RESET}"),
+    }
 
     println!("{BRAND}Best L_train: {:.6} (Epoch {}){RESET}", best.best_train_loss, best.best_train_epoch);
 
     println!();
-    println!("{BRAND}Final epoch {final_epoch}:  L_val {:.6}  L_train {:.6}{RESET}", best.last_val, best.last_train);
+    println!(
+        "{BRAND}Final epoch {final_epoch}:  L_val {}  L_train {}{RESET}",
+        fmt_loss(best.last_val),
+        fmt_loss(best.last_train),
+    );
     print_params(all_params, initial_values, final_ema);
 
     if let Ok(mut f) = File::create("evaltune_best.txt") {
         let mut w = BufWriter::new(&mut f);
 
-        writeln!(w, "Best L_val: {:.6} (Epoch {})", best.best_val_loss, best.best_val_epoch).ok();
-        write_params(&mut w, all_params, best.best_val_params, None);
+        // Without a holdout the val block is the train block: selection fell back to it.
+        if let Some(l) = best.best_val_loss {
+            writeln!(w, "Best L_val: {l:.6} (Epoch {})", best.best_val_epoch).ok();
+            write_params(&mut w, all_params, best.best_val_params, None);
+        } else {
+            writeln!(w, "Best L_val: — (no holdout)").ok();
+        }
+
         writeln!(w, "\nBest L_train: {:.6} (Epoch {})", best.best_train_loss, best.best_train_epoch).ok();
         write_params(&mut w, all_params, best.best_train_params, None);
-        writeln!(w, "\nFinal epoch {final_epoch}:  L_val {:.6}  L_train {:.6}", best.last_val, best.last_train).ok();
+        writeln!(
+            w,
+            "\nFinal epoch {final_epoch}:  L_val {}  L_train {}",
+            fmt_loss(best.last_val),
+            fmt_loss(best.last_train),
+        )
+        .ok();
         write_params(&mut w, all_params, final_ema, None);
     }
 }

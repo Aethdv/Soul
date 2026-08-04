@@ -3,7 +3,7 @@
 //! [`Progress`] for the records it ships and [`DivergenceMonitor`] for the one
 //! it only warns on.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub use super::engine::sigmoid;
 use super::engine::{FeatureRecord, LAYOUT, TOTAL_PHASE, eval_f64, eval_params, flip_wdl};
@@ -106,13 +106,13 @@ pub struct DivergenceMonitor {
 pub struct Progress {
     pub best_val_loss: f64,
     pub best_val_epoch: usize,
-    #[serde(default = "unset_smooth")]
+    #[serde(default = "unset_smooth", deserialize_with = "unset_if_null")]
     pub val_smooth: f64,
     #[serde(default = "unset_best")]
     pub best_val_smooth: f64,
     pub best_train_loss: f64,
     pub best_train_epoch: usize,
-    #[serde(default = "unset_smooth")]
+    #[serde(default = "unset_smooth", deserialize_with = "unset_if_null")]
     pub train_smooth: f64,
     #[serde(default = "unset_best")]
     pub best_train_smooth: f64,
@@ -368,6 +368,12 @@ fn unset_smooth() -> f64 {
 /// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
 fn unset_best() -> f64 {
     f64::MAX
+}
+
+/// JSON has no NaN, so an unseeded trail is written as `null`, and `default` covers only a key
+/// that is absent. Without this a run with no holdout cannot resume its own checkpoint.
+fn unset_if_null<'de, D: Deserializer<'de>>(de: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(de)?.unwrap_or_else(unset_smooth))
 }
 
 #[cfg(test)]

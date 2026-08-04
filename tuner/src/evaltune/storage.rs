@@ -268,8 +268,7 @@ mod tests {
             k: 1.0,
             k_ref: 1.0,
             k_momentum: 0.0,
-            // Finite on purpose. `Progress::default` seeds its trails with NaN, and
-            // serde_json writes NaN as null, which no `f64` reads back.
+            // Finite on purpose: the tests that use this compare fields, and NaN equals nothing.
             progress: Progress {
                 best_val_loss: 0.2,
                 best_val_epoch: 3,
@@ -360,6 +359,39 @@ mod tests {
         assert_eq!(d.best_val_params, [1.5, 2.5, 30.0]);
         assert_eq!(d.best_train_params, [3.5, 4.5, 30.0]);
         assert_eq!(d.fresh_params, 1, "gamma is the one parameter the checkpoint never held");
+    }
+
+    #[test]
+    fn an_unseeded_trail_resumes() {
+        let tunables = [tunable("alpha", 0, 1.0, false)];
+
+        let state = TrainerState {
+            run: RunState { epoch: 20, lr_scale: 1.0, k: 1.0, k_ref: 1.0, k_momentum: 0.0, progress: Progress::default() },
+            rng_seed: 1,
+            split_seed: 2,
+            dataset: 3,
+            dataset_path: "data/test.txt",
+            values: &[10.0],
+            momentum: &[0.1],
+            ema: &[9.0],
+            grad_ema: &[0.01],
+            stagnant: &[0],
+            frozen: &[false],
+            best_val_params: &[1.5],
+            best_train_params: &[3.5],
+        };
+
+        let path = std::env::temp_dir().join(format!("soul_ckpt_unseeded_test_{}.json", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_checkpoint(path, &tunables, &state).unwrap();
+
+        let d = load_checkpoint(path, &tunables, &[1.0]);
+        std::fs::remove_file(path).ok();
+
+        let progress = d.expect("an unseeded trail must resume").run.progress;
+
+        assert!(progress.val_smooth.is_nan(), "the trail must resume unseeded, not at zero");
+        assert!(progress.train_smooth.is_nan());
     }
 
     #[test]

@@ -478,7 +478,7 @@ fn run_evaltune(args: Args) -> bool {
     }
 
     let dataset_str = args.dataset.map(|v| v.join(","));
-    evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref(), Task::Train).is_some()
+    evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref(), Task::Train).trained()
 }
 
 fn print_help() {

@@ -54,7 +54,7 @@ impl KController {
 
                     let fit = |v: &[f64]| {
                         golden_search_k(config.k_min, config.k_max, 1e-6 * (config.k_max - config.k_min), |kk| {
-                            ctx.val_eval(v, [(kk, init_blend)])[0]
+                            ctx.k_fit_eval(v, kk, init_blend)
                         })
                     };
 
@@ -95,7 +95,7 @@ impl KController {
         }
 
         self.k = golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| {
-            ctx.val_eval(ema_values, [(kk, blend)])[0]
+            ctx.k_fit_eval(ema_values, kk, blend)
         });
 
         Some(self.k)

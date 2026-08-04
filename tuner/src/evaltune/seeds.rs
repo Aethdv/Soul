@@ -16,6 +16,7 @@ use serde::Deserialize;
 use super::{
     engine::eval_params,
     palette::{LAB, RESET, VAL},
+    report::fmt_loss,
 };
 
 /// How many of the most load-bearing parameters get their own line in the report. A spread
@@ -29,7 +30,9 @@ struct Final {
     /// Absent in a record written while the training seed still carved out the val slice.
     #[serde(default)]
     split_seed: Option<u64>,
-    best_val_loss: f64,
+    /// `None` when the run had no validation split: nothing to rank it by.
+    #[serde(default)]
+    best_val_loss: Option<f64>,
     best_val_epoch: usize,
     /// `params` in a log written before the key said which vector it holds.
     #[serde(rename = "best_val_params", alias = "params")]
@@ -101,7 +104,7 @@ pub fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &s
 /// What the last run in `log_path` reached, for a caller spawning one trial at a time.
 #[must_use]
 pub fn last_best_val(log_path: &str) -> Option<f64> {
-    finals(log_path).last().map(|r| r.best_val_loss)
+    finals(log_path).last().and_then(|r| r.best_val_loss)
 }
 
 /// Every `final` record in an append-only log, in the order they were written.
@@ -136,16 +139,26 @@ fn report(runs: &[Final]) {
         eprintln!("  Runs held out different validation slices; the L_val column below ranks that, not the seed.");
     }
 
-    let lo = runs.iter().map(|r| r.best_val_loss).fold(f64::MAX, f64::min);
-    let hi = runs.iter().map(|r| r.best_val_loss).fold(f64::MIN, f64::max);
+    let losses: Vec<f64> = runs.iter().filter_map(|r| r.best_val_loss).collect();
+
+    if losses.len() < runs.len() {
+        eprintln!("  Runs without a holdout show —; the L_val spread ranks the rest.");
+    }
 
     println!("\n  {LAB}seed{RESET}                    {LAB}L_val{RESET}       {LAB}epoch{RESET}");
 
     for r in runs {
-        println!("  {:<22}  {:.6}    {}", r.seed, r.best_val_loss, r.best_val_epoch);
+        println!("  {:<22}  {}    {}", r.seed, fmt_loss(r.best_val_loss), r.best_val_epoch);
     }
 
-    println!("\n  {LAB}L_val{RESET}   min {VAL}{lo:.6}{RESET}  max {VAL}{hi:.6}{RESET}  spread {VAL}{:.2e}{RESET}", hi - lo);
+    if losses.is_empty() {
+        println!("\n  {LAB}L_val{RESET}   (no run had a validation split)");
+    } else {
+        let lo = losses.iter().copied().fold(f64::MAX, f64::min);
+        let hi = losses.iter().copied().fold(f64::MIN, f64::max);
+
+        println!("\n  {LAB}L_val{RESET}   min {VAL}{lo:.6}{RESET}  max {VAL}{hi:.6}{RESET}  spread {VAL}{:.2e}{RESET}", hi - lo);
+    }
 
     let params = eval_params::collect_parameters();
     let np = runs[0].params.len();
@@ -244,7 +257,10 @@ fn report(runs: &[Final]) {
 
     println!(
         "\n  {LAB}Furthest pair{RESET}  {VAL}{}{RESET} and {VAL}{}{RESET}, {VAL}{distance}{RESET} apart, \
-         L_val {:.6} vs {:.6}\n  paste seed_{}_best.txt against seed_{}_best.txt",
-        runs[a].seed, runs[b].seed, runs[a].best_val_loss, runs[b].best_val_loss, runs[a].seed, runs[b].seed
+         L_val {} vs {}\n  paste seed_{}_best.txt against seed_{}_best.txt",
+        runs[a].seed, runs[b].seed,
+        fmt_loss(runs[a].best_val_loss),
+        fmt_loss(runs[b].best_val_loss),
+        runs[a].seed, runs[b].seed
     );
 }

@@ -41,6 +41,10 @@ use crate::core::{
 /// `best_val_loss` ever recorded on every dataset.
 const VAL_SPLIT_SEED: u64 = 0x5350_4C49_5432_3736;
 
+/// Positions a K fit reads when the run holds nothing out. Bounded because the golden search
+/// reads it some thirty times; a prefix is a fair draw because the split is shuffled before it is cut.
+const K_FIT_PROBE: usize = 65_536;
+
 /// What a loaded dataset is for.
 ///
 /// Both arms want every step up to `TrainerContext`, feature extraction included, so the choice
@@ -147,21 +151,44 @@ impl TrainerContext<'_> {
     /// along for a sigmoid and a target more. The epoch report wants two, its live loss and the
     /// frozen-`k_ref` reference; the K search wants one per probe.
     pub fn val_eval<const N: usize>(&self, values: &[f64], probes: [(f64, f64); N]) -> [f64; N] {
-        let (wsum, weight) = self
-            .val
+        self.split_eval(self.val, self.train_count, values, probes)
+    }
+
+    /// Loss at one probe over whichever split a K fit can read: the holdout, or a bounded prefix
+    /// of the training set for a run without one, since an empty split reports a flat zero and a
+    /// flat loss walks the golden search onto `k_max`.
+    pub fn k_fit_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
+        if self.val.is_empty() {
+            let probe = &self.train[..self.train.len().min(K_FIT_PROBE)];
+
+            return self.split_eval(probe, 0, values, [(k, blend)])[0];
+        }
+
+        self.val_eval(values, [(k, blend)])[0]
+    }
+
+    /// One weighted pass over `entries`, whose records start at `offset` in the packed array.
+    fn split_eval<const N: usize>(
+        &self,
+        entries: &[loader::SoulEntry],
+        offset: usize,
+        values: &[f64],
+        probes: [(f64, f64); N],
+    ) -> [f64; N] {
+        let (wsum, weight) = entries
             .par_iter()
             .enumerate()
             .fold(
                 || ([0.0_f64; N], 0.0_f64),
                 |(mut wsum, mut weight), (idx, entry)| {
-                    let record = &self.records[self.train_count + idx];
+                    let record = &self.records[offset + idx];
 
                     if !self.passes_vol_filter(entry, record.static_eval) {
                         return (wsum, weight);
                     }
 
                     let score = loader::eval_record(record, values);
-                    let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[self.train_count + idx] };
+                    let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[offset + idx] };
 
                     for (sum, &(k, blend)) in wsum.iter_mut().zip(&probes) {
                         let sig = sigmoid(score, k);
@@ -214,9 +241,24 @@ pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
         .collect()
 }
 
-/// The best validation loss a training run reached, or `None` when there is no such figure:
-/// a dataset that never loaded, or a diagnostic task, which reports to stdout and ranks nothing.
-pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> Option<f64> {
+/// What a run leaves behind for a caller that ranks runs.
+pub enum Outcome {
+    Ranked(f64),
+    /// Trained, on a dataset with no tenth to spare, so no figure ranks it.
+    Unranked,
+    /// Nothing trained: the dataset never loaded, or the task reports to stdout instead.
+    NotTrained,
+}
+
+impl Outcome {
+    #[must_use]
+    pub fn trained(&self) -> bool {
+        !matches!(self, Self::NotTrained)
+    }
+}
+
+/// Trains on `dataset_path`, or on the dataset the `resume_path` checkpoint names.
+pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> Outcome {
     let total_start = Instant::now();
 
     let effective_dataset: String = match (dataset_path, resume_path) {
@@ -236,7 +278,7 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
             palette::ALARM,
         );
 
-        return None;
+        return Outcome::NotTrained;
     };
 
     let filter = replay_filter(config);
@@ -253,16 +295,16 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
-        return None;
+        return Outcome::NotTrained;
     }
 
     let dataset_label = paths.join(", ");
     let keep = epoch_keep_fraction(config, &filter, replays);
-    let best_val = train_entries(all_entries, sample_weights, groups, &dataset_label, config, resume_path, task, keep);
+    let outcome = train_entries(all_entries, sample_weights, groups, &dataset_label, config, resume_path, task, keep);
 
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
-    best_val
+    outcome
 }
 
 /// Permutes whole groups, so a game leaves for the holdout entire, and returns the group sizes in
@@ -405,7 +447,7 @@ fn train_entries(
     resume_path: Option<&str>,
     task: Task,
     epoch_keep: f64,
-) -> Option<f64> {
+) -> Outcome {
     let dataset_fnv = dataset_fingerprint(&entries);
 
     let (rng_seed, split_seed) = match resume_path {
@@ -467,6 +509,16 @@ fn train_entries(
         val_count = target;
     }
 
+    if val_count == 0 {
+        eprintln!(
+            "{}[!] No validation split: {} positions cannot spare a tenth (or val_max = 0 requested none).\n\
+             [!] The run trains and reports train loss only; nothing will rank its outcome,\n\
+             [!] and K is fitted on a sample of the positions it trains on.{RESET}",
+            palette::ALARM,
+            entries.len(),
+        );
+    }
+
     let train_count = entries.len() - val_count;
     let (train, val) = entries.split_at(train_count);
 
@@ -509,17 +561,17 @@ fn train_entries(
     match task {
         Task::GatherCost => {
             gather_cost(&ctx, config);
-            return None;
+            return Outcome::NotTrained;
         },
 
         Task::Curvature => {
             curvature_report(&ctx, config);
-            return None;
+            return Outcome::NotTrained;
         },
 
         Task::ValCost => {
             val_cost(&ctx, config);
-            return None;
+            return Outcome::NotTrained;
         },
 
         Task::Train => {},
@@ -527,7 +579,7 @@ fn train_entries(
 
     let seeds = Seeds { rng_seed, split_seed };
 
-    Some(train_loop(train.len(), epoch_keep, "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx))
+    train_loop(train.len(), epoch_keep, "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
 }
 
 /// `Name (detail)` with the name in the value color. Both schedulers and `KMode`
@@ -557,8 +609,10 @@ fn train_loop(
     seeds: Seeds,
     dataset_fnv: u64,
     ctx: &TrainerContext,
-) -> f64 {
+) -> Outcome {
     let Seeds { rng_seed, split_seed } = seeds;
+
+    let has_val = !ctx.val.is_empty();
 
     let all_params = eval_params::collect_parameters();
     let default_values = eval_params::default_values(&all_params);
@@ -934,30 +988,49 @@ fn train_loop(
 
         // ref_loss reads the same scores at frozen k_ref against the pure outcome,
         // which is what makes one run's number comparable to another's.
-        let [val_loss, ref_loss] = ctx.val_eval(&ema_values, [(k_ctrl.k(), blend), (k_ctrl.k_ref(), 0.0)]);
+        // NaN is the absent-value marker, as in unset_smooth: an ungated read shows up.
+        let [val_loss, ref_loss] = if has_val {
+            ctx.val_eval(&ema_values, [(k_ctrl.k(), blend), (k_ctrl.k_ref(), 0.0)])
+        } else {
+            [f64::NAN, f64::NAN]
+        };
         let val_secs = t_val.elapsed().as_secs_f32();
 
         let train_loss = train_loss / train_count.max(1) as f64;
 
-        if progress.record_train(epoch, train_loss) {
+        let improved_train = progress.record_train(epoch, train_loss);
+
+        if improved_train {
             best_train_params.copy_from_slice(&ema_values);
         }
 
-        let improved_val = progress.record_val(epoch, val_loss);
+        let improved_val = if has_val {
+            let improved = progress.record_val(epoch, val_loss);
 
-        if improved_val {
-            best_val_params.copy_from_slice(&ema_values);
-        } else {
-            // A decaying schedule already answers a stall; halving on top would correct twice.
-            if is_constant_schedule && progress.plateau_count >= config.patience {
-                lr_scale *= 0.5;
-                progress.plateau_count = 0;
-                println!("  Plateau detected, LR scale → {lr_scale:.3}");
+            if improved {
+                best_val_params.copy_from_slice(&ema_values);
+            } else {
+                // A decaying schedule already answers a stall; halving on top would correct twice.
+                if is_constant_schedule && progress.plateau_count >= config.patience {
+                    lr_scale *= 0.5;
+                    progress.plateau_count = 0;
+                    println!("  Plateau detected, LR scale → {lr_scale:.3}");
+                }
             }
-        }
+
+            improved
+        } else {
+            // The train record doubles as the best; nothing can plateau against
+            // a loss that is never measured.
+            if improved_train {
+                best_val_params.copy_from_slice(&ema_values);
+            }
+
+            improved_train
+        };
 
         let is_best = improved_val;
-        let overfit = divergence.update(train_loss, val_loss);
+        let overfit = if has_val { divergence.update(train_loss, val_loss) } else { false };
 
         // The overfit flag tests a slope, so a run that simply walks back uphill never
         // trips it. This tests displacement, against the only bar the run itself supplies:
@@ -998,8 +1071,8 @@ fn train_loop(
                 &serde_json::json!({
                     "epoch": epoch,
                     "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "ref_loss": ref_loss,
+                    "val_loss": if has_val { serde_json::Value::from(val_loss) } else { serde_json::Value::Null },
+                    "ref_loss": if has_val { serde_json::Value::from(ref_loss) } else { serde_json::Value::Null },
                     "lr": lr,
                     "is_best": is_best,
                     "psqt_norm": psqt_norm,
@@ -1029,7 +1102,7 @@ fn train_loop(
 
         // Loss has no absolute scale, so color the live value by its per-epoch
         // trend; dropped from last epoch → green ▼, rose → red ▲.
-        let (arrow, trend) = if !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
+        let (arrow, trend) = if !has_val || !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
             ('·', LAB.to_string())
         } else if val_loss < prev_val_loss {
             ('▼', palette::fg(color::advantage(0.7)))
@@ -1045,12 +1118,19 @@ fn train_loop(
             (false, false) => String::new(),
         };
 
+        let val_cell = if has_val {
+            format!("{trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}")
+        } else {
+            format!("{DIM}—{RESET}")
+        };
+        let ref_cell = if has_val { format!("{DIM}{ref_loss:.6}{RESET}") } else { format!("{DIM}—{RESET}") };
+
         #[rustfmt::skip]
         println!(
             "{mark}{epoch_c}Epoch {epoch:>3}/{}{RESET}  \
-             {LAB}val{RESET} {trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}  \
+             {LAB}val{RESET} {val_cell}  \
              {LAB}train{RESET} {DIM}{train_loss:.6}{RESET}  \
-             {LAB}ref{RESET} {DIM}{ref_loss:.6}{RESET}  \
+             {LAB}ref{RESET} {ref_cell}  \
              {LAB}lr{RESET} {}{lr:.4}{RESET}  {LAB}Δp{RESET} {DIM}{moved:>3}{RESET}  \
              {DIM}{elapsed:.2}s{RESET}  {DIM}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
             config.epochs,
@@ -1079,15 +1159,22 @@ fn train_loop(
             );
         }
 
-        val_history.push(val_loss);
+        if has_val {
+            val_history.push(val_loss);
+            prev_val_loss = val_loss;
+        }
+
         train_history.push(train_loss);
-        prev_val_loss = val_loss;
 
         if epoch % 20 == 0 || epoch == config.epochs {
-            let val_tail = &val_history[val_history.len().saturating_sub(40)..];
             let train_tail = &train_history[train_history.len().saturating_sub(40)..];
 
-            println!("\n  {LAB}L_val{RESET}    {}", loss_sparkline(val_tail));
+            if has_val {
+                let val_tail = &val_history[val_history.len().saturating_sub(40)..];
+
+                println!("\n  {LAB}L_val{RESET}    {}", loss_sparkline(val_tail));
+            }
+
             println!("\n  {LAB}L_train{RESET}  {}", loss_sparkline(train_tail));
 
             if epoch != config.epochs {
@@ -1160,8 +1247,8 @@ fn train_loop(
                 "split_seed": split_seed,
                 "epochs": epochs_run,
                 "steps": batches_run,
-                "best_val_loss": progress.best_val_loss,
-                "best_val_epoch": progress.best_val_epoch,
+                "best_val_loss": if has_val { serde_json::Value::from(progress.best_val_loss) } else { serde_json::Value::Null },
+                "best_val_epoch": if has_val { serde_json::Value::from(progress.best_val_epoch) } else { serde_json::Value::Null },
                 "best_train_loss": progress.best_train_loss,
                 "best_train_epoch": progress.best_train_epoch,
                 // Named for the vector it is: the run also ships `ema_values`,
@@ -1177,7 +1264,12 @@ fn train_loop(
     let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
     let off_scale = off_scale_warning(off_scale_ratio);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
-    let calibration = calibration_report(ctx, &best_val_params, report_k);
+    let calibration = if has_val {
+        calibration_report(ctx, &best_val_params, report_k)
+    } else {
+        // Without a split it would print an empty table under a header that claims it exists.
+        String::new()
+    };
     let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
     let clip = clip_report(&all_params, optimizer.clipped(), batches_run);
 
@@ -1195,15 +1287,15 @@ fn train_loop(
     drop(logger);
 
     sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
-    let last_val = val_history.last().copied().unwrap_or(0.0);
-    let last_train = train_history.last().copied().unwrap_or(0.0);
+    let last_val = val_history.last().copied();
+    let last_train = train_history.last().copied();
     print_results(
         &all_params,
         &initial_values,
         &ema_values,
         &BestEpochs {
             best_val_params: &best_val_params,
-            best_val_loss: progress.best_val_loss,
+            best_val_loss: if has_val { Some(progress.best_val_loss) } else { None },
             best_val_epoch: progress.best_val_epoch,
             best_train_params: &best_train_params,
             best_train_loss: progress.best_train_loss,
@@ -1227,7 +1319,7 @@ fn train_loop(
         );
     }
 
-    progress.best_val_loss
+    if has_val { Outcome::Ranked(progress.best_val_loss) } else { Outcome::Unranked }
 }
 
 #[cfg(test)]
