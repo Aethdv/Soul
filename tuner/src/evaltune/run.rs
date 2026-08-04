@@ -498,7 +498,6 @@ fn train_entries(
     let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &groups, split_seed);
 
     // One-time cost: training reads FeatureRecords straight through.
-    // Parallel because entries are independent.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
 
@@ -696,7 +695,6 @@ fn train_loop(
     let mut gauge = Gauge::new(probe, &default_values);
     let hold_scale = gauge.holds(&values);
 
-    // Setup optimizer state and convergence tracking
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
     let decay_mask = build_decay_mask(all_params.len());
     let beta2_mask = build_beta2_mask(all_params.len(), config.beta2);
@@ -830,7 +828,6 @@ fn train_loop(
     let group_ranges = group_ranges(slots);
     let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
 
-    // ── Progressive unfreeze
     // Freeze non-psqt/mat for the first unfreeze_epoch epochs.
     // Resume restores the saved mask. It encodes this gate plus any auto-freeze.
     if let Some(d) = &resume {
@@ -908,8 +905,6 @@ fn train_loop(
 
             grad_stats.update(avg_norm);
 
-            // ── Dynamic Gradient Clipping
-            // Clips outliers based on distribution of recent batch norms.
             let clip_thresh = grad_stats.clip_threshold(config.grad_clip);
             let threshold = clip_thresh * n;
 
@@ -936,15 +931,13 @@ fn train_loop(
                 gauge.restore(&mut values, &mut optimizer, &mut k_ctrl);
             }
 
-            // ── Per-parameter Convergence Tracking
-            // Freeze parameters that have statistically converged to reduce noise.
+            // The |gradient| trail the auto-freeze below reads.
             for i in 0..values.len() {
                 if !fixed_mask[i] {
                     grad_ema_per_param[i] = 0.99_f64.mul_add(grad_ema_per_param[i], 0.01 * grads[i].abs());
                 }
             }
 
-            // ── Tail-only EMA
             // Skip the noisy high-LR phase; only average once LR has
             // decayed below 30 % of its peak. Before that, snapshot
             // the live weights directly.
@@ -975,7 +968,6 @@ fn train_loop(
             println!("  Unfrozen all remaining parameters at epoch {epoch}");
         }
 
-        // Auto-freeze stagnant parameters
         if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
             let mut frozen = 0;
 
@@ -1056,7 +1048,6 @@ fn train_loop(
         let moved = quantized.iter().zip(&prev_quantized).filter(|(q, p)| q != p).count();
         prev_quantized.copy_from_slice(&quantized);
 
-        // Group-wise gradient norms for diagnostics
         let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
         let mob_norm = total_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
 
