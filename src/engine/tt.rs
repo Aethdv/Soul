@@ -61,14 +61,6 @@ pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
     bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
 }
 
-/// The slot's verification key: the low 16 bits of the Zobrist hash.
-/// The cluster index is drawn from the high bits, so the low bits
-/// are what's left to tell entries in the same bucket apart.
-#[inline(always)]
-const fn verification_key(hash: u64) -> u16 {
-    hash as u16
-}
-
 /// One slot, five `AtomicU16` words. The atomics let Lazy SMP threads share
 /// the table without locks; 16-bit words keep the entry at 10 bytes and align 2,
 /// where a single `AtomicU32` would force align 4 and pad it back out,
@@ -90,6 +82,16 @@ struct TtEntry {
     eval: AtomicU16,
     /// depth(8) | bound(2) | pv(1) | age(5).
     packed: AtomicU16,
+}
+
+pub struct TranspositionTable {
+    clusters: HugePages<Cluster>,
+    /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
+    /// so `wrapping_sub` measures generation distance modulo 32.
+    pub generation: AtomicU8,
+    /// The machine's locality, detected once. Drives the first-touch placement
+    /// so a multi-node box spreads the table across its memory controllers.
+    numa: NumaTopology,
 }
 
 /// Sized and aligned to fit inside one 64-byte cache line.
@@ -115,16 +117,47 @@ struct Decoded {
     pv: u8,
 }
 
-impl TtEntry {
-    /// The cheap scan read: just the key and the (bound, depth) that replacement
-    /// weighs. Relaxed is enough, since these scans never read payload off this
-    /// load; the paths that do go through `load()`, which carries its own ordering.
-    #[inline(always)]
-    fn meta(&self) -> (u16, u8, u8) {
-        let key = self.key.load(Ordering::Relaxed);
-        let packed = self.packed.load(Ordering::Relaxed);
+/// The slot's verification key: the low 16 bits of the Zobrist hash.
+/// The cluster index is drawn from the high bits, so the low bits
+/// are what's left to tell entries in the same bucket apart.
+#[inline(always)]
+const fn verification_key(hash: u64) -> u16 {
+    hash as u16
+}
 
-        (key, ((packed >> 8) & 0x3) as u8, (packed & 0xFF) as u8)
+const fn pack(depth: u8, bound: u8, pv: u8, age: u8) -> u16 {
+    depth as u16 | ((bound as u16 & 0x3) << 8) | ((pv as u16 & 0x1) << 10) | ((age as u16 & 0x1F) << 11)
+}
+
+const fn packed_depth(packed: u16) -> u8 {
+    (packed & 0xFF) as u8
+}
+
+const fn packed_bound(packed: u16) -> u8 {
+    ((packed >> 8) & 0x3) as u8
+}
+
+const fn packed_pv(packed: u16) -> u8 {
+    ((packed >> 10) & 0x1) as u8
+}
+
+const fn packed_age(packed: u16) -> u8 {
+    ((packed >> 11) & 0x1F) as u8
+}
+
+impl TtEntry {
+    /// The cheap scan read: the key, and the packed word replacement weighs.
+    /// Relaxed is enough, since these scans never read payload off this load; the
+    /// paths that do go through `load()`, which carries its own ordering.
+    #[inline(always)]
+    fn meta(&self) -> (u16, u16) {
+        (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed))
+    }
+
+    /// Whether the slot holds an entry at all, for the occupancy sample.
+    #[inline(always)]
+    fn is_occupied(&self) -> bool {
+        packed_bound(self.packed.load(Ordering::Relaxed)) != BOUND_NONE
     }
 
     /// The probe's per-slot read. One Acquire load of `key` gates it; the rest is
@@ -138,28 +171,20 @@ impl TtEntry {
         }
 
         let packed = self.packed.load(Ordering::Relaxed);
-        let bound = ((packed >> 8) & 0x3) as u8;
-
+        let bound = packed_bound(packed);
         if bound == BOUND_NONE {
             return None;
         }
-
         Some(Decoded {
             key: key16,
             mv: self.mv.load(Ordering::Relaxed),
             score: self.score.load(Ordering::Relaxed) as i16,
             eval: self.eval.load(Ordering::Relaxed) as i16,
-            depth: (packed & 0xFF) as u8,
+            depth: packed_depth(packed),
             bound,
-            age: ((packed >> 11) & 0x1F) as u8,
-            pv: ((packed >> 10) & 0x1) as u8,
+            age: packed_age(packed),
+            pv: packed_pv(packed),
         })
-    }
-
-    /// Store generation, for replacement-quality aging.
-    #[inline(always)]
-    fn age(&self) -> u8 {
-        ((self.packed.load(Ordering::Relaxed) >> 11) & 0x1F) as u8
     }
 
     #[inline(always)]
@@ -169,24 +194,21 @@ impl TtEntry {
         let score = self.score.load(Ordering::Relaxed) as i16;
         let eval = self.eval.load(Ordering::Relaxed) as i16;
         let packed = self.packed.load(Ordering::Relaxed);
-
         Decoded {
             key,
             mv,
             score,
             eval,
-            depth: (packed & 0xFF) as u8,
-            bound: ((packed >> 8) & 0x3) as u8,
-            age: ((packed >> 11) & 0x1F) as u8,
-            pv: ((packed >> 10) & 0x1) as u8,
+            depth: packed_depth(packed),
+            bound: packed_bound(packed),
+            age: packed_age(packed),
+            pv: packed_pv(packed),
         }
     }
 
     #[inline(always)]
     fn store(&self, d: Decoded) {
-        let packed =
-            (d.depth as u16 & 0xFF) | ((d.bound as u16 & 0x3) << 8) | ((d.pv as u16 & 0x1) << 10) | ((d.age as u16 & 0x1F) << 11);
-
+        let packed = pack(d.depth, d.bound, d.pv, d.age);
         self.mv.store(d.mv, Ordering::Relaxed);
         self.score.store(d.score as u16, Ordering::Relaxed);
         self.eval.store(d.eval as u16, Ordering::Relaxed);
@@ -197,22 +219,11 @@ impl TtEntry {
     }
 }
 
-pub struct TranspositionTable {
-    clusters: HugePages<Cluster>,
-    /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
-    /// so `wrapping_sub` measures generation distance modulo 32.
-    pub generation: AtomicU8,
-    /// The machine's locality, detected once. Drives the first-touch placement
-    /// so a multi-node box spreads the table across its memory controllers.
-    numa: NumaTopology,
-}
-
 impl TranspositionTable {
     /// Allocates a new Transposition Table of the given size in MB.
     pub fn new(size_mb: usize, threads: usize) -> Self {
         let numa = NumaTopology::detect();
         let clusters = Self::alloc(size_mb, &numa, threads);
-
         Self { clusters, numa, generation: AtomicU8::new(0) }
     }
 
@@ -240,7 +251,6 @@ impl TranspositionTable {
     /// wants it pinned local, so that spread waits for the threads to share it.
     fn alloc(size_mb: usize, numa: &NumaTopology, threads: usize) -> HugePages<Cluster> {
         let bytes = size_mb.max(1) * 1024 * 1024;
-
         // SAFETY (both paths): Cluster is valid when zero-initialized (all fields
         // are AtomicU16(0), which is the empty entry). Satisfies HugePages::mapped
         // and HugePages::zeroed's documented precondition. On the multi-node path,
@@ -258,16 +268,14 @@ impl TranspositionTable {
     pub fn hashfull(&self) -> usize {
         let total = self.clusters.len() * CLUSTER_SIZE;
         let sample = total.min(1000);
-
         if sample == 0 {
             return 0;
         }
-
         self.clusters
             .iter()
             .flat_map(|c| c.slots.iter())
             .take(sample)
-            .filter(|s| s.meta().1 != BOUND_NONE)
+            .filter(|s| s.is_occupied())
             .count()
             * 1000
             / sample
@@ -284,7 +292,6 @@ impl TranspositionTable {
         } else {
             self.clusters.clear();
         }
-
         self.generation.store(0, Ordering::Relaxed);
     }
 
@@ -310,7 +317,6 @@ impl TranspositionTable {
     #[inline(always)]
     pub fn prefetch(&self, hash: u64) {
         let idx = self.index(hash);
-
         // SAFETY: _mm_prefetch is a non-faulting hint instruction available on
         // all x86_64 targets; ptr is valid within the allocation.
         unsafe {
@@ -325,16 +331,13 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cluster = self.cluster(idx);
-
         for slot in &cluster.slots {
             if let Some(entry) = slot.probe_read(key16) {
                 let score = score_from_tt(entry.score as i32, ply);
                 let mv = Move::from_u16(entry.mv);
-
                 return Some((mv, score, entry.depth as i32, entry.bound, entry.pv != 0, entry.eval as i32));
             }
         }
-
         None
     }
 
@@ -353,17 +356,14 @@ impl TranspositionTable {
         let mut is_exact_match = false;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, slot_bound, slot_depth) = slot.meta();
-
-            if slot_bound == BOUND_NONE || key == key16 {
+            let (key, packed) = slot.meta();
+            if packed_bound(packed) == BOUND_NONE || key == key16 {
                 replace = i;
                 is_exact_match = key == key16;
                 break;
             }
 
-            let gen_diff = (cur.wrapping_sub(slot.age()) & AGE_MASK) as i32;
-            let quality = slot_depth as i32 - gen_diff * AGE_FACTOR;
-
+            let quality = replacement_quality(packed, cur);
             if quality < worst_quality {
                 worst_quality = quality;
                 replace = i;
@@ -413,17 +413,14 @@ impl TranspositionTable {
         let mut is_key_match = false;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, slot_bound, slot_depth) = slot.meta();
-
-            if key == key16 || slot_bound == BOUND_NONE || slot_depth == 0 {
+            let (key, packed) = slot.meta();
+            if key == key16 || packed_bound(packed) == BOUND_NONE || packed_depth(packed) == 0 {
                 best_idx = Some(i);
                 is_key_match = key == key16;
                 break;
             }
 
-            let gen_diff = (cur.wrapping_sub(slot.age()) & AGE_MASK) as i32;
-            let quality = slot_depth as i32 - gen_diff * AGE_FACTOR;
-
+            let quality = replacement_quality(packed, cur);
             if quality <= 0 && quality < best_quality {
                 best_quality = quality;
                 best_idx = Some(i);
@@ -435,7 +432,6 @@ impl TranspositionTable {
             // a qsearch visit would otherwise wipe the flag a previous
             // negamax store left here. Only a key match reads it back.
             let store_pv = if is_key_match { (pv as u8) | cluster.slots[best].load().pv } else { pv as u8 };
-
             cluster.slots[best].store(Decoded {
                 key: key16,
                 mv: mv.inner(),
@@ -462,9 +458,16 @@ impl TranspositionTable {
         // mulhi64: the top 64 bits of hash · len. Lands the hash uniformly
         // in [0, len), the way hash % len would, but with a multiply.
         let clusters = self.clusters.len();
-
         (((hash as u128) * (clusters as u128)) >> 64) as usize
     }
+}
+
+/// How readily a slot gives way: its depth, discounted by how many generations
+/// old it is. `AGE_FACTOR` sets the exchange rate between the two.
+#[inline(always)]
+fn replacement_quality(packed: u16, current_age: u8) -> i32 {
+    let gen_diff = (current_age.wrapping_sub(packed_age(packed)) & AGE_MASK) as i32;
+    packed_depth(packed) as i32 - gen_diff * AGE_FACTOR
 }
 
 /// First-touch the cluster region in parallel, each NUMA node's thread zeroing
@@ -477,10 +480,8 @@ impl TranspositionTable {
 fn first_touch(clusters: &HugePages<Cluster>, numa: &NumaTopology) {
     let nodes = numa.num_nodes();
     let len = clusters.len();
-
     // SAFETY: idle precondition (above); the region maps len clusters.
     let region = unsafe { slice::from_raw_parts_mut(clusters.as_ptr() as *mut Cluster, len) };
-
     thread::scope(|scope| {
         for (node, chunk) in region.chunks_mut(len.div_ceil(nodes)).enumerate() {
             scope.spawn(move || {
