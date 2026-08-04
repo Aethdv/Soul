@@ -111,7 +111,6 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
     }
 }
 
-/// Prints parameters to stdout with ANSI green highlighting for changed values.
 pub fn print_params(params: &[Tunable], initial: &[f64], values: &[f64]) {
     let mut out = io::stdout().lock();
     write_params(&mut out, params, values, Some(initial));
@@ -269,8 +268,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 }
 
 /// Writes a slice of weight parameters as a comma-separated list.
-///
-/// When `initial` is `Some`, changed values are highlighted with ANSI green.
 pub fn write_weight_array<W: Write>(
     w: &mut W,
     offset: usize,

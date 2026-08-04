@@ -184,7 +184,7 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
 /// Ten coefficients over piece counts, fitted outside the tuner.
 ///
 /// Material is nearly separable from the rest of the evaluation, so this recovers a set's opinion
-/// of a piece without the other 480 parameters trading against it. Normalizing the midgame pawn to
+/// of a piece without the other parameters trading against it. Normalizing the midgame pawn to
 /// 100 is what makes two sets comparable when their sigmoids landed on different slopes.
 fn material(sets: &[Set], shipped: &str) {
     let columns: Vec<String> = SYMBOLS
