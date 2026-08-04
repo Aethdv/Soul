@@ -62,7 +62,6 @@ pub const NODE_CHECK_INTERVAL: u64 = 2048;
 /// reporting progress during long analysis.
 pub const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
 pub const PRINT_UPDATE_MS: u128 = 25;
-
 /// MAX_TRACKED_QUIETS matches MAX_MOVES today, and only because the legal quiet
 /// count is bounded by the total pseudo-legal count. If MAX_MOVES grows, this
 /// can shrink independently; we only care that quiet penalties cover all
@@ -71,7 +70,6 @@ pub const MAX_TRACKED_QUIETS: usize = 256;
 /// Captures are far fewer per position than quiets. 64 covers all realistic
 /// legal capture counts with headroom.
 pub const MAX_TRACKED_CAPTURES: usize = 64;
-
 /// One ply expressed in LMR table units. Sub-ply granularity lets each
 /// per-move adjustment dose uniformly across the table, regardless of
 /// the cell's absolute reduction.
@@ -94,13 +92,6 @@ pub struct RootNode;
 pub struct PvNode;
 pub struct NonPvNode;
 
-pub struct MoveResult {
-    pub move_count: usize,
-    pub best_eval: i32,
-    pub alpha: i32,
-    pub best_move: Move,
-}
-
 impl NodeType for RootNode {
     const PV: bool = true;
     const ROOT: bool = true;
@@ -120,6 +111,13 @@ impl NodeType for NonPvNode {
     const PV: bool = false;
     const ROOT: bool = false;
     type Next = NonPvNode;
+}
+
+pub struct MoveResult {
+    pub move_count: usize,
+    pub best_eval: i32,
+    pub alpha: i32,
+    pub best_move: Move,
 }
 
 pub struct Searcher<'cfg> {
@@ -311,12 +309,10 @@ impl SearchConfig {
     #[inline(always)]
     pub fn lmr(&self, depth: i32, m: usize) -> i32 {
         let sp = &self.search_params;
-
         let base = sp.lmr_base * LMR_SCALE / 100;
         let div = sp.lmr_divisor * LMR_SCALE / 100;
         let d = self.lmr_table[depth as usize] as i32;
         let m = self.lmr_table[m] as i32;
-
         base + d * m / div
     }
 
@@ -335,14 +331,12 @@ impl SearchConfig {
                 a[PieceType::$pt] = $a;
             };
         }
-
         map!(Pawn, sp.mvvlva_v_pawn, sp.mvvlva_a_pawn);
         map!(Knight, sp.mvvlva_v_knight, sp.mvvlva_a_knight);
         map!(Bishop, sp.mvvlva_v_bishop, sp.mvvlva_a_bishop);
         map!(Rook, sp.mvvlva_v_rook, sp.mvvlva_a_rook);
         map!(Queen, sp.mvvlva_v_queen, sp.mvvlva_a_queen);
         map!(King, sp.mvvlva_v_king, sp.mvvlva_a_king);
-
         (v, a)
     }
 
@@ -356,11 +350,9 @@ impl SearchConfig {
     fn build_lmr_table() -> Box<[i16; MAX_PLY + 1]> {
         let scale = LMR_SCALE as f64;
         let mut lut = Box::new([0i16; MAX_PLY + 1]);
-
         for i in 1..=MAX_PLY {
             lut[i] = ((i as f64).ln() * scale).round() as i16;
         }
-
         lut
     }
 }
@@ -373,7 +365,6 @@ impl Line {
     /// Prepend `mv` to `tail`, forming a complete PV line.
     pub fn compose(&mut self, mv: Move, tail: &Line) {
         let n = tail.len.min(MAX_PLY - 1);
-
         self.moves[0] = mv;
         self.moves[1..=n].copy_from_slice(&tail.moves[..n]);
         self.len = 1 + n;
@@ -448,7 +439,6 @@ impl<'cfg> Searcher<'cfg> {
             if !self.cfg.limits.silent {
                 println!("bestmove 0000");
             }
-
             return;
         }
 
@@ -457,11 +447,9 @@ impl<'cfg> Searcher<'cfg> {
 
             if self.root_moves.is_empty() {
                 eprintln!("info string error: no legal moves match searchmoves");
-
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
-
                 return;
             }
         }
@@ -512,10 +500,8 @@ impl<'cfg> Searcher<'cfg> {
 
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
-
             let elapsed = self.tm.elapsed().as_millis() as u64;
             let prev_depth_time = elapsed.saturating_sub(last_iter_elapsed);
-
             last_iter_elapsed = elapsed;
 
             // A fixed movetime has no later move to bank unspent budget for,
@@ -564,13 +550,11 @@ impl<'cfg> Searcher<'cfg> {
             let mut delta = sp.asp_initial;
             let mut alpha = if depth >= sp.asp_depth { (self.prev_score - delta).max(-INF) } else { -INF };
             let mut beta = if depth >= sp.asp_depth { (self.prev_score + delta).min(INF) } else { INF };
-
             let mut aborted = false;
 
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
-
                 // The node's own best score, not `root_moves[0]`: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
@@ -584,7 +568,6 @@ impl<'cfg> Searcher<'cfg> {
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
                     self.print_bound(depth, score, tui::ScoreBound::Lower);
-
                     // The move that broke the window goes first in the retry, where
                     // being first earns the full window: one search settles its score
                     // and its line instead of a scout plus a re-search.
@@ -598,12 +581,10 @@ impl<'cfg> Searcher<'cfg> {
                     if let Some(i) = self.root_moves.iter().position(|rm| rm.score == score) {
                         self.root_moves[..=i].rotate_right(1);
                     }
-
                     beta = (score + delta).min(INF);
                 } else {
                     break;
                 }
-
                 delta += delta / sp.asp_widen_div;
             }
 
@@ -642,7 +623,6 @@ impl<'cfg> Searcher<'cfg> {
                 let total_nodes = self.nodes.max(1);
                 let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
                 let percent = (sp.bm_stab_base as u64).saturating_sub(effort_discount).max(sp.bm_stab_floor as u64);
-
                 self.tm.set_bm_stab_factor(percent as f64 / 100.0);
             }
 
@@ -666,11 +646,9 @@ impl<'cfg> Searcher<'cfg> {
             };
 
             self.tm.set_score_factor(score_factor);
-
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
             self.print_info(depth, self.prev_score, &self.prev_pv);
-
             let elapsed = self.tm.elapsed().as_millis().max(1);
             self.pv_history
                 .push_back(PvSnapshot { depth, time_ms: elapsed, score: self.prev_score, line: self.prev_pv });
@@ -683,7 +661,6 @@ impl<'cfg> Searcher<'cfg> {
 
         if !self.cfg.limits.silent {
             let mut best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
-
             // Guard: if the PV move is somehow illegal for the root position,
             // fall back to root_moves[0], which was generated legally.
             if !is_pseudo_legal(&self.root_pos, best) {
@@ -694,7 +671,6 @@ impl<'cfg> Searcher<'cfg> {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
                 Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
             }
-
             let _ = io::stdout().flush();
         }
     }
@@ -703,11 +679,8 @@ impl<'cfg> Searcher<'cfg> {
     pub fn new(cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], tt: Arc<TranspositionTable>) -> Self {
         let tm = Self::build_tm(cfg, pos, history);
         let root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
-
         let mut trail = Vec::with_capacity(1024);
-
         Self::fill_trail(&mut trail, pos, history);
-
         Self {
             cfg,
             tm,
@@ -749,11 +722,9 @@ impl<'cfg> Searcher<'cfg> {
     fn fill_trail(trail: &mut Vec<u64>, pos: &Position, history: &[u64]) {
         trail.clear();
         let keep = history.len().min(pos.halfmove_clock as usize);
-
         if keep > 0 {
             trail.extend_from_slice(&history[history.len() - keep..]);
         }
-
         trail.push(pos.hash);
     }
 
@@ -788,7 +759,6 @@ impl<'cfg> Searcher<'cfg> {
             || (self.cfg.limits.nodes > 0 && self.node_count() >= self.cfg.limits.nodes)
         {
             self.cfg.stop.store(true, Ordering::Release);
-
             // The flag is stored either way, so the pool stops on time; this thread
             // carries its first iteration to the end, where `may_stop` picks it up.
             return self.iter_depth > 1;
@@ -796,13 +766,11 @@ impl<'cfg> Searcher<'cfg> {
 
         if self.cfg.display.go_pretty && self.nodes.is_multiple_of(NODE_CHECK_INTERVAL) {
             let now = self.tm.elapsed().as_millis();
-
             if now - self.last_print > PRINT_UPDATE_MS {
                 self.last_print = now;
                 self.print_realtime();
             }
         }
-
         false
     }
 
@@ -834,7 +802,6 @@ impl<'cfg> Searcher<'cfg> {
         let ms = self.tm.elapsed().as_millis().max(1);
         let total = self.node_count();
         let nps = (u128::from(total) * 1000) / ms;
-
         tui::SearchInfoData {
             bound: tui::ScoreBound::Exact,
             depth,
@@ -880,7 +847,6 @@ impl<'cfg> Searcher<'cfg> {
         if self.cfg.limits.silent || is_mate(score) {
             return;
         }
-
         // A bound is a claim about the position, not about the move that broke the
         // window, so it reports the line the engine currently believes. There is
         // none to report until an iteration has completed one.
@@ -890,9 +856,7 @@ impl<'cfg> Searcher<'cfg> {
 
         let history: Vec<_> = self.pv_history.iter().copied().collect();
         let mut data = self.search_info_data(depth, score, &self.prev_pv, &history);
-
         data.bound = bound;
-
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
             tui::print_pretty_search_info(&data);
         } else {
@@ -912,7 +876,6 @@ impl<'cfg> Searcher<'cfg> {
         {
             return;
         }
-
         println!("info depth {depth} currmove {} currmovenumber {move_number}", mv.to_uci(self.root_pos.is_frc));
     }
 
@@ -928,7 +891,6 @@ impl<'cfg> Searcher<'cfg> {
 
         let history_vec: Vec<_> = self.pv_history.iter().copied().collect();
         let data = self.search_info_data(self.iter_depth, self.prev_score, &self.prev_pv, &history_vec);
-
         tui::print_pretty_search_info(&data);
     }
 }
@@ -954,7 +916,6 @@ impl Worker<'_> {
         let phase = extract_phase(&self.accumulator);
         let pawn = self.pawn_cache.probe(&self.pos);
         let features = SharedFeatures::with_pawn(&self.pos, &pawn);
-
         evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &self.eval_params, Some(&features))
     }
 
@@ -1031,11 +992,9 @@ impl Worker<'_> {
         } else {
             let a = alpha.max(mated_in(ply));
             let b = beta.min(mate_in(ply + 1));
-
             if a >= b {
                 return Ok(a);
             }
-
             (a, b)
         };
 
@@ -1071,7 +1030,6 @@ impl Worker<'_> {
                 {
                     return Ok(score);
                 }
-
                 (tt_move, pv, Some(eval), score, bound, depth_stored)
             } else {
                 (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
@@ -1176,7 +1134,6 @@ impl Worker<'_> {
             && static_eval + sp.razoring_margin * depth < alpha
         {
             let score = self.qsearch::<N>(searcher, alpha, beta, ply, None, 0)?;
-
             if score <= alpha {
                 return Ok(score);
             }
@@ -1211,7 +1168,6 @@ impl Worker<'_> {
             self.stack[ply + 1].is_null = false;
 
             let score = -score?;
-
             if score >= beta {
                 let null_score = if is_win(score) { beta } else { score };
 
@@ -1229,7 +1185,6 @@ impl Worker<'_> {
                 self.is_nmp_verif = true;
                 let verif = self.negamax::<NonPvNode>(searcher, null_depth, beta - 1, beta, ply, None);
                 self.is_nmp_verif = false;
-
                 if verif? >= beta {
                     return Ok(null_score);
                 }
@@ -1287,7 +1242,6 @@ impl Worker<'_> {
                 self.accumulator = saved_acc;
 
                 let value = value?;
-
                 if value >= probcut_beta {
                     searcher
                         .tt
@@ -1484,13 +1438,11 @@ impl Worker<'_> {
                     // A quiet that newly attacks a bigger piece is tactically live,
                     // like a check; reduce it less so the threat gets a real search.
                     r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * sp.threat_lmr_bonus;
-
                     // Fail-highs are piling up at this depth; the late quiets here are
                     // unlikely to be the move, so reduce them harder.
                     r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > 2) as i32;
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
-
                     (r - hist / sp.lmr_hist_div).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
@@ -1533,14 +1485,12 @@ impl Worker<'_> {
                     self.stack[ply].excluded = mv;
                     let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply, None);
                     self.stack[ply].excluded = Move::null();
-
                     self.stack[ply].quiet_count = saved_quiet_count;
                     self.stack[ply].quiet_moves[..saved_quiet_count].copy_from_slice(&saved_quiets[..saved_quiet_count]);
                     self.stack[ply].capture_count = saved_capture_count;
                     self.stack[ply].capture_moves[..saved_capture_count].copy_from_slice(&saved_captures[..saved_capture_count]);
 
                     let sing_score = sing_score?;
-
                     if sing_score < sing_beta {
                         extension = 1;
                     } else if sing_score >= beta {
@@ -1636,7 +1586,6 @@ impl Worker<'_> {
                     for i in 0..penalty_limit {
                         let qm = self.stack[ply].quiet_moves[i];
                         let q_pt = self.pos.expect_piece_at(qm.from());
-
                         // Over time, this "anti-history" pushes bad moves deeper into the list.
                         self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                     }
@@ -1658,7 +1607,6 @@ impl Worker<'_> {
 
                         self.history.update_capture(stm, attacker, cm.to(), victim, -bonus);
                     }
-
                     break;
                 }
             }
@@ -1713,7 +1661,6 @@ impl Worker<'_> {
             self.history
                 .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, diff, depth);
         }
-
         Ok(res.best_eval)
     }
 
@@ -1790,11 +1737,9 @@ impl Worker<'_> {
                 // through two separate borrows of self.stack, so split_at_mut
                 // gives us two non-overlapping slices as proof.
                 let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
-
                 current_stack[ply].pv.compose(mv, &next_stack[0].pv);
             }
         }
-
         Ok(())
     }
 
@@ -1862,7 +1807,6 @@ impl Worker<'_> {
             // Genuine improvement; search with full window on the PV.
             score = -self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?;
         }
-
         Ok(score)
     }
 
@@ -1941,7 +1885,6 @@ impl Worker<'_> {
             -INF
         } else {
             let eval = self.corrected_eval(raw_eval, sp);
-
             if eval >= beta {
                 // Static eval is blind to quiet replies;
                 // the stand-pat verdict overstates certainty.
@@ -1964,7 +1907,6 @@ impl Worker<'_> {
             if eval + best_capturable + sp.delta_margin < alpha {
                 return Ok(alpha);
             }
-
             alpha = alpha.max(eval);
             eval
         };
@@ -2019,7 +1961,6 @@ impl Worker<'_> {
             self.accumulator = saved_acc;
 
             let score = -score?;
-
             if score > best_eval {
                 best_eval = score;
                 best_move = mv;
@@ -2028,7 +1969,6 @@ impl Worker<'_> {
                     if score >= beta {
                         break;
                     }
-
                     alpha = score;
                 }
             }
@@ -2113,7 +2053,6 @@ impl Worker<'_> {
                 return true;
             }
         }
-
         remainder.contains(&key)
     }
 }
@@ -2132,9 +2071,7 @@ mod tests {
             let board = Position::from_fen(STARTPOS);
             let limits = Limits { depth: 8, silent: true, protocol: Protocol::Uci, ..Default::default() };
             let cfg = SearchConfig::new(limits, Instant::now(), Arc::new(AtomicBool::new(false)), 0, params);
-
             let mut s = Searcher::new(&cfg, &board, &[board.hash], Arc::new(TranspositionTable::new(16, 1)));
-
             s.iterative_deepening(&mut History::new());
             s.nodes
         };
@@ -2150,11 +2087,8 @@ mod tests {
         let board = Position::from_fen(STARTPOS);
         let limits = Limits { depth: 32, silent: true, protocol: Protocol::Uci, ..Default::default() };
         let cfg = SearchConfig::new(limits, Instant::now(), Arc::new(AtomicBool::new(true)), 0, SearchParams::default());
-
         let mut searcher = Searcher::new(&cfg, &board, &[board.hash], Arc::new(TranspositionTable::new(16, 1)));
-
         searcher.iterative_deepening(&mut History::new());
-
         assert!(searcher.prev_pv.len > 0, "the first iteration was abandoned");
         assert_eq!(searcher.best_move(), searcher.prev_pv.get(0), "the move played is not the one searched");
     }
