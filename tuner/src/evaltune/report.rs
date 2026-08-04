@@ -82,9 +82,7 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
         Some(l) => println!("{BRAND}Best L_val: {:.6} (Epoch {}){RESET}", l, best.best_val_epoch),
         None => println!("{BRAND}Best L_val: — (no holdout){RESET}"),
     }
-
     println!("{BRAND}Best L_train: {:.6} (Epoch {}){RESET}", best.best_train_loss, best.best_train_epoch);
-
     println!();
     println!(
         "{BRAND}Final epoch {final_epoch}:  L_val {}  L_train {}{RESET}",
@@ -95,7 +93,6 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
 
     if let Ok(mut f) = File::create(artifact("evaltune_best.txt")) {
         let mut w = BufWriter::new(&mut f);
-
         // Without a holdout the val block is the train block: selection fell back to it.
         if let Some(l) = best.best_val_loss {
             writeln!(w, "Best L_val: {l:.6} (Epoch {})", best.best_val_epoch).ok();
@@ -103,7 +100,6 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
         } else {
             writeln!(w, "Best L_val: — (no holdout)").ok();
         }
-
         writeln!(w, "\nBest L_train: {:.6} (Epoch {})", best.best_train_loss, best.best_train_epoch).ok();
         write_params(&mut w, all_params, best.best_train_params, None);
         writeln!(w, "\nFinal epoch {final_epoch}:  L_val {}  L_train {}", fmt_loss(best.last_val), fmt_loss(best.last_train),).ok();
@@ -129,13 +125,10 @@ pub fn quantize(values: &[f64], out: &mut [i32]) {
 /// Pass `initial` to highlight changed values, `None` for plain output.
 pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], initial: Option<&[f64]>) {
     let colored = initial.is_some();
-
     if colored {
         writeln!(w, "\n// --- Tuned Parameters (paste into eval_params.rs) ---").ok();
     }
-
     writeln!(w, "define_psqt_params! {{").ok();
-
     if colored {
         writeln!(w, "    // Files A-D (mirrored to E-H) × 8 ranks").ok();
     }
@@ -151,7 +144,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             .unwrap();
 
         writeln!(w, "    {name} = [").ok();
-
         for row in 0..8 {
             write!(w, "        ").ok();
 
@@ -159,32 +151,26 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
                 let sq_idx = row * 4 + col;
                 let mg_idx = psqt_offset + sq_idx;
                 let eg_idx = psqt_offset + TABLE_SQUARES + sq_idx;
-
                 let mg_val = values[mg_idx].round() as i32;
                 let eg_val = values[eg_idx].round() as i32;
                 let fixed = params[mg_idx].is_fixed;
 
                 let s = if fixed { format!("CS({mg_val:>3}, {eg_val:>4}),") } else { format!("S({mg_val:>4}, {eg_val:>4}),") };
-
                 let changed =
                     initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
 
                 let cell = if col < 3 { format!("{s: <16}") } else { s };
                 write!(w, "{}", highlight(&cell, changed, initial)).ok();
             }
-
             writeln!(w).ok();
         }
-
         writeln!(w, "    ],").ok();
-
         if p_idx + 1 < PIECE_TABLES {
             writeln!(w).ok();
         }
     }
 
     let simple = present_blocks(Group::Simple);
-
     if !simple.is_empty() {
         writeln!(w, "}}\n\ndefine_simple_params! {{").ok();
     }
@@ -192,57 +178,44 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     for block in simple {
         let half = block.len / 2;
         let pieces = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
-
         writeln!(w, "    {} = [", block.name).ok();
-
         for i in 0..half {
             let mg_idx = block.offset + i;
             let eg_idx = block.offset + half + i;
-
             let mg_val = values[mg_idx].round() as i32;
             let eg_val = values[eg_idx].round() as i32;
             let fixed = params[mg_idx].is_fixed;
-
             let tag = if fixed { "CS" } else { "S" };
             let label = pieces.get(i).map_or(String::new(), |name| format!(" // {name}"));
             let s = format!("{tag}({mg_val:>4}, {eg_val:>4}),{label}");
-
             let changed = initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
             writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
         }
-
         writeln!(w, "    ],").ok();
     }
-
     writeln!(w, "}}").ok();
 
     let simd = present_blocks(Group::Simd);
-
     if !simd.is_empty() {
         writeln!(w, "\ndefine_simd_params! {{").ok();
 
         for block in simd {
             let half = block.len / 2;
-
             writeln!(w, "    {} {{", block.name).ok();
             write!(w, "        mg = [").ok();
             write_weight_array(w, block.offset, half, values, params, initial);
             writeln!(w, "],{}", annotation(block.name)).ok();
-
             write!(w, "        eg = [").ok();
             write_weight_array(w, block.offset + half, half, values, params, initial);
             writeln!(w, "],").ok();
             writeln!(w, "    }},").ok();
         }
-
         writeln!(w, "}}").ok();
     }
 
     let weights = present_blocks(Group::Weight);
-
     if !weights.is_empty() {
         writeln!(w, "\ndefine_weight_params! {{").ok();
-
         for (s, section) in weights.chunk_by(|a, b| a.section == b.section).enumerate() {
             let width = section.iter().map(|b| b.name.len()).max().unwrap_or(0);
 
@@ -252,13 +225,11 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
             for (i, block) in section.iter().enumerate() {
                 let end = if i + 1 == section.len() { ';' } else { ',' };
-
                 write!(w, "    {:<width$} = [", block.name).ok();
                 write_weight_array(w, block.offset, block.len, values, params, initial);
                 writeln!(w, "]{end}{}", annotation(block.name)).ok();
             }
         }
-
         writeln!(w, "}}").ok();
     }
 
@@ -280,14 +251,11 @@ pub fn write_weight_array<W: Write>(
         let idx = offset + i;
         let val = values[idx].round() as i32;
         let fixed = params[idx].is_fixed;
-
         let tag = if fixed { "CV" } else { "V" };
         let s = format!("{tag}({val})");
-
         if i > 0 {
             write!(w, ", ").ok();
         }
-
         let changed = initial.is_some_and(|ini| val != ini[idx].round() as i32);
         write!(w, "{}", highlight(&s, changed, initial)).ok();
     }
@@ -304,7 +272,6 @@ pub fn off_scale_warning(shipped: f64) -> String {
     if (shipped - 1.0).abs() <= 0.01 {
         return String::new();
     }
-
     format!(
         "{}[!] Warning: the final-epoch parameters ship at {shipped:.3}× the reference scale.\n\
          [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
@@ -325,11 +292,9 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
     }
 
     let margin = 0.01 * (config.k_max - config.k_min);
-
     if k - config.k_min >= margin && config.k_max - k >= margin {
         return String::new();
     }
-
     format!(
         "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
          [!] this run reported a clamp rather than an optimum.{RESET}\n",
@@ -356,13 +321,11 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
 pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> String {
     const BAND_WIDTH: usize = 4;
     const BANDS: usize = TOTAL_PHASE as usize / BAND_WIDTH;
-
     /// Centipawn cuts of the signed-eval buckets each phase band splits into.
     const EDGES: [f64; 2] = [-50.0, 50.0];
     const CELLS: usize = EDGES.len() + 1;
 
     let phase_w = phase_weights();
-
     let (counts, predicted, realized) = ctx
         .val
         .par_iter()
@@ -371,11 +334,9 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
             || ([0u64; BANDS * CELLS], [0.0_f64; BANDS * CELLS], [0.0_f64; BANDS * CELLS]),
             |(mut counts, mut predicted, mut realized), (idx, entry)| {
                 let record = &ctx.records[ctx.train_count + idx];
-
                 if !ctx.passes_vol_filter(entry, record.static_eval) {
                     return (counts, predicted, realized);
                 }
-
                 // Full material divides into the top band rather than owning one of its own.
                 let b = (phase_of(record, &phase_w) / BAND_WIDTH).min(BANDS - 1);
                 let eval = loader::eval_record(record, values);
@@ -384,7 +345,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
                 counts[cell] += 1;
                 predicted[cell] += sigmoid(eval, k);
                 realized[cell] += f64::from(entry.result) / 2.0;
-
                 (counts, predicted, realized)
             },
         )
@@ -396,7 +356,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
                     p1[i] += p2[i];
                     r1[i] += r2[i];
                 }
-
                 (c1, p1, r1)
             },
         );
@@ -404,21 +363,17 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
     let band_label = |b: usize| {
         let lo = b * BAND_WIDTH;
         let hi = if b + 1 == BANDS { TOTAL_PHASE as usize } else { lo + BAND_WIDTH - 1 };
-
         format!("{lo}-{hi}")
     };
 
     let rate = |sum: f64, n: u64| 100.0 * sum / n as f64;
-
     let mut out = String::new();
-
     let _ = writeln!(out, "\n{LAB}Calibration{RESET} {DIM}(best-val parameters, validation split at K = {k:.6}){RESET}");
     let _ = writeln!(out, "  {LAB}phase           n   predicted   realized  residual{RESET}");
 
     for b in 0..BANDS {
         let cells = b * CELLS..(b + 1) * CELLS;
         let n: u64 = counts[cells.clone()].iter().sum();
-
         if n == 0 {
             continue;
         }
@@ -426,7 +381,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
         let p = rate(predicted[cells.clone()].iter().sum(), n);
         let r = rate(realized[cells].iter().sum(), n);
         let band = band_label(b);
-
         let _ = writeln!(
             out,
             "  {band:<7} {VAL}{n:>9}{RESET}      {VAL}{p:5.1}%{RESET}     {VAL}{r:5.1}%{RESET}     {VAL}{:+5.1}{RESET}",
@@ -436,7 +390,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 
     let _ = writeln!(out, "\n{LAB}Residual by eval within phase{RESET} {DIM}(cell counts in parentheses){RESET}");
     let _ = writeln!(out, "  {LAB}{:<7} {:<13} {:<13} eval > +50{RESET}", "phase", "eval < -50", "-50..+50");
-
     for b in 0..BANDS {
         let row: Vec<String> = (0..CELLS)
             .map(|c| {
@@ -452,10 +405,8 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
         if row.iter().all(|cell| cell == "-") {
             continue;
         }
-
         let _ = writeln!(out, "  {:<7} {:<13} {:<13} {}", band_label(b), row[0], row[1], row[2]);
     }
-
     out
 }
 
@@ -465,7 +416,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 /// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
 pub fn gate_census_report(groups: &[GateCensus]) -> String {
     let mut out = String::new();
-
     let _ = writeln!(out, "\n{LAB}Gate census{RESET} {DIM}(share of parameter-updates){RESET}");
     let _ = writeln!(out, "  {LAB}group          φ     skip  canonical    band   c-only   waived     dead  no grad{RESET}");
 
@@ -484,16 +434,13 @@ pub fn gate_census_report(groups: &[GateCensus]) -> String {
             c.percent(c.absent),
         );
     }
-
     out
 }
 
 pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
     println!("{LAB}Positions:{RESET}  {COUNT}{total}{RESET} ({} train / {} val)", train.len(), val.len());
-
     let (ww, bw, dr) = train.iter().fold((0, 0, 0), |(w, b, d), entry| {
         let r = result_fn(entry);
-
         if (r - 1.0).abs() < 1e-4 {
             (w + 1, b, d)
         } else if r.abs() < 1e-4 {
@@ -502,11 +449,9 @@ pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: u
             (w, b, d + 1)
         }
     });
-
     println!("  {LAB}White wins:{RESET} {COUNT}{ww}{RESET}");
     println!("  {LAB}Black wins:{RESET} {COUNT}{bw}{RESET}");
     println!("  {LAB}Draws:{RESET}      {COUNT}{dr}{RESET}");
-
     // A datagen run that never filled the result field looks exactly like a set of drawn games.
     // The outcome target is then 0.5 everywhere and only a score-weighted blend can learn.
     if ww + bw == 0 {
@@ -533,11 +478,9 @@ pub fn loss_sparkline(history: &[f64]) -> String {
     for &v in history {
         let frac = (v - lo) / span; // 0 = best (lowest), 1 = worst (highest)
         let level = (frac * 8.0).min(7.0) as usize;
-
         out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
         out.push(BARS[level]);
     }
-
     out.push_str(RESET);
     out
 }
@@ -550,15 +493,12 @@ pub fn loss_sparkline(history: &[f64]) -> String {
 /// gate are stickiest together at exactly the moment a parameter tries to leave the wall.
 pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String {
     let mut pinned: Vec<_> = params.iter().filter(|p| clipped[p.idx] > 0).collect();
-
     if pinned.is_empty() {
         return String::new();
     }
-
     pinned.sort_unstable_by_key(|p| std::cmp::Reverse(clipped[p.idx]));
 
     let width = pinned.iter().take(10).map(|p| p.name.len()).max().unwrap_or(20);
-
     let mut out = String::new();
     let _ = writeln!(out, "\n{LAB}Clip{RESET} {}(share of updates truncated at the bound){RESET}", palette::DIM);
 
@@ -566,54 +506,43 @@ pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String 
         let share = 100.0 * clipped[p.idx] as f64 / updates.max(1) as f64;
         let _ = writeln!(out, "  {:<width$}  {VAL}{share:5.1}%{RESET}", p.name);
     }
-
     out
 }
 
 pub fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
     let Ok(mut f) = fs::File::create(artifact("sensitivity-report.txt")) else { return };
     let mut w = io::BufWriter::new(&mut f);
-
     writeln!(w, "Sensitivity Analysis").ok();
     writeln!(w).ok();
-
     let mut sensitivities = Vec::new();
     let mut frozen = Vec::new();
 
     for p in params {
         let delta = grad_ema[p.idx];
-
         if p.is_fixed || fixed_mask[p.idx] {
             frozen.push((delta, p.idx, p.name.as_str()));
         } else {
             sensitivities.push((delta, p.idx, p.name.as_str()));
         }
     }
-
     sensitivities.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
     frozen.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
     let max_width = |list: &[(f64, usize, &str)]| list.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
     let active_width = max_width(&sensitivities);
     let frozen_width = max_width(&frozen);
-
     writeln!(w, "  Top Load-Bearing Parameters:").ok();
-
     for (i, (delta, _, name)) in sensitivities.iter().take(10).enumerate() {
         writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
-
     writeln!(w).ok();
     writeln!(w, "  Lowest-Impact Parameters:").ok();
-
     for (i, (delta, _, name)) in sensitivities.iter().rev().take(10).enumerate() {
         writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
-
     if !frozen.is_empty() {
         writeln!(w).ok();
         writeln!(w, "  Highest Sensitivity Auto-Frozen/Fixed Parameters:").ok();
-
         for (i, (delta, _, name)) in frozen.iter().take(10).enumerate() {
             writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = frozen_width).ok();
         }
@@ -626,7 +555,6 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
     let max_pop = hist.iter().copied().max().unwrap_or(0);
     let min_pop = hist.iter().copied().filter(|&c| c > 0).min().unwrap_or(0);
     let imbalance = if min_pop > 0 { max_pop as f64 / min_pop as f64 } else { f64::INFINITY };
-
     let bars: String = hist
         .iter()
         .map(|&c| if c == 0 { ' ' } else { BARS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
@@ -635,7 +563,6 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
     let wmin = weights.iter().copied().fold(f64::INFINITY, f64::min);
     let wmax = weights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let clamp_pct = 100.0 * clamped as f64 / weights.len().max(1) as f64;
-
     println!("{LAB}Phase balance:{RESET} {VAL}{bars}{RESET} {LAB}(phase 0..{}){RESET}", hist.len() - 1);
     println!(
         "  {LAB}imbalance{RESET} {VAL}{imbalance:.0}×{RESET} {LAB}vs cap{RESET} {VAL}{cap:.0}×{RESET}  \

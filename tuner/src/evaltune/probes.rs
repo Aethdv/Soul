@@ -27,10 +27,8 @@ use crate::core::{config::EvalTuneConfig, shuffle::Shuffler};
 pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
     let params = eval_params::collect_parameters();
     let values = eval_params::default_values(&params);
-
     let blend = config.wdl_schedule.clone().into_scheduler().blend(1, config.epochs);
     let k = KController::bootstrap(config, ctx, &values, &values, blend, None).k();
-
     let free: Vec<usize> = params.iter().filter(|p| !p.is_fixed).map(|p| p.idx).collect();
     let trainable: Vec<bool> = params.iter().map(|p| !p.is_fixed).collect();
     let n = params.len();
@@ -41,7 +39,6 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
             || (Curvature::zeros(n), vec![0.0; n], Vec::with_capacity(64)),
             |(mut acc, mut scratch, mut nonzeros), i| {
                 let (entry, record) = (&ctx.train[i], &ctx.records[i]);
-
                 if ctx.passes_vol_filter(entry, record.static_eval) {
                     let eval = loader::eval_record_full(record, &values);
                     let p = sigmoid(eval.score, k);
@@ -49,7 +46,6 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
                     let w = if ctx.phase_weights.is_empty() { 1.0 } else { ctx.phase_weights[i] };
 
                     accumulate_record_grad(record, &eval, 1.0, &mut scratch);
-
                     // One walk drains the buffer and collects it, so the next position starts from
                     // zero without paying to clear all slots again.
                     nonzeros.clear();
@@ -59,14 +55,11 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
                             if trainable[j] {
                                 nonzeros.push((j, *coefficient));
                             }
-
                             *coefficient = 0.0;
                         }
                     }
-
                     acc.add_outer(w * ctx.loss_fn().hessian_scale(p, target, k), &nonzeros);
                 }
-
                 (acc, scratch, nonzeros)
             },
         )
@@ -96,26 +89,21 @@ pub fn gather_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     let params = eval_params::collect_parameters();
     let values = eval_params::default_values(&params);
     let k = 0.5 * (config.k_min + config.k_max);
-
     let batches = (ctx.train_count / config.batch_size).clamp(1, BATCHES);
     let positions = (batches * config.batch_size) as f64;
-
     let mut indices: Vec<u32> = (0..ctx.train_count as u32).collect();
 
     let time_pass = |order: &[u32]| {
         let start = Instant::now();
-
         for batch in order.chunks(config.batch_size).take(batches) {
             // Discarded: only the read pattern is under measurement.
             let _ = ctx.batch_grad(batch, &values, k, 0.0);
         }
-
         start.elapsed().as_secs_f64()
     };
 
     // Sequential first, so the shuffled arm cannot be the one paying for a cold page cache.
     let sequential = time_pass(&indices);
-
     Shuffler::new(ctx.train_count).fill(&mut indices, 0xC0FFEE);
     let shuffled = time_pass(&indices);
 
@@ -151,10 +139,8 @@ pub fn val_cost(ctx: &TrainerContext, config: &EvalTuneConfig) {
     // Both arms untimed once, or the first one pays to fault in the val slice.
     let _ = fused();
     let _ = split();
-
     // Interleaved, and scored on the minimum: noise only ever adds time.
     let (mut best_fused, mut best_split) = (f64::INFINITY, f64::INFINITY);
-
     for _ in 0..REPEATS {
         best_fused = best_fused.min(fused());
         best_split = best_split.min(split());

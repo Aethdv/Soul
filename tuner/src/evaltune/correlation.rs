@@ -20,21 +20,6 @@ const HALF: usize = RANKS * FILES; // 32
 const OUTLIER_MULT: f64 = 1.5;
 const OUTLIER_FLOOR: f64 = 5.0;
 
-struct Pair {
-    a: usize,
-    b: usize,
-    diff: i32,
-}
-
-struct SliceStats {
-    piece: &'static str,
-    phase: &'static str,
-    count: usize,
-    mean: f64,
-    max: i32,
-    outliers: Vec<Pair>,
-}
-
 /// Run PSQT adjacency analysis on the current parameter values.
 pub fn run_correlation() {
     let values = eval_params::default_values(&eval_params::collect_parameters());
@@ -54,6 +39,21 @@ pub fn run_correlation() {
     }
 }
 
+struct Pair {
+    a: usize,
+    b: usize,
+    diff: i32,
+}
+
+struct SliceStats {
+    piece: &'static str,
+    phase: &'static str,
+    count: usize,
+    mean: f64,
+    max: i32,
+    outliers: Vec<Pair>,
+}
+
 fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
     let mut slices = Vec::with_capacity(PIECES.len() * PHASES.len());
 
@@ -65,7 +65,6 @@ fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
             slices.push(analyse_slice(v, piece, phase));
         }
     }
-
     slices
 }
 
@@ -75,7 +74,6 @@ fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceSt
     for rank in 0..RANKS {
         for file in 0..FILES {
             let idx = rank * FILES + file;
-
             if file + 1 < FILES {
                 let nb = idx + 1;
                 pairs.push(make_pair(v, idx, nb));
@@ -92,7 +90,6 @@ fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceSt
     let mean = total as f64 / n.max(1) as f64;
     let max = pairs.iter().map(|p| p.diff).max().unwrap_or(0);
     let threshold = (mean * OUTLIER_MULT).max(OUTLIER_FLOOR) as i32;
-
     let outliers: Vec<Pair> = pairs.into_iter().filter(|p| p.diff > threshold).collect();
 
     SliceStats { piece, phase, count: n, mean, max, outliers }
@@ -129,7 +126,6 @@ fn write_report(slices: &[SliceStats]) -> io::Result<()> {
             writeln!(w, "  {line}")?;
         }
     }
-
     w.flush()
 }
 

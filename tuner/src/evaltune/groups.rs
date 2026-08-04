@@ -11,7 +11,6 @@ use crate::core::config::EvalTuneConfig;
 
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 pub const MOB_CLAMP: f64 = 100.0;
-
 /// `p + c·p²/DANGER_SCALE` turns over and starts falling at `p = DANGER_SCALE/2c`,
 /// so a negative curvature puts that turnover inside the reachable pressure range
 /// and a besieged king scores safer than a lightly pressed one. Zero is the
@@ -65,7 +64,6 @@ pub fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
 
     for i in 0..slots {
         let g = group_index(&param_group(i));
-
         span[g].0 = span[g].0.min(i);
         span[g].1 = i + 1;
         counts[g] += 1;
@@ -78,7 +76,6 @@ pub fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
 
         let (lo, hi) = span[g];
         assert_eq!(hi - lo, counts[g], "{} does not occupy a contiguous range of the layout", GROUP_NAMES[g]);
-
         lo..hi
     })
 }
@@ -99,7 +96,6 @@ pub fn build_decay_mask(slots: usize) -> Vec<f64> {
                 let is_center = (2..=5).contains(&row) && (2..=3).contains(&col);
                 if is_center { 0.5 } else { 1.0 }
             },
-
             ParamGroup::Mobility => 1.5,
             ParamGroup::Material | ParamGroup::Other => 1.0,
         })
@@ -123,7 +119,6 @@ pub fn build_lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
 /// and the king-danger curvature.
 pub fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
     let danger = LAYOUT.king_danger_offset;
-
     (0..slots)
         .map(|i| {
             if i == danger {

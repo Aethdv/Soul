@@ -13,10 +13,8 @@ use crate::evaltune::{loader, report::report_phase_balance};
 // since a trend read before that span has filled is reading its own seed.
 pub const TREND_FAST: usize = 10;
 const TREND_SLOW: usize = 40;
-
 pub const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
 const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
-
 /// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
 ///
 /// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
@@ -65,11 +63,9 @@ pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> (f64, f6
     let score = f64::from(entry.score);
     let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / CONFIDENCE_THRESHOLD).min(1.0) };
     let expected = sigmoid(score, k);
-
     // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
     let target = (1.0 - instance_blend).mul_add(f64::from(entry.result) / 2.0, instance_blend * expected);
     let dt_dk = instance_blend * expected * (1.0 - expected) * score;
-
     (target, dt_dk)
 }
 
@@ -121,7 +117,6 @@ pub struct Progress {
 pub fn phase_weights() -> [f64; 6] {
     let params = eval_params::collect_parameters();
     let woff = LAYOUT.phase_offset;
-
     std::array::from_fn(|pt| params[woff + pt].value)
 }
 
@@ -129,7 +124,6 @@ pub fn phase_weights() -> [f64; 6] {
 /// are constants rather than tunables.
 pub fn phase_of(rec: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
     let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();
-
     raw.clamp(0.0, f64::from(TOTAL_PHASE)).trunc() as usize
 }
 
@@ -142,7 +136,6 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
     let phase_w = phase_weights();
 
     let mut hist = vec![0u64; TOTAL_PHASE as usize + 1];
-
     for rec in records {
         hist[phase_of(rec, &phase_w)] += 1;
     }
@@ -169,17 +162,14 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
             if raw < lo || raw > hi {
                 clamped += 1;
             }
-
             raw.clamp(lo, hi)
         })
         .collect();
 
     let mean = weights.iter().sum::<f64>() / weights.len() as f64;
-
     for w in &mut weights {
         *w /= mean;
     }
-
     report_phase_balance(&hist, &weights, cap, clamped);
     weights
 }
@@ -194,19 +184,16 @@ pub fn merge_weights(phase: Vec<f64>, sample: &[f32]) -> Vec<f64> {
     }
 
     let mut weights = if phase.is_empty() { vec![1.0; sample.len()] } else { phase };
-
     for (w, s) in weights.iter_mut().zip(sample) {
         *w *= f64::from(*s);
     }
 
     let mean = weights.iter().sum::<f64>() / weights.len() as f64;
-
     if mean > 0.0 {
         for w in &mut weights {
             *w /= mean;
         }
     }
-
     weights
 }
 
@@ -223,11 +210,9 @@ impl GradientStats {
             return;
         }
         self.count += 1;
-
         // Up by p over the estimate, down by (1 - p) under it, which balances where
         // the estimate sits at the 95th percentile: 0.05 · 0.95 + 0.95 · -0.05 = 0.
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
-
         // The multiplicative step scales with the current magnitude, so nothing needs a
         // floor at initialization or once the norms have decayed.
         self.p95 *= (self.alpha * step).exp();
@@ -259,10 +244,8 @@ impl DivergenceMonitor {
             self.val_slow += A_SLOW * (val_loss - self.val_slow);
             self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
         }
-
         self.prev_val = val_loss;
         self.seen += 1;
-
         self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
     }
 }
@@ -286,11 +269,9 @@ impl Default for Progress {
 impl Progress {
     pub fn record_train(&mut self, epoch: usize, loss: f64) -> bool {
         self.train_smooth = smooth(self.train_smooth, loss);
-
         if self.train_smooth >= self.best_train_smooth {
             return false;
         }
-
         self.best_train_smooth = self.train_smooth;
         self.best_train_loss = loss;
         self.best_train_epoch = epoch;
@@ -301,12 +282,10 @@ impl Progress {
     /// counter if it did and advancing it otherwise.
     pub fn record_val(&mut self, epoch: usize, loss: f64) -> bool {
         self.val_smooth = smooth(self.val_smooth, loss);
-
         if self.val_smooth >= self.best_val_smooth {
             self.plateau_count += 1;
             return false;
         }
-
         self.best_val_smooth = self.val_smooth;
         self.best_val_loss = loss;
         self.best_val_epoch = epoch;
@@ -352,13 +331,11 @@ fn smooth(trail: f64, loss: f64) -> f64 {
 fn unset_smooth() -> f64 {
     f64::NAN
 }
-
 /// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
 /// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
 fn unset_best() -> f64 {
     f64::MAX
 }
-
 /// JSON has no NaN, so an unseeded trail is written as `null`, and `default` covers only a key
 /// that is absent. Without this a run with no holdout cannot resume its own checkpoint.
 fn unset_if_null<'de, D: Deserializer<'de>>(de: D) -> Result<f64, D::Error> {
@@ -381,16 +358,13 @@ mod tests {
         // comparison flags on roughly every other epoch.
         let mut d = DivergenceMonitor::default();
         let mut fired = 0;
-
         for e in 0..600 {
             let train = 0.4041 + wobble(e, 4e-6);
             let val = 0.4053 + wobble(e + 977, 20e-6);
-
             if d.update(train, val) {
                 fired += 1;
             }
         }
-
         assert_eq!(fired, 0, "flat plateau must not read as divergence");
     }
 
@@ -399,17 +373,14 @@ mod tests {
         // Train descending, val climbing, both under the same noise as the plateau case.
         let mut d = DivergenceMonitor::default();
         let mut fired = 0;
-
         for e in 0..600 {
             let t = e as f64;
             let train = 0.4041 - t * 2e-6 + wobble(e, 4e-6);
             let val = 0.4053 + t * 2e-6 + wobble(e + 977, 20e-6);
-
             if d.update(train, val) {
                 fired += 1;
             }
         }
-
         assert!(fired > 400, "sustained divergence must flag, fired {fired} of 600");
     }
 
@@ -418,34 +389,28 @@ mod tests {
         // Nothing clears the trails at an LR restart, so this test carries the whole guarantee:
         // neither the jump nor the recovery that follows it may read as divergence.
         let mut d = DivergenceMonitor::default();
-
         for e in 0..200 {
             d.update(0.4041 + wobble(e, 4e-6), 0.4053 + wobble(e + 977, 20e-6));
         }
 
         let mut fired = 0;
-
         for e in 0..160 {
             let bump = 0.0012 * (-f64::from(i32::try_from(e).unwrap()) / 25.0).exp();
-
             if d.update(0.4041 + bump + wobble(e, 4e-6), 0.4053 + bump + wobble(e + 977, 20e-6)) {
                 fired += 1;
             }
         }
-
         assert_eq!(fired, 0, "a restart cycle must not read as divergence");
     }
 
     #[test]
     fn divergence_warms_up_before_reporting() {
         let mut d = DivergenceMonitor::default();
-
         // Maximally divergent input, so warmup is the only thing holding the flag down.
         for e in 0..TREND_SLOW {
             let t = e as f64;
             assert!(!d.update(0.5 - t * 1e-3, 0.5 + t * 1e-3), "reported at epoch {e}, inside the warmup span");
         }
-
         assert!(d.update(0.5 - 0.04, 0.5 + 0.04), "must report once the slow span has filled");
     }
 }

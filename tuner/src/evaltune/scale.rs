@@ -14,7 +14,6 @@ use crate::core::config::{EvalTuneConfig, KMode};
 
 /// Positions the [`Gauge`] reads the eval's scale from, every batch.
 pub const GAUGE_PROBE: usize = 1024;
-
 /// The [`Gauge`] reads its probe at this magnification.
 ///
 /// `taper` truncates in the f64 path too, which makes Σ|score| a staircase in the
@@ -56,18 +55,15 @@ impl KController {
                             ctx.k_fit_eval(v, kk, init_blend)
                         })
                     };
-
                     // k_ref is fitted on the defaults: a cold start begins near a zero eval
                     // where the loss is flat in K, and one frozen at that bracket edge makes
                     // ref_loss climb all run as the eval grows a scale.
                     let k = fit(values);
                     let k_ref = if values == defaults { k } else { fit(defaults) };
-
                     (k, k_ref, 0.0)
                 },
             },
         };
-
         Self {
             k,
             k_ref,
@@ -92,21 +88,17 @@ impl KController {
         if !epoch.is_multiple_of(interval.max(1)) {
             return None;
         }
-
         self.k =
             golden_search_k(self.k_min, self.k_max, 1e-6 * (self.k_max - self.k_min), |kk| ctx.k_fit_eval(ema_values, kk, blend));
 
         Some(self.k)
     }
-
     pub fn on_batch(&mut self, k_grad: f64, batch_count: usize, lr: f64, scale: f64, weight_decay: f64) {
         let KMode::Learned { lr_mult } = self.mode else { return };
-
         let n = batch_count.max(1) as f64;
         let kg = k_grad / n * scale;
         let eff_lr = lr * lr_mult;
         let c = self.beta1.mul_add(self.momentum, (1.0 - self.beta1) * kg);
-
         // `sign(0.0)` is 1.0: a cold start's zero eval keeps the blended direction
         // at exactly zero, and without the gate K would walk down by `eff_lr`
         // every batch. Only the sign step is dead; decay still fires.
@@ -150,18 +142,15 @@ impl KController {
 pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
     let l = &LAYOUT;
     let (pieces, squares) = (PIECE_TABLES, TABLE_SQUARES);
-
     for piece in 0..pieces {
         for phase in 0..2 {
             let table = l.psqt_offset + piece * 2 * squares + phase * squares;
             let free = || (table..table + squares).filter(|&i| !params[i].is_fixed);
             let sink = (piece != PieceType::King as usize).then(|| l.material_offset + phase * pieces + piece);
-
             // Nowhere to put the fold, and shifting the table alone moves the score.
             if sink.is_some_and(|s| params[s].is_fixed) {
                 continue;
             }
-
             // The fold shifts material for every square, so a fixed square keeps its value while
             // a piece standing there collects the shift. Only the pawn ranks nobody can occupy
             // are fixed, which is what makes the fold invisible to the score.
@@ -173,13 +162,11 @@ pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
             );
 
             let n = free().count();
-
             if n == 0 {
                 continue;
             }
 
             let fold = (free().map(|i| values[i]).sum::<f64>() / n as f64 + 0.5).floor();
-
             if fold == 0.0 {
                 continue;
             }
@@ -187,7 +174,6 @@ pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
             for i in free() {
                 values[i] -= fold;
             }
-
             if let Some(s) = sink {
                 values[s] += fold;
             }
@@ -230,13 +216,11 @@ impl<'a> Gauge<'a> {
     /// its magnitudes.
     pub fn measure(probe: &[&FeatureRecord], values: &[f64]) -> f64 {
         let lifted: Vec<f64> = values.iter().enumerate().map(|(i, v)| v * Self::slot(i, MEASURE_GAIN)).collect();
-
         probe.iter().map(|r| eval_record(r, &lifted).abs()).sum()
     }
 
     pub fn new(probe: Vec<&'a FeatureRecord>, defaults: &[f64]) -> Self {
         let reference = Self::measure(&probe, defaults);
-
         Self { probe, reference, applied: 1.0 }
     }
 
@@ -260,7 +244,6 @@ impl<'a> Gauge<'a> {
     /// else's `f`, and scaling it alike leaves the curve trading unevenly against K.
     fn slot(i: usize, f: f64) -> f64 {
         let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
-
         if (lo..hi).contains(&i) {
             1.0
         } else if i == LAYOUT.king_danger_offset {
@@ -273,24 +256,20 @@ impl<'a> Gauge<'a> {
     /// Scales `values` back onto the reference, returning the factor applied.
     pub fn normalize(&self, values: &mut [f64]) -> f64 {
         let now = Self::measure(&self.probe, values);
-
         if !(now.is_finite() && now > 0.0 && self.reference > 0.0) {
             return 1.0;
         }
 
         let f = self.reference / now;
-
         for (i, v) in values.iter_mut().enumerate() {
             *v *= Self::slot(i, f);
         }
-
         f
     }
 
     /// [`Gauge::normalize`] with the rest of the optimizer state carried along.
     pub fn restore(&mut self, values: &mut [f64], optimizer: &mut Lion, k_ctrl: &mut KController) {
         let f = self.normalize(values);
-
         optimizer.rescale(|i| Self::slot(i, f));
         k_ctrl.rescale(f);
         self.applied *= f;
@@ -309,7 +288,6 @@ impl<'a> Gauge<'a> {
 pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -> f64 {
     assert!(lo < hi, "golden_search_k: lo ({lo}) must be < hi ({hi})");
     assert!(tol > 0.0, "golden_search_k: tol ({tol}) must be positive");
-
     if hi - lo <= tol {
         return (lo + hi) / 2.0;
     }
@@ -326,7 +304,6 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
 
     while width > tol {
         width *= C;
-
         if fa < fb {
             hi = b;
             b = a;
@@ -341,7 +318,6 @@ pub fn golden_search_k<F: Fn(f64) -> f64>(lo: f64, hi: f64, tol: f64, eval: F) -
             fb = eval(b);
         }
     }
-
     (lo + hi) / 2.0
 }
 
@@ -385,18 +361,15 @@ mod tests {
         let l = &LAYOUT;
         let table = l.psqt_offset + PieceType::Queen as usize * 2 * TABLE_SQUARES;
         let records = probe_records();
-
         // Off canon by 60 on the queen's midgame table, so the fold has work to do
         // whatever the shipped file happens to hold.
         let mut values = eval_params::default_values(&params);
-
         for i in table..table + TABLE_SQUARES {
             values[i] += 60.0;
         }
 
         let mut folded = values.clone();
         canonicalize(&mut folded, &params);
-
         assert_ne!(folded, values, "a table 60 off its mean has to move");
 
         for (fen, record) in PROBE_FENS.iter().zip(&records) {
@@ -421,15 +394,12 @@ mod tests {
         let squares = TABLE_SQUARES;
         let queen = PieceType::Queen as usize;
         let table = l.psqt_offset + queen * 2 * squares;
-
         let mut base = eval_params::default_values(&params);
         let mut drifted = base.clone();
-
         // Onto every queen square and off the queen's material: nothing to the eval.
         for i in table..table + squares {
             drifted[i] += 37.0;
         }
-
         drifted[l.material_offset + queen] -= 37.0;
 
         for (fen, record) in PROBE_FENS.iter().zip(&probe_records()) {
@@ -447,7 +417,6 @@ mod tests {
         // A mean of exactly half a unit, which integer squares hit often enough to
         // see. Rounding away from zero folds it back and forth from here on.
         let mut tied = eval_params::default_values(&params);
-
         for (n, i) in (table..table + squares).enumerate() {
             tied[i] = if n < squares / 2 { -1.0 } else { 0.0 };
         }
@@ -455,7 +424,6 @@ mod tests {
         canonicalize(&mut tied, &params);
         let once = tied.clone();
         canonicalize(&mut tied, &params);
-
         assert_eq!(tied, once, "a table tied at half a unit never settles");
     }
 
@@ -468,18 +436,14 @@ mod tests {
         let params = eval_params::collect_parameters();
         let mut values = eval_params::default_values(&params);
         let mut optimizer = Lion::new(values.len(), 0.9, 0.1, 0.0);
-
         optimizer.restore_momentum(&vec![0.5; values.len()]);
-
         let records = probe_records();
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge_ref = Gauge::measure(&probe, &values);
         let (lo, hi) = (LAYOUT.phase_offset, LAYOUT.phase_offset + LAYOUT.phase_len);
         let phase_before: Vec<f64> = values[lo..hi].to_vec();
-
         let mut gauge = Gauge::new(probe.clone(), &values);
         assert!(gauge.holds(&values), "a run standing on the reference must gauge");
-
         let mut k_ctrl = KController {
             k: 0.004,
             k_ref: 0.004,
@@ -494,9 +458,7 @@ mod tests {
         for i in (0..values.len()).filter(|i| !(lo..hi).contains(i)) {
             values[i] *= 1.23;
         }
-
         gauge.restore(&mut values, &mut optimizer, &mut k_ctrl);
-
         assert!((Gauge::measure(&probe, &values) - gauge_ref).abs() < 1e-6 * gauge_ref, "scale not restored");
         assert_eq!(&values[lo..hi], &phase_before[..], "phase is a coordinate, not a score term");
         assert!((k_ctrl.k() / (0.004 * 1.23) - 1.0).abs() < 1e-6, "K did not take the other half: {}", k_ctrl.k());
@@ -512,10 +474,8 @@ mod tests {
         let params = eval_params::collect_parameters();
         let defaults = eval_params::default_values(&params);
         let curve = LAYOUT.king_danger_offset;
-
         let mut want = defaults.clone();
         want[curve] = 64.0;
-
         let records = probe_records();
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge = Gauge::new(probe.clone(), &want);
@@ -530,11 +490,8 @@ mod tests {
             }
             *v *= if i == curve { 1.0 / 1.23 } else { 1.23 };
         }
-
         gauge.normalize(&mut drifted);
-
         assert!((Gauge::measure(&probe, &drifted) - gauge.reference).abs() < 1e-6 * gauge.reference, "no fixed point");
-
         for (i, (got, expect)) in drifted.iter().zip(&want).enumerate() {
             assert!((got - expect).abs() < 1e-6 * expect.abs().max(1.0), "slot {i}: {got} against {expect}");
         }
@@ -546,11 +503,9 @@ mod tests {
         let defaults = eval_params::default_values(&params);
         let records = probe_records();
         let gauge = Gauge::new(records.iter().collect(), &defaults);
-
         for init in [Init::Zero, Init::Random] {
             assert!(!gauge.holds(&seed_values(&params, init, 7)), "{init:?} must not gauge during training");
         }
-
         assert!(gauge.holds(&seed_values(&params, Init::Default, 7)), "a warm start must");
     }
 
@@ -566,11 +521,9 @@ mod tests {
             beta2: 0.99,
             momentum: 0.0,
         };
-
         for _ in 0..100 {
             ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.0);
         }
-
         assert_eq!(ctrl.k, 0.01, "zero gradient on fresh momentum must not move K");
     }
 
@@ -586,9 +539,7 @@ mod tests {
             beta2: 0.99,
             momentum: 0.5,
         };
-
         ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.0);
-
         let expected = 0.01 - 0.01 * 0.001; // eff_lr = lr · lr_mult
         assert!((ctrl.k - expected).abs() < 1e-15, "momentum should still step K: {} against {expected}", ctrl.k);
     }
@@ -605,10 +556,8 @@ mod tests {
             beta2: 0.99,
             momentum: 0.0,
         };
-
         let before = ctrl.k;
         ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.00001);
-
         let expected = before - (0.01 * 0.001) * (0.00001 * before);
         assert!((ctrl.k - expected).abs() < 1e-16, "decay must fire in the dead zone: {} against {expected}", ctrl.k);
     }

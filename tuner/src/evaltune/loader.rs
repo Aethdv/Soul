@@ -37,17 +37,14 @@ pub struct Entry {
 pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
     let file = File::open(path)?;
     let reader = open_reader(file, Path::new(path))?;
-
     let mut entries = Vec::new();
 
     for line in reader.lines() {
         let line = line?;
-
         if let Some((board, result)) = parse_epd_str(&line) {
             entries.push(Entry { board, result });
         }
     }
-
     Ok(entries)
 }
 
@@ -60,7 +57,6 @@ pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
 pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
     let file = File::open(input)?;
     let reader = open_reader(file, Path::new(input))?;
-
     let mut encoded = Vec::new();
     let mut last_print = Instant::now();
 
@@ -84,17 +80,14 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
     println!();
 
     let path = if output.ends_with(".zst") { output.to_string() } else { format!("{output}.zst") };
-
     println!("Writing encoded file: {path}");
     save_encoded(&path, &encoded)?;
 
     let orig_size = encoded.len() * mem::size_of::<SoulEntry>();
     let comp_size = fs::metadata(&path)?.len();
     let ratio = orig_size as f64 / comp_size as f64;
-
     println!("Done! {} entries ({orig_size} bytes → {comp_size} bytes, {ratio:.1}x compression)", encoded.len());
     println!("Entry size: {} bytes", mem::size_of::<SoulEntry>());
-
     Ok(())
 }
 
@@ -136,7 +129,6 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                         all_weights.resize(all_entries.len(), 1.0);
                         all_weights.extend(weights);
                     }
-
                     all_entries.append(&mut viri_entries);
                     grouped = games.iter().sum::<u32>() as usize;
                     all_groups.extend(games);
@@ -154,7 +146,6 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                 Err(e) => bail_dataset(path, &e),
             }
         }
-
         // A format that records no games contributes one group per position.
         all_groups.extend(iter::repeat_n(1u32, all_entries.len() - before - grouped));
     }
@@ -162,7 +153,6 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
     if !all_weights.is_empty() {
         all_weights.resize(all_entries.len(), 1.0);
     }
-
     (all_entries, all_weights, all_groups)
 }
 
@@ -190,7 +180,6 @@ pub fn dataset_fingerprint(entries: &[SoulEntry]) -> u64 {
     for d in &digests {
         fnv.write_bytes(&d.to_le_bytes());
     }
-
     fnv.digest()
 }
 
@@ -202,7 +191,6 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let name = path.to_string_lossy();
-
                 if name.ends_with(".soul.zst") || name.ends_with(".soul") {
                     paths.push(name.to_string());
                 }

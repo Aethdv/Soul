@@ -26,10 +26,8 @@ use super::{
 
 /// Sweeps the Jacobi rotation is allowed before it gives up on an unconverged matrix.
 const MAX_SWEEPS: usize = 40;
-
 /// How many of the flattest directions and most collinear parameters get printed.
 const LISTED: usize = 6;
-
 /// Eigenvalue below this fraction of the largest counts as zero.
 ///
 /// A positive semi-definite matrix has no negative eigenvalues, so the −8e−16 the rotation leaves
@@ -74,7 +72,6 @@ impl Curvature {
     pub fn add_outer(&mut self, weight: f64, nonzeros: &[(usize, f64)]) {
         for (col, &(j, aj)) in nonzeros.iter().enumerate() {
             let scaled = weight * aj;
-
             for &(i, ai) in &nonzeros[..=col] {
                 self.h[i * self.n + j] += scaled * ai;
             }
@@ -112,7 +109,6 @@ impl Curvature {
         let scale: Vec<f64> = live.iter().map(|&i| diagonal[i].sqrt()).collect();
 
         let mut a = vec![0.0; m * m];
-
         for (row, &i) in live.iter().enumerate() {
             for (col, &j) in live.iter().enumerate() {
                 a[row * m + col] = self.h[i * self.n + j] / (scale[row] * scale[col]);
@@ -120,7 +116,6 @@ impl Curvature {
         }
 
         let mut vectors = vec![0.0; m * m];
-
         for i in 0..m {
             vectors[i * m + i] = 1.0;
         }
@@ -133,7 +128,6 @@ impl Curvature {
         let values: Vec<f64> = order.iter().map(|&j| a[j * m + j]).collect();
         let sorted = {
             let mut v = vec![0.0; m * m];
-
             for (col, &j) in order.iter().enumerate() {
                 for row in 0..m {
                     v[row * m + col] = vectors[row * m + j];
@@ -141,7 +135,6 @@ impl Curvature {
             }
             v
         };
-
         Spectrum { values, vectors: sorted, live, diagonal, untouched }
     }
 }
@@ -150,7 +143,6 @@ impl Spectrum {
     /// Number of leading directions the data constrains.
     fn determined(&self) -> usize {
         let cutoff = self.values.first().copied().unwrap_or(0.0) * NULL;
-
         self.values.iter().filter(|&&x| x > cutoff).count()
     }
 
@@ -161,7 +153,6 @@ impl Spectrum {
     /// This sum is invariant under that rotation. The figures total the null dimension.
     fn participation(&self) -> Vec<f64> {
         let m = self.live.len();
-
         (0..m)
             .map(|j| (self.determined()..m).map(|k| self.vectors[j * m + k].powi(2)).sum())
             .collect()
@@ -175,7 +166,6 @@ impl Spectrum {
     /// and a reciprocal would only turn into a large arbitrary number.
     fn inflation(&self) -> Vec<f64> {
         let m = self.live.len();
-
         (0..m)
             .map(|j| (0..self.determined()).map(|k| self.vectors[j * m + k].powi(2) / self.values[k]).sum())
             .collect()
@@ -208,7 +198,6 @@ impl Spectrum {
         // fails loudly rather than wrapping the index below.
         let determined = self.determined();
         assert!(determined > 0, "a live parameter with no determined direction is impossible");
-
         let smallest = self.values[determined - 1];
 
         println!("\n{LAB}Curvature{RESET} {DIM}({positions} train positions at K = {k:.6}){RESET}");
@@ -242,7 +231,6 @@ impl Spectrum {
             let names: Vec<&str> = self.untouched.iter().take(LISTED).map(|&i| name(i)).collect();
             let more = self.untouched.len().saturating_sub(names.len());
             let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
-
             println!("  {LAB}never appear{RESET}    {}{tail}", names.join(", "));
         }
 
@@ -251,7 +239,6 @@ impl Spectrum {
                 "\n{LAB}Undetermined{RESET} {DIM}(share of each parameter lying in the {} free directions){RESET}",
                 m - determined
             );
-
             for &(share, name) in self.ranked(&self.participation(), params).iter().take(LISTED) {
                 println!("  {VAL}{share:5.2}{RESET}  {name}");
             }
@@ -261,11 +248,9 @@ impl Spectrum {
 
         for k in (determined.saturating_sub(LISTED)..determined).rev() {
             let mut loadings: Vec<(f64, usize)> = (0..m).map(|row| (self.vectors[row * m + k], self.live[row])).collect();
-
             loadings.sort_unstable_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
 
             let named: Vec<String> = loadings.iter().take(3).map(|&(w, i)| format!("{} {w:+.2}", name(i))).collect();
-
             println!("  {VAL}{:.3e}{RESET}  {}", self.values[k], named.join("   "));
         }
 
@@ -274,13 +259,11 @@ impl Spectrum {
         println!("\n{LAB}Least curvature{RESET} {DIM}(raw diagonal, the freeze normalizer){RESET}");
 
         let raw: Vec<f64> = self.live.iter().map(|&i| -self.diagonal[i]).collect();
-
         for &(negated, name) in self.ranked(&raw, params).iter().take(LISTED) {
             println!("  {VAL}{:9.3e}{RESET}  {name}", -negated);
         }
 
         println!("\n{LAB}Most collinear parameters{RESET} {DIM}(variance inflation){RESET}");
-
         for &(factor, name) in self.ranked(&self.inflation(), params).iter().take(LISTED) {
             println!("  {VAL}{factor:9.3e}{RESET}  {name}");
         }
@@ -310,7 +293,6 @@ fn jacobi(a: &mut [f64], vectors: &mut [f64], n: usize) {
         for p in 0..n {
             for q in p + 1..n {
                 let apq = a[p * n + q];
-
                 if apq == 0.0 {
                     continue;
                 }
@@ -324,21 +306,16 @@ fn jacobi(a: &mut [f64], vectors: &mut [f64], n: usize) {
 
                 for k in 0..n {
                     let (kp, kq) = (a[k * n + p], a[k * n + q]);
-
                     a[k * n + p] = c * kp - s * kq;
                     a[k * n + q] = s * kp + c * kq;
                 }
-
                 for k in 0..n {
                     let (pk, qk) = (a[p * n + k], a[q * n + k]);
-
                     a[p * n + k] = c * pk - s * qk;
                     a[q * n + k] = s * pk + c * qk;
                 }
-
                 for k in 0..n {
                     let (kp, kq) = (vectors[k * n + p], vectors[k * n + q]);
-
                     vectors[k * n + p] = c * kp - s * kq;
                     vectors[k * n + q] = s * kp + c * kq;
                 }
@@ -383,7 +360,6 @@ mod tests {
         }
 
         let spectrum = curvature.symmetrized().spectrum(&[0, 1, 2]);
-
         assert!(spectrum.untouched.is_empty(), "every parameter here carries curvature");
         assert_eq!(spectrum.values.len(), 3);
 

@@ -39,16 +39,13 @@ mod tests {
         for entry in std::fs::read_dir(dir).expect("the module's own directory") {
             let path = entry.expect("a readable entry").path();
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-
             if name == "engine.rs" || path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-
             if std::fs::read_to_string(&path).is_ok_and(|src| src.contains("soul::")) {
                 offenders.push(name);
             }
         }
-
         assert!(offenders.is_empty(), "these reach past engine.rs into soul: {offenders:?}");
     }
 }

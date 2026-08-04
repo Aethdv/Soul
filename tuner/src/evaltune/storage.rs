@@ -103,7 +103,6 @@ pub struct CheckpointData {
 pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -> Result<(), CheckpointError> {
     let mut params = BTreeMap::new();
     let mut param_names = vec![String::new(); tunables.len()];
-
     for t in tunables {
         param_names[t.idx] = t.name.clone();
         params.insert(t.name.clone(), ParamState {
@@ -132,7 +131,6 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
 
     let tmp = format!("{path}.tmp");
     let file = File::create(&tmp)?;
-
     serde_json::to_writer(BufWriter::new(file), &cp)?;
     std::fs::rename(&tmp, path)?; // atomic on Linux
     Ok(())
@@ -148,7 +146,6 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let cp: Checkpoint = serde_json::from_reader(reader)?;
-
     if cp.version != CHECKPOINT_VERSION {
         let mismatch = format!("checkpoint is version {}, this build writes {CHECKPOINT_VERSION}", cp.version);
 
@@ -163,7 +160,6 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
     let mut frozen: Vec<bool> = tunables.iter().map(|t| t.is_fixed).collect();
 
     let current_hash = compute_layout_hash(tunables);
-
     let mut fresh_params = 0;
 
     if cp.hash != current_hash {
@@ -172,7 +168,6 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
         let dropped: Vec<&str> = saved.difference(&live).copied().collect();
 
         fresh_params = live.difference(&saved).count();
-
         // Names leaving while others arrive is a rename: the trained values sit
         // unreachable under the old names while the new ones resume at defaults.
         if !dropped.is_empty() && fresh_params > 0 {
@@ -222,18 +217,15 @@ pub fn load_checkpoint(path: &str, tunables: &[Tunable], current_values: &[f64])
 pub fn peek_checkpoint(path: &str) -> Result<Checkpoint, CheckpointError> {
     let file = File::open(path)?;
     let cp: Checkpoint = serde_json::from_reader(BufReader::new(file))?;
-
     Ok(cp)
 }
 
 /// FNV-1a hash over parameter names to detect layout changes.
 pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
     let mut fnv = Fnv1a::new();
-
     for t in tunables {
         fnv.write_bytes(t.name.as_bytes());
     }
-
     fnv.digest()
 }
 
@@ -241,15 +233,12 @@ pub fn compute_layout_hash(tunables: &[Tunable]) -> u64 {
 /// don't silently zero out on resume.
 fn remap_flat_params(checkpoint_names: &[String], checkpoint_vals: &[f64], tunables: &[Tunable], fallback: &[f64]) -> Vec<f64> {
     let saved: BTreeMap<&str, f64> = checkpoint_names.iter().zip(checkpoint_vals).map(|(n, &v)| (n.as_str(), v)).collect();
-
     let mut out = fallback.to_vec();
-
     for t in tunables {
         if let Some(&v) = saved.get(t.name.as_str()) {
             out[t.idx] = v;
         }
     }
-
     out
 }
 
@@ -326,9 +315,7 @@ mod tests {
 
         // Load against a grown layout: gamma is new, so it must come back fresh.
         let grown = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true), tunable("gamma", 2, 30.0, false)];
-
         let d = load_checkpoint(path, &grown, &[1.0, 2.0, 30.0]).unwrap();
-
         // The seeds and the dataset identity are read off `Checkpoint` by `peek_checkpoint`, ahead
         // of the split and therefore ahead of this load, so that is where they are checked.
         let cp = peek_checkpoint(path).unwrap();
@@ -336,7 +323,6 @@ mod tests {
 
         assert_eq!((cp.rng_seed, cp.split_seed, cp.dataset), (999, Some(888), 777));
         assert_eq!(cp.dataset_path, "data/test.txt");
-
         assert_eq!((d.run.epoch, d.run.lr_scale, d.run.k, d.run.k_ref, d.run.k_momentum), (42, 0.5, 1.23, 1.11, 0.42));
         assert_eq!(
             (
@@ -364,7 +350,6 @@ mod tests {
     #[test]
     fn an_unseeded_trail_resumes() {
         let tunables = [tunable("alpha", 0, 1.0, false)];
-
         let state = TrainerState {
             run: RunState { epoch: 20, lr_scale: 1.0, k: 1.0, k_ref: 1.0, k_momentum: 0.0, progress: Progress::default() },
             rng_seed: 1,
@@ -384,12 +369,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("soul_ckpt_unseeded_test_{}.json", std::process::id()));
         let path = path.to_str().unwrap();
         save_checkpoint(path, &tunables, &state).unwrap();
-
         let d = load_checkpoint(path, &tunables, &[1.0]);
         std::fs::remove_file(path).ok();
-
         let progress = d.expect("an unseeded trail must resume").run.progress;
-
         assert!(progress.val_smooth.is_nan(), "the trail must resume unseeded, not at zero");
         assert!(progress.train_smooth.is_nan());
     }
@@ -397,7 +379,6 @@ mod tests {
     #[test]
     fn a_rename_refuses_to_resume_but_a_removal_does_not() {
         let tunables = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true)];
-
         let state = TrainerState {
             run: a_run(),
             rng_seed: 1,
@@ -417,18 +398,13 @@ mod tests {
         let path = std::env::temp_dir().join(format!("soul_ckpt_renamed_test_{}.json", std::process::id()));
         let path = path.to_str().unwrap();
         save_checkpoint(path, &tunables, &state).unwrap();
-
         let renamed = [tunable("alpha", 0, 1.0, false), tunable("gamma", 1, 30.0, false)];
         let refused = load_checkpoint(path, &renamed, &[1.0, 30.0]);
-
         // Nothing left in the layout wants beta's state.
         let shrunk = [tunable("alpha", 0, 1.0, false)];
         let resumed = load_checkpoint(path, &shrunk, &[1.0]);
-
         std::fs::remove_file(path).ok();
-
         assert!(refused.is_err(), "a renamed parameter must not resume");
-
         let d = resumed.expect("a removed parameter must still resume the rest");
         assert_eq!(d.values, [10.0], "alpha keeps its trained value across the removal");
         assert_eq!(d.momentum, [0.1], "and its momentum");
@@ -440,7 +416,6 @@ mod tests {
         // Round-trips through a written file with the four fields stripped: the serde defaults
         // are the whole subject, and building a Checkpoint directly would step over them.
         let tunables = [tunable("alpha", 0, 1.0, false)];
-
         let state = TrainerState {
             run: a_run(),
             rng_seed: 1,
@@ -460,7 +435,6 @@ mod tests {
         let path = std::env::temp_dir().join(format!("soul_ckpt_legacy_test_{}.json", std::process::id()));
         let path = path.to_str().unwrap();
         save_checkpoint(path, &tunables, &state).unwrap();
-
         let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let obj = raw.as_object_mut().unwrap();
         for key in ["val_smooth", "best_val_smooth", "train_smooth", "best_train_smooth"] {
@@ -468,10 +442,8 @@ mod tests {
         }
 
         std::fs::write(path, serde_json::to_string(&raw).unwrap()).unwrap();
-
         let d = load_checkpoint(path, &tunables, &[1.0]).unwrap();
         std::fs::remove_file(path).ok();
-
         assert!(d.run.progress.val_smooth.is_nan(), "an absent val trail must re-seed, got {}", d.run.progress.val_smooth);
         assert!(
             d.run.progress.train_smooth.is_nan(),
@@ -487,7 +459,6 @@ mod tests {
         // A bare u64 would default to 0, a split no older checkpoint ever drew.
         // Option is what lets a resume recognize the absence and fall back to rng_seed.
         let tunables = [tunable("alpha", 0, 1.0, false)];
-
         let state = TrainerState {
             run: a_run(),
             rng_seed: 12345,
@@ -507,14 +478,11 @@ mod tests {
         let path = std::env::temp_dir().join(format!("soul_ckpt_split_test_{}.json", std::process::id()));
         let path = path.to_str().unwrap();
         save_checkpoint(path, &tunables, &state).unwrap();
-
         let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         raw.as_object_mut().unwrap().remove("split_seed");
         std::fs::write(path, serde_json::to_string(&raw).unwrap()).unwrap();
-
         let cp = peek_checkpoint(path).unwrap();
         std::fs::remove_file(path).ok();
-
         assert_eq!(cp.split_seed, None);
         assert_eq!(cp.rng_seed, 12345, "the fallback the resume uses must survive the older format");
     }

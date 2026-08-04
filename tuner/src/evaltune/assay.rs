@@ -38,19 +38,16 @@ const COIN_FLIP: f64 = std::f64::consts::LN_2;
 /// the centipawn scale, so a bracket cut to what a shipped-scale eval needs would clamp such a
 /// candidate at the edge and report a loss that is about its units rather than its opinions.
 const SCORE_K: (f64, f64) = (1e-5, 0.2);
-
 /// The sigmoid scale the material fit holds fixed.
 ///
 /// Weights and K trade off exactly, so fixing one identifies the other, and the printed table is
 /// normalized past both.
 const FIT_K: f64 = 0.0025;
-
 const FIT_STEPS: usize = 24;
 const FIT_TOL: f64 = 1e-10;
 
 /// The five piece types a material table has an opinion about; the king is fixed at zero.
 const PIECES: [&str; 5] = ["pawn", "knight", "bishop", "rook", "queen"];
-
 /// The same five where a column header has room for one letter.
 const SYMBOLS: [&str; 5] = ["P", "N", "B", "R", "Q"];
 
@@ -88,7 +85,6 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
         };
 
         let (mut entries, ..) = load_datasets(&paths, &filter);
-
         if entries.is_empty() {
             eprintln!("{ALARM}[!] No positions loaded from {dataset}.{RESET}");
             continue;
@@ -102,7 +98,6 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
 
         println!("  Extracting features ({} entries)...", format_comma(entries.len() as u64));
         let records = entries.par_iter().map(FeatureRecord::from_entry).collect();
-
         sets.push(Set { label: label_for(&paths), paths, entries, records, loaded });
     }
 
@@ -176,7 +171,6 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
     if candidates.len() > 1 {
         println!("\n{DIM}  A checkpoint is read at its best-validation vector.{RESET}");
     }
-
     println!("\n{DIM}  {loss}, measured against the game result.");
     println!("  A constant 0.5 scores ln 2 = 0.693147; under 0.05 of headroom, a set has no outcome signal.{RESET}");
 }
@@ -238,7 +232,6 @@ fn material(sets: &[Set], shipped: &str) {
     for (label, note) in notes {
         println!("  {LAB}{label:<width$}{RESET}  {note}");
     }
-
     println!("{DIM}  L_fit is each set's loss on its own positions and does not compare across sets.{RESET}");
 }
 
@@ -291,7 +284,6 @@ fn profile(sets: &[Set]) {
 
     println!("\n{LAB}Labels{RESET}");
     labels.print();
-
     println!("\n{LAB}Positions{RESET}");
     design.print();
 
@@ -299,10 +291,8 @@ fn profile(sets: &[Set]) {
     // queen imbalances has nothing to say about a queen however many positions it holds.
     println!("\n{LAB}Imbalance: the share of positions where the count differs{RESET}");
     imbalance.print();
-
     println!("\n{LAB}And the mean phase where it does{RESET}");
     at_phase.print();
-
     print_games(sets);
 }
 
@@ -312,7 +302,6 @@ fn print_games(sets: &[Set]) {
         .iter()
         .filter_map(|set| {
             let path = set.paths.iter().find(|p| p.ends_with(".vf") || p.ends_with(".viri"))?;
-
             match scan_viri_games(path) {
                 Ok(scan) if scan.games > 0 => Some((set, scan)),
                 Ok(_) => None,
@@ -330,7 +319,6 @@ fn print_games(sets: &[Set]) {
 
     let mut games = Table::new("dataset", {
         let mut columns = strings(&["games", "plies", "kept/game", "pieces left", "draws", "mate"]);
-
         columns.push(format!("past {DECISIVE_ENDING}"));
         columns.push(format!("inside {QUIET_ENDING}"));
         columns
@@ -372,7 +360,6 @@ fn best_loss(set: &Set, values: &[f64], loss: LossFn) -> (f64, f64) {
 
     let loss_at = |k: f64| {
         let sum: f64 = scored.par_iter().map(|&(s, y)| loss.loss(sigmoid(s, k), y)).sum();
-
         sum / scored.len() as f64
     };
 
@@ -385,7 +372,6 @@ fn best_loss(set: &Set, values: &[f64], loss: LossFn) -> (f64, f64) {
             set.label
         );
     }
-
     (k, loss_at(k))
 }
 
@@ -407,7 +393,6 @@ fn material_rows(set: &Set) -> Vec<([f64; 10], f64)> {
                 design[pt] = diff * mg;
                 design[pt + 5] = diff * (1.0 - mg);
             }
-
             (design, f64::from(entry.result) / 2.0)
         })
         .collect()
@@ -437,24 +422,20 @@ fn newton_fit(rows: &[([f64; 10], f64)]) -> ([f64; 10], f64, usize) {
         for _ in 0..8 {
             let candidate = std::array::from_fn(|i| w[i] - scale * delta[i]);
             let candidate_loss = fit_loss(rows, &candidate);
-
             if candidate_loss <= loss {
                 w = candidate;
                 loss = candidate_loss;
                 moved = true;
                 break;
             }
-
             scale *= 0.5;
         }
 
         let norm: f64 = delta.iter().map(|d| d * d).sum::<f64>().sqrt() * scale;
-
         if !moved || norm < FIT_TOL {
             return (w, loss, step);
         }
     }
-
     (w, loss, FIT_STEPS)
 }
 
@@ -480,7 +461,6 @@ fn fit_derivatives(rows: &[([f64; 10], f64)], w: &[f64; 10]) -> ([f64; 10], [f64
                         h[i * 10 + j] += curvature * x[i] * x[j];
                     }
                 }
-
                 (g, h)
             },
         )
@@ -490,11 +470,9 @@ fn fit_derivatives(rows: &[([f64; 10], f64)], w: &[f64; 10]) -> ([f64; 10], [f64
                 for i in 0..10 {
                     g[i] += dg[i];
                 }
-
                 for i in 0..100 {
                     h[i] += dh[i];
                 }
-
                 (g, h)
             },
         );
@@ -514,7 +492,6 @@ fn fit_derivatives(rows: &[([f64; 10], f64)], w: &[f64; 10]) -> ([f64; 10], [f64
     for i in 0..10 {
         hessian[i * 10 + i] += 1e-12;
     }
-
     (gradient, hessian)
 }
 
@@ -535,7 +512,6 @@ fn dot(x: &[f64; 10], w: &[f64; 10]) -> f64 {
 fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
     for col in 0..10 {
         let pivot = (col..10).max_by(|&i, &j| a[i * 10 + col].abs().total_cmp(&a[j * 10 + col].abs()))?;
-
         if a[pivot * 10 + col].abs() < 1e-18 {
             return None;
         }
@@ -550,7 +526,6 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
 
         for row in col + 1..10 {
             let factor = a[row * 10 + col] / a[col * 10 + col];
-
             if factor == 0.0 {
                 continue;
             }
@@ -570,7 +545,6 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
 
         x[row] = (b[row] - known) / a[row * 10 + row];
     }
-
     Some(x)
 }
 
@@ -605,7 +579,6 @@ fn strided(entries: Vec<SoulEntry>, cap: usize) -> Vec<SoulEntry> {
         format_comma(sampled.len() as u64),
         format_comma(entries.len() as u64),
     );
-
     sampled
 }
 
@@ -621,7 +594,6 @@ fn label_for(paths: &[String]) -> String {
         while let Some(shorter) = SUFFIXES.iter().find_map(|suffix| name.strip_suffix(suffix)) {
             name = shorter.to_string();
         }
-
         name
     };
 
@@ -662,7 +634,6 @@ impl Counts {
             // Both are STM-relative, so a winner the search scored below zero is a position whose
             // label and whose eval disagree about who stands better.
             let winner = i32::from(entry.result) - 1;
-
             if winner != 0 && i32::from(entry.score) * winner < 0 {
                 self.contradictions += 1;
             }
@@ -704,7 +675,6 @@ impl Counts {
         self.phase_low += other.phase_low;
         self.phase_high += other.phase_high;
         self.pieces += other.pieces;
-
         self
     }
 }
@@ -735,7 +705,6 @@ impl Table {
     fn push(&mut self, label: &str, cells: Vec<String>) {
         self.rows.push(Row { label: label.to_string(), cells, reference: false });
     }
-
     fn push_dim(&mut self, label: &str, cells: Vec<String>) {
         self.rows.push(Row { label: label.to_string(), cells, reference: true });
     }
@@ -784,7 +753,6 @@ impl Table {
                 out.push_str(&format!("{pen}{cell:>width$}{RESET}", width = widths[i]));
             }
         }
-
         println!("{out}");
     }
 
@@ -813,12 +781,10 @@ mod tests {
 
                     design[piece] = diff * mg;
                     design[piece + 5] = diff * (1.0 - mg);
-
                     rows.push((design, sigmoid(dot(&design, weights), FIT_K)));
                 }
             }
         }
-
         rows
     }
 
@@ -839,11 +805,9 @@ mod tests {
     #[test]
     fn a_piece_that_never_varies_gets_no_opinion() {
         let mut rows = planted(&[100.0, 370.0, 382.0, 471.0, 752.0, 162.0, 513.0, 550.0, 970.0, 1897.0]);
-
         rows.retain(|(design, _)| design[4] == 0.0 && design[9] == 0.0);
 
         let (fitted, ..) = newton_fit(&rows);
-
         assert!(fitted[4].abs() < 1e-6, "a queen nothing constrains came out at {}", fitted[4]);
         assert!(fitted[9].abs() < 1e-6, "a queen nothing constrains came out at {}", fitted[9]);
         assert!((fitted[0] - 100.0).abs() < 1.0, "the pawn moved when the queen dropped out");
@@ -852,9 +816,7 @@ mod tests {
     #[test]
     fn a_sample_takes_the_whole_span_and_stops_at_the_cap() {
         let entries: Vec<SoulEntry> = (0..100).map(|i| SoulEntry { occupancy: i, ..SoulEntry::default() }).collect();
-
         let sampled = strided(entries.clone(), 10);
-
         assert_eq!(sampled.len(), 10);
         assert_eq!(sampled.first().map(|e| e.occupancy), Some(0));
         assert_eq!(sampled.last().map(|e| e.occupancy), Some(90));
