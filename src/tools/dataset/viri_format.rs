@@ -27,6 +27,11 @@ use crate::{
 const PACKED_BOARD_SIZE: usize = 32;
 const SENTINEL: [u8; 4] = [0, 0, 0, 0];
 
+/// A last score this far from equality means the generator stopped on a won position.
+pub const DECISIVE_ENDING: i32 = 1000;
+/// A last score this near equality means the generator stopped on a drawn one.
+pub const QUIET_ENDING: i32 = 50;
+
 /// White-relative game outcomes, as the header packs them.
 const WDL_DRAW: u8 = 1;
 const WDL_WIN: u8 = 2;
@@ -284,12 +289,6 @@ pub struct GameScan {
     pub decisive_endings: usize,
     pub quiet_endings: usize,
 }
-
-/// A last score this far from equality means the generator stopped on a won position.
-pub const DECISIVE_ENDING: i32 = 1000;
-
-/// A last score this near equality means the generator stopped on a drawn one.
-pub const QUIET_ENDING: i32 = 50;
 
 /// Walk every game for its ending, filter ignored: a scan describes the file as it is.
 ///

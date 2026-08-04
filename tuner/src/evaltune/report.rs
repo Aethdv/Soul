@@ -23,7 +23,7 @@ use crate::{
     evaltune::palette::{self, BRAND, COUNT, DIM, LAB, MOVED, RESET, VAL},
 };
 
-/// Eighth-blocks, tallest last: the height ramp every sparkline here draws with.
+/// Eighth-blocks, shortest to tallest; every sparkline here indexes a height level into this.
 const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Trailing comments for the paste block, by block name.
@@ -36,7 +36,7 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ("king_safety",        "[Pawn Shield, Ortho Exp, Diag Exp]"),
     ("attacker",           "[0, 1, 2, 3, 4, 5] attackers × weak"),
     ("xray",               "[Ortho King]"),
-    ("king_danger",        "pressure curvature, over DANGER_SCALE; floored at 0, the data pulls under"),
+    ("king_danger",        "pressure curvature, over DANGER_SCALE; the floor at 0 holds the curvature where the data pulls negative"),
     ("tempo",              "[MG, EG], side-to-move initiative"),
     ("bishop_pair",        "[MG, EG]"),
     ("rook_open",          "[MG, EG]"),
@@ -273,7 +273,7 @@ pub fn write_weight_array<W: Write>(
     }
 }
 
-/// The gauge reports how hard it pulled; this reads what the pull achieved.
+/// The gauge line reports how hard the pull was; this warns when the final parameters ship off the reference scale.
 ///
 /// A run can hold a statistic perfectly and still ship an eval off the scale
 /// `search_params` was written against, which is worth −25 Elo and looks like

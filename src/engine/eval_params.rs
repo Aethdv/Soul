@@ -619,7 +619,7 @@ define_weight_params! {
     king_safety = [V(23), V(11), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
     attacker    = [CV(0), V(180), V(279), V(472), V(555), V(572)], // [0, 1, 2, 3, 4, 5] attackers × weak
     xray        = [V(11)], // [Ortho King]
-    king_danger = [V(0)]; // pressure curvature, over DANGER_SCALE; floored at 0, the data pulls under
+    king_danger = [V(0)]; // pressure curvature, over DANGER_SCALE; the floor at 0 holds the curvature where the data pulls negative
 
     tempo             = [V(33), V(37)], // [MG, EG], side-to-move initiative
     bishop_pair       = [V(39), V(72)], // [MG, EG]
