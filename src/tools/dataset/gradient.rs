@@ -118,8 +118,8 @@ impl FeatureRecord {
             mobility,
             safety_us: pack_safety(saf_us),
             safety_them: pack_safety(saf_them),
-            // The accumulator sums at most 32 PSQT entries, each ≤ 128, so the i16
-            // truncation cannot wrap.
+            // The tables carry material and negate Black's entries, so this is an
+            // imbalance rather than a sum, and no legal position takes it to the i16 edge.
             static_eval: evaluate_fast(&pos, &acc, phase) as i16,
             ..Default::default()
         };
