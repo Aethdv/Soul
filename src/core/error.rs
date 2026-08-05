@@ -9,37 +9,26 @@ use thiserror::Error;
 pub enum FenError {
     #[error("Empty FEN string")]
     Empty,
-
     #[error("Too many ranks in FEN at rank {rank} (expected 8, got {count})")]
     TooManyRanks { rank: u8, count: u8 },
-
     #[error("File overflow at rank {rank}: column {file} exceeds 8")]
     FileOverflow { rank: u8, file: u8 },
-
     #[error("Rank {rank} has invalid width {width} (expected 8)")]
     InvalidRankWidth { rank: u8, width: u8 },
-
     #[error("Invalid piece character '{ch}' at rank {rank}, file {file}")]
     InvalidPiece { ch: char, rank: u8, file: u8 },
-
     #[error("Square {square} out of bounds (0-63)")]
     SquareOutOfBounds { square: i32 },
-
     #[error("Missing side to move field")]
     MissingStm,
-
     #[error("Invalid side to move '{stm}' (expected 'w' or 'b')")]
     InvalidStm { stm: String },
-
     #[error("Invalid en passant square '{square}' (expected a3-h3, a6-h6, or -)")]
     InvalidEnPassant { square: String },
-
     #[error("Missing {color} king in position")]
     MissingKing { color: &'static str },
-
     #[error("Opponent king can be captured (illegal side-to-move in check)")]
     IllegalCheck,
-
     #[error("Castling rights specify a rook at {sq}, but none was found")]
     InvalidCastlingRights { sq: String },
 }
@@ -49,10 +38,8 @@ pub enum FenError {
 pub enum MoveError {
     #[error("Illegal move from {from} to {to}")]
     IllegalMove { from: u8, to: u8 },
-
     #[error("Move not found in legal list")]
     NotFound,
-
     #[error("Invalid move format")]
     InvalidFormat,
 }
@@ -62,10 +49,8 @@ pub enum MoveError {
 pub enum EngineError {
     #[error("Search thread panicked: {0}")]
     SearchPanic(String),
-
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
     #[error("Timeout after {ms}ms")]
     Timeout { ms: u64 },
 }
@@ -90,10 +75,8 @@ impl EngineError {
 pub enum OptionError {
     #[error("Unknown option: '{name}'")]
     UnknownOption { name: String },
-
     #[error("Invalid value '{value}' for option '{name}': {reason}")]
     InvalidValue { name: String, value: String, reason: &'static str },
-
     #[error("Missing value for option '{0}'")]
     MissingValue(String),
 }
@@ -103,13 +86,10 @@ pub enum OptionError {
 pub enum SoulError {
     #[error(transparent)]
     Fen(#[from] FenError),
-
     #[error(transparent)]
     Move(#[from] MoveError),
-
     #[error(transparent)]
     Engine(#[from] EngineError),
-
     #[error(transparent)]
     Option(#[from] OptionError),
 }
