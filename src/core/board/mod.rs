@@ -26,6 +26,7 @@ pub mod bitboard;
 mod fen;
 mod make;
 pub mod spatial;
+pub mod xorboard;
 
 #[cfg(test)] mod tests;
 

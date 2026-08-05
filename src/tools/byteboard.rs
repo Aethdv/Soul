@@ -292,8 +292,7 @@ impl V64 {
         unsafe {
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
-                u64::from(_mm256_test_epi8_mask(self.0, self.0))
-                    | u64::from(_mm256_test_epi8_mask(self.1, self.1)) << 32
+                u64::from(_mm256_test_epi8_mask(self.0, self.0)) | u64::from(_mm256_test_epi8_mask(self.1, self.1)) << 32
             }
 
             #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
@@ -333,18 +332,12 @@ impl V64 {
         unsafe {
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
-                Self(
-                    _mm256_maskz_mov_epi8(mask as __mmask32, self.0),
-                    _mm256_maskz_mov_epi8((mask >> 32) as __mmask32, self.1),
-                )
+                Self(_mm256_maskz_mov_epi8(mask as __mmask32, self.0), _mm256_maskz_mov_epi8((mask >> 32) as __mmask32, self.1))
             }
 
             #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
             {
-                Self(
-                    _mm256_and_si256(self.0, spread(mask as u32)),
-                    _mm256_and_si256(self.1, spread((mask >> 32) as u32)),
-                )
+                Self(_mm256_and_si256(self.0, spread(mask as u32)), _mm256_and_si256(self.1, spread((mask >> 32) as u32)))
             }
         }
     }
