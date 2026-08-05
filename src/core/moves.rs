@@ -141,8 +141,6 @@ impl Move {
     }
 
     /// Move captures something.
-    /// Checks bit 12 directly: the capture flag is bit 0 of the 4-bit flag nibble,
-    /// which sits at bits [12..15] of the packed u16.
     #[inline(always)]
     pub const fn is_capture(self) -> bool {
         (self.0 & 0x1000) != 0
