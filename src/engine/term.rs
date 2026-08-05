@@ -19,7 +19,7 @@ pub struct TaperPair {
 }
 
 /// [`register_terms!`] dispatches each field to the term(s) that consume it.
-/// `mg_eg` is read by the tuner's PSQT/material scatter — PSQT is not a registered term.
+/// `mg_eg` is read by the tuner's PSQT/material scatter; PSQT is not a registered term.
 pub struct BucketUpstreams {
     pub mg_eg: TaperPair,
     pub mobility: TaperPair,
