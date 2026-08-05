@@ -9,9 +9,9 @@ Ref: Kaizhao Liang, Lizhang Chen, Bo Liu & Qiang Liu (2024).
 Cautious Optimizers: Improving Training with One Line of Code.
 <https://arxiv.org/abs/2411.16085v4>
 
-Ours holds on `m·g ≤ 0 && |m| > 1e-6`. Liang's canonical mask skips on c·g ≤ 0, which at
-β₁ = 0.9 reads m·g ≤ -g²/9: a subset of ours on the m·g comparison, so it steps on reversals we
-hold, while our epsilon steps on coordinates it would hold. Attempted at 490 HCE parameters, two
+Ours holds the step on `m·g ≤ 0 && |m| > 1e-6`. Liang's canonical mask holds on c·g ≤ 0, which
+at β₁ = 0.9 reads m·g ≤ -g²/9: a subset of ours on the m·g comparison, so it steps on reversals
+we sit out, while our epsilon steps where it would hold. Attempted at 490 HCE parameters, two
 retunes on separate seeds:
 
 ```text
@@ -28,11 +28,11 @@ retunes on separate seeds:
   https://asylum.red/test/5762/
 ```
 
-Liang pairs the mask with a φ/mean(φ) rescale, which we skip: it would set the surviving step
+Liang pairs the mask with a φ/mean(φ) rescale, which we leave out: it would set the surviving step
 to lr·dim/nnz, forfeiting the uniform magnitude Lion is built on and pricing every coordinate
 off a global statistic.
 
-Skipping it is not free. Gate width sets ‖Δθ‖₁ directly, so a wider gate is also a longer step,
+Leaving it out is not free. Gate width sets ‖Δθ‖₁ directly, so a wider gate is also a longer step,
 and the two runs above differ in step length as well as in mask shape. Any retry pins one of the
 two, or it buys another confounded result. `GateCensus` exists to price that: `band` and
 `canonical_only` are the two directions in which the gates disagree, and the counts are the
