@@ -164,7 +164,6 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     let sum = |slots: &[PieceSlot]| {
         slots.iter().fold((0.0, 0.0), |(mg, eg), slot| {
             let (mg_idx, eg_idx) = slot.indices();
-
             // SAFETY: a slot comes from `PieceSlot::new`, which takes a piece type ≤ 5 with a
             // mirrored square ≤ 31, or from `Default`, which is slot zero. Either way
             // `mg_index() ≤ 5·64+31 = 351` and `eg_idx = mg_idx+32 ≤ 383`, both inside the
@@ -185,7 +184,6 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
 
     for pt in 0..6 {
         let diff = f64::from(record.mat_diffs[pt]);
-
         if diff != 0.0 {
             lane_mg += diff * values[mat + pt];
             lane_eg += diff * values[mat + 6 + pt];
@@ -244,7 +242,6 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
 
     for pt in 0..6 {
         let diff = f64::from(record.mat_diffs[pt]);
-
         if diff.abs() > 0.001 {
             grads[mat + pt] += gradient * diff * mg_w;
             grads[mat + 6 + pt] += gradient * diff * eg_w;
@@ -272,7 +269,6 @@ impl PieceSlot {
     #[inline(always)]
     fn new(piece_type: usize, mirror_sq: usize) -> Self {
         debug_assert!(piece_type <= 5 && mirror_sq <= 31, "slot out of range: {piece_type}, {mirror_sq}");
-
         Self((piece_type * 32 + mirror_sq) as u8)
     }
 
@@ -284,7 +280,6 @@ impl PieceSlot {
     #[inline(always)]
     const fn mg_index(self) -> usize {
         let slot = self.0 as usize;
-
         slot + (slot & !31)
     }
 
@@ -292,7 +287,6 @@ impl PieceSlot {
     #[inline(always)]
     const fn indices(self) -> (usize, usize) {
         let mg = self.mg_index();
-
         (mg, mg + 32)
     }
 }
@@ -350,7 +344,6 @@ impl FeatureRecord {
 
             if pt == 0 {
                 let bit = 1u64 << sq.0;
-
                 if is_black {
                     black_pawns |= bit;
                 } else {
@@ -491,7 +484,6 @@ mod tests {
         for pt in 0..6 {
             for sq in 0..32 {
                 let mg = PieceSlot::new(pt, sq).mg_index();
-
                 assert_eq!(mg, pt * 64 + sq, "slot ({pt}, {sq}) lands on the wrong entry");
                 assert!(mg + 32 < 384, "slot ({pt}, {sq}) reaches past the table");
             }
@@ -520,7 +512,6 @@ mod tests {
                 let them = pos.pieces(pt, pos.stm.opposite()).popcount() as i32;
                 assert_eq!(i32::from(record.mat_diffs[pt.as_usize()]), us - them, "{fen}");
             }
-
             assert_eq!(i32::from(record.piece_count), pos.occupancy().popcount() as i32, "{fen}");
         }
     }

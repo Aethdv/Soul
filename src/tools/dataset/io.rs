@@ -36,7 +36,6 @@ pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
 pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
     let file = fs::File::open(path)?;
     let mut decoder = zstd::Decoder::new(file)?;
-
     let mut entries = Vec::new();
 
     loop {
@@ -60,7 +59,6 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
         }
     }
-
     Ok(entries)
 }
 
@@ -94,10 +92,8 @@ pub fn count_encoded(path: &str) -> io::Result<usize> {
         if skipped != payload {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame ends before its count"));
         }
-
         total += count;
     }
-
     Ok(total)
 }
 
@@ -126,7 +122,6 @@ pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
 /// The returned `f64` is always from White's perspective.
 pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
     let line = line.trim();
-
     if line.is_empty() {
         return None;
     }
@@ -139,7 +134,6 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 
         if let Some(wdl) = fields.next() {
             let result = wdl.parse::<f64>().ok()?;
-
             if let Ok(board) = Position::try_from_fen(fen) {
                 return Some((board, result));
             }
@@ -179,7 +173,6 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 /// the training pipeline expects.
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
-
     Some(SoulEntry::from_board(&board, flip_wdl(wdl, board.stm), None))
 }
 
@@ -203,7 +196,6 @@ pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
         // Lines that fail both parses are silently skipped,
         // they're comments, blank lines, or corrupted entries.
     }
-
     Ok(fens)
 }
 
@@ -221,12 +213,10 @@ fn check_results(entries: &[SoulEntry], base: usize) -> io::Result<()> {
 
 fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
     let mut enc = zstd::Encoder::new(writer, 3)?;
-
     enc.write_all(MAGIC_V6)?;
     enc.write_all(&(entries.len() as u64).to_le_bytes())?;
     enc.write_all(entries.as_bytes())?;
     enc.finish()?;
-
     Ok(())
 }
 

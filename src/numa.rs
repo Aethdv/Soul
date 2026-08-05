@@ -94,7 +94,6 @@ impl NumaTopology {
             occupied[pick] += 1;
             assignment.push(pick);
         }
-
         assignment
     }
 
@@ -131,7 +130,6 @@ fn allowed_cpus() -> Vec<Cpu> {
 
     if let Ok(online) = fs::read_to_string("/sys/devices/system/cpu/online") {
         let cpus = parse_cpu_list(online.trim());
-
         if !cpus.is_empty() {
             return cpus;
         }
@@ -145,18 +143,14 @@ fn allowed_cpus() -> Vec<Cpu> {
 /// when `/sys` has nothing to say, leaving the caller to assume one node.
 fn read_numa_nodes(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
     let online = fs::read_to_string("/sys/devices/system/node/online").ok()?;
-
     let mut nodes = Vec::new();
-
     for node in parse_cpu_list(online.trim()) {
         let list = fs::read_to_string(format!("/sys/devices/system/node/node{node}/cpulist")).ok()?;
         let cpus: Vec<Cpu> = parse_cpu_list(list.trim()).into_iter().filter(|c| allowed.contains(c)).collect();
-
         if !cpus.is_empty() {
             nodes.push(cpus);
         }
     }
-
     (!nodes.is_empty()).then_some(nodes)
 }
 
@@ -183,7 +177,6 @@ fn read_l3_domains(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
             domains.push(group);
         }
     }
-
     (!domains.is_empty()).then_some(domains)
 }
 
@@ -200,7 +193,6 @@ fn read_l3_siblings(cpu: Cpu) -> Option<String> {
             return fs::read_to_string(format!("{base}/shared_cpu_list")).ok().map(|s| s.trim().to_string());
         }
     }
-
     None
 }
 
@@ -210,7 +202,6 @@ fn parse_cpu_list(s: &str) -> Vec<Cpu> {
 
     for part in s.split(',') {
         let part = part.trim();
-
         if part.is_empty() {
             continue;
         }
@@ -228,7 +219,6 @@ fn parse_cpu_list(s: &str) -> Vec<Cpu> {
             },
         }
     }
-
     cpus
 }
 
@@ -249,7 +239,6 @@ mod sys {
         // SAFETY: sched_getaffinity(0, bytes, ptr) fills the calling thread's mask
         // into `mask` for `bytes`; the buffer is `mask.len() * 8` and lives here.
         let ret = unsafe { syscall3(SYS_SCHED_GETAFFINITY, 0, mask.len() * 8, mask.as_mut_ptr() as usize) };
-
         if ret < 0 {
             return None;
         }
@@ -258,13 +247,11 @@ mod sys {
 
         for (word, &bits) in mask.iter().enumerate() {
             let mut bits = bits;
-
             while bits != 0 {
                 cpus.push(word * 64 + bits.trailing_zeros() as usize);
                 bits &= bits - 1; // clear the lowest set bit
             }
         }
-
         Some(cpus)
     }
 
@@ -286,11 +273,9 @@ mod sys {
         // SAFETY: sched_setaffinity(0, bytes, ptr) reads `bytes` of mask for the
         // calling thread (pid 0); `bytes` is `words * 8`, exactly the buffer.
         let ret = unsafe { syscall3(SYS_SCHED_SETAFFINITY, 0, words * 8, mask.as_ptr() as usize) };
-
         if ret != 0 {
             return false;
         }
-
         // SAFETY: sched_yield takes no arguments and only reschedules.
         unsafe { syscall3(SYS_SCHED_YIELD, 0, 0, 0) };
         true
@@ -315,7 +300,6 @@ mod sys {
                 options(nostack),
             );
         }
-
         ret
     }
 }
@@ -358,7 +342,6 @@ mod tests {
     fn distribute_balances_by_fill() {
         let topo = NumaTopology { nodes: vec![(0..32).collect()], domains: vec![(0..16).collect(), (16..32).collect()] };
         let assignment = topo.distribute(4);
-
         assert_eq!(assignment.iter().filter(|&&d| d == 0).count(), 2);
         assert_eq!(assignment.iter().filter(|&&d| d == 1).count(), 2);
     }
@@ -366,7 +349,6 @@ mod tests {
     #[test]
     fn single_domain_never_binds() {
         let topo = NumaTopology { nodes: vec![(0..8).collect()], domains: vec![(0..8).collect()] };
-
         assert!(!topo.should_bind(8));
         assert_eq!(topo.distribute(4), vec![0, 0, 0, 0]);
     }
@@ -376,7 +358,6 @@ mod tests {
         // Exercises the live `/sys` reads and the affinity syscall end to end.
         // Whatever this machine is, detection always lands at least one domain.
         let topo = NumaTopology::detect();
-
         assert!(topo.num_nodes() >= 1);
         assert!(topo.num_domains() >= 1);
     }

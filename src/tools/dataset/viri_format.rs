@@ -148,10 +148,8 @@ impl ReplayFilter {
 
         if self.material_count_filtered {
             let index = pos.occupancy().popcount().min(32) as usize;
-
             weight *= 1.0 - self.material_count_probabilities.get(index).copied().unwrap_or(0.0);
         }
-
         weight
     }
 
@@ -172,7 +170,6 @@ impl ReplayFilter {
         }
 
         let winner_pov_eval = if wdl == WDL_WIN { eval } else { -eval };
-
         winner_pov_eval.min(0).unsigned_abs() > self.max_eval_incorrectness
     }
 
@@ -184,7 +181,6 @@ impl ReplayFilter {
     /// perspective `wdl` is already in.
     fn result_chance(eval: i32, material: u32, wdl: u8) -> f64 {
         let (win, draw, loss) = wdl_model(eval, material);
-
         match wdl {
             WDL_WIN => win,
             WDL_DRAW => draw,
@@ -226,7 +222,6 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
             }
 
             let candidate = &data[pos..pos + 4];
-
             if candidate == SENTINEL {
                 pos += 4;
                 break;
@@ -253,9 +248,7 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
                     weights.push(filter.sample_weight(&position, i32::from(viri_score), game_result) as f32);
                 }
             }
-
             ply += 1;
-
             position.make_move(soul_move, &mut acc);
         }
 
@@ -265,9 +258,7 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
     }
 
     let share = if seen == 0 { 0.0 } else { 100.0 * entries.len() as f64 / seen as f64 };
-
     println!("  Replayed {seen} positions, kept {} ({share:.1}%) from {} games", entries.len(), games.len());
-
     Ok((entries, weights, games))
 }
 
@@ -310,7 +301,6 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
     };
 
     let mut pos = 0usize;
-
     while pos + PACKED_BOARD_SIZE <= data.len() {
         let header = &data[pos..pos + PACKED_BOARD_SIZE];
         pos += PACKED_BOARD_SIZE;
@@ -329,7 +319,6 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
             }
 
             let candidate = &data[pos..pos + 4];
-
             if candidate == SENTINEL {
                 pos += 4;
                 break;
@@ -344,7 +333,6 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
             };
 
             plies += 1;
-
             position.make_move(soul_move, &mut acc);
         }
 
@@ -354,7 +342,6 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
         scan.results[usize::from(game_result.min(2))] += 1;
 
         let magnitude = last_score.abs();
-
         if magnitude >= MATE_BOUND {
             scan.mate_endings += 1;
         } else if magnitude >= DECISIVE_ENDING {
@@ -363,7 +350,6 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
             scan.quiet_endings += 1;
         }
     }
-
     Ok(scan)
 }
 
@@ -501,7 +487,6 @@ fn parse_packed_board(data: &[u8]) -> Option<(Position, u8, u32)> {
     pos.major_key = pos.calc_major_hash();
 
     let ply = u32::from(fullmove).saturating_sub(1) * 2 + u32::from(stm == Color::Black);
-
     Some((pos, result, ply))
 }
 
@@ -595,7 +580,6 @@ mod tests {
 
     fn keeps(filter: &ReplayFilter, fen: &str, mv: Move, eval: i32, wdl: u8, ply: u32) -> bool {
         let pos = Position::from_fen(fen);
-
         !filter.should_filter(&pos, mv, eval, wdl, ply)
     }
 
@@ -607,7 +591,6 @@ mod tests {
     fn unrestricted_keeps_everything() {
         let filter = ReplayFilter::UNRESTRICTED;
         let capture = pick(OPEN, Move::is_tactical).1;
-
         assert!(keeps(&filter, OPEN, quiet_move(OPEN), 0, WDL_DRAW, 0));
         assert!(keeps(&filter, OPEN, capture, 30_000, WDL_WIN, 0));
         assert!(keeps(&filter, IN_CHECK, quiet_move(IN_CHECK), -30_000, WDL_LOSS, 0));
@@ -616,13 +599,10 @@ mod tests {
     #[test]
     fn min_ply_and_min_pieces_gate_separately() {
         let by_ply = ReplayFilter { min_ply: 8, ..ReplayFilter::UNRESTRICTED };
-
         assert!(!keeps(&by_ply, OPEN, quiet_move(OPEN), 0, WDL_DRAW, 7));
         assert!(keeps(&by_ply, OPEN, quiet_move(OPEN), 0, WDL_DRAW, 8));
-
         let on_board = Position::from_fen(OPEN).occupancy().popcount();
         let by_pieces = ReplayFilter { min_pieces: on_board + 1, ..ReplayFilter::UNRESTRICTED };
-
         assert!(!keeps(&by_pieces, OPEN, quiet_move(OPEN), 0, WDL_DRAW, 0));
         assert!(keeps(
             &ReplayFilter { min_pieces: on_board, ..ReplayFilter::UNRESTRICTED },
@@ -637,7 +617,6 @@ mod tests {
     #[test]
     fn max_eval_is_exclusive() {
         let filter = ReplayFilter { max_eval: 450, ..ReplayFilter::UNRESTRICTED };
-
         assert!(keeps(&filter, OPEN, quiet_move(OPEN), 449, WDL_DRAW, 0));
         assert!(!keeps(&filter, OPEN, quiet_move(OPEN), 450, WDL_DRAW, 0), "the bound itself is filtered");
         assert!(!keeps(&filter, OPEN, quiet_move(OPEN), -450, WDL_DRAW, 0), "and it reads the magnitude");
@@ -666,15 +645,12 @@ mod tests {
     fn eval_incorrectness_is_read_from_the_winner() {
         let filter = ReplayFilter { max_eval_incorrectness: 400, ..ReplayFilter::UNRESTRICTED };
         let quiet = quiet_move(OPEN);
-
         assert!(!keeps(&filter, OPEN, quiet, -401, WDL_WIN, 0));
         assert!(keeps(&filter, OPEN, quiet, -400, WDL_WIN, 0));
         assert!(keeps(&filter, OPEN, quiet, 30_000, WDL_WIN, 0), "a winning score for the winner is never incorrect");
-
         // Eval is White-relative, so a Black win puts the winner at -401 here.
         assert!(!keeps(&filter, OPEN, quiet, 401, WDL_LOSS, 0));
         assert!(keeps(&filter, OPEN, quiet, -30_000, WDL_LOSS, 0));
-
         assert!(!keeps(&filter, OPEN, quiet, 401, WDL_DRAW, 0));
         assert!(!keeps(&filter, OPEN, quiet, -401, WDL_DRAW, 0));
         assert!(keeps(&filter, OPEN, quiet, 400, WDL_DRAW, 0));
@@ -684,7 +660,6 @@ mod tests {
     fn decimation_does_not_reach_the_replay() {
         let quiet = quiet_move(OPEN);
         let certain = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 1.0, ..ReplayFilter::UNRESTRICTED };
-
         assert!(keeps(&certain, OPEN, quiet, 0, WDL_DRAW, 0), "a drop chance of 1.0 must still load");
     }
 
@@ -706,10 +681,8 @@ mod tests {
     fn the_wdl_gate_weighs_what_the_eval_predicted() {
         let filter = ReplayFilter { wdl_filtered: true, ..ReplayFilter::UNRESTRICTED };
         let pos = Position::from_fen(OPEN);
-
         let won = filter.sample_weight(&pos, 2000, WDL_WIN);
         let lost = filter.sample_weight(&pos, 2000, WDL_LOSS);
-
         assert!(won > 0.9, "a won game scored as won weighed {won}");
         assert!(lost < 0.1, "the same score against a loss weighed {lost}");
     }
@@ -717,7 +690,6 @@ mod tests {
     #[test]
     fn the_defaults_are_the_documented_ones() {
         let filter = ReplayFilter::default();
-
         assert_eq!(filter.min_ply, 16);
         assert_eq!(filter.min_pieces, 4);
         assert_eq!(filter.max_eval, 31339);
@@ -746,7 +718,6 @@ mod tests {
         assert_eq!(a.castling_rooks, b.castling_rooks);
         assert_eq!(a.is_frc, b.is_frc);
         assert_eq!(a.occupancy(), b.occupancy());
-
         for sq_idx in 0..64 {
             let sq = Square(sq_idx as u8);
             assert_eq!(a.piece_at(sq), b.piece_at(sq), "piece on {sq:?}");
@@ -759,7 +730,6 @@ mod tests {
     fn assert_wire_roundtrip(fen: &str, result: f64, score: i32, halfmove: u8, fullmove: u16) {
         let pos = Position::from_fen(fen);
         let entry = quant::from_board(&pos, result, Some(score));
-
         let (decoded, game_result, ply) =
             parse_packed_board(&wire_from_entry(&entry, halfmove, fullmove, 0)).expect("a test-written wire decodes");
 
@@ -796,7 +766,6 @@ mod tests {
 
         let entry = quant::from_board(&pos, 1.0, Some(0));
         let (decoded, ..) = parse_packed_board(&wire_from_entry(&entry, 0, 3, 0)).expect("well-formed wire");
-
         assert_position_equal(&pos, &decoded);
         assert_eq!(decoded.castling_rights, WHITE_OO | WHITE_OOO);
         assert_eq!(decoded.castling_rooks[ROOK_W_QS], Square(1));

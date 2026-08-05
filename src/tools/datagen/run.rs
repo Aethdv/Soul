@@ -44,7 +44,6 @@ const BADGE_BAD: &str = "\x1b[91m[BAD]\x1b[0m";
 /// Dashboard refresh interval.
 /// 10 Hz is smooth enough without burning CPU on terminal writes.
 const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
-
 /// Number of lines the dashboard occupies. We print this many newlines on
 /// first render, then cursor-up by this amount on every subsequent frame.
 const DASHBOARD_LINES: usize = 14;
@@ -82,7 +81,6 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // during multi-hour runs.
     let all_cores = available_parallelism().map_or(1, NonZero::get);
     let num_threads = config.thread_count.unwrap_or_else(|| (all_cores / 2).max(1));
-
     let global = Arc::new(GlobalStats::new());
 
     print_banner(&config, num_threads, book.len(), start_count);
@@ -141,14 +139,12 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
                 }
 
                 let entries = worker.play_game();
-
                 if !entries.is_empty() && tx.send(entries).is_err() {
                     break;
                 }
             }
         }));
     }
-
     drop(tx); // channel closes when all senders drop
 
     // Flush results to disk periodically
@@ -321,7 +317,6 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     // Quality badge reflects the underlying filter selectivity, not just how often
     // we skip positions for variety.
     let normalized = snap.pass_rate();
-
     let badge = if normalized > 30.0 {
         BADGE_OK
     } else if normalized > 10.0 {
@@ -335,7 +330,6 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         for _ in 0..DASHBOARD_LINES {
             println!();
         }
-
         *first_frame = false;
     }
 
@@ -442,7 +436,6 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
 fn load_books(paths: &[String]) -> Vec<String> {
     println!("Loading opening books...");
     let mut all = Vec::new();
-
     for path in paths {
         match load_epd_fens(path) {
             Ok(fens) => {
@@ -452,7 +445,6 @@ fn load_books(paths: &[String]) -> Vec<String> {
             Err(e) => eprintln!("  {RED}Failed to load {path}: {e}{RESET}"),
         }
     }
-
     all
 }
 
@@ -464,7 +456,6 @@ fn resolve_config(parsed: DatagenConfig, resume: bool) -> DatagenConfig {
         cfg.book_paths = parsed.book_paths;
         return cfg;
     }
-
     parsed
 }
 
@@ -511,7 +502,6 @@ fn print_banner(config: &DatagenConfig, num_threads: usize, book_count: usize, s
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
     }
-
     println!();
 }
 
@@ -525,7 +515,6 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Datag
     if let Err(e) = append_encoded(output_path, pending) {
         eprintln!("{RED}[ERROR] Failed to save batch: {e}{RESET}");
     }
-
     pending.clear();
     let _ = config.save();
 }
@@ -662,7 +651,6 @@ fn parse_args(args: &[&str]) -> (DatagenConfig, bool) {
                 print_help();
                 process::exit(0);
             },
-
             _ => {}, // Unknown flags silently ignored.
         }
     }
@@ -674,23 +662,19 @@ fn parse_args(args: &[&str]) -> (DatagenConfig, bool) {
     } else if cfg.soft_nodes.is_some() || cfg.hard_nodes.is_some() {
         cfg.depth = MAX_DEPTH;
     }
-
     (cfg, resume)
 }
 
 /// Parses a number string with optional K/M/B suffix.
 fn parse_suffix(s: &str) -> Option<u64> {
     let lower = s.to_lowercase();
-
     // Try stripping a magnitude suffix and multiplying.
     let suffixes: &[(&str, f64)] = &[("b", 1e9), ("m", 1e6), ("k", 1e3)];
-
     for &(suffix, multiplier) in suffixes {
         if let Some(stem) = lower.strip_suffix(suffix) {
             return stem.parse::<f64>().map(|n| (n * multiplier) as u64).ok();
         }
     }
-
     // No suffix: strip commas and parse directly.
     s.replace(',', "").parse().ok()
 }

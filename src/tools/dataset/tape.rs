@@ -95,7 +95,6 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
 
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
         let phase_idx = LAYOUT.phase_offset + pt;
-
         if phase_idx < values.len() {
             phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
         }
@@ -208,7 +207,6 @@ pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64;
     accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
 
     let phase = compute_phase_f64(&piece_counts, values);
-
     // Same generator the DualNode path uses: no per-term hand literal to drift.
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
@@ -247,14 +245,12 @@ fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
             let mg_idx = pt * 64 + mirror_idx;
             let eg_idx = pt * 64 + 32 + mirror_idx;
-
             param_grads[mg_idx] += d_mg;
             param_grads[eg_idx] += d_eg;
         }
 
         let mut bb_b = board.pieces(piece, Color::Black);
         let count_b = bb_b.popcount() as f64;
-
         param_grads[mat_mg_idx] -= d_mg * count_b;
         param_grads[mat_eg_idx] -= d_eg * count_b;
 
@@ -263,7 +259,6 @@ fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
             let mg_idx = pt * 64 + mirror_idx;
             let eg_idx = pt * 64 + 32 + mirror_idx;
-
             param_grads[mg_idx] -= d_mg;
             param_grads[eg_idx] -= d_eg;
         }
@@ -296,21 +291,18 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
         while bb_w.is_not_empty() {
             let sq = bb_w.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
-
             lane_vals[0] += values[pt * 64 + mirror_idx];
             lane_vals[1] += values[pt * 64 + 32 + mirror_idx];
         }
 
         let mut bb_b = board.pieces(piece, Color::Black);
         let count_b = bb_b.popcount() as f64;
-
         lane_vals[0] -= count_b * mat_mg;
         lane_vals[1] -= count_b * mat_eg;
 
         while bb_b.is_not_empty() {
             let sq = bb_b.pop_lsb();
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
-
             lane_vals[0] -= values[pt * 64 + mirror_idx];
             lane_vals[1] -= values[pt * 64 + 32 + mirror_idx];
         }
@@ -473,7 +465,6 @@ mod tests {
             let (hi, lo) = (danger_buckets(p + h, 0.0), danger_buckets((p - h).max(0.0), 0.0));
             let rise = LinearCombiner::forward(&hi, phase, &shipped) - LinearCombiner::forward(&lo, phase, &shipped);
             let measured = rise / (hi.danger_us - lo.danger_us);
-
             assert!((analytic - measured).abs() < 0.05, "danger slope at {p}: analytic {analytic}, finite difference {measured}",);
         }
     }
@@ -498,7 +489,6 @@ mod tests {
             let hi = LinearCombiner::forward(&buckets, phase, &curvature(span));
             let lo = LinearCombiner::forward(&buckets, phase, &curvature(0.0));
             let measured = (hi - lo) / span;
-
             assert!(
                 (analytic - measured).abs() < 0.05,
                 "curvature grad at ({us}, {them}): analytic {analytic}, finite difference {measured}",
@@ -547,12 +537,10 @@ mod tests {
                     asserted += 1;
 
                     let bound = ROUND_SITES * (1.0 + f);
-
                     assert!((got - want).abs() <= bound, "curve {curve}, ×{f} on '{fen}': {got} against {want}");
                 }
             }
         }
-
         assert!(asserted >= 12, "no position carried enough eval to test: {asserted}");
     }
 
@@ -563,12 +551,10 @@ mod tests {
     #[test]
     fn test_i32_matches_f64_oracle() {
         let values = default_values(&collect_parameters());
-
         for fen in FENS {
             let pos = Position::from_fen(fen);
             let engine = f64::from(evaluate(&pos, &pos.get_initial_accumulator()));
             let tuner = eval_f64(&pos, &values);
-
             assert!((engine - tuner).abs() < 1e-9, "engine {engine} vs tuner {tuner} on '{fen}'");
         }
     }
@@ -696,7 +682,6 @@ mod tests {
     #[test]
     fn test_encoded_block_coverage_oracle() {
         let base = default_values(&collect_parameters());
-
         let records: Vec<FeatureRecord> = FENS
             .iter()
             .map(|fen| FeatureRecord::from_entry(&SoulEntry::from_board(&Position::from_fen(fen), TARGET, Some(20))))
@@ -704,13 +689,11 @@ mod tests {
 
         for block in BLOCKS {
             let mut bumped = base.clone();
-
             for slot in &mut bumped[block.offset..block.offset + block.len] {
                 *slot += 100.0;
             }
 
             let moved = records.iter().any(|r| (eval_record(r, &base) - eval_record(r, &bumped)).abs() > 1e-9);
-
             assert!(moved, "block `{}` never moves the cached eval: unpacked in from_entry, or no FEN reaches it", block.name);
         }
     }
@@ -721,14 +704,11 @@ mod tests {
     #[test]
     fn test_encoded_matches_board_at_defaults_oracle() {
         let values = default_values(&collect_parameters());
-
         for fen in FENS {
             let pos = Position::from_fen(fen);
             let record = FeatureRecord::from_entry(&SoulEntry::from_board(&pos, TARGET, Some(20)));
-
             let board = eval_f64(&pos, &values);
             let cached = eval_record(&record, &values);
-
             assert!((board - cached).abs() < 1e-9, "board {board} vs cached {cached} on '{fen}'");
         }
     }
@@ -745,26 +725,24 @@ mod tests {
 
         let iters: usize = env::var("SOUL_OPS_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
         let mode = env::var("SOUL_OPS_MODE").unwrap_or_default();
-
         let values = default_values(&collect_parameters());
         let boards: Vec<Position> = BENCH.lines().filter(|line| !line.trim().is_empty()).map(Position::from_fen).collect();
         let records: Vec<FeatureRecord> = boards
             .iter()
             .map(|board| FeatureRecord::from_entry(&SoulEntry::from_board(board, TARGET, Some(20))))
             .collect();
+
         let mut grads = vec![0.0f64; values.len()];
 
         // Generic rather than `dyn`, so each mode gets its own loop instead of an
         // indirect call per position.
         fn drive(iters: usize, n: usize, mut body: impl FnMut(usize) -> f64) -> f64 {
             let mut sink = 0.0;
-
             for _ in 0..iters {
                 for i in 0..n {
                     sink += body(i);
                 }
             }
-
             sink
         }
 

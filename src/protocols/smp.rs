@@ -32,7 +32,6 @@ pub struct LazySmpPool {
 pub fn table_and_pool(hash_mb: usize, threads: usize) -> (Arc<TranspositionTable>, Arc<LazySmpPool>) {
     let tt = Arc::new(TranspositionTable::new(hash_mb, threads));
     let pool = LazySmpPool::new(threads, tt.clone());
-
     (tt, pool)
 }
 

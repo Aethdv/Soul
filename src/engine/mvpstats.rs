@@ -81,7 +81,6 @@ pub fn report() {
 
 fn report_quiets() {
     let nodes = QUIET_NODES.load(Relaxed);
-
     if nodes == 0 {
         return;
     }
@@ -106,7 +105,6 @@ fn report_quiets() {
 
 fn report_cutoffs() {
     let nodes = CUTOFF_NODES.load(Relaxed);
-
     if nodes == 0 {
         return;
     }
@@ -130,7 +128,6 @@ fn report_cutoffs() {
 
 fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize) {
     let mut cumulative = 0u64;
-
     for (i, b) in buckets.iter().enumerate() {
         let c = b.load(Relaxed);
 

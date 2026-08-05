@@ -23,7 +23,6 @@ pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
     let to_sq = square_from_str(&uci[2..4])?;
 
     let promo = if uci.len() == 5 { Some(piece_from_char(uci.chars().nth(4).unwrap())?) } else { None };
-
     // Find matching legal move
     let legal = gen_legal_moves(board);
 
@@ -52,7 +51,6 @@ pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
                     return true;
                 }
             }
-
             false
         })
         .copied()

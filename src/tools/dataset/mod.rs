@@ -102,7 +102,6 @@ mod tests {
             for result in 0..=2u8 {
                 assert_eq!(flip_result(flip_result(result, stm), stm), result, "{result} under {stm:?}");
             }
-
             for wdl in [0.0, 0.25, 0.5, 1.0] {
                 assert!((flip_wdl(flip_wdl(wdl, stm), stm) - wdl).abs() < f64::EPSILON, "{wdl} under {stm:?}");
             }

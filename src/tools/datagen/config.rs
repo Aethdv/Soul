@@ -81,7 +81,6 @@ impl Default for DatagenConfig {
 impl DatagenConfig {
     pub fn load() -> Result<Self> {
         let path = CONFIG_FILENAME;
-
         if !Path::new(path).exists() {
             return Ok(Self::default());
         }

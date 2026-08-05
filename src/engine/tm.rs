@@ -153,7 +153,6 @@ impl Clock {
         let open = params.mtg_opening as f64;
         let end = params.mtg_endgame as f64;
         let p = (phase as f64).clamp(0.0, TOTAL_PHASE as f64);
-
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
@@ -175,7 +174,6 @@ impl Clock {
             let frac = params.tm_sd_base as f64 / 100.0 + params.tm_sd_ramp as f64 / 1000.0 * self.ply as f64;
             let ceiling = (self.time as f64 * cap) as u64;
             let base = (self.time as f64 * frac) as u64;
-
             base.min(ceiling)
         };
 
@@ -186,7 +184,6 @@ impl Clock {
     fn soft_ms(&self, mtg: f64, params: &SearchParams) -> u64 {
         let base = (self.time as f64 / mtg) as u64;
         let inc_contrib = (self.inc as f64 * (params.tm_soft_inc as f64 / 100.0)) as u64;
-
         base + inc_contrib
     }
 }
@@ -214,7 +211,6 @@ fn compute_budget(
     }
 
     let clock = Clock::for_stm(limits, stm, game_ply);
-
     if clock.is_unclocked() {
         return (Duration::MAX, Duration::MAX);
     }
@@ -222,7 +218,6 @@ fn compute_budget(
     let mtg = clock.moves_to_go(phase, params);
     let soft_ms = clock.soft_ms(mtg, params);
     let hard_ms = clock.hard_ms(mtg, params);
-
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }
 

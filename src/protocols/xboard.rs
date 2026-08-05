@@ -66,7 +66,6 @@ pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
 
     while let Some(Ok(line)) = lines.next() {
         let trimmed = line.trim();
-
         if trimmed.is_empty() {
             continue;
         }
@@ -176,6 +175,7 @@ impl XBoardState {
             // the helpers and wait for them to park before clearing the flag.
             pool.launch(&cfg, board, &history);
 
+            tt.bind_search_thread(0, cfg.threads);
             let mut ctx = Searcher::new(&cfg, &board, &history, tt);
             ctx.iterative_deepening(&mut persistent_history);
 
@@ -362,11 +362,9 @@ fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
     }
 
     let engine_turn = state.engine_side == Some(state.board.stm);
-
     if state.mode == Mode::Normal && engine_turn {
         state.start_search();
     }
-
     true
 }
 
@@ -388,14 +386,12 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
         let secs = if parts.len() > 1 { parts[1].parse::<u64>().unwrap_or(0) } else { 0 };
 
         let total_ms = (mins * 60 + secs) * 1000;
-
         state.limits.wtime = total_ms;
         state.limits.btime = total_ms;
     }
 
     if let Some(inc) = args.next().and_then(|s| s.parse::<f64>().ok()) {
         let inc_ms = (inc * 1000.0) as u64;
-
         state.limits.winc = inc_ms;
         state.limits.binc = inc_ms;
     }
@@ -473,13 +469,11 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
                 (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
-
         "overhead" => {
             if let Ok(v) = value.parse::<u64>() {
                 state.overhead = v.clamp(0, 2000);
             }
         },
-
         "showwdl" => {
             if let Ok(v) = value.parse::<u8>() {
                 state.show_wdl = v != 0;

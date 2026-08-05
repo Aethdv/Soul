@@ -501,12 +501,10 @@ macro_rules! collect_groups {
                 if p.name.starts_with("PHASE") {
                     assert!(p.is_fixed, "PHASE must be constant (CV); tuning phase is not supported.");
                 }
-
                 p.idx = all.len();
                 all.push(p);
             }
         )*
-
         all
     }};
 }

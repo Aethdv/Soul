@@ -165,7 +165,7 @@ macro_rules! register_bonus {
             mobility::MobilityTerm   => mobility,
             mobility::KingSafetyTerm => king_safety,
             XrayTerm                 => xray,
-            $( $term => bonus, )*
+            $( $term                 => bonus, )*
         }
     };
 }
@@ -260,7 +260,6 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 
     let div = std::cmp::max(params.lazy_eval_divisor, 1);
     let scaled = (volatility * phase) / div;
-
     params.lazy_eval_margin + scaled
 }
 
@@ -489,7 +488,6 @@ impl SharedFeatures {
         for sq in pawn.w_passers {
             enemy_king_dist[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
         }
-
         for sq in pawn.b_passers {
             enemy_king_dist[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
         }
@@ -597,7 +595,6 @@ macro_rules! tapered_bonus_term {
             #[inline(always)]
             fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
                 let feature = T::from_i32(features.$sf_field);
-
                 acc.bonus_mg += params.$mg * feature;
                 acc.bonus_eg += params.$eg * feature;
             }
@@ -647,7 +644,6 @@ macro_rules! tapered_bonus_term {
 
                 let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
                 let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
-
                 for i in 0..$n {
                     acc.bonus_mg += values[mg + i] * features[i];
                     acc.bonus_eg += values[eg + i] * features[i];
@@ -662,7 +658,6 @@ macro_rules! tapered_bonus_term {
 
                 let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
                 let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
-
                 for i in 0..$n {
                     grads[mg + i] += upstream.d_mg * features[i];
                     grads[eg + i] += upstream.d_eg * features[i];

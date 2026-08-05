@@ -21,6 +21,11 @@ use crate::{
     },
 };
 
+/// Denominator of the curvature weight, sized so one integer step of
+/// `KING_DANGER` is ~3% of the shipped curve rather than 25%. `pressure²` tops
+/// out near 216k, leaving `i32` room for curvatures into the thousands.
+pub const DANGER_SCALE: i32 = 32768;
+
 /// Per-bucket score accumulators filled by the term layer before combination.
 ///
 /// Fields are either pre-tapered (`mg_eg`, `mobility`), where the mg/eg blend
@@ -69,11 +74,6 @@ impl CombinerParams<f64> {
     }
 }
 
-/// Denominator of the curvature weight, sized so one integer step of
-/// `KING_DANGER` is ~3% of the shipped curve rather than 25%. `pressure²` tops
-/// out near 216k, leaving `i32` room for curvatures into the thousands.
-pub const DANGER_SCALE: i32 = 32768;
-
 /// The one non-linearity in the eval: pressure accelerates instead of scaling
 /// with the weight table alone. Curvature is a numerator so that zero is exactly
 /// the linear block; as a divisor it could only approach one.
@@ -121,7 +121,6 @@ impl Combiner for LinearCombiner {
         let safety_diff = buckets.safety_us - buckets.safety_them - danger + buckets.xray;
         let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
         let safety = taper(safety_diff, T::zero(), phase);
-
         buckets.mg_eg + buckets.mobility + bonus + safety
     }
 

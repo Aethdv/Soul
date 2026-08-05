@@ -39,7 +39,6 @@ struct AnimationGuard {
 impl Drop for AnimationGuard {
     fn drop(&mut self) {
         self.running.store(false, Relaxed);
-
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -57,7 +56,6 @@ pub fn run(depth: i32, hash_mb: usize) {
     let running = Arc::new(AtomicBool::new(true));
 
     let tty = io::stdout().is_terminal();
-
     if tty {
         println!("{}{BOLD}✦ Soul v{}{RESET}", color::ansi_fg(PURPLE), env!("CARGO_PKG_VERSION"));
     }
@@ -138,7 +136,6 @@ fn spawn_spinner(
             phase += 1;
             thread::sleep(frame);
         }
-
         render_frame(phase);
     })
 }

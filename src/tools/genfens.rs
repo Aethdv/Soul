@@ -58,13 +58,11 @@ impl Request {
     /// skipped in turn, so a lone flag cannot swallow the key behind it.
     fn parse(args: &[&str]) -> Self {
         let mut request = Self { count: 1, seed: 0, book: None, plies: None };
-
         if let Some(count) = args.first().and_then(|n| n.parse().ok()) {
             request.count = count;
         }
 
         let mut rest = args.iter().skip(1).copied();
-
         while let Some(key) = rest.next() {
             match key {
                 "seed" => {
@@ -77,7 +75,6 @@ impl Request {
                 _ => {},
             }
         }
-
         request
     }
 
@@ -95,7 +92,6 @@ impl Request {
 fn opening(book: &[String], rng: &mut Rng, plies: Option<usize>) -> Option<String> {
     (0..MAX_ATTEMPTS).find_map(|_| {
         let plies = plies.unwrap_or_else(|| rng.usize(MIN_PLIES..=MAX_PLIES));
-
         play_out(book, rng, plies)
     })
 }
@@ -108,14 +104,11 @@ fn play_out(book: &[String], rng: &mut Rng, plies: usize) -> Option<String> {
 
     for _ in 0..plies {
         let moves = gen_legal_moves(&pos);
-
         if moves.is_empty() {
             return None;
         }
-
         pos.make_move(moves[rng.usize(..moves.len())], &mut acc);
     }
-
     (!gen_legal_moves(&pos).is_empty()).then(|| pos.as_fen())
 }
 

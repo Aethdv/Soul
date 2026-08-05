@@ -115,7 +115,6 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
         Protocol::Uci => print_uci(data, pretty),
         Protocol::XBoard => print_xboard(data),
     }
-
     let _ = io::stdout().flush();
 }
 
@@ -123,7 +122,6 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
 /// the principal variation in SAN, and a colored history of recent iterations.
 pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let ansi = data.use_ansi;
-
     if ansi {
         print!("\x1b[H");
     }
@@ -209,7 +207,6 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
         if snap.line.len > 8 {
             print!("{dim}…{reset}");
         }
-
         println!("\x1b[K");
     }
 
@@ -218,7 +215,6 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     if ansi {
         print!("\x1b[J"); // Clear to end of screen
     }
-
     let _ = io::stdout().flush();
 }
 
@@ -234,7 +230,6 @@ fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
         let level = ((sigmoid(snap.score) * 8.0) as usize).min(7);
         write!(out, "{}{}", tui_fg(score_color(snap.score), enabled), BLOCKS[level]).unwrap();
     }
-
     out.push_str(reset);
     out
 }
@@ -295,7 +290,6 @@ fn wdl_row(label: &str, pct: f32, hue: Rgb, width: usize, enabled: bool) -> Stri
     let filled = (frac * width as f64) as usize;
 
     let mut bars = String::with_capacity(width * 20);
-
     for i in 0..filled {
         let t = i as f64 / width.saturating_sub(1).max(1) as f64;
         write!(bars, "{}#", tui_fg(color::mix(WDL_FLOOR, hue, t), enabled)).unwrap();
@@ -319,7 +313,6 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
     let from = mv.from();
     let to = mv.to();
     let pt = board.piece_at(from);
-
     if pt == PieceType::King && mv.is_castling() {
         return if to > from { "O-O".into() } else { "O-O-O".into() };
     }
@@ -386,7 +379,6 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
         let responses = gen_legal_moves(board);
         san.push(if responses.is_empty() { '#' } else { '+' });
     }
-
     board.unmake_move(mv, &undo);
     san
 }
@@ -419,7 +411,6 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
         let w = (wf * 1000.0).round() as u32;
         let d = (df * 1000.0).round() as u32;
         let l = (lf * 1000.0).round() as u32;
-
         format!(" wdl {w} {d} {l}")
     } else {
         String::new()
@@ -434,7 +425,6 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
 
     if pretty {
         let t = data.time_ms.try_into().unwrap_or(u64::MAX);
-
         // One column, taken from the padding the score already carried, so the
         // columns after it stay where they were.
         let mark = match data.bound {
@@ -480,11 +470,9 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             (Some(b), Some(a)) => {
                 let legal = gen_legal_moves(b);
                 let san = to_san(b, mv, legal.as_slice());
-
                 b.make_move(mv, a);
                 san
             },
-
             _ => mv.to_uci(false),
         };
 
@@ -497,18 +485,15 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             print!(" {s}");
         }
     }
-
     println!();
 }
 
 fn print_xboard(data: &SearchInfoData<'_>) {
     let cs = (data.time_ms + 5) / 10;
     print!("{:>2} {:>5} {:>6} {:>10} ", data.depth, data.score, cs, data.nodes);
-
     for i in 0..data.pv.len {
         print!("{} ", data.pv.moves[i].to_uci(data.board.is_frc));
     }
-
     println!();
 }
 
@@ -522,7 +507,6 @@ fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
     let mut acc = board.get_initial_accumulator();
     let mut num = board.fullmove_number;
     let mut white_to_move = board.stm == Color::White;
-
     let mut out = String::with_capacity(moves.len() * 12);
 
     for (i, &mv) in moves.iter().enumerate() {
@@ -542,9 +526,7 @@ fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
         if !white_to_move {
             num += 1;
         }
-
         white_to_move = !white_to_move;
     }
-
     out
 }

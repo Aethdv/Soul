@@ -19,7 +19,6 @@ pub fn wdl_model(score: i32, material: u32) -> (f64, f64, f64) {
     let w = 1.0 / (1.0 + ((a - v) / b).exp());
     let l = 1.0 / (1.0 + ((a + v) / b).exp());
     let d = (1.0 - w - l).max(0.0);
-
     (w, d, l)
 }
 

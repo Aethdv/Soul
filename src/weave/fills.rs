@@ -29,13 +29,11 @@ macro_rules! kogge_fill {
         #[inline(always)]
         pub fn $name(mut generator: Vu64x4, mut propagator: Vu64x4) -> Vu64x4 {
             $( propagator = Vu64x4::splat($wrap).andnot(propagator); )?
-
             generator |= propagator & generator.$shift::<$s1>();
             propagator &= propagator.$shift::<$s1>();
             generator |= propagator & generator.$shift::<$s2>();
             propagator &= propagator.$shift::<$s2>();
             generator |= propagator & generator.$shift::<$s3>();
-
             generator
         }
     };

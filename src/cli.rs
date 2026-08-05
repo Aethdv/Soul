@@ -83,13 +83,9 @@ impl Help {
     fn print_line_internal(&self, indent: usize, name: &str, args: &str, desc: &str) {
         let name_len = name.len();
         let args_len = args.len();
-
         let gap = usize::from(args_len > 0);
-
         let content_len = indent + name_len + gap + args_len;
-
         let padding = if content_len < self.width { self.width - content_len } else { 1 };
-
         let spaces_indent = " ".repeat(indent);
         let spaces_pad = " ".repeat(padding);
 

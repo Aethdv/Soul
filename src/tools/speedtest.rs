@@ -42,7 +42,6 @@ pub fn run(limit: usize) {
 
     let mut total_nodes: u64 = 0;
 
-    // Header
     println!();
     println!("  Running speedtest on {total} positions...");
     println!();
@@ -59,7 +58,6 @@ pub fn run(limit: usize) {
             .saturating_mul(2);
 
         let move_time = 50000 / (ply + 15);
-
         let limits = Limits { movetime: move_time, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
         let history = vec![board.hash];

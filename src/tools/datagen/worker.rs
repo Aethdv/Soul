@@ -163,7 +163,6 @@ impl WorkerState {
 
         for _ in 0..self.config.random_plies {
             let moves = gen_legal_moves(&self.board);
-
             if moves.is_empty() {
                 return Vec::new();
             }
@@ -242,7 +241,6 @@ impl WorkerState {
             self.local_plies += 1;
 
             let moves = gen_legal_moves(&self.board);
-
             // Checkmate / Stalemate
             if moves.is_empty() {
                 outcome = if self.board.checkers().is_not_empty() {
@@ -353,7 +351,6 @@ impl WorkerState {
             let pieces = self.board.occupancy().popcount();
 
             let should_save = should_save && ply >= self.config.min_ply && pieces >= self.config.min_pieces;
-
             if !should_save {
                 if ply < self.config.min_ply {
                     self.global.filtered_ply.fetch_add(1, Relaxed);
@@ -410,18 +407,14 @@ impl WorkerState {
                 self.global.filtered_incorrect.fetch_add(1, Relaxed);
                 continue;
             }
-
             self.confirmed.push(entry);
         }
-
         self.global.saved.fetch_add(self.confirmed.len() as u64, Relaxed);
-
         // Flush local stats to global
         self.global.attempted.fetch_add(self.local_attempted, Relaxed);
         self.global.plies.fetch_add(self.local_plies, Relaxed);
         self.local_attempted = 0;
         self.local_plies = 0;
-
         let mut out = Vec::new();
         mem::swap(&mut self.confirmed, &mut out);
         out
@@ -457,7 +450,6 @@ impl WorkerState {
         searcher.iterative_deepening(&mut self.history_table);
         let best_score = searcher.best_score().unwrap_or(0);
         let best_move = searcher.best_move();
-
         (static_eval, best_score, best_move)
     }
 }

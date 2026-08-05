@@ -86,7 +86,6 @@ impl<M> Sender<M> {
     /// message so the next `send()` can allocate fresh.
     pub fn wait(&self) {
         let shared = &*self.shared;
-
         let mut val = shared.futex.load(Acquire);
 
         while unpack(val).0 != 0 {
@@ -97,7 +96,6 @@ impl<M> Sender<M> {
         shared.ready.store(false, Release);
 
         let ptr = shared.msg.swap(ptr::null_mut(), Relaxed);
-
         if !ptr.is_null() {
             // SAFETY: Created by Box::into_raw in send(); all receivers
             // have returned from recv (outstanding count is zero).
@@ -145,7 +143,6 @@ impl<M> Receiver<M> {
         // is visible here.
         let msg_ref = unsafe { &*shared.msg.load(Relaxed) };
         let result = handler(msg_ref);
-
         // fetch_sub hands back the value before the decrement, so 1 means this
         // receiver was the last one out and the sender is parked in wait().
         let (outstanding, _) = unpack(shared.futex.fetch_sub(1, Release));
@@ -154,7 +151,6 @@ impl<M> Receiver<M> {
         if outstanding == 1 {
             wake_all(&shared.futex);
         }
-
         Some(result)
     }
 }

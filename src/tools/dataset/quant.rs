@@ -24,7 +24,6 @@ pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> S
     let mut pieces = [0u8; 16];
     let mut idx = 0usize;
     let mut occ = board.occ.0;
-
     while occ != 0 {
         let lsb_idx = occ.trailing_zeros() as u8;
         occ &= occ - 1;
@@ -33,7 +32,6 @@ pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> S
         let piece = board.piece_at(sq);
         let color = board.color_at(sq);
         let pt_raw = piece.as_usize() & 0x07;
-
         let pt = if pt_raw == PieceType::Rook.as_usize() && is_castling_rook(board, sq, color) {
             CASTLING_ROOK
         } else {
@@ -65,12 +63,10 @@ pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> S
 fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
     for slot in 0..4 {
         let bit = 1u8 << slot;
-
         if board.castling_rights & bit != 0 && board.castling_rooks[slot] == sq && (slot < 2) == (color == Color::White) {
             return true;
         }
     }
-
     false
 }
 
@@ -103,7 +99,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         if pt_raw == 5 {
             king_sq[color_idx] = sq;
         }
-
         if pt_raw == CASTLING_ROOK {
             pending_rooks[pending_count] = (color_idx, sq);
             pending_count += 1;
@@ -133,7 +128,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
 
         for file in 0..8usize {
             let ch = board[rank * 8 + file];
-
             if ch == b'.' {
                 empty += 1;
             } else {
@@ -148,7 +142,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         if empty > 0 {
             fen.push((b'0' + empty) as char);
         }
-
         if rank > 0 {
             fen.push('/');
         }
@@ -194,13 +187,11 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     fen.push(' ');
 
     let ep = entry.stm_and_ep & 0x7F;
-
     if ep >= 64 {
         fen.push('-');
     } else {
         fen.push_str(&Square(ep).to_string());
     }
-
     fen.push_str(" 0 1");
     fen
 }
@@ -215,12 +206,10 @@ pub fn material_count(entry: &SoulEntry) -> u32 {
     let mut total = 0;
     let mut idx = 0usize;
     let mut occ = entry.occupancy;
-
     while occ != 0 {
         occ &= occ - 1;
         total += WEIGHTS[usize::from(next_nibble(&entry.pieces, &mut idx) & 0x07)];
     }
-
     total
 }
 
@@ -228,7 +217,6 @@ pub fn material_count(entry: &SoulEntry) -> u32 {
 pub(super) fn next_nibble(pieces: &[u8; 16], idx: &mut usize) -> u8 {
     let i = *idx;
     *idx += 1;
-
     let byte = pieces[i / 2];
     if i & 1 == 0 { byte & 0x0F } else { byte >> 4 }
 }
@@ -243,7 +231,6 @@ mod tests {
     #[test]
     fn an_absent_search_score_encodes_as_the_sentinel() {
         let board = Position::from_fen(STARTPOS);
-
         assert_eq!(from_board(&board, 0.5, None).score, SoulEntry::NO_SCORE);
         assert_eq!(from_board(&board, 0.5, Some(0)).score, 0);
         assert_eq!(from_board(&board, 0.5, Some(-42)).score, -42);
@@ -261,10 +248,8 @@ mod tests {
             "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
         ] {
             let board = Position::from_fen(fen);
-
             assert_eq!(from_board(&board, 0.5, None).material_count(), board.material_count(), "{fen}");
         }
-
         assert_eq!(Position::from_fen(STARTPOS).material_count(), 78, "the scale wdl_model was fitted on");
     }
 }

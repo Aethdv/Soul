@@ -162,7 +162,6 @@ fn info(path: &str) {
         // Result: 0=loss, 1=draw, 2=win from side-to-move perspective.
         // Convert to white-relative for the breakdown.
         let white_result = flip_result(result, if stm_white { Color::White } else { Color::Black });
-
         if white_result >= 2 {
             white_wins += 1;
         } else if white_result == 0 {
@@ -228,7 +227,6 @@ fn encode(input: &str, output: &str) {
 
     // Grab file size before the reader chain consumes the handle.
     let file_len = file.metadata().map_or(0, |m| m.len());
-
     let is_zst = Path::new(input).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zst"));
 
     let mut reader: Box<dyn BufRead> = if is_zst {
@@ -286,10 +284,8 @@ fn encode(input: &str, output: &str) {
             if bad < 5 {
                 eprintln!("Warning: failed to parse line {}: '{line}'", line_idx + 1);
             }
-
             bad += 1;
         }
-
         line_idx += 1;
     }
 
