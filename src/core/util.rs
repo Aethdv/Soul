@@ -40,7 +40,6 @@ pub fn format_comma(n: u64) -> String {
     let comma_count = len.saturating_sub(1) / 3;
 
     let mut buf = String::with_capacity(len + comma_count);
-
     for (i, b) in raw.bytes().enumerate() {
         if i > 0 && (len - i).is_multiple_of(3) {
             buf.push(',');

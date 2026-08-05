@@ -94,7 +94,6 @@ impl Move {
         let f = u16::from(from) & Self::MASK_SQ;
         let t = (u16::from(to) & Self::MASK_SQ) << Self::SHIFT_TO;
         let fl = (flag & Self::MASK_FLAG) << Self::SHIFT_FLAG;
-
         Self(f | t | fl)
     }
 

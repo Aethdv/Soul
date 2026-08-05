@@ -23,11 +23,9 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
     if (atk_pawn(sq, attacker.opposite()) & pos.role_bb[PieceType::Pawn] & them).is_not_empty() {
         return true;
     }
-
     if (atk_knight(sq) & pos.role_bb[PieceType::Knight] & them).is_not_empty() {
         return true;
     }
-
     if (atk_king(sq) & pos.role_bb[PieceType::King] & them).is_not_empty() {
         return true;
     }

@@ -48,7 +48,6 @@ pub const fn mirror_sq(sq: usize) -> usize {
 
     let file = sq & 7;
     let rank = sq >> 3;
-
     (rank << 2) + MIRROR_FILE[file]
 }
 
@@ -63,7 +62,6 @@ const fn init_psqt() -> [AlignedTable; 14] {
         let ph_w = PHASE[pt];
 
         let mut sq = 0;
-
         while sq < 64 {
             let w_visual_idx = sq ^ 0x38;
             let mg_val = clamp_i16(mg_w + get_raw_mg(pt, w_visual_idx));
