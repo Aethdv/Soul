@@ -344,28 +344,19 @@ impl PawnFeatures {
         let wp = board.pieces(PieceType::Pawn, Color::White);
         let bp = board.pieces(PieceType::Pawn, Color::Black);
 
-        // Passed pawns; no enemy pawn on the file or adjacent files ahead.
-        // Bucketed white-minus-black by relative rank. Passer squares retained
-        // for the enemy-king distance bucket in SharedFeatures::with_pawn.
+        // Passed pawns; no enemy pawn on the file or adjacent files ahead. Passer squares
+        // retained for the enemy-king distance bucket in SharedFeatures::with_pawn.
         let mut passed_pawn = [0i32; 6];
         let mut w_passers = Bitboard::default();
         let mut b_passers = Bitboard::default();
-        let mut w = wp;
 
-        while w.is_not_empty() {
-            let sq = w.pop_lsb();
-
+        for sq in wp {
             if (bitboard::passed_span(sq, Color::White) & bp).is_empty() {
                 passed_pawn[(sq.rank() - 1) as usize] += 1;
                 w_passers |= sq.bitboard();
             }
         }
-
-        let mut b = bp;
-
-        while b.is_not_empty() {
-            let sq = b.pop_lsb();
-
+        for sq in bp {
             if (bitboard::passed_span(sq, Color::Black) & wp).is_empty() {
                 passed_pawn[(6 - sq.rank()) as usize] -= 1;
                 b_passers |= sq.bitboard();
@@ -388,42 +379,14 @@ impl PawnFeatures {
         let b_isolated = (bp & !b_adj).popcount() as i32;
         let isolated_pawn_diff = w_isolated - b_isolated;
 
-        // Phalanx; side-by-side friendly pawns. & shift(East) marks the east pawn of
-        // each pair; bucket white-minus-black by relative rank.
-        let mut phalanx = [0i32; 6];
-        let mut wph = wp & wp.shift(Direction::East);
-
-        while wph.is_not_empty() {
-            let sq = wph.pop_lsb();
-            phalanx[(sq.rank() - 1) as usize] += 1;
-        }
-
-        let mut bph = bp & bp.shift(Direction::East);
-
-        while bph.is_not_empty() {
-            let sq = bph.pop_lsb();
-            phalanx[(6 - sq.rank()) as usize] -= 1;
-        }
+        // Phalanx; side-by-side friendly pawns. & shift(East) marks the east pawn of each pair.
+        let phalanx = by_relative_rank(wp & wp.shift(Direction::East), bp & bp.shift(Direction::East));
 
         // Defended; a pawn on a square its own side's pawns attack.
-        // Bucket white-minus-black by relative rank. Pawn-attack maps shared
-        // with backward-pawn detection.
+        // Pawn-attack maps shared with backward-pawn detection.
         let w_pawn_atk = board.pawn_attacks(Color::White);
         let b_pawn_atk = board.pawn_attacks(Color::Black);
-        let mut defended_pawn = [0i32; 6];
-        let mut wdef = wp & w_pawn_atk;
-
-        while wdef.is_not_empty() {
-            let sq = wdef.pop_lsb();
-            defended_pawn[(sq.rank() - 1) as usize] += 1;
-        }
-
-        let mut bdef = bp & b_pawn_atk;
-
-        while bdef.is_not_empty() {
-            let sq = bdef.pop_lsb();
-            defended_pawn[(6 - sq.rank()) as usize] -= 1;
-        }
+        let defended_pawn = by_relative_rank(wp & w_pawn_atk, bp & b_pawn_atk);
 
         // Backward pawns; behind all neighbors with a stop square the enemy controls.
         // Isolated pawns are excluded by the adjacency mask (they score as isolated).
@@ -724,3 +687,15 @@ macro_rules! tapered_bonus_term {
 }
 
 bonus_terms!(tapered_bonus_term);
+
+/// White adds, Black subtracts, bucketed by the mover's own rank (rank 2 → index 0).
+fn by_relative_rank(white: Bitboard, black: Bitboard) -> [i32; 6] {
+    let mut buckets = [0i32; 6];
+    for sq in white {
+        buckets[(sq.rank() - 1) as usize] += 1;
+    }
+    for sq in black {
+        buckets[(6 - sq.rank()) as usize] -= 1;
+    }
+    buckets
+}
