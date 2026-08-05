@@ -14,6 +14,8 @@ use crate::{core::defs::TOTAL_PHASE, engine::eval_params::LAYOUT};
 /// once at the end.
 #[inline]
 pub fn compute_phase_f64(piece_counts: &[f64; 6], values: &[f64]) -> f64 {
+    debug_assert!(values.len() > LAYOUT.phase_offset + 5, "a short vector silently drops piece types from the phase");
+
     let mut phase_raw = 0.0;
 
     for (pt, &count) in piece_counts.iter().enumerate().take(6) {

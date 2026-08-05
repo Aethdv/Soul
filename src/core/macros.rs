@@ -13,6 +13,7 @@ macro_rules! debug_index {
 
         #[cfg(not(debug_assertions))]
         {
+            // Some call sites expand inside an unsafe block, where this one is redundant.
             #[allow(unused_unsafe)]
             // SAFETY: Caller guarantees that $index is within the bounds of $collection
             unsafe {
@@ -42,6 +43,7 @@ macro_rules! debug_index_mut {
 
         #[cfg(not(debug_assertions))]
         {
+            // Some call sites expand inside an unsafe block, where this one is redundant.
             #[allow(unused_unsafe)]
             // SAFETY: Caller guarantees that $index is within the bounds of $collection.
             unsafe {
