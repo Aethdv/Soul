@@ -1,18 +1,20 @@
 //! The attack relation, stored from-side.
 //!
-//! Every incremental attack table in the field indexes by square: one entry per
-//! square saying who attacks it, whether that entry is Rebel's byte, Rookie's
-//! direction bits, KnightCap's id bitset or Rose's colour-split pair. This one
-//! indexes by piece. `rows[id]` is the set of squares piece `id` attacks, and
-//! the square-indexed table is its transpose, computed where it is wanted
-//! instead of kept in step.
+//! Every incremental attack table in the field indexes by square: Rebel's byte,
+//! Rookie's direction bits, KnightCap's id bitset, Rose's colour-split pair.
+//! This one indexes by piece, so `rows[id]` is what piece `id` attacks and the
+//! square-indexed table is a transpose to compute where it is wanted.
 //!
-//! A move rewrites whole rows rather than scattering bits, roughly one row per
-//! move against nine (piece, square) pairs, so the update is a handful of stores
-//! with no read-modify-write chain. The union views come free with it: a square
-//! ORs a side together and forgets which piece set the bit, which is what forces
-//! a square-indexed table to recount, and here the contributor is the index.
-//! The unmake record is bounded by pieces touched, not squares attacked.
+//! A move rewrites about one whole row where a square-indexed table scatters
+//! nine bits, and the union views come free: a square ORs a side together and
+//! forgets which piece set the bit, where here the contributor is the index.
+//! The unmake record counts pieces touched, not squares attacked.
+//!
+//! Dormant. Maintaining it costs 162 instructions a node and every attack query
+//! Soul makes is worth about 53, so hot magics and a setwise eval leave nothing
+//! to win. Threat inputs would change what the diff stream is for without
+//! settling that: Stockfish generates the same events from probes and keeps no
+//! table.
 
 use core::arch::x86_64::*;
 
@@ -161,10 +163,11 @@ impl XorBoard {
 
     /// Every square `color` attacks.
     ///
-    /// Not the same set as `Position::threats`, which ends its setwise fill with
-    /// `& !generator` over the whole rook-plus-queen union and so cannot see a
-    /// rook defending a rook. This one is exact, so swapping it into a consumer
-    /// changes search behaviour and wants its own test.
+    /// Wider than `Position::threats`, which ends its setwise fill with
+    /// `& !generator` over the whole rook-plus-queen union and so drops the
+    /// squares holding that side's own rooks and queens. Nothing can stand on
+    /// those, so the two are interchangeable to a consumer asking about its own
+    /// pieces, and not to one asking about the board.
     #[inline(always)]
     pub fn danger(&self, color: Color) -> Bitboard {
         let base = usize::from(color) * 16;
@@ -226,10 +229,8 @@ impl XorBoard {
     /// in `mask`. Testing a row against a multi-bit mask answers for every square
     /// in it at once, so a castling move's four changed squares cost one pass.
     ///
-    /// Written by hand because the shape matters: eight lane tests folded into a
-    /// slot set, or four `vptestmq` where the wider registers exist. Left to the
-    /// autovectorizer this is a thirty-two iteration dependency chain, and it
-    /// sits in the update path of every move.
+    /// Written by hand: left to the autovectorizer it is a thirty-two iteration
+    /// dependency chain rather than eight lane tests folded into a slot set.
     #[inline(always)]
     pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
         let sliders = self.sliders();
@@ -243,6 +244,68 @@ impl XorBoard {
     #[inline(always)]
     pub fn attackers_of(&self, mask: Bitboard) -> u64 {
         self.probe_groups::<false>(mask)
+    }
+
+    /// The pieces of `stm`'s opponent giving check.
+    ///
+    /// Only one side can be checking, so the column test covers that side's
+    /// slots and no more. Slots of captured pieces hold an empty row and drop
+    /// out of the test on their own.
+    #[inline(always)]
+    pub fn checkers(&self, pos: &Position) -> Bitboard {
+        let king = pos.pieces(PieceType::King, pos.stm);
+
+        if king.is_empty() {
+            return Bitboard(0);
+        }
+
+        let mut slots = self.probe_side(king, pos.stm.opposite());
+        let mut squares = Bitboard(0);
+
+        while slots != 0 {
+            let slot = slots.trailing_zeros() as usize;
+            slots &= slots - 1;
+            squares |= Square(self.sq[slot]).bitboard();
+        }
+
+        squares
+    }
+
+    /// The column test restricted to one colour's half of the slots.
+    #[inline(always)]
+    fn probe_side(&self, mask: Bitboard, color: Color) -> u64 {
+        // SAFETY: as `probe_groups`; the group indices stay inside the half
+        // belonging to `color`, so every load covers real rows.
+        unsafe {
+            #[cfg(target_feature = "avx512f")]
+            {
+                let want = _mm512_set1_epi64(mask.0 as i64);
+                let group = usize::from(color) * 2;
+                let rows = _mm512_loadu_si512(self.rows.as_ptr().add(group * 8).cast());
+                let more = _mm512_loadu_si512(self.rows.as_ptr().add((group + 1) * 8).cast());
+
+                (u64::from(_mm512_test_epi64_mask(rows, want)) << (group * 8))
+                    | (u64::from(_mm512_test_epi64_mask(more, want)) << ((group + 1) * 8))
+            }
+
+            #[cfg(not(target_feature = "avx512f"))]
+            {
+                let want = _mm256_set1_epi64x(mask.0 as i64);
+                let zero = _mm256_setzero_si256();
+                let base = usize::from(color) * 4;
+                let mut set = 0u64;
+
+                for step in 0..4 {
+                    let group = base + step;
+                    let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
+                    let idle = _mm256_cmpeq_epi64(_mm256_and_si256(rows, want), zero);
+                    let live = !(_mm256_movemask_pd(_mm256_castsi256_pd(idle)) as u32) & 0xF;
+                    set |= u64::from(live) << (group * 4);
+                }
+
+                set
+            }
+        }
     }
 
     /// `WINDOW` restricts the test to the slider window, four groups instead of
@@ -300,9 +363,9 @@ impl XorBoard {
         let (mut ortho, mut diag) = (Bitboard(0), Bitboard(0));
         let (mut ortho_direct, mut diag_direct) = (Bitboard(0), Bitboard(0));
 
-        let mut rest = (self.class_slots(PieceType::Rook) | self.class_slots(PieceType::Bishop)
-            | self.class_slots(PieceType::Queen))
-            & color_slots(color);
+        let mut rest =
+            (self.class_slots(PieceType::Rook) | self.class_slots(PieceType::Bishop) | self.class_slots(PieceType::Queen))
+                & color_slots(color);
 
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
@@ -631,6 +694,8 @@ mod tests {
                     assert_eq!(ortho, want_o, "xray ortho {color:?}, {fen} ply {ply}\n{pos}");
                     assert_eq!(diag, want_d, "xray diag {color:?}, {fen} ply {ply}\n{pos}");
                 }
+
+                assert_eq!(board.checkers(&pos), pos.checkers(), "checkers, {fen} ply {ply}\n{pos}");
 
                 board.unmake(mv, &undo);
                 pos.unmake_move(mv, &state);
