@@ -485,17 +485,12 @@ impl SharedFeatures {
         // Enemy-king Chebyshev distance to each passer, bucketed (1..=6, 7 clamps
         // to 6). Walks the cached passer sets rather than re-detecting them.
         let mut enemy_king_dist = [0i32; 6];
-        let mut w = pawn.w_passers;
 
-        while w.is_not_empty() {
-            let sq = w.pop_lsb();
+        for sq in pawn.w_passers {
             enemy_king_dist[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
         }
 
-        let mut b = pawn.b_passers;
-
-        while b.is_not_empty() {
-            let sq = b.pop_lsb();
+        for sq in pawn.b_passers {
             enemy_king_dist[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
         }
 
