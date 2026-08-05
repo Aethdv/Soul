@@ -1299,7 +1299,12 @@ impl Worker<'_> {
         } else {
             let stm = self.pos.stm;
             let opp = stm.opposite();
-            let threats = self.pos.threats(opp);
+            // Wider than `Position::threats`, whose setwise fill ends in
+            // `& !generator` and so drops the squares holding that side's own
+            // rooks and queens. Those are squares our pieces can never stand on,
+            // which is why the two maps are interchangeable here and the node
+            // count does not move.
+            let threats = self.xorboard.danger(opp);
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
