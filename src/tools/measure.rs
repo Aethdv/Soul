@@ -1057,7 +1057,7 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         "xorboard_fused" => variant_xorboard::<3, false, 1, false>(stream, repeats, "xorboard_fused"),
         "xorboard_lag" => variant_xorboard::<3, false, 2, false>(stream, repeats, "xorboard_lag"),
         "xorboard_lag1" => variant_xorboard::<1, false, 3, false>(stream, repeats, "xorboard_lag1"),
-        "xorboard_undo" => variant_xorboard::<3, false, 0, true>(stream, repeats, "xorboard_undo"),
+        "xorboard_undo" => variant_xorboard::<1, false, 0, true>(stream, repeats, "xorboard_undo"),
         "xray" => variant_xorboard::<3, true, 0, false>(stream, repeats, "xray"),
         "xray_pins" => variant_xorboard::<3, true, 4, false>(stream, repeats, "xray_pins"),
         "xorboard_vision" => variant_xorboard::<2, false, 0, false>(stream, repeats, "xorboard_vision"),
