@@ -40,8 +40,8 @@ ENGINE = "./soul"
 _SUMMARY = re.compile(r"(\d+)\s+nodes\s+(\d+)\s+nps")
 
 _TTY = sys.stdout.isatty()
-_GOLD = "1;38;2;230;180;80"  # the headline nps
-_DIM  = "38;2;138;126;104"   # labels and secondary numbers
+_GOLD = "1;38;2;230;180;80" # the headline nps
+_DIM  = "38;2;138;126;104"  # labels and secondary numbers
 
 
 def paint(text: str, code: str) -> str:
