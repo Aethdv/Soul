@@ -99,6 +99,7 @@ const _: () = {
 };
 
 pub use fen::Fen;
+pub(crate) use make::castling_targets;
 
 //  192 bytes, spans three cache lines.
 //

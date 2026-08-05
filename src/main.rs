@@ -69,6 +69,10 @@ fn main() {
                 let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::genfens::run(&genfens_args);
             },
+            "measure" => {
+                let measure_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+                tools::measure::run(&measure_args);
+            },
             "dataset" => {
                 let dataset_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::dataset::cli::run(&dataset_args);
