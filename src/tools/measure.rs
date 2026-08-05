@@ -852,20 +852,37 @@ impl Pre {
 /// `vptestmq` with the k-masks joined.
 #[inline(always)]
 fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
-    // SAFETY: AVX2 is guaranteed for every binary linking this crate, by the
-    // compile_error gate in weave/mod.rs. The loads are unaligned reads of four
-    // u64s at offsets 0, 4, ..., 28 of a 32-element array, so the last ends
-    // exactly at its end.
+    // SAFETY: AVX2 per the weave/mod.rs gate, AVX-512 under its own cfg. Each
+    // load covers a whole group of a 32-element array, so the last ends exactly
+    // at its end.
     unsafe {
-        let m = _mm256_set1_epi64x(mask.0 as i64);
-        let zero = _mm256_setzero_si256();
-        let mut live = 0u32;
-        for g in 0..8 {
-            let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
-            let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-            live |= (!(_mm256_movemask_pd(_mm256_castsi256_pd(miss)) as u32) & 0xF) << (g * 4);
+        #[cfg(target_feature = "avx512f")]
+        {
+            let m = _mm512_set1_epi64(mask.0 as i64);
+            let mut live = 0u32;
+
+            for g in 0..4 {
+                let v = _mm512_loadu_si512(rows.as_ptr().add(g * 8).cast());
+                live |= u32::from(_mm512_test_epi64_mask(v, m)) << (g * 8);
+            }
+
+            live
         }
-        live
+
+        #[cfg(not(target_feature = "avx512f"))]
+        {
+            let m = _mm256_set1_epi64x(mask.0 as i64);
+            let zero = _mm256_setzero_si256();
+            let mut live = 0u32;
+
+            for g in 0..8 {
+                let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
+                let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
+                live |= (!(_mm256_movemask_pd(_mm256_castsi256_pd(miss)) as u32) & 0xF) << (g * 4);
+            }
+
+            live
+        }
     }
 }
 

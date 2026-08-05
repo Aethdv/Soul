@@ -287,12 +287,22 @@ impl V64 {
 
     #[inline(always)]
     pub fn nonzero(self) -> u64 {
-        // SAFETY: AVX2 per the gate; register-only.
+        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
+        // register-only.
         unsafe {
-            let z = _mm256_setzero_si256();
-            let lo = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.0, z)) as u32;
-            let hi = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.1, z)) as u32;
-            !(u64::from(lo) | u64::from(hi) << 32)
+            #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
+            {
+                u64::from(_mm256_test_epi8_mask(self.0, self.0))
+                    | u64::from(_mm256_test_epi8_mask(self.1, self.1)) << 32
+            }
+
+            #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
+            {
+                let z = _mm256_setzero_si256();
+                let lo = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.0, z)) as u32;
+                let hi = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.1, z)) as u32;
+                !(u64::from(lo) | u64::from(hi) << 32)
+            }
         }
     }
 
@@ -318,8 +328,25 @@ impl V64 {
 
     #[inline(always)]
     pub fn keep(self, mask: u64) -> Self {
-        // SAFETY: AVX2 per the gate; register-only.
-        unsafe { Self(_mm256_and_si256(self.0, spread(mask as u32)), _mm256_and_si256(self.1, spread((mask >> 32) as u32))) }
+        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
+        // register-only.
+        unsafe {
+            #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
+            {
+                Self(
+                    _mm256_maskz_mov_epi8(mask as __mmask32, self.0),
+                    _mm256_maskz_mov_epi8((mask >> 32) as __mmask32, self.1),
+                )
+            }
+
+            #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
+            {
+                Self(
+                    _mm256_and_si256(self.0, spread(mask as u32)),
+                    _mm256_and_si256(self.1, spread((mask >> 32) as u32)),
+                )
+            }
+        }
     }
 
     #[inline(always)]
@@ -337,14 +364,27 @@ impl V64 {
 
     #[inline(always)]
     pub fn write(self, mask: u64, b: u8) -> Self {
-        // SAFETY: AVX2 per the gate; register-only.
+        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
+        // register-only.
         unsafe {
             let v = _mm256_set1_epi8(b as i8);
-            let (lo, hi) = (spread(mask as u32), spread((mask >> 32) as u32));
-            Self(
-                _mm256_or_si256(_mm256_andnot_si256(lo, self.0), _mm256_and_si256(lo, v)),
-                _mm256_or_si256(_mm256_andnot_si256(hi, self.1), _mm256_and_si256(hi, v)),
-            )
+
+            #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
+            {
+                Self(
+                    _mm256_mask_blend_epi8(mask as __mmask32, self.0, v),
+                    _mm256_mask_blend_epi8((mask >> 32) as __mmask32, self.1, v),
+                )
+            }
+
+            #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
+            {
+                let (lo, hi) = (spread(mask as u32), spread((mask >> 32) as u32));
+                Self(
+                    _mm256_or_si256(_mm256_andnot_si256(lo, self.0), _mm256_and_si256(lo, v)),
+                    _mm256_or_si256(_mm256_andnot_si256(hi, self.1), _mm256_and_si256(hi, v)),
+                )
+            }
         }
     }
 
@@ -397,6 +437,7 @@ impl V64 {
     }
 }
 
+#[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
 #[inline(always)]
 fn spread(bits: u32) -> __m256i {
     // SAFETY: AVX2 per the gate; register-only.
