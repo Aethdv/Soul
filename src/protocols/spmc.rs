@@ -146,9 +146,12 @@ impl<M> Receiver<M> {
         let msg_ref = unsafe { &*shared.msg.load(Relaxed) };
         let result = handler(msg_ref);
 
-        // Decrement outstanding. If this was the last receiver, wake the
-        // sender (parked in wait()).
-        if unpack(shared.futex.fetch_sub(1, Release)).0 == 1 {
+        // fetch_sub hands back the value before the decrement, so 1 means this
+        // receiver was the last one out and the sender is parked in wait().
+        let (outstanding, _) = unpack(shared.futex.fetch_sub(1, Release));
+        debug_assert!(outstanding > 0, "a decrement past zero borrows into the generation bit");
+
+        if outstanding == 1 {
             wake_all(&shared.futex);
         }
 
