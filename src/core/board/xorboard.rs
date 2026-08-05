@@ -84,9 +84,13 @@ impl PieceId {
         if self.0 < 16 { Color::White } else { Color::Black }
     }
 
+    /// Masked, so every `rows`/`sq`/`kind` access is in range by construction
+    /// and the compiler drops the check. A slot out of range would be a bug the
+    /// mask hides, and slots only ever come from a 32-bit mask's set bits or
+    /// from `at`, both of which are already in range.
     #[inline(always)]
     const fn index(self) -> usize {
-        self.0 as usize
+        (self.0 & 31) as usize
     }
 }
 
@@ -104,6 +108,32 @@ static LANE_MASK: [[u64; 4]; 16] = {
     }
     table
 };
+
+/// Square as an index into a 64-element array, masked so the bound is known.
+trait SquareIndex {
+    fn index(self) -> usize;
+}
+
+impl SquareIndex for Square {
+    #[inline(always)]
+    fn index(self) -> usize {
+        usize::from(self.0 & 63)
+    }
+}
+
+/// The set slots of a mask, low to high.
+#[inline(always)]
+fn slots(mask: u64) -> impl Iterator<Item = PieceId> {
+    let mut rest = mask;
+
+    core::iter::from_fn(move || {
+        (rest != 0).then(|| {
+            let slot = rest.trailing_zeros() as u8;
+            rest &= rest - 1;
+            PieceId(slot)
+        })
+    })
+}
 
 #[inline(always)]
 const fn color_slots(color: Color) -> u64 {
@@ -140,7 +170,7 @@ impl XorBoard {
                 let slot = next[color as usize];
                 next[color as usize] += 1;
 
-                board.at[usize::from(square)] = (slot + 1) as u8;
+                board.at[square.index()] = (slot + 1) as u8;
                 board.sq[slot] = raw;
                 board.kind[slot] = piece;
                 board.class[piece as usize * 2 + color as usize] |= 1 << slot;
@@ -184,31 +214,54 @@ impl XorBoard {
         self.union(self.class[piece as usize * 2 + color as usize])
     }
 
-    /// The eval's attack map for `color`: everything but the king, with pins
-    /// honoured the way the tensor honours them.
+    /// Every piece of `color` bar the king, each with the squares it may legally
+    /// use.
     ///
-    /// A pinned slider may only use its pin ray and a pinned knight has no legal
+    /// One place knows the pin policy and the readers are reductions over it. A
+    /// pinned slider may only use its pin ray and a pinned knight has no legal
     /// move at all; crediting either with more is mobility for a move that would
     /// leave the king in check. Pinned pawns are left whole, which is not that
     /// argument but a match for what the tensor does today.
     #[inline(always)]
-    pub fn attack_map(&self, color: Color, pinned: Bitboard, ksq: Square) -> Bitboard {
-        let mut skip = self.class[PieceType::King as usize * 2 + color as usize];
-        let mut rays = Bitboard(0);
+    pub fn legal_rows(&self, color: Color, pinned: Bitboard, ksq: Square) -> impl Iterator<Item = (PieceId, Bitboard)> + '_ {
+        let king = self.class[PieceType::King as usize * 2 + color as usize];
 
-        for square in pinned {
-            let Some(id) = self.id_at(square) else { continue };
-
-            match self.kind[id.index()] {
-                PieceType::Knight => skip |= 1 << id.index(),
-                PieceType::Bishop | PieceType::Rook | PieceType::Queen => {
-                    skip |= 1 << id.index();
-                    rays |= self.row(id) & line_bb(ksq, square);
-                },
-                _ => {},
+        slots(color_slots(color) & !king).filter_map(move |id| {
+            let raw = self.sq[id.index()];
+            if raw == NOWHERE {
+                return None;
             }
-        }
-        self.union(color_slots(color) & !skip) | rays
+
+            let square = Square(raw);
+            let row = self.row(id);
+
+            if !pinned.check_bit(square) {
+                return Some((id, row));
+            }
+
+            Some(match self.kind[id.index()] {
+                PieceType::Knight => (id, Bitboard(0)),
+                PieceType::Bishop | PieceType::Rook | PieceType::Queen => (id, row & line_bb(ksq, square)),
+                _ => (id, row),
+            })
+        })
+    }
+
+    /// The eval's attack map for `color`: the union of what its pieces may use.
+    #[inline(always)]
+    pub fn attack_map(&self, color: Color, pinned: Bitboard, ksq: Square) -> Bitboard {
+        self.legal_rows(color, pinned, ksq).fold(Bitboard(0), |acc, (_, row)| acc | row)
+    }
+
+    /// Mobility counted per piece rather than over the union.
+    ///
+    /// A setwise fill cannot produce this: ORing the sides together loses which
+    /// piece reached where, so a square two pieces both attack is worth one to
+    /// the union and two here. The rows keep the identity, which is the same
+    /// reason a square-indexed table cannot maintain a danger view.
+    #[inline(always)]
+    pub fn mobility(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
+        self.legal_rows(color, pinned, ksq).map(|(_, row)| (row & area).popcount() as i32).sum()
     }
 
     /// What one piece attacks: the from-side query the store exists to answer.
@@ -219,7 +272,7 @@ impl XorBoard {
 
     #[inline(always)]
     pub fn id_at(&self, square: Square) -> Option<PieceId> {
-        match self.at[usize::from(square)] {
+        match self.at[square.index()] {
             0 => None,
             slot => Some(PieceId(slot - 1)),
         }
@@ -294,7 +347,6 @@ impl XorBoard {
                 let zero = _mm256_setzero_si256();
                 let base = usize::from(color) * 4;
                 let mut set = 0u64;
-
                 for step in 0..4 {
                     let group = base + step;
                     let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
@@ -302,7 +354,6 @@ impl XorBoard {
                     let live = !(_mm256_movemask_pd(_mm256_castsi256_pd(idle)) as u32) & 0xF;
                     set |= u64::from(live) << (group * 4);
                 }
-
                 set
             }
         }
@@ -390,14 +441,12 @@ impl XorBoard {
                 ortho_direct |= direct;
                 ortho |= atk_rook(from, behind);
             }
-
             if kind != PieceType::Rook {
                 let direct = atk_bishop(from, occ);
                 diag_direct |= direct;
                 diag |= atk_bishop(from, behind);
             }
         }
-
         (ortho & !ortho_direct, diag & !diag_direct)
     }
 
@@ -411,7 +460,6 @@ impl XorBoard {
         // is indexed by four bits so it stays inside its sixteen rows.
         unsafe {
             let mut acc = _mm256_setzero_si256();
-
             for group in 0..8 {
                 let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
                 let keep = _mm256_loadu_si256(LANE_MASK.as_ptr().add((slots >> (group * 4)) as usize & 15).cast());
@@ -504,7 +552,7 @@ impl XorBoard {
             affected &= !(1 << victim.index());
             undo.save(victim, self.rows[victim.index()]);
             self.rows[victim.index()] = 0;
-            self.at[usize::from(square)] = 0;
+            self.at[square.index()] = 0;
             self.sq[victim.index()] = NOWHERE;
         }
 
@@ -543,7 +591,7 @@ impl XorBoard {
     #[inline(always)]
     fn read(&self, mv: Move) -> Plan {
         let (from, to) = (mv.from(), mv.to());
-        let mover = PieceId(self.at[usize::from(from)] - 1);
+        let mover = PieceId(self.at[from.index()] - 1);
         let mut movers = [(mover, from, to); 2];
         let mut changed = from.bitboard() | to.bitboard();
         let mut n_movers = 1;
@@ -552,7 +600,7 @@ impl XorBoard {
         if mv.is_castling() {
             // The move encodes the rook's home square as its destination, so
             // both pieces and all four squares come out of that one pair.
-            let rook = PieceId(self.at[usize::from(to)] - 1);
+            let rook = PieceId(self.at[to.index()] - 1);
             let (king_to, rook_to) = super::castling_targets(from, to);
             movers = [(mover, from, king_to), (rook, to, rook_to)];
             changed |= king_to.bitboard() | rook_to.bitboard();
@@ -560,9 +608,9 @@ impl XorBoard {
         } else if mv.is_en_passant() {
             let square = Square(to.0 ^ 8);
             changed |= square.bitboard();
-            victim = Some((PieceId(self.at[usize::from(square)] - 1), square));
+            victim = Some((PieceId(self.at[square.index()] - 1), square));
         } else if mv.is_capture() {
-            victim = Some((PieceId(self.at[usize::from(to)] - 1), to));
+            victim = Some((PieceId(self.at[to.index()] - 1), to));
         }
         Plan { movers, n_movers, changed, victim }
     }
@@ -572,11 +620,11 @@ impl XorBoard {
     #[inline(always)]
     fn relocate(&mut self, mv: Move, plan: &Plan) {
         for m in 0..plan.n_movers {
-            self.at[usize::from(plan.movers[m].1)] = 0;
+            self.at[plan.movers[m].1.index()] = 0;
         }
         for m in 0..plan.n_movers {
             let (id, _, to) = plan.movers[m];
-            self.at[usize::from(to)] = id.0 + 1;
+            self.at[to.index()] = id.0 + 1;
             self.sq[id.index()] = to.0;
         }
 
@@ -602,16 +650,16 @@ impl XorBoard {
         }
 
         for m in 0..plan.n_movers {
-            self.at[usize::from(plan.movers[m].2)] = 0;
+            self.at[plan.movers[m].2.index()] = 0;
         }
         for m in 0..plan.n_movers {
             let (id, from, _) = plan.movers[m];
-            self.at[usize::from(from)] = id.0 + 1;
+            self.at[from.index()] = id.0 + 1;
             self.sq[id.index()] = from.0;
         }
 
         if let Some((id, square)) = plan.victim {
-            self.at[usize::from(square)] = id.0 + 1;
+            self.at[square.index()] = id.0 + 1;
             self.sq[id.index()] = square.0;
         }
     }
@@ -696,6 +744,22 @@ mod tests {
                 }
 
                 assert_eq!(board.checkers(&pos), pos.checkers(), "checkers, {fen} ply {ply}\n{pos}");
+
+                // Per-piece mobility against the same count taken the long way.
+                // The union cannot produce this number: it drops a square that
+                // two pieces both reach to one.
+                for color in [Color::White, Color::Black] {
+                    let pinned = pos.pinned_pieces(color);
+                    let ksq = pos.pieces(PieceType::King, color).lsb();
+                    let area = !pos.side_bb[color];
+                    let want: i32 = board
+                        .legal_rows(color, pinned, ksq)
+                        .map(|(_, row)| (row & area).popcount() as i32)
+                        .sum();
+
+                    assert_eq!(board.mobility(color, pinned, ksq, area), want, "mobility {color:?}, {fen} ply {ply}");
+                    assert!(board.mobility(color, pinned, ksq, area) >= (board.attack_map(color, pinned, ksq) & area).popcount() as i32);
+                }
 
                 board.unmake(mv, &undo);
                 pos.unmake_move(mv, &state);

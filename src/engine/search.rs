@@ -37,7 +37,11 @@ use std::{
 pub use crate::core::defs::Protocol;
 use crate::{
     core::{
-        board::{Position, attacks::Pins},
+        board::{
+            Position,
+            attacks::Pins,
+            xorboard::{Undo as XorUndo, XorBoard},
+        },
         defs::{INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in},
         moves::Move,
     },
@@ -140,6 +144,8 @@ pub struct Searcher<'cfg> {
 pub struct Worker<'h> {
     pub pos: Position,
     pub accumulator: Vi16x8,
+    pub xorboard: XorBoard,
+    pub xb_undo: Box<[XorUndo; MAX_PLY + 2]>,
     pub stack: Box<[Stack; MAX_PLY + 2]>,
     pub history: &'h mut History,
     /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
@@ -470,6 +476,8 @@ impl<'cfg> Searcher<'cfg> {
         let mut worker = Worker {
             pos: self.root_pos,
             accumulator: root_acc,
+            xorboard: XorBoard::new(&self.root_pos),
+            xb_undo: vec![XorUndo::new(); MAX_PLY + 2].into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!()),
             stack: vec![Stack::default(); MAX_PLY + 2]
                 .into_boxed_slice()
                 .try_into()
@@ -1214,6 +1222,7 @@ impl Worker<'_> {
 
                 let saved_acc = self.accumulator;
                 let undo = self.pos.make_move(mv, &mut self.accumulator);
+                self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
 
                 searcher.tt.prefetch(self.pos.hash);
                 searcher.zobrist_trail.push(self.pos.hash);
@@ -1229,6 +1238,7 @@ impl Worker<'_> {
                 };
 
                 searcher.zobrist_trail.pop();
+                self.xorboard.unmake(mv, &self.xb_undo[ply]);
                 self.pos.unmake_move(mv, &undo);
                 self.accumulator = saved_acc;
 
@@ -1678,6 +1688,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
+        self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -1699,6 +1710,7 @@ impl Worker<'_> {
         let eval = self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv);
 
         searcher.zobrist_trail.pop();
+        self.xorboard.unmake(mv, &self.xb_undo[ply]);
         self.pos.unmake_move(mv, &undo);
         self.accumulator = saved_acc;
 
@@ -1941,6 +1953,7 @@ impl Worker<'_> {
 
             let saved_acc = self.accumulator;
             let undo = self.pos.make_move(mv, &mut self.accumulator);
+            self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
 
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);
@@ -1948,6 +1961,7 @@ impl Worker<'_> {
             let score = self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1);
 
             searcher.zobrist_trail.pop();
+            self.xorboard.unmake(mv, &self.xb_undo[ply]);
             self.pos.unmake_move(mv, &undo);
             self.accumulator = saved_acc;
 
