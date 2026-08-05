@@ -120,7 +120,6 @@ impl UciState {
                         cfg.stop.store(false, Ordering::Release);
 
                         is_searching_worker.store(false, Ordering::Release);
-
                         let _ = result_tx.send(history_table);
                     },
                     SearchCommand::Quit => break,
@@ -191,7 +190,6 @@ pub fn print_license() {
 
 pub fn main_loop(initial_command: Option<String>) {
     let mut state = UciState::new();
-
     let rx = spawn_stdin_listener(state.stop.clone());
 
     if let Some(cmd) = initial_command {
@@ -215,7 +213,6 @@ pub fn main_loop(initial_command: Option<String>) {
 /// stdin, and `quit` ends the sequence early.
 pub fn run_commands(lines: &[String]) {
     let mut state = UciState::new();
-
     for line in lines {
         if !process_command(&mut state, line.trim()) {
             break;
@@ -381,7 +378,6 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
             }
 
             let trimmed = line.trim();
-
             if trimmed.is_empty() {
                 continue;
             }
@@ -391,18 +387,15 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                     println!("readyok");
                     let _ = io::stdout().flush();
                 },
-
                 "quit" => {
                     stop.store(true, Ordering::Release);
                     let _ = tx.send(line);
                     break;
                 },
-
                 "stop" => {
                     stop.store(true, Ordering::Release);
                     let _ = tx.send(line);
                 },
-
                 _ => {
                     // Always forward to the main thread's command channel.
                     // Commands queue up and are processed in order after any
@@ -420,12 +413,8 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
 }
 
 fn process_command(state: &mut UciState, input: &str) -> bool {
-    if input.is_empty() {
-        return true;
-    }
-
     let mut tokens = input.split_whitespace().peekable();
-    let cmd = tokens.next().unwrap();
+    let Some(cmd) = tokens.next() else { return true };
 
     match cmd {
         "quit" => {
@@ -433,7 +422,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             let _ = state.search_tx.send(SearchCommand::Quit);
             return false;
         },
-
         "uci" => {
             state.pretty_print = false;
             print_id();
@@ -443,7 +431,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "isready" => println!("readyok"),
-
         "ucinewgame" => {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
@@ -451,10 +438,8 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.tt.clear(state.threads);
             state.load_position(Position::from_fen(STARTPOS));
         },
-
         "position" => cmd_position(state, &mut tokens),
         "go" => cmd_go(state, &mut tokens),
-
         "stop" => {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
@@ -486,7 +471,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.go_pretty = !state.go_pretty;
             println!("GoPretty: {}", state.go_pretty);
         },
-
         "prettyprint" | "pp" => {
             state.pretty_print = !state.pretty_print;
             println!("PrettyPrint: {}", state.pretty_print);
@@ -497,7 +481,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.board.hash ^= key_side();
             println!("Side to move: {:?}", state.board.stm);
         },
-
         "key" => println!("Zobrist: 0x{:016X}", state.board.hash),
         "help" => print_help(state.stdout_isatty.unwrap_or(true)),
         _ => {},
@@ -728,11 +711,9 @@ where I: Iterator<Item = &'a str> {
 
     if let Some(tok) = bool_str {
         let val = parse_bool(tok);
-
         if target & 0b01 != 0 {
             state.stdout_isatty = Some(val);
         }
-
         if target & 0b10 != 0 {
             state.stderr_isatty = Some(val);
         }
