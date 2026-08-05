@@ -4,7 +4,7 @@
 use std::{fmt::Write, io, io::Write as _};
 
 use crate::{
-    color::{self, Rgb},
+    color::{self, BOLD, GOLD, RESET, Rgb},
     core::{
         board::Position,
         defs::{Color, MATE, MATE_BOUND, PieceType, Protocol, Square},
@@ -17,7 +17,6 @@ use crate::{
     },
 };
 
-const GOLD_DIM: Rgb = (218, 165, 32); // branding
 const GOLD_BRIGHT: Rgb = (255, 215, 0); // branding
 const STEEL: Rgb = (176, 196, 222); // header info
 const SLATE: Rgb = (119, 136, 153); // header dim
@@ -41,10 +40,17 @@ const PV_WHITE: Rgb = (246, 238, 218);
 const PV_BLACK: Rgb = (139, 154, 171);
 const DIM: Rgb = (130, 130, 130); // timestamps, move numbers
 
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
+/// Whether a reported score is the iteration's answer or only a bound on it,
+/// left behind by a search that broke out of its aspiration window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScoreBound {
+    Exact,
+    Lower,
+    Upper,
+}
 
 pub struct SearchInfoData<'a> {
+    pub bound: ScoreBound,
     pub depth: i32,
     pub sel_depth: i32,
     pub score: i32,
@@ -109,7 +115,6 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
         Protocol::Uci => print_uci(data, pretty),
         Protocol::XBoard => print_xboard(data),
     }
-
     let _ = io::stdout().flush();
 }
 
@@ -117,7 +122,6 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
 /// the principal variation in SAN, and a colored history of recent iterations.
 pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let ansi = data.use_ansi;
-
     if ansi {
         print!("\x1b[H");
     }
@@ -125,7 +129,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let reset = ansi_code(RESET, ansi);
     let bold = ansi_code(BOLD, ansi);
     let dim = tui_fg(DIM, ansi);
-    let label = tui_fg(GOLD_DIM, ansi);
+    let label = tui_fg(GOLD, ansi);
 
     // identity, depth/seldepth, clock, nodes, speed, TT fill.
     let t = data.time_ms.try_into().unwrap_or(u64::MAX);
@@ -154,7 +158,15 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let bar_width = 50;
     let (wf, df, lf) = wdl::wdl_model(data.score, data.material);
 
-    println!("  {bold}{label}Eval{reset}    {bold}{}{reset}\x1b[K", fmt_score_colored(data.score, 0, ansi));
+    // Two columns wide even when exact, so the score holds its place as frames
+    // redraw over each other.
+    let bound = match data.bound {
+        ScoreBound::Exact => "  ".to_string(),
+        ScoreBound::Lower => format!("{}≥{reset} ", tui_fg(SLATE, ansi)),
+        ScoreBound::Upper => format!("{}≤{reset} ", tui_fg(SLATE, ansi)),
+    };
+
+    println!("  {bold}{label}Eval{reset}    {bound}{bold}{}{reset}\x1b[K", fmt_score_colored(data.score, 0, ansi));
     println!("{}", wdl_row("Win", (wf * 100.0) as f32, WIN_C, bar_width, ansi));
     println!("{}", wdl_row("Draw", (df * 100.0) as f32, color::LEVEL, bar_width, ansi));
     println!("{}\n", wdl_row("Lose", (lf * 100.0) as f32, LOSE_C, bar_width, ansi));
@@ -195,7 +207,6 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
         if snap.line.len > 8 {
             print!("{dim}…{reset}");
         }
-
         println!("\x1b[K");
     }
 
@@ -204,7 +215,6 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     if ansi {
         print!("\x1b[J"); // Clear to end of screen
     }
-
     let _ = io::stdout().flush();
 }
 
@@ -220,7 +230,6 @@ fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
         let level = ((sigmoid(snap.score) * 8.0) as usize).min(7);
         write!(out, "{}{}", tui_fg(score_color(snap.score), enabled), BLOCKS[level]).unwrap();
     }
-
     out.push_str(reset);
     out
 }
@@ -239,7 +248,7 @@ fn ansi_code(code: &'static str, enabled: bool) -> &'static str {
 /// Maps centipawn score to [0, 1] win probability.
 #[inline]
 fn sigmoid(cp: i32) -> f64 {
-    1.0 / (1.0 + (f64::from(-cp) / 150.0).exp())
+    wdl::sigmoid(f64::from(cp), 1.0 / 150.0)
 }
 
 /// Color for a centipawn score; purple for mate,
@@ -281,7 +290,6 @@ fn wdl_row(label: &str, pct: f32, hue: Rgb, width: usize, enabled: bool) -> Stri
     let filled = (frac * width as f64) as usize;
 
     let mut bars = String::with_capacity(width * 20);
-
     for i in 0..filled {
         let t = i as f64 / width.saturating_sub(1).max(1) as f64;
         write!(bars, "{}#", tui_fg(color::mix(WDL_FLOOR, hue, t), enabled)).unwrap();
@@ -294,7 +302,7 @@ fn wdl_row(label: &str, pct: f32, hue: Rgb, width: usize, enabled: bool) -> Stri
     }
 
     let pct_fg = tui_fg(color::mix(WDL_FLOOR, hue, frac), enabled);
-    format!("  {bold}{}{label:<4}{reset}    [{bars}{reset}] {pct_fg}{pct:>5.1}%{reset}", tui_fg(GOLD_DIM, enabled))
+    format!("  {bold}{}{label:<4}{reset}    [{bars}{reset}] {pct_fg}{pct:>5.1}%{reset}", tui_fg(GOLD, enabled))
 }
 
 fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
@@ -305,7 +313,6 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
     let from = mv.from();
     let to = mv.to();
     let pt = board.piece_at(from);
-
     if pt == PieceType::King && mv.is_castling() {
         return if to > from { "O-O".into() } else { "O-O-O".into() };
     }
@@ -372,7 +379,6 @@ fn to_san(board: &mut Position, mv: Move, legal_moves: &[Move]) -> String {
         let responses = gen_legal_moves(board);
         san.push(if responses.is_empty() { '#' } else { '+' });
     }
-
     board.unmake_move(mv, &undo);
     san
 }
@@ -405,17 +411,30 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
         let w = (wf * 1000.0).round() as u32;
         let d = (df * 1000.0).round() as u32;
         let l = (lf * 1000.0).round() as u32;
-
         format!(" wdl {w} {d} {l}")
     } else {
         String::new()
     };
 
+    // UCI puts the bound on the score itself: score cp 22 lowerbound.
+    let bound = match data.bound {
+        ScoreBound::Exact => "",
+        ScoreBound::Lower => " lowerbound",
+        ScoreBound::Upper => " upperbound",
+    };
+
     if pretty {
         let t = data.time_ms.try_into().unwrap_or(u64::MAX);
+        // One column, taken from the padding the score already carried, so the
+        // columns after it stay where they were.
+        let mark = match data.bound {
+            ScoreBound::Exact => " ".to_string(),
+            ScoreBound::Lower => format!("{}≥{}", tui_fg(SLATE, data.use_ansi), ansi_code(RESET, data.use_ansi)),
+            ScoreBound::Upper => format!("{}≤{}", tui_fg(SLATE, data.use_ansi), ansi_code(RESET, data.use_ansi)),
+        };
 
         print!(
-            "info depth {:>2} seldepth {:>2} score {}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
+            "info depth {:>2} seldepth {:>2} score {mark}{}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
             data.depth,
             data.sel_depth,
             fmt_score_colored(data.score, 7, data.use_ansi),
@@ -427,10 +446,11 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
         );
     } else {
         print!(
-            "info depth {} seldepth {} score {}{} nodes {} nps {} time {} hashfull {} pv",
+            "info depth {} seldepth {} score {}{}{} nodes {} nps {} time {} hashfull {} pv",
             data.depth,
             data.sel_depth,
             fmt_score_uci(data.score),
+            bound,
             wdl_str,
             data.nodes,
             data.nps,
@@ -450,11 +470,9 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             (Some(b), Some(a)) => {
                 let legal = gen_legal_moves(b);
                 let san = to_san(b, mv, legal.as_slice());
-
                 b.make_move(mv, a);
                 san
             },
-
             _ => mv.to_uci(false),
         };
 
@@ -467,18 +485,15 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             print!(" {s}");
         }
     }
-
     println!();
 }
 
 fn print_xboard(data: &SearchInfoData<'_>) {
     let cs = (data.time_ms + 5) / 10;
     print!("{:>2} {:>5} {:>6} {:>10} ", data.depth, data.score, cs, data.nodes);
-
     for i in 0..data.pv.len {
         print!("{} ", data.pv.moves[i].to_uci(data.board.is_frc));
     }
-
     println!();
 }
 
@@ -492,7 +507,6 @@ fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
     let mut acc = board.get_initial_accumulator();
     let mut num = board.fullmove_number;
     let mut white_to_move = board.stm == Color::White;
-
     let mut out = String::with_capacity(moves.len() * 12);
 
     for (i, &mv) in moves.iter().enumerate() {
@@ -512,9 +526,7 @@ fn fmt_pv(root: &Position, moves: &[Move], enabled: bool) -> String {
         if !white_to_move {
             num += 1;
         }
-
         white_to_move = !white_to_move;
     }
-
     out
 }

@@ -4,7 +4,7 @@ eval
 target/
 /data/
 openings/
-scripts/
+scripts/__pycache__/
 *.soul
 *.soul.zst
 *.json
@@ -17,6 +17,14 @@ perf.data*
 flamegraph.svg
 profdir/*
 *.log
+
+# Tuner run artifacts
+evaltune.jsonl
+evaltune_best.txt
+evaltune_log.txt
+sensitivity-report.txt
+correlation-report.txt
+bounds_report.txt
 
 # Neovim
 .nvim/

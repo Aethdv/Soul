@@ -30,7 +30,7 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune searchtune test oracle seeformat format clippy profile etprofile \
+        evaltune searchtune test oracle flops seeformat format clippy profile etprofile \
         releases avx2 avx2-bmi2 avx512 corrstats movepicker
 
 all: openbench
@@ -184,8 +184,11 @@ searchtune:
 test: ## Run test suite
 	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="-C target-cpu=native" cargo test --workspace -- --nocapture
 
-oracle: ## Run the eval-tuner gradient oracle tests
-	@RUSTFLAGS="-C target-cpu=native" cargo test -p tuner --release oracle
+oracle: ## Run the eval gradient oracle tests
+	@RUSTFLAGS="-C target-cpu=native" cargo test --workspace --release oracle
+
+flops: ## f64 ops the gradient costs per position, differenced under perf
+	@FLOP_EVENT="$(FLOP_EVENT)" scripts/flops.sh
 
 seeformat: ## Check formatting
 	@cargo fmt --check

@@ -18,7 +18,7 @@ Options:
     --eg-only             Endgame table only
     --material            Show absolute values (default: positional delta)
     --shared-scale        One color scale per phase across all pieces (all view)
-    --dpi INT             Output DPI (default: 200)
+    --dpi INT             Output DPI (default: 300)
     --show                Open interactively after saving
 """
 
@@ -85,7 +85,6 @@ def _draw_board(
     ax.invert_yaxis()  # origin='upper' equivalent: row 0 at top
 
 
-    # cell grid: internal dividers + outer border, same pipeline
     inner = np.arange(0.5, 7.0)   # 0.5 … 6.5
     outer = np.array([-0.5, 7.5]) # board edges
     all_h = np.concatenate([outer, inner])
@@ -94,7 +93,6 @@ def _draw_board(
     ax.vlines(all_h, ymin=-0.5, ymax=7.5,
               color=sp.LINE, lw=0.5, zorder=2)
 
-    # value annotations
     for r in range(8):
         for f in range(8):
             v = board[r, f]
@@ -110,7 +108,6 @@ def _draw_board(
                 )],
             )
 
-    # file / rank labels
     ax.set_xticks(range(8))
     ax.set_yticks(range(8))
     ax.set_xticklabels(FILE_LABELS, fontsize=7, color=sp.MUTE,
@@ -139,7 +136,7 @@ def plot_psqt(
     eg_only:      bool  = False,
     material:     bool  = False,
     shared_scale: bool  = False,
-    dpi:          int   = 200,
+    dpi:          int   = sp.DPI,
     show:         bool  = False,
 ) -> None:
 
@@ -150,14 +147,21 @@ def plot_psqt(
     except FileNotFoundError:
         sys.exit(f"Error: '{cp}' not found.")
     except json.JSONDecodeError as e:
+        # The run log sits beside the checkpoint under a name four characters
+        # away, and json reports a whole file of objects as trailing garbage.
+        if cp.suffix == ".jsonl" or "Extra data" in str(e):
+            sys.exit(f"Error: '{cp}' is a run log. PSQTs come from the checkpoint, e.g. evaltune_checkpoint.json.")
         sys.exit(f"Error: bad JSON ({e})")
 
-    values = data.get("values")
+    # A checkpoint stores per-parameter optimizer state, `{name: {value, momentum,
+    # …}}`; the flat `{name: number}` is what older ones carried.
+    params = data.get("params")
+    values = ({k: v["value"] for k, v in params.items() if isinstance(v, dict) and "value" in v}
+              if isinstance(params, dict) else data.get("values"))
 
-    if not isinstance(values, dict):
-        sys.exit("Error: checkpoint missing 'values' dict.")
+    if not isinstance(values, dict) or not values:
+        sys.exit("Error: checkpoint carries no parameters.")
 
-    # Resolve piece selection
     piece_name = piece_arg.strip().capitalize()
 
     if piece_name == "All":
@@ -180,7 +184,6 @@ def plot_psqt(
     sp.use_theme()
     cmap = sp.diverging_cmap()
 
-    # adaptive sizing
     board_size = 3.2 if n_rows <= 2 else 2.5
     annot_fs = 7.5 if n_rows <= 2 else 6.0
 
@@ -254,7 +257,6 @@ def plot_psqt(
             im = _draw_board(ax, eg, eg_t, cmap, norm_eg, annot_fs)
             col += 1
 
-        # per-row colorbar
         assert im is not None  # at least one phase always renders
         cax = fig.add_subplot(gs[row, -1])
         cb  = fig.colorbar(im, cax=cax)
@@ -262,7 +264,6 @@ def plot_psqt(
         cb.outline.set_edgecolor(sp.LINE)
         cb.outline.set_linewidth(0.4)
 
-    # title block
     label = PIECES[sel[0]].lower() if single else "all pieces"
     meta_parts = []
 
@@ -317,7 +318,7 @@ def main() -> None:
                     help="show absolute values (default: positional delta)")
     ap.add_argument("--shared-scale",     action="store_true",
                     help="one color scale per phase across all pieces")
-    ap.add_argument("--dpi",    type=int, default=200)
+    ap.add_argument("--dpi",    type=int, default=sp.DPI)
     ap.add_argument("--show",             action="store_true")
     args = ap.parse_args()
 

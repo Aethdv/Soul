@@ -19,6 +19,18 @@ pub fn wdl_model(score: i32, material: u32) -> (f64, f64, f64) {
     let w = 1.0 / (1.0 + ((a - v) / b).exp());
     let l = 1.0 / (1.0 + ((a + v) / b).exp());
     let d = (1.0 - w - l).max(0.0);
-
     (w, d, l)
+}
+
+/// The plain logistic link, score to win probability at scale `k`.
+///
+/// `S(x) = 1 / (1 + exp(-k · x))`, the material-free form of the model above: what a tuner's
+/// loss compares its label against, and what the gradient oracle rebuilds a reference loss from.
+#[inline]
+#[must_use]
+pub fn sigmoid(score: f64, k: f64) -> f64 {
+    // Clamp the exponent to avoid libm's extremely slow subnormal fallback path
+    // for values between -708 and -744, which ignores CPU FTZ/DAZ flags.
+    let x = (-k * score).clamp(-700.0, 700.0);
+    1.0 / (1.0 + x.exp())
 }

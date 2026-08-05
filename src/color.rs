@@ -8,9 +8,15 @@
 
 pub type Rgb = (u8, u8, u8);
 
+pub const RESET: &str = "\x1b[0m";
+pub const BOLD: &str = "\x1b[1m";
+
 /// Dead-level neutral: the color of exactly zero advantage → `+0.00`.
 /// Engine eval and tuner Elo both paint their zero state with it.
 pub const LEVEL: Rgb = (120, 170, 220);
+
+/// Branding gold: table headers and field labels.
+pub const GOLD: Rgb = (218, 165, 32);
 
 // Advantage-gradient waypoints as (L, C, H°). Authored in OkLCH, never flattened.
 const WIN_GOLD: (f64, f64, f64) = (0.80, 0.13, 92.0);
@@ -25,19 +31,56 @@ const LOSS_DEEP: (f64, f64, f64) = (0.64, 0.17, 22.0);
 #[must_use]
 pub fn advantage(t: f64) -> Rgb {
     let m = t.abs().min(1.0);
-    let (lo, hi, seg) = match (t >= 0.0, m < 0.5) {
-        (true, true) => (WIN_GOLD, WIN_GREEN, m / 0.5),
-        (true, false) => (WIN_GREEN, WIN_DEEP, (m - 0.5) / 0.5),
-        (false, true) => (LOSS_PEACH, LOSS_ORANGE, m / 0.5),
-        (false, false) => (LOSS_ORANGE, LOSS_DEEP, (m - 0.5) / 0.5),
+    let near = m < 0.5;
+
+    let (lo, hi) = match (t >= 0.0, near) {
+        (true, true) => (WIN_GOLD, WIN_GREEN),
+        (true, false) => (WIN_GREEN, WIN_DEEP),
+        (false, true) => (LOSS_PEACH, LOSS_ORANGE),
+        (false, false) => (LOSS_ORANGE, LOSS_DEEP),
     };
-    oklch_lerp(lo, hi, seg)
+
+    oklch_lerp(lo, hi, if near { m / 0.5 } else { (m - 0.5) / 0.5 })
 }
 
 /// ANSI truecolor foreground escape for `c`.
 #[must_use]
 pub fn ansi_fg(c: Rgb) -> String {
-    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+    let mut s = String::with_capacity(20);
+    let _ = write_ansi_fg(&mut s, c);
+    s
+}
+
+/// Write an ANSI truecolor foreground escape for `c` into `w`.
+pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result {
+    write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+}
+
+/// Drop the escapes from colored text bound for a file or a pipe.
+///
+/// Only what this module writes: `ESC [` params `m`, and `ESC [ K`. Anything
+/// else keeps its text, escape included, since scanning on for a terminator
+/// would swallow the prose up to the next one.
+#[must_use]
+pub fn strip(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(esc) = rest.find('\x1b') {
+        out.push_str(&rest[..esc]);
+        rest = &rest[esc..];
+
+        let params = rest.strip_prefix("\x1b[").unwrap_or_default();
+        let Some(end) = params.find(|c: char| !c.is_ascii_digit() && c != ';') else { break };
+        // Narrower than the CSI grammar on purpose: over-accepting eats prose,
+        // under-accepting leaves an escape in a log.
+        if !matches!(params.as_bytes()[end], b'm' | b'K') {
+            break;
+        }
+        rest = &params[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Perceptual blend of two sRGB colors; interpolate in OkLab so the midpoint
@@ -104,4 +147,26 @@ fn encode(x: f64) -> u8 {
 fn decode(b: u8) -> f64 {
     let x = f64::from(b) / 255.0;
     if x <= 0.040_45 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_leaves_only_the_text() {
+        let colored = format!("{}Gauge:{} 0.739x", ansi_fg((218, 165, 32)), "\x1b[0m");
+
+        assert_eq!(strip(&colored), "Gauge: 0.739x");
+        assert_eq!(strip("nothing to drop"), "nothing to drop");
+        assert_eq!(strip(""), "");
+    }
+
+    /// An escape with no terminator would otherwise swallow the rest of the line,
+    /// or the words up to whatever letter the prose reaches first.
+    #[test]
+    fn strip_keeps_text_after_an_unterminated_escape() {
+        assert_eq!(strip("before\x1b[38;2;1;2;3after"), "before\x1b[38;2;1;2;3after");
+        assert_eq!(strip("before\x1b[38;2;1;2;3 more"), "before\x1b[38;2;1;2;3 more");
+    }
 }

@@ -41,13 +41,6 @@ use crate::{
 // Ensure move bit-packing assumes correctly.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
-// ── Staged Move Picker ──
-//
-// Pipeline:
-//   [ Hash Move ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
-//      (𝒪(1))          (MVV-LVA Sort)     (History Sort)  (SEE-losing, deferred)
-//
-// We fully sort the generated stages using Rust's sort_unstable.
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
 // Because Big-O is a lie when it hits modern hardware.
 // An ipnsort beats a branch-heavy selection sort loop, even when K is small.
@@ -183,7 +176,6 @@ impl MovePicker {
             match self.stage {
                 Stage::Hash => {
                     self.stage = Stage::GenCaptures;
-
                     if let Some(mv) = self.hash_move {
                         return Some(mv);
                     }
@@ -210,7 +202,6 @@ impl MovePicker {
                         } else {
                             self.stage = Stage::GenQuiets;
                         }
-
                         continue;
                     }
                     // Pop from the back; since the array is sorted ascending,
@@ -220,12 +211,11 @@ impl MovePicker {
                     // SAFETY: count was strictly > 0 above, so this index holds a valid packed move.
                     let packed = unsafe { debug_index!(self.candidates, self.count).assume_init() };
                     let mv = Move::from_u16(packed as u16);
-
                     if Some(mv) == self.hash_move {
                         continue;
                     }
 
-                    // ── Good / Bad Capture Split ──
+                    // ── Good / Bad Capture Split
                     // A SEE-losing capture rarely deserves to jump ahead of every quiet; a
                     // killer or a high-history move usually refutes the node first. Defer it:
                     // park the packed entry at the array top, which the quiets never fill, and
@@ -235,9 +225,10 @@ impl MovePicker {
                     if !self.is_qsearch && !mv.is_promotion() {
                         let attacker = board.piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
+                        // Both read the value table on purpose: mvvlva_a is an ordering
+                        // penalty, and comparing material needs one scale.
                         let victim_val = *debug_index!(self.mvvlva_v, victim as usize);
                         let attacker_val = *debug_index!(self.mvvlva_v, attacker as usize);
-
                         // A capture winning material (victim worth at least the attacker) has
                         // SEE >= 0, so it's good without the exchange walk; only material-losing
                         // captures are ambiguous enough to need SEE. The common cutoff-causing
@@ -252,12 +243,10 @@ impl MovePicker {
                                     .add(MAX_MOVES - 1 - self.bad_count)
                                     .write(MaybeUninit::new(packed));
                             }
-
                             self.bad_count += 1;
                             continue;
                         }
                     }
-
                     return Some(mv);
                 },
 
@@ -287,7 +276,6 @@ impl MovePicker {
                         self.stage = Stage::YieldBadCaptures;
                         continue;
                     }
-                    // Pop from the back: exploits the ascending sort to yield the strongest moves first.
                     self.count -= 1;
                     // SAFETY: self.count was strictly checked > 0 above, proving this index holds a valid move.
                     let mv = unsafe { self.read_move(self.count) };
@@ -300,7 +288,6 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
-
                 Stage::YieldBadCaptures => {
                     // The deferred losing captures occupy [MAX_MOVES - bad_count, MAX_MOVES),
                     // best at the top since YieldCaptures parked them in descending score.
@@ -309,7 +296,6 @@ impl MovePicker {
                         self.stage = Stage::Done;
                         continue;
                     }
-
                     self.count -= 1;
                     // SAFETY: count is in (MAX_MOVES - bad_count, MAX_MOVES], every slot
                     // written by the park step in YieldCaptures.
@@ -319,7 +305,6 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
-
                 Stage::Done => return None,
             }
         }
@@ -368,13 +353,11 @@ impl MovePicker {
         for (delta, victims) in targets {
             let promo = victims & prom_mask;
             let standard = victims & !prom_mask;
-
             // Promotion-captures bypass capture history entirely (see add_promo_caps).
             for to in promo {
                 let from = Square((to.0.cast_signed() - delta).cast_unsigned());
                 self.add_promo_caps(board, from, to);
             }
-
             for to in standard {
                 let from = Square((to.0.cast_signed() - delta).cast_unsigned());
                 self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn, history);
@@ -415,7 +398,6 @@ impl MovePicker {
                 let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
                 let chist = history.score_capture(stm, PT, to, victim);
                 let score = self.cap_score(v_val - a_pen, chist);
-
                 self.add_move_packed(Move::new(from, to, Move::CAPTURE), score as MoveScore);
             }
         }
@@ -477,14 +459,12 @@ impl MovePicker {
         if mv.is_en_passant() {
             return self.mvvlva_ep as MoveScore;
         }
-
         debug_assert!(mv.promo().is_none(), "mvv_lva is only reached by non-promotion captures");
         debug_assert!(usize::from(victim) < 8);
         debug_assert!(usize::from(attacker) < 8);
 
         let v = *crate::debug_index!(self.mvvlva_v, victim as usize);
         let a = *crate::debug_index!(self.mvvlva_a, attacker as usize);
-
         (v - a) as MoveScore
     }
 
@@ -494,7 +474,6 @@ impl MovePicker {
         let us = board.side_bb[board.stm];
         let occ = board.occ;
         let empty = !occ;
-
         let stm = board.stm;
         let up = stm.forward_dir();
         let up_d = up.delta();
@@ -535,9 +514,7 @@ impl MovePicker {
     #[inline(always)]
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
-
         let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.cont1, self.cont2, self.cont4);
-
         // Combined history values stay well inside [-32768, 32768] in practice.
         // Soft-gravity attractors prevent any single table from sitting near its
         // ±16384 cap, so even with four tables the summed range never approaches
@@ -561,7 +538,6 @@ impl MovePicker {
         } else if mv == self.killers[1] {
             sort_score = 64000;
         }
-
         self.write_packed((sort_score << 16) | (mv.inner() as u32));
     }
 
@@ -595,14 +571,12 @@ impl MovePicker {
             let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_promo_quiets(from, to, stm, history);
         }
-
         for to in quiet_pushes {
             let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::QUIET), PieceType::Pawn, stm, history);
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
-
         for to in doubles {
             let from = Square((to.0.cast_signed() - up_d * 2).cast_unsigned());
             self.add_quiet_node(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
@@ -648,7 +622,6 @@ impl MovePicker {
             } else {
                 (&CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY)
             };
-
             self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
         }
 
@@ -660,7 +633,6 @@ impl MovePicker {
             } else {
                 (&CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY)
             };
-
             self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
         }
     }

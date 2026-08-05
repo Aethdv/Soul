@@ -27,7 +27,7 @@ Options:
     --odds              odds-scaling mode (Elo vs time/thread handicap)
     --ref-slope N       odds mode: reference at ±N Elo/doubling (0 disables; default 80)
     --title TEXT        override the headline
-    --dpi INT           output DPI (default: 200)
+    --dpi INT           output DPI (default: 300)
     --show              open interactively after saving
 """
 
@@ -178,16 +178,11 @@ def plot_ordo(data: dict[str, dict], out: str, *, title: str | None, dpi: int, s
 
         color = PALETTE[i % len(PALETTE)] if comparison else sp.advantage(0.6)
 
-        # ±error cone: a faint hatched fill, with dashed rails for the lone hero
-        # (skipped when comparing, where many rail pairs would just clutter).
-        sp.band(ax, x, y - e, y + e, color, alpha=0.06, hatch="////", zorder=1)
-
-        if comparison:
-            ax.plot(x, y, color=color, lw=2.0, zorder=4)
-        else:
-            ax.plot(x, y - e, color=color, ls=(0, (4, 3)), lw=1.0, alpha=0.5, zorder=2)
-            ax.plot(x, y + e, color=color, ls=(0, (4, 3)), lw=1.0, alpha=0.5, zorder=2)
-            ax.plot(x, y, color=color, lw=2.4, zorder=4)
+        # ±error cone, densest on the rating and fading to the edge: what the
+        # interval means, where a flat fill would read every value in it as
+        # equally likely.
+        sp.density_band(ax, x, y, e, color, zorder=1)
+        ax.plot(x, y, color=color, lw=2.0 if comparison else 2.4, zorder=4)
         # Core fades where the rating is young and the error wide; firms up as games accrue.
         sp.dot(ax, x, y, color, size=30, core_alpha=sp.confidence_alpha(e), zorder=5)
         entries.append((float(y[-1]), f"{name}  {y[-1]:+.0f}", color))
@@ -233,18 +228,21 @@ def plot_sprt(tests: list[dict], out: str, *, initial: float = 0.0,
     sp.use_theme()
     fig, (ax, axd) = plt.subplots(2, 1, figsize=(13, 8), height_ratios=[3, 1], sharex=True)
 
-    # ── top; cumulative total inside a 95% cone of uncertainty ──
-    ax.axhline(initial, color=sp.MUTE, lw=0.9, alpha=0.5, zorder=2)
-    # 95% cone: a faint hatched fill inside the dashed lo/hi rails.
-    sp.band(ax, x, lo, hi, sp.GOLD, alpha=0.06, hatch="////", zorder=1)
-    ax.plot(x, lo, color=sp.GOLD, ls=(0, (4, 3)), lw=1.0, alpha=0.5, zorder=3)
-    ax.plot(x, hi, color=sp.GOLD, ls=(0, (4, 3)), lw=1.0, alpha=0.5, zorder=3)
+    # ── top; cumulative total inside a 95% cone of uncertainty
+    # Zero is the origin of a cumulative total and belongs on the axis. A starting
+    # rating is not: the axis is a rating scale, the first patch lands hundreds of
+    # Elo above the mark, and drawing it there spends a third of the panel saying
+    # what the subtitle says in words.
+    if not absolute:
+        ax.axhline(0.0, color=sp.MUTE, lw=0.9, alpha=0.5, zorder=2)
+
+    sp.density_band(ax, x, y, cum_err, sp.GOLD, zorder=1)
     ax.plot(x, y, color=sp.GOLD, lw=2.0, zorder=4)
     # Cumulative cores stay solid; the cone carries the growing uncertainty here.
     sp.dot(ax, x, y, shades, size=22, zorder=5)
     ax.set_ylabel("Elo" if absolute else "cumulative Elo (Σ measured)", labelpad=8)
 
-    # ── bottom; each patch's measured gain, symlog so tiny and huge both read ──
+    # ── bottom; each patch's measured gain, symlog so tiny and huge both read
     ax.set_xlim(0.5, len(tests) + 0.5)
     axd.axhline(0, color=sp.MUTE, lw=0.8, alpha=0.5, zorder=1)
     axd.vlines(x, 0, elo, colors=shades, lw=1.6, zorder=3)
@@ -254,15 +252,16 @@ def plot_sprt(tests: list[dict], out: str, *, initial: float = 0.0,
     axd.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:+.0f}"))
     axd.set_ylabel("patch Δ", labelpad=8)
 
-    # thinned date labels on the shared bottom axis
     dates = [t["date"] for t in tests]
 
     if all(d is not None for d in dates):
-        step = max(1, round(len(tests) / 9))
+        # Six upright labels rather than ten leaning ones. Patches are not evenly
+        # spaced in time, so the gaps between dates are real and a denser axis
+        # only makes them look like a stutter.
+        step = max(1, round(len(tests) / 6))
         idx = list(range(0, len(tests), step))
         axd.set_xticks([x[i] for i in idx])
-        axd.set_xticklabels([dates[i].strftime(_DISPLAY_DATE) for i in idx],
-                            rotation=35, ha="right", fontsize=7.5)
+        axd.set_xticklabels([dates[i].strftime(_DISPLAY_DATE) for i in idx], fontsize=7.5)
     else:
         axd.set_xlabel("patch", labelpad=8)
 
@@ -381,7 +380,7 @@ def main() -> None:
     ap.add_argument("--ref-slope", type=float, default=80.0,
                     help="odds mode: reference at ±N Elo/doubling (0 disables; default 80)")
     ap.add_argument("--title", default=None)
-    ap.add_argument("--dpi", type=int, default=200)
+    ap.add_argument("--dpi", type=int, default=sp.DPI)
     ap.add_argument("--show", action="store_true")
     args = ap.parse_args()
 

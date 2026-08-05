@@ -35,7 +35,6 @@ pub const LANE_MG: usize = 0;
 pub const LANE_EG: usize = 1;
 /// Tapered-eval phase counter
 pub const LANE_PHASE: usize = 2;
-
 /// |score| < this for N plies → Draw
 pub const ADJ_DRAW_SCORE: i32 = 10;
 /// |score| < ADJ_DRAW_SCORE for this many consecutive plies
@@ -141,7 +140,6 @@ const impl Not for Color {
     }
 }
 
-// The six chessmen (plus a sentinel)
 /// Ordered Pawn..King by ascending material value for compact table lookups.
 /// The `None` sentinel marks empty squares:
 /// variant 7 is reserved as the niche so `Option<PieceType>`
@@ -187,19 +185,10 @@ impl PieceType {
         self as usize
     }
 
-    /// Construct from a raw index. Caller must guarantee `idx ∈ 0..=6`.
+    /// Construct from a raw index, masked to the three bits a variant occupies.
     #[inline(always)]
     pub const fn new(idx: u8) -> Self {
-        match idx & 7 {
-            0 => Self::Pawn,
-            1 => Self::Knight,
-            2 => Self::Bishop,
-            3 => Self::Rook,
-            4 => Self::Queen,
-            5 => Self::King,
-            6 | 7 => Self::None,
-            _ => unsafe { core::hint::unreachable_unchecked() },
-        }
+        Self::from(idx & 7)
     }
 
     /// FEN / SAN character: uppercase for White, lowercase for Black.

@@ -157,18 +157,11 @@ pub struct Position {
     pub fullmove_number: u16,
 }
 
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Fen(self))
-    }
-}
-
-// Moves that destroy information:
-// castling rights, the fifty-move counter, en passant availability, captured pieces.
-// We snapshot these irreversible fields before each move so unmake_move
-// can restore them perfectly: no costly recalculation, just a memcpy.
-
 /// The irreversible state needed to undo a move: stack-allocated, snapshotted per move.
+///
+/// A move destroys castling rights, the fifty-move counter, en passant availability and the
+/// captured piece. Snapshotting them before the move makes `unmake_move` a memcpy rather
+/// than a recalculation.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StateInfo {
@@ -194,6 +187,12 @@ impl Default for StateInfo {
             captured: PieceType::None,
             halfmove_clock: 0,
         }
+    }
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Fen(self))
     }
 }
 
@@ -268,16 +267,13 @@ impl Position {
             halfmove_clock: self.halfmove_clock,
         };
 
-        // Clear en passant
         if let Some(ep) = self.en_passant.take() {
             self.hash ^= zobrist::key_ep(ep);
         }
 
-        // Flip side
         self.stm = self.stm.opposite();
         self.hash ^= zobrist::key_side();
         self.halfmove_clock += 1;
-
         info
     }
 
@@ -333,7 +329,6 @@ impl Position {
     /// explicitly need 3-fold counts). Contrast with `Worker::is_repetition`
     /// which scans every ply for early draw detection in search.
     ///
-    /// The iterator logic:
     /// - `rev()`: scan backward from the most recent position.
     /// - `skip(2)`: the tail entry is the current position (count starts at 1),
     ///   and the position one ply back has the opponent to move, so both are skipped.
@@ -346,11 +341,9 @@ impl Position {
 
         let limit = history.len().saturating_sub(self.halfmove_clock as usize + 1);
         let mut count = 1; // Current position
-
         for &h in history[limit..].iter().rev().skip(2).step_by(2) {
             if h == self.hash {
                 count += 1;
-
                 if count >= 3 {
                     return true;
                 }
@@ -379,7 +372,6 @@ impl Position {
 
         // Only kings and minor pieces remain. A lone minor can't deliver mate.
         let minors = self.role_bb[PieceType::Knight as usize].popcount() + self.role_bb[PieceType::Bishop as usize].popcount();
-
         minors <= 1
     }
 
@@ -422,7 +414,7 @@ impl Position {
         empty_mask: Bitboard,
         opp: Color,
     ) -> bool {
-        // ── Fast path: Standard castling with canonical piece placement ──
+        // ── Fast path: Standard castling with canonical piece placement
         if ksq.0 == data[0] && rsq.0 == data[1] && (occ & empty_mask).is_empty() {
             for &sq in check_sqs {
                 if self.is_attacked::<false>(Square(sq), opp, Bitboard(0)) {
@@ -432,7 +424,7 @@ impl Position {
             return true;
         }
 
-        // ── Slow path: Chess960 arbitrary placement ──
+        // ── Slow path: Chess960 arbitrary placement
         // We use a "1D Bounding Box" simplification. Because all valid castling
         // squares reside exclusively on the 1st or 8th rank, checking the emptiness
         // of all squares between the minimum and maximum of the (king, rook, and
@@ -446,7 +438,6 @@ impl Position {
             if sq == ksq.0 || sq == rsq.0 {
                 continue;
             }
-
             if occ.check_bit(Square(sq)) {
                 return false;
             }
@@ -465,7 +456,6 @@ impl Position {
                 return false;
             }
         }
-
         true
     }
 
@@ -523,7 +513,6 @@ impl Position {
         let b = self.role_bb[PieceType::Bishop as usize].popcount();
         let r = self.role_bb[PieceType::Rook as usize].popcount();
         let q = self.role_bb[PieceType::Queen as usize].popcount();
-
         p + 3 * n + 3 * b + 5 * r + 9 * q
     }
 
@@ -579,14 +568,13 @@ impl Position {
         let us = self.side_bb[color];
         let empty = Vu64x4::splat(!self.occ.0);
 
-        let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
-        let bq = ((self.role_bb[PieceType::Bishop] | self.role_bb[PieceType::Queen]) & us).0;
         let knights = (self.role_bb[PieceType::Knight] & us).0;
+        let bq = ((self.role_bb[PieceType::Bishop] | self.role_bb[PieceType::Queen]) & us).0;
+        let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
         let king = (self.role_bb[PieceType::King] & us).0;
 
         let sliders = spatial::atk_rook(Vu64x4::splat(rq), empty) | spatial::atk_bishop(Vu64x4::splat(bq), empty);
         let leapers = spatial::atk_knight(Vu64x4::splat(knights)) | spatial::atk_king(Vu64x4::splat(king));
-
         Bitboard((sliders | leapers).extract::<0>()) | self.pawn_attacks(color)
     }
 
@@ -653,7 +641,6 @@ impl Position {
     /// debug verification against the incrementally maintained `self.hash`.
     pub fn calc_zobrist(&self) -> u64 {
         let mut key = 0u64;
-
         for sq in self.occ {
             key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
         }
@@ -669,7 +656,6 @@ impl Position {
         if let Some(ep) = self.en_passant {
             key ^= zobrist::key_ep(ep);
         }
-
         key
     }
 

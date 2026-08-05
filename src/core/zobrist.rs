@@ -1,9 +1,9 @@
 //! Zobrist hashing: incremental 64-bit position signatures, invented by
 //! Albert Zobrist in 1970.
 //!
-//! Every feature a position can carry, a white pawn on e4, black's kingside
-//! castling right, an en passant target on e6, gets its own random 64-bit key,
-//! drawn once at startup. A position's hash is the XOR of the keys for every
+//! Every feature a position can carry, a white pawn on e4, an en passant target
+//! on e6, the castling rights as a whole, gets its own random 64-bit key, drawn
+//! once at startup. A position's hash is the XOR of the keys for every
 //! feature it currently has.
 //!
 //! XOR being its own inverse is the whole trick: one key toggles a feature on or
@@ -90,13 +90,10 @@ pub fn key_side() -> u64 {
 const fn init_keys() -> ZobristKeys {
     // Seed: a nod to Tord Romstad's birthday (7 Oct 1972).
     let mut rng = ConstRng::new(1_070_372);
-
     let mut pieces = [0; PIECE_KEYS_LEN];
     let mut pt = 0;
-
     while pt < 6 {
         let mut sq = 0;
-
         while sq < 64 {
             pieces[(pt + Color::White as usize * 7) * 64 + sq] = rng.next();
             pieces[(pt + Color::Black as usize * 7) * 64 + sq] = rng.next();
@@ -107,7 +104,6 @@ const fn init_keys() -> ZobristKeys {
 
     let mut en_passant = [0; EP_KEYS_LEN];
     let mut j = 0;
-
     while j < EP_KEYS_LEN {
         en_passant[j] = rng.next();
         j += 1;
@@ -115,7 +111,6 @@ const fn init_keys() -> ZobristKeys {
 
     let mut castling = [0; CASTLING_KEYS_LEN];
     let mut k = 0;
-
     while k < CASTLING_KEYS_LEN {
         castling[k] = rng.next();
         k += 1;
@@ -127,6 +122,5 @@ const fn init_keys() -> ZobristKeys {
     castling[0] = 0;
 
     let side = rng.next();
-
     ZobristKeys { pieces, en_passant, castling, side }
 }

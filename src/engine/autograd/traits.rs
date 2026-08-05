@@ -328,7 +328,6 @@ impl EvalMath for f64 {
         let eg = acc.0[1];
         let p = phase;
         let tot = f64::from(TOTAL_PHASE);
-
         ((mg * p + eg * (tot - p)) / tot).trunc()
     }
 }

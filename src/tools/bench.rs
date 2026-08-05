@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    color::{self, Rgb},
+    color::{self, BOLD, RESET, Rgb},
     core::{board::Position, defs::Protocol},
     engine::{
         history::History,
@@ -25,9 +25,6 @@ use crate::{
 };
 
 const FENS: &str = include_str!("../data/bench.fens");
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
 
 const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 const FPS: u64 = 30;
@@ -42,7 +39,6 @@ struct AnimationGuard {
 impl Drop for AnimationGuard {
     fn drop(&mut self) {
         self.running.store(false, Relaxed);
-
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -60,7 +56,6 @@ pub fn run(depth: i32, hash_mb: usize) {
     let running = Arc::new(AtomicBool::new(true));
 
     let tty = io::stdout().is_terminal();
-
     if tty {
         println!("{}{BOLD}✦ Soul v{}{RESET}", color::ansi_fg(PURPLE), env!("CARGO_PKG_VERSION"));
     }
@@ -141,7 +136,6 @@ fn spawn_spinner(
             phase += 1;
             thread::sleep(frame);
         }
-
         render_frame(phase);
     })
 }

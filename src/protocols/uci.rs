@@ -30,7 +30,10 @@ use crate::{
         tt::TranspositionTable,
     },
     numa::NumaTopology,
-    protocols::{notation::parse_uci_move, smp::LazySmpPool},
+    protocols::{
+        notation::parse_uci_move,
+        smp::{LazySmpPool, table_and_pool},
+    },
     tools,
     weave::Vi16x8,
 };
@@ -88,7 +91,7 @@ impl UciState {
         let history = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
-        let tt = Arc::new(TranspositionTable::new(16, 1));
+        let (tt, smp_pool) = table_and_pool(16, 1);
 
         let (tx, rx) = mpsc::channel::<SearchCommand>();
         let (h_tx, h_rx) = mpsc::channel::<History>();
@@ -99,7 +102,7 @@ impl UciState {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
                     SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx, pool) => {
-                        // ── Lazy SMP ──
+                        // ── Lazy SMP
                         // Helpers are persistent, parked on a channel, not spawned per
                         // search. The pool sends each helper a cloned config and root state,
                         // then they run iterative_deepening alongside main. The TT is the
@@ -117,7 +120,6 @@ impl UciState {
                         cfg.stop.store(false, Ordering::Release);
 
                         is_searching_worker.store(false, Ordering::Release);
-
                         let _ = result_tx.send(history_table);
                     },
                     SearchCommand::Quit => break,
@@ -130,13 +132,13 @@ impl UciState {
             board,
             history,
             persistent_history: History::new(),
-            tt: tt.clone(),
+            tt,
             stop,
             search_tx: tx,
             history_tx: h_tx,
             history_rx: h_rx,
             is_searching,
-            smp_pool: LazySmpPool::new(1, tt),
+            smp_pool,
             threads: 1,
             hash_size: 16,
             overhead: 10,
@@ -188,7 +190,6 @@ pub fn print_license() {
 
 pub fn main_loop(initial_command: Option<String>) {
     let mut state = UciState::new();
-
     let rx = spawn_stdin_listener(state.stop.clone());
 
     if let Some(cmd) = initial_command {
@@ -202,6 +203,30 @@ pub fn main_loop(initial_command: Option<String>) {
 
         if !process_command(&mut state, line.trim()) {
             break;
+        }
+    }
+}
+
+/// Runs each argument as one protocol line, with no stdin listener behind it.
+///
+/// A test runner spawns the engine with its commands as arguments rather than on
+/// stdin, and `quit` ends the sequence early.
+pub fn run_commands(lines: &[String]) {
+    let mut state = UciState::new();
+    for line in lines {
+        if !process_command(&mut state, line.trim()) {
+            break;
+        }
+
+        // `go` hands the search to another thread and returns, so a `quit` on the
+        // next line would stop it before it reported. `cmd_go` raises the flag
+        // before it sends, so this cannot miss the start of a search.
+        while state.is_searching.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+
+        while let Ok(table) = state.history_rx.try_recv() {
+            state.persistent_history = table;
         }
     }
 }
@@ -320,8 +345,9 @@ pub fn print_help(use_ansi: bool) {
     h.command_args("bench", "<N>", "Benchmark to depth N");
     h.command_args("divide", "<N>", "Perft divide test");
     h.command("speedtest", "Run performance test");
+    h.command("datagen", "Generate self-play training data");
     h.command("dataset", "Manage datasets (inspect, info, encode)");
-    h.command("genfens", "Run datagen");
+    h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
     h.separator();
@@ -352,7 +378,6 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
             }
 
             let trimmed = line.trim();
-
             if trimmed.is_empty() {
                 continue;
             }
@@ -362,18 +387,15 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                     println!("readyok");
                     let _ = io::stdout().flush();
                 },
-
                 "quit" => {
                     stop.store(true, Ordering::Release);
                     let _ = tx.send(line);
                     break;
                 },
-
                 "stop" => {
                     stop.store(true, Ordering::Release);
                     let _ = tx.send(line);
                 },
-
                 _ => {
                     // Always forward to the main thread's command channel.
                     // Commands queue up and are processed in order after any
@@ -391,12 +413,8 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
 }
 
 fn process_command(state: &mut UciState, input: &str) -> bool {
-    if input.is_empty() {
-        return true;
-    }
-
     let mut tokens = input.split_whitespace().peekable();
-    let cmd = tokens.next().unwrap();
+    let Some(cmd) = tokens.next() else { return true };
 
     match cmd {
         "quit" => {
@@ -404,7 +422,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             let _ = state.search_tx.send(SearchCommand::Quit);
             return false;
         },
-
         "uci" => {
             state.pretty_print = false;
             print_id();
@@ -414,7 +431,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "isready" => println!("readyok"),
-
         "ucinewgame" => {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
@@ -422,10 +438,8 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.tt.clear(state.threads);
             state.load_position(Position::from_fen(STARTPOS));
         },
-
         "position" => cmd_position(state, &mut tokens),
         "go" => cmd_go(state, &mut tokens),
-
         "stop" => {
             state.stop_search();
             state.is_searching.store(false, Ordering::Release);
@@ -450,13 +464,13 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "bench" => tools::bench::run(parse_val(&mut tokens), 16),
         "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
         "speedtest" => tools::speedtest::run(0),
-        "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {
             state.go_pretty = !state.go_pretty;
             println!("GoPretty: {}", state.go_pretty);
         },
-
         "prettyprint" | "pp" => {
             state.pretty_print = !state.pretty_print;
             println!("PrettyPrint: {}", state.pretty_print);
@@ -467,7 +481,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.board.hash ^= key_side();
             println!("Side to move: {:?}", state.board.stm);
         },
-
         "key" => println!("Zobrist: 0x{:016X}", state.board.hash),
         "help" => print_help(state.stdout_isatty.unwrap_or(true)),
         _ => {},
@@ -608,10 +621,8 @@ where I: Iterator<Item = &'a str> {
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                let mb = mb.clamp(1, 524288);
-                state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
-                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
+                state.hash_size = mb.clamp(1, 524288);
+                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
 
@@ -699,12 +710,10 @@ where I: Iterator<Item = &'a str> {
     }
 
     if let Some(tok) = bool_str {
-        let val = matches!(tok.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1");
-
+        let val = parse_bool(tok);
         if target & 0b01 != 0 {
             state.stdout_isatty = Some(val);
         }
-
         if target & 0b10 != 0 {
             state.stderr_isatty = Some(val);
         }

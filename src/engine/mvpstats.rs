@@ -24,11 +24,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering::Relaxed},
 };
 
-use crate::color;
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const HEADER: color::Rgb = (218, 165, 32);
+use crate::{
+    color::{self, BOLD, GOLD, RESET},
+    core::util::human,
+};
 
 /// Consumption buckets: index = quiets used, the last bucket is "11 or more".
 const QUIET_BUCKETS: usize = 12;
@@ -82,7 +81,6 @@ pub fn report() {
 
 fn report_quiets() {
     let nodes = QUIET_NODES.load(Relaxed);
-
     if nodes == 0 {
         return;
     }
@@ -107,7 +105,6 @@ fn report_quiets() {
 
 fn report_cutoffs() {
     let nodes = CUTOFF_NODES.load(Relaxed);
-
     if nodes == 0 {
         return;
     }
@@ -131,7 +128,6 @@ fn report_cutoffs() {
 
 fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize) {
     let mut cumulative = 0u64;
-
     for (i, b) in buckets.iter().enumerate() {
         let c = b.load(Relaxed);
 
@@ -160,7 +156,7 @@ fn columns(labels: [&str; 4]) {
 }
 
 fn header_color() -> (String, &'static str) {
-    if io::stdout().is_terminal() { (color::ansi_fg(HEADER), RESET) } else { (String::new(), "") }
+    if io::stdout().is_terminal() { (color::ansi_fg(GOLD), RESET) } else { (String::new(), "") }
 }
 
 fn colored(text: String, advantage: f64) -> String {
@@ -168,14 +164,5 @@ fn colored(text: String, advantage: f64) -> String {
         format!("{}{text}{RESET}", color::ansi_fg(color::advantage(advantage)))
     } else {
         text
-    }
-}
-
-/// Hooman counts.
-fn human(n: u64) -> String {
-    match n {
-        1_000_000.. => format!("{:.2}M", n as f64 / 1e6),
-        1_000.. => format!("{:.1}K", n as f64 / 1e3),
-        _ => n.to_string(),
     }
 }

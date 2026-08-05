@@ -18,6 +18,7 @@ Options:
     --bins INT       histogram bins (default: 60)
     --max-cp INT     score cap for the bin range (default: 500)
     -o, --output     image path (default: <stem>_scores.png)
+    --dpi INT        output DPI (default: 300)
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ WIN  = sp.advantage(0.7)
 DRAW = sp.MUTE
 LOSS = sp.advantage(-0.7)
 
-# Distinct hues for multi-file overlays, legible on the warm ground.
+# Distinct hues for multi-file overlays.
 FILE_COLORS = ["#86b06a", "#e0935a", "#e6b450", "#7d97b8", "#b79be0", "#cf7d7d"]
 
 
@@ -65,7 +66,6 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
     clip = args.max_cp
     bins = np.linspace(-clip, clip, args.bins + 1)
 
-    # top: stacked histogram
     ax_top.hist(
         [score[w_mask], score[d_mask], score[b_mask]],
         bins=bins, stacked=True, zorder=3, alpha=0.9,
@@ -81,7 +81,6 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
     pct_d = 100 * d_mask.sum() / n_total
     pct_b = 100 * b_mask.sum() / n_total
 
-    # bottom: per-bin result fraction, stacked
     counts_w, _ = np.histogram(score[w_mask], bins=bins)
     counts_d, _ = np.histogram(score[d_mask], bins=bins)
     counts_b, _ = np.histogram(score[b_mask], bins=bins)
@@ -134,7 +133,7 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
              f"{args.bins} bins   ·   ±{clip} cp{sent_str}")
 
     plt.subplots_adjust(top=0.90, bottom=0.09, left=0.08, right=0.97, hspace=0.07)
-    sp.save(fig, args.output or f"{stem}_scores.png", dpi=200)
+    sp.save(fig, args.output or f"{stem}_scores.png", dpi=args.dpi)
 
 
 def _multi(files: list[str], args: argparse.Namespace) -> None:
@@ -210,7 +209,7 @@ def _multi(files: list[str], args: argparse.Namespace) -> None:
              f"{', '.join(labels)}   ·   {total_str} samples   ·   {args.bins} bins   ·   ±{clip} cp")
 
     plt.subplots_adjust(top=0.90, bottom=0.09, left=0.08, right=0.97, hspace=0.07)
-    sp.save(fig, args.output or "deltas_compare.png", dpi=200)
+    sp.save(fig, args.output or "deltas_compare.png", dpi=args.dpi)
 
 
 def _fit_k(cp: np.ndarray, exp_score: np.ndarray, weight: np.ndarray) -> float:
@@ -267,6 +266,7 @@ def main() -> None:
     ap.add_argument("--bins", type=int, default=60, help="histogram bins (default: 60)")
     ap.add_argument("--max-cp", type=int, default=500, help="score cap for the bin range")
     ap.add_argument("-o", "--output", default=None)
+    ap.add_argument("--dpi", type=int, default=sp.DPI)
     args = ap.parse_args()
 
     files = [s.strip() for a in args.csv for s in a.split(",") if s.strip()]

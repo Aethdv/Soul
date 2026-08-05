@@ -1,30 +1,25 @@
-//! Serialization layer for `SoulEntry` training data.
+//! Serialization for Soul's own zstd-compressed frames, and the EPD text
+//! parsers beside them.
 //!
-//! Two formats are supported:
-//!   - `SoulEntry`; 32-byte nibble-array frames, zstd-compressed.
-//!   - EPD text; one position per line, with game-result annotations.
+//! EPD arrives for two different jobs: a line carrying a game result becomes a
+//! training entry; lines read for their FEN alone stock an opening book.
 
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, BufRead, Read, Write},
+    mem,
 };
 
 use zerocopy::IntoBytes;
 
 use crate::{
-    core::{board::Position, defs::Color},
-    tools::dataset::SoulEntry,
+    core::board::Position,
+    tools::dataset::{SoulEntry, flip_wdl},
 };
 
-pub const MAGIC_V5: &[u8; 8] = b"SOULENC5";
 pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
 
-const V5_SIZE: usize = 96;
-
 /// Loads every [`SoulEntry`] from a zstd-compressed dataset.
-///
-/// V5 files are transparently upgraded on load: the legacy 96-byte entries
-/// are converted to the 32-byte V6 nibble format. V6 files are read directly.
 ///
 /// The binary layout for each frame is:
 ///
@@ -41,7 +36,6 @@ const V5_SIZE: usize = 96;
 pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
     let file = fs::File::open(path)?;
     let mut decoder = zstd::Decoder::new(file)?;
-
     let mut entries = Vec::new();
 
     loop {
@@ -59,25 +53,48 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
 
             entries.resize(base + count, SoulEntry::default());
             decoder.read_exact(entries[base..].as_mut_bytes())?;
-        } else if magic == *MAGIC_V5 {
-            let mut buf = [0u8; 8];
-            decoder.read_exact(&mut buf)?;
 
-            let count = u64::from_le_bytes(buf) as usize;
-            let mut v5_chunk = vec![0u8; count * V5_SIZE];
-
-            decoder.read_exact(&mut v5_chunk)?;
-            entries.reserve(count);
-
-            for i in 0..count {
-                entries.push(v5_to_v6(&v5_chunk[i * V5_SIZE..][..V5_SIZE]));
-            }
+            check_results(&entries[base..], base)?;
         } else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
         }
     }
-
     Ok(entries)
+}
+
+/// Positions in a dataset, without decoding any of them.
+///
+/// The same frame walk as [`load_encoded`], reading each count and skipping its payload, so an
+/// append-only file reports everything it holds rather than what its first frame holds.
+pub fn count_encoded(path: &str) -> io::Result<usize> {
+    let file = fs::File::open(path)?;
+    let mut decoder = zstd::Decoder::new(file)?;
+
+    let mut total = 0usize;
+
+    loop {
+        let mut magic = [0u8; 8];
+        if decoder.read_exact(&mut magic).is_err() {
+            break;
+        }
+
+        if magic != *MAGIC_V6 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
+        }
+
+        let mut buf = [0u8; 8];
+        decoder.read_exact(&mut buf)?;
+
+        let count = u64::from_le_bytes(buf) as usize;
+        let payload = (count * mem::size_of::<SoulEntry>()) as u64;
+        let skipped = io::copy(&mut Read::by_ref(&mut decoder).take(payload), &mut io::sink())?;
+
+        if skipped != payload {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame ends before its count"));
+        }
+        total += count;
+    }
+    Ok(total)
 }
 
 /// Creates (or overwrites) a compressed dataset file.
@@ -105,7 +122,6 @@ pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
 /// The returned `f64` is always from White's perspective.
 pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
     let line = line.trim();
-
     if line.is_empty() {
         return None;
     }
@@ -118,7 +134,6 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 
         if let Some(wdl) = fields.next() {
             let result = wdl.parse::<f64>().ok()?;
-
             if let Ok(board) = Position::try_from_fen(fen) {
                 return Some((board, result));
             }
@@ -126,7 +141,7 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
         // Fewer than three fields, or bad FEN → fall through to classic heuristics.
     }
 
-    // Result detection.
+    // Result detection
     const RESULT_SUFFIXES: &[(&str, f64)] = &[
         ("1-0", 1.0),
         ("0-1", 0.0),
@@ -158,87 +173,105 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
 /// the training pipeline expects.
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
     let (board, wdl) = parse_epd_str(line)?;
-    let stm_wdl = if board.stm == Color::White { wdl } else { 1.0 - wdl };
-
-    Some(SoulEntry::from_board(&board, stm_wdl, None, None))
+    Some(SoulEntry::from_board(&board, flip_wdl(wdl, board.stm), None))
 }
 
-fn v5_to_v6(raw: &[u8]) -> SoulEntry {
-    // V5 `repr(C)` layout, fields top to bottom:
-    let result = f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-    let search_score = i16::from_le_bytes([raw[70], raw[71]]);
-    let castling_stm = raw[90];
-    let ep_square = raw[91];
-    let original_stm = raw[89];
-    let piece_count = raw[88] as usize;
+/// Loads opening positions from an EPD file, falling back to raw FEN parsing.
+/// Both formats are common in the chess datagen ecosystem.
+pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
+    let file = fs::File::open(path)?;
+    let reader = io::BufReader::new(file);
+    let mut fens = Vec::new();
 
-    // Map each square to its nibble (pt | color_bit) and build occupancy.
-    let mut nibbles = [0u8; 64];
-    let mut occupancy = 0u64;
+    for line in reader.lines() {
+        let line = line?;
 
-    for i in 0..piece_count.min(32) {
-        let off = 4 + i * 2;
-        let p = u16::from_le_bytes([raw[off], raw[off + 1]]);
-        let sq_val = (p & 0x3F) as u8;
-        let upper = (p >> 6) as usize;
-        let pt = upper & 0x07;
-
-        if pt > 5 {
-            continue;
+        if let Some((board, _)) = parse_epd_str(&line) {
+            // EPD parsed successfully: re-export as FEN to normalize formatting.
+            fens.push(board.as_fen());
+        } else if Position::try_from_fen(&line).is_ok() {
+            // Fallback: raw FEN line (no EPD operations field).
+            fens.push(line);
         }
-
-        let v5_color = upper & 0x08; // 0=Us/White, 8=Them/Black in V5 normalization
-
-        // Undo V5 STM-perspective normalization.
-        let mut sq = sq_val;
-
-        if original_stm == 1 {
-            sq ^= 0x38; // flip_rank
-        }
-
-        let real_black = if original_stm == 0 { v5_color != 0 } else { v5_color == 0 };
-        let color_bit = if real_black { 0x08u8 } else { 0x00u8 };
-
-        nibbles[sq as usize] = pt as u8 | color_bit;
-        occupancy |= 1u64 << (sq as u64);
+        // Lines that fail both parses are silently skipped,
+        // they're comments, blank lines, or corrupted entries.
     }
+    Ok(fens)
+}
 
-    // Pack nibbles in occupancy-LSB order.
-    let mut pieces = [0u8; 16];
-    let mut occ = occupancy;
-    let mut idx = 0usize;
-
-    while occ != 0 {
-        let sq = occ.trailing_zeros() as usize;
-
-        occ &= occ - 1;
-        pieces[idx / 2] |= nibbles[sq] << ((idx & 1) * 4);
-        idx += 1;
-    }
-
-    // V5 castling is STM-relative; convert to absolute FEN byte.
-    let castling = if original_stm == 0 { castling_stm } else { (castling_stm >> 2) | ((castling_stm & 0x3) << 2) };
-
-    // V5 ep square is STM-relative (rank-flipped for Black); undo to absolute.
-    let ep = if ep_square >= 64 || original_stm == 0 { ep_square } else { ep_square ^ 0x38 };
-
-    SoulEntry {
-        occupancy,
-        pieces,
-        score: search_score,
-        result: (f64::from(result) * 2.0) as u8,
-        stm_and_ep: (original_stm << 7) | (ep & 0x7F),
-        castling,
-        _pad: [0u8; 3],
+/// The result byte is whatever the file says. Past 2 it underflows [`flip_result`]
+/// and reads as a win in the stats tally, so it stops at the read.
+fn check_results(entries: &[SoulEntry], base: usize) -> io::Result<()> {
+    match entries.iter().position(|e| e.result > 2) {
+        Some(i) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("entry {} carries result {}, outside 0..=2", base + i, entries[i].result),
+        )),
+        None => Ok(()),
     }
 }
 
 fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
     let mut enc = zstd::Encoder::new(writer, 3)?;
-
     enc.write_all(MAGIC_V6)?;
     enc.write_all(&(entries.len() as u64).to_le_bytes())?;
     enc.write_all(entries.as_bytes())?;
     enc.finish()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SoulEntry, append_encoded, count_encoded, load_encoded, save_encoded};
+    use crate::core::board::{Position, STARTPOS};
+
+    fn temp(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("soul_{name}_{}.soul.zst", std::process::id()))
+            .display()
+            .to_string()
+    }
+
+    /// A dataset is bytes off a disk, and every consumer reads the result byte as
+    /// one of three values.
+    #[test]
+    fn a_result_byte_past_two_fails_the_load() {
+        let good = temp("io_good");
+        let bad = temp("io_bad");
+
+        let board = Position::from_fen(STARTPOS);
+        let mut entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
+
+        save_encoded(&good, &entries).expect("writing a good frame");
+        assert_eq!(load_encoded(&good).expect("reading it back").len(), 4);
+
+        entries[2].result = 3;
+        save_encoded(&bad, &entries).expect("writing the tampered frame");
+
+        // expect_err would need SoulEntry: Debug to format the Ok side.
+        let Err(err) = load_encoded(&bad) else {
+            panic!("a result past 2 must fail the load");
+        };
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("entry 2"), "the error must name the entry: {err}");
+
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn counting_frames_matches_loading_them() {
+        let path = temp("io_count");
+        let board = Position::from_fen(STARTPOS);
+        let entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
+
+        save_encoded(&path, &entries).expect("writing the first frame");
+        append_encoded(&path, &entries[..3]).expect("appending a second");
+
+        assert_eq!(count_encoded(&path).expect("counting the frames"), 7);
+        assert_eq!(load_encoded(&path).expect("loading the frames").len(), 7);
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

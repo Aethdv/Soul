@@ -5,12 +5,11 @@
 
 use std::{arch, mem};
 
-pub use crate::engine::eval_params::LAYOUT;
 use crate::{
     core::defs::{Color, PieceType, Square},
     engine::eval_params::{
         EG_BISHOP, EG_KING, EG_KNIGHT, EG_MATERIAL, EG_PAWN, EG_QUEEN, EG_ROOK, MG_BISHOP, MG_KING, MG_KNIGHT, MG_MATERIAL,
-        MG_PAWN, MG_QUEEN, MG_ROOK, PHASE_WEIGHTS,
+        MG_PAWN, MG_QUEEN, MG_ROOK, PHASE,
     },
     weave::Vi16x8,
 };
@@ -49,7 +48,6 @@ pub const fn mirror_sq(sq: usize) -> usize {
 
     let file = sq & 7;
     let rank = sq >> 3;
-
     (rank << 2) + MIRROR_FILE[file]
 }
 
@@ -61,10 +59,9 @@ const fn init_psqt() -> [AlignedTable; 14] {
     while pt < 6 {
         let mg_w = MG_MATERIAL[pt];
         let eg_w = EG_MATERIAL[pt];
-        let ph_w = PHASE_WEIGHTS[pt];
+        let ph_w = PHASE[pt];
 
         let mut sq = 0;
-
         while sq < 64 {
             let w_visual_idx = sq ^ 0x38;
             let mg_val = clamp_i16(mg_w + get_raw_mg(pt, w_visual_idx));
@@ -89,13 +86,7 @@ const fn init_psqt() -> [AlignedTable; 14] {
 
 /// Saturating i32 → i16 cast.
 const fn clamp_i16(v: i32) -> i16 {
-    if v < i16::MIN as i32 {
-        i16::MIN
-    } else if v > i16::MAX as i32 {
-        i16::MAX
-    } else {
-        v as i16
-    }
+    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
 #[inline]

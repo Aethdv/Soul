@@ -23,6 +23,18 @@ pub struct LazySmpPool {
     handles: Vec<thread::JoinHandle<()>>,
 }
 
+/// A table sized to `hash_mb`, and a pool bound to it.
+///
+/// Both come back together because every helper captures the table by `Arc` for
+/// the pool's lifetime: replace one without the other and the helpers go on
+/// probing the old table while main writes the new one, neither side seeing what
+/// the other stores.
+pub fn table_and_pool(hash_mb: usize, threads: usize) -> (Arc<TranspositionTable>, Arc<LazySmpPool>) {
+    let tt = Arc::new(TranspositionTable::new(hash_mb, threads));
+    let pool = LazySmpPool::new(threads, tt.clone());
+    (tt, pool)
+}
+
 impl LazySmpPool {
     pub fn new(threads: usize, tt: Arc<TranspositionTable>) -> Arc<Self> {
         if threads <= 1 {

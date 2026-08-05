@@ -40,7 +40,6 @@ pub fn format_comma(n: u64) -> String {
     let comma_count = len.saturating_sub(1) / 3;
 
     let mut buf = String::with_capacity(len + comma_count);
-
     for (i, b) in raw.bytes().enumerate() {
         if i > 0 && (len - i).is_multiple_of(3) {
             buf.push(',');
@@ -48,6 +47,15 @@ pub fn format_comma(n: u64) -> String {
         buf.push(b as char);
     }
     buf
+}
+
+/// Hooman counters: 1234 -> "1.2K", 1234567 -> "1.23M".
+pub fn human(n: u64) -> String {
+    match n {
+        1_000_000.. => format!("{:.2}M", n as f64 / 1e6),
+        1_000.. => format!("{:.1}K", n as f64 / 1e3),
+        _ => n.to_string(),
+    }
 }
 
 #[cfg(test)]

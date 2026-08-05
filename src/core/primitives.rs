@@ -251,8 +251,7 @@ impl Square {
     pub const fn chebyshev_distance(self, other: Self) -> u8 {
         let file_d = self.file().abs_diff(other.file());
         let rank_d = self.rank().abs_diff(other.rank());
-
-        if file_d > rank_d { file_d } else { rank_d }
+        file_d.max(rank_d)
     }
 
     /// Returns `true` if the index is in `0..64`.
@@ -298,14 +297,14 @@ impl Square {
         self.0 as usize
     }
 
-    /// Mirrors vertically (rank → 7 − rank). E.g. e1 ↔ e8.
+    /// Mirrors vertically (rank → 7 − rank). E.g. e1 → e8.
     #[inline(always)]
     #[must_use]
     pub const fn flip_rank(self) -> Self {
         Self(self.0 ^ 56)
     }
 
-    /// Mirrors horizontally (file → 7 − file). E.g. a4 ↔ h4.
+    /// Mirrors horizontally (file → 7 − file). E.g. a4 → h4.
     #[inline(always)]
     #[must_use]
     pub const fn flip_file(self) -> Self {
@@ -439,7 +438,6 @@ impl std::str::FromStr for Square {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = s.as_bytes();
-
         if bytes.len() != 2 {
             return Err(ParseSquareError);
         }

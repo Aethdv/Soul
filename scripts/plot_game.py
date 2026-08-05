@@ -24,7 +24,7 @@ Options:
         --fresh            clear TT/history between positions (independent evals)
         --clamp INT        fix the y-axis cp range (default: auto from P98)
     -o, --output PATH      image path (default: <pgn>_eval.png)
-        --dpi INT          output DPI (default: 200)
+        --dpi INT          output DPI (default: 300)
         --show             open interactively after saving
     -wr, --white-relative  treat the engine's score as White-relative
 """
@@ -100,8 +100,7 @@ def _evaluate_game(engine: str, fens: list[str], *, nodes: int | None = None,
             if chess.Board(fen).is_checkmate():
                 r = uci.Score(-uci.MATE if fen.split()[1] == "w" else uci.MATE, 0)
             else:
-                # Clear TT/history so each eval stands alone; the default carries
-                # it across the walk, mirroring how the engine sees a real game.
+                # Clear TT/history.
                 if fresh:
                     eng.new_game()
                 r = eng.search(f"fen {fen}", lim)
@@ -181,7 +180,7 @@ def plot_game(
     fresh:    bool       = False,
     clamp:    int | None = None,
     output:   str | None = None,
-    dpi:      int        = 200,
+    dpi:      int        = sp.DPI,
     show:     bool       = False,
     white_relative: bool = False,
     compare_white_relative: bool = False,
@@ -249,24 +248,19 @@ def plot_game(
     ax.fill_between(xs, y1, 0, where=(y1 >= 0), color=WHITE_A, alpha=0.14, interpolate=True, zorder=1)
     ax.fill_between(xs, y1, 0, where=(y1 <= 0), color=BLACK_A, alpha=0.14, interpolate=True, zorder=1)
 
-    # raw ghost trace under the smoothed river
     ax.plot(xs, yr1, color=sp.MUTE, alpha=0.20, lw=0.6, zorder=3)
 
-    # the river: color flows with who's ahead (keyed to the true eval)
     river_c = np.array([sp.advantage(_winprob(v)) for v in sm1])
     sp.gradient_line(ax, xs, y1, river_c, lw=2.0, zorder=4)
 
-    # comparison overlay: single cool hue, dashed, subordinate
     if y2 is not None and yr2 is not None:
         ax.plot(xs, yr2, color=CMP, alpha=0.22, lw=0.7, zorder=3)
         ax.plot(xs, y2, color=CMP, lw=1.5, ls="--", alpha=0.80, zorder=4)
 
-    # zero line
     ax.axhline(0, color=sp.MUTE, lw=0.9, alpha=0.5, zorder=2)
 
     ax.set_xlim(0.5, n_pos + max(n_pos * 0.06, 2))
 
-    # ── swing annotations ──
     # A decisive sequence clusters swings into a tight x-range and their labels
     # overprint. Pack them into vertical lanes: left to right, each label drops to
     # the lowest tier whose previous label clears it, so a crowded run fans out
@@ -320,7 +314,6 @@ def plot_game(
             path_effects=[pe.withStroke(linewidth=2.0, foreground=sp.PANEL)],
         )
 
-    # axes
     step  = 20
     ticks = list(range(step, n_pos + 1, step))
     ax.set_xticks(ticks)
@@ -363,7 +356,6 @@ def plot_game(
                         edgecolor=sp.LINE, labelcolor=sp.TEXT, loc="upper left")
         leg.get_frame().set_alpha(0.9)
 
-    # title block: players headline, engine(s), then metadata
     fig_h = fig.get_size_inches()[1]
     fig.text(0.50, 1.0 - 0.22 / fig_h, f"{white}  vs  {black}",
              ha="center", va="top", fontsize=15, fontweight="bold", color=sp.TEXT)
@@ -399,7 +391,7 @@ def main() -> None:
     ap.add_argument("--fresh", action="store_true", help="clear TT/history between positions")
     ap.add_argument("--clamp", type=int, default=None, help="fix y-axis cp range (default: auto)")
     ap.add_argument("--output", "-o", default=None)
-    ap.add_argument("--dpi", type=int, default=200)
+    ap.add_argument("--dpi", type=int, default=sp.DPI)
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--white-relative", "-wr", action="store_true", default=False)
     args = ap.parse_args()

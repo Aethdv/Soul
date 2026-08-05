@@ -13,16 +13,13 @@ use crate::{
     core::{
         board::{Position, bitboard, spatial::SpatialTensor},
         defs::{Bitboard, Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
-        psqt,
     },
     engine::{
         autograd::EvalMath,
-        combiner::{Accumulators, Combiner, LinearCombiner, taper},
+        combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
         eval_params::{
-            self, ATTACKER_WEIGHTS, BACKWARD_PAWN_WEIGHTS, BISHOP_PAIR_WEIGHTS, DEFENDED_PAWN_EG, DEFENDED_PAWN_MG,
-            DOUBLED_PAWN_WEIGHTS, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, ENEMY_KING_DIST_EG, ENEMY_KING_DIST_MG,
-            ISOLATED_PAWN_WEIGHTS, KING_SAFETY_WEIGHTS, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, MINOR_BEHIND_PAWN_WEIGHTS,
-            PASSED_PAWN_EG, PASSED_PAWN_MG, PHALANX_EG, PHALANX_MG, ROOK_OPEN_WEIGHTS, TEMPO_WEIGHTS, XRAY_WEIGHTS,
+            self, ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
+            XRAY,
         },
         mobility::{self, Mobility, MobilityData},
         search_params::SearchParams,
@@ -38,19 +35,24 @@ use crate::{
 /// - For the tuner: `EvalParams::<DualNode>::load_tunable()` seeds each weight as a
 ///   dual variable (`grad[slot] = 1`), so a gradient flows back to its slot.
 macro_rules! impl_eval_params {
-    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr) ),* $(,)?) => {
+    ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr, $konst:expr) ),* $(,)?) => {
         pub struct EvalParams<T: EvalMath> {
             $( pub $name: <T as EvalMath>::$ty, )*
+        }
+
+        impl EvalParams<i32> {
+            /// Load from compile-time const arrays. The compiler inlines this entirely.
+            #[inline(always)]
+            pub fn from_const() -> Self {
+                Self { $( $name: $konst, )* }
+            }
         }
 
         impl<T: EvalMath<Scalar = T>> EvalParams<T> {
             // Tuner-only: the engine build seeds params via from_const, never this.
             #[allow(dead_code)]
             pub fn load_tunable(values: &[f64]) -> Self {
-                // Slots 0 and 1 are reserved for the PSQT accumulator gradients:
-                // slot 0 tracks the MiddleGame (MG) material/positional score,
-                // slot 1 tracks the EndGame (EG) material/positional score.
-                // The dynamically tuned EvalParams begin at slot 2.
+                // PSQT gradients occupy slots 0 (MG) and 1 (EG); tunable params start at 2.
                 let mut slot = 2;
                 paste::paste! {
                     Self {
@@ -70,47 +72,107 @@ macro_rules! impl_eval_params {
 
 crate::define_tunables! {impl_eval_params}
 
-crate::register_terms! {
-    mobility::MobilityTerm => mobility,
-    mobility::KingSafetyTerm => king_safety,
-    BishopPairTerm => bonus,
-    RookOpenTerm => bonus,
-    PassedPawnTerm => bonus,
-    EnemyKingDistTerm => bonus,
-    DoubledPawnTerm => bonus,
-    IsolatedPawnTerm => bonus,
-    PhalanxTerm => bonus,
-    DefendedPawnTerm => bonus,
-    BackwardPawnTerm => bonus,
-    TempoTerm => bonus,
-    MinorBehindPawnTerm => bonus,
-    XrayTerm => xray,
+/// Every consumer works from this list. A term implemented in one place and
+/// registered in another builds clean and stops being evaluated.
+///
+/// Rows reach a consumer behind a bracketed carry slot, so a list declared
+/// elsewhere can chain in through `@tunables` or `@blocks` and have its own rows
+/// arrive in front of them. Both rewrites live here rather than beside the
+/// shapes they produce, because a consumer travels as a bare ident and resolves
+/// in the scope that named it, while `$crate::` resolves from anywhere.
+///
+/// Every array term is six slots wide, so the width is matched as a literal
+/// rather than captured: one declared wider has no arm and names itself at the
+/// build, where a captured width would scatter past its own block.
+#[macro_export]
+macro_rules! bonus_terms {
+    ($macro:ident $($carried:tt)*) => {
+        $crate::bonus_terms! { @emit direct [$macro] [$($carried)*] }
+    };
+
+    (@tunables $macro:ident, $($carried:tt)*) => {
+        $crate::bonus_terms! { @emit rewrite [$macro] [$($carried)*] }
+    };
+
+    (@blocks $macro:ident, $($carried:tt)*) => {
+        $crate::bonus_terms! { @emit blocks [$macro] [$($carried)*] }
+    };
+
+    (@emit $mode:ident [$macro:ident] [$($carried:tt)*]) => {
+        $crate::bonus_terms! { @$mode [$macro] [$($carried)*]
+            tempo             = scalar(TempoTerm, tempo, tempo_mg, tempo_eg); // ~9 Elo
+            bishop_pair       = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
+            rook_open         = scalar(RookOpenTerm, rook_open_diff, rook_open_mg, rook_open_eg); // ~5 Elo
+            minor_behind_pawn = scalar(MinorBehindPawnTerm, minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg); // ~3 Elo
+            doubled_pawn      = scalar(DoubledPawnTerm, doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg); // ~10 Elo
+            isolated_pawn     = scalar(IsolatedPawnTerm, isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg); // ~8 Elo
+            backward_pawn     = scalar(BackwardPawnTerm, backward_pawn_diff, backward_pawn_mg, backward_pawn_eg); // ~13 Elo
+            phalanx           = array(PhalanxTerm, phalanx, phalanx_mg, phalanx_eg, 6); // ~5 Elo
+            defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6); // ~10 Elo
+            passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6); // ~15 Elo
+            enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6); // ~12 Elo
+        }
+    };
+
+    (@direct [$macro:ident] [$($carried:tt)*] $($rows:tt)*) => {
+        $macro! { [$($carried)*] $($rows)* }
+    };
+
+    (@rewrite [$macro:ident] [$($out:tt)*]
+        $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! {
+            @rewrite [$macro] [$($out)*
+                ($mg, Scalar, [<$block _offset>], 0, $crate::engine::eval_params::[<$block:upper>][0]),
+                ($eg, Scalar, [<$block _offset>], 1, $crate::engine::eval_params::[<$block:upper>][1]),
+            ] $($rest)*
+        }
+    };
+
+    (@rewrite [$macro:ident] [$($out:tt)*]
+        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! {
+            @rewrite [$macro] [$($out)*
+                ($mg, Array6, [<$block _mg_offset>], 0, $crate::engine::eval_params::[<$block:upper _MG>]),
+                ($eg, Array6, [<$block _eg_offset>], 0, $crate::engine::eval_params::[<$block:upper _EG>]),
+            ] $($rest)*
+        }
+    };
+
+    (@rewrite [$macro:ident] [$($out:tt)*]) => { paste::paste! { $macro! { $($out)* } } };
+
+    (@blocks [$macro:ident] [$($out:tt)*]
+        $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! { @blocks [$macro] [$($out)* $block,] $($rest)* }
+    };
+
+    (@blocks [$macro:ident] [$($out:tt)*]
+        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+    ) => {
+        $crate::bonus_terms! { @blocks [$macro] [$($out)* [<$block _mg>], [<$block _eg>],] $($rest)* }
+    };
+
+    (@blocks [$macro:ident] [$($out:tt)*]) => { paste::paste! { $macro! { $($out)* } } };
 }
 
-/// X-ray king-ring differential; shares the king-safety block's scalar upstream.
+macro_rules! register_bonus {
+    ([] $( $block:ident = $kind:ident ( $term:ident, $($spec:tt)* ) ; )*) => {
+        $( pub struct $term; )*
+
+        crate::register_terms! {
+            mobility::MobilityTerm   => mobility,
+            mobility::KingSafetyTerm => king_safety,
+            XrayTerm                 => xray,
+            $( $term                 => bonus, )*
+        }
+    };
+}
+
+bonus_terms!(register_bonus);
+
 pub struct XrayTerm;
-/// Tapered bonus for holding both bishops (~9 Elo).
-pub struct BishopPairTerm;
-/// Tapered bonus for a rook on an open file with no pawns of either color (~5 Elo).
-pub struct RookOpenTerm;
-/// Tapered passed-pawn bonus, indexed by how far the pawn has advanced (~15 Elo).
-pub struct PassedPawnTerm;
-/// Tapered passed-pawn bonus, indexed by the enemy king's distance to the passer (~12 Elo).
-pub struct EnemyKingDistTerm;
-/// Tapered penalty for doubled pawns; friendly pawns stacked on the same file (~10 Elo).
-pub struct DoubledPawnTerm;
-/// Tapered penalty for isolated pawns; no friendly pawn on either adjacent file (~8 Elo).
-pub struct IsolatedPawnTerm;
-/// Tapered bonus for pawn phalanxes; side-by-side friendly pawns, indexed by relative rank (~5 Elo).
-pub struct PhalanxTerm;
-/// Tapered bonus for defended pawns; a pawn supported by a friendly pawn, indexed by relative rank (~10 Elo).
-pub struct DefendedPawnTerm;
-/// Tapered penalty for backward pawns; behind all neighbors with an enemy-controlled stop square (~13 Elo).
-pub struct BackwardPawnTerm;
-/// Tapered bonus for the side to move, the half-move of initiative every position carries (~9 Elo).
-pub struct TempoTerm;
-/// Tapered bonus for a minor behind a pawn; a knight or bishop with a pawn (either color) directly ahead shielding it (~3 Elo).
-pub struct MinorBehindPawnTerm;
 
 pub struct DetailedEval {
     pub psqt: i32,
@@ -128,30 +190,25 @@ pub struct SharedFeatures {
     pub openness: i32,
     pub data: MobilityData,
     pub xray_ortho: i32,
-    /// `+1` if white has the bishop pair and black doesn't,
-    /// `-1` for the reverse, `0` otherwise.
+    /// +1/0/−1 per side's `more_than_one()`.
     pub bishop_pair_diff: i32,
-    /// White minus black rooks standing on a fully open file with no pawns of either color.
+    /// Rooks on fully open files (no pawns of either color).
     pub rook_open_diff: i32,
-    /// White minus black passed pawns, bucketed by relative rank (index 0 = rank 2, 5 = rank 7).
+    /// Bucketed by relative rank (rank 2 → index 0).
     pub passed_pawn: [i32; 6],
-    /// White minus black passers, bucketed by enemy-king Chebyshev distance (index 0 = dist 1, 5 = dist 6+).
+    /// Chebyshev distance (dist 1 → index 0, dist 6+ → index 5).
     pub enemy_king_dist: [i32; 6],
-    /// White minus black doubled pawns; friendly pawns stacked on a file (adjacent pairs only).
+    /// Adjacent pairs only (gapped stacks go uncounted).
     pub doubled_pawn_diff: i32,
-    /// White minus black isolated pawns; no friendly pawn on either adjacent file.
     pub isolated_pawn_diff: i32,
-    /// White minus black pawn phalanxes, bucketed by relative rank (index 0 = rank 2, 5 = rank 7).
+    /// Bucketed by relative rank.
     pub phalanx: [i32; 6],
-    /// White minus black pawns defended by a friendly pawn, bucketed by relative rank
-    /// (index 0 = rank 2, 5 = rank 7; rank 2 is unreachable since the defender would sit on rank 1).
+    /// Bucketed by relative rank; index 0 (rank 2) unreachable (defender would sit on rank 1).
     pub defended_pawn: [i32; 6],
-    /// White minus black backward pawns; behind all neighbors with a stop square the enemy controls.
     pub backward_pawn_diff: i32,
-    /// Side-to-move tempo in the white-relative frame: `+1` if white is to move, `-1` if black.
-    /// The combiner's STM flip turns this into `+tempo` for whoever holds the move.
+    /// White-relative; the combiner flips it to STM-positive.
     pub tempo: i32,
-    /// White minus black minors (knight/bishop) with a pawn of either color directly ahead.
+    /// Minors with a pawn (either color) directly ahead.
     pub minor_behind_pawn_diff: i32,
 }
 
@@ -172,7 +229,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     let psqt = buckets.mg_eg;
     let mobility = buckets.mobility;
     let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
-    let total = LinearCombiner::forward(&buckets, phase);
+    let total = LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(&params));
     let safety = total - psqt - mobility - bonus;
 
     let (p, m, b, s, t) = if board.stm == Color::White {
@@ -203,21 +260,16 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
 
     let div = std::cmp::max(params.lazy_eval_divisor, 1);
     let scaled = (volatility * phase) / div;
-
     params.lazy_eval_margin + scaled
 }
 
-/// Generic evaluation: monomorphized to `i32` for search, `DualNode` for tuning.
+/// Monomorphized to `i32` for search, `DualNode` for tuning.
 ///
-/// Linearity trap: if you introduce any non-linear math (e.g. `feature · feature · weight` or `max(feature, 0)`)
-/// to the evaluation parameters, the affected [`crate::engine::term::LinearTerm::scatter`]
-/// impl will silently compute mathematically invalid gradients because
-/// [`LinearTerm`] assumes perfect parameter linearity (`y = w · x`).
-/// Non-linear shapes belong in the [`crate::engine::combiner::Combiner`] layer
-/// or soon a future `NonlinearTerm`.
+/// [`LinearTerm::scatter`] assumes `y = w · x`. A non-linear shape like
+/// `feature · feature · weight` or `max(feature, 0)` produces invalid gradients;
+/// put it in the [`Combiner`] layer. Run `make oracle` to verify.
 ///
-/// If you aren't sure, run `make oracle`, which compares against the dual-number
-/// forward pass and fails on any drift.
+/// TODO: `NonLinearTerm` trait.
 #[inline(always)]
 pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
     board: &Position,
@@ -246,7 +298,7 @@ pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
     params: &EvalParams<T>,
 ) -> T {
     let buckets = fill_accumulators::<T>(acc, phase, features, params);
-    LinearCombiner::forward(&buckets, phase)
+    LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(params))
 }
 
 /// Extracts the game phase directly from the accumulator's dedicated lane.
@@ -255,51 +307,9 @@ pub fn extract_phase(acc: &Vi16x8) -> i32 {
     i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE)
 }
 
-impl EvalParams<i32> {
-    /// Load from compile-time const arrays. The compiler inlines this entirely.
-    #[inline(always)]
-    pub fn from_const() -> Self {
-        Self {
-            mg_mob_open: MG_MOBILITY_OPEN,
-            mg_mob_closed: MG_MOBILITY_CLOSED,
-            eg_mob_open: EG_MOBILITY_OPEN,
-            eg_mob_closed: EG_MOBILITY_CLOSED,
-            w_shield: KING_SAFETY_WEIGHTS[0],
-            w_ortho: KING_SAFETY_WEIGHTS[1],
-            w_diag: KING_SAFETY_WEIGHTS[2],
-            atk_weights: ATTACKER_WEIGHTS,
-            w_xray_ortho: XRAY_WEIGHTS[0],
-            w_bp_mg: BISHOP_PAIR_WEIGHTS[0],
-            w_bp_eg: BISHOP_PAIR_WEIGHTS[1],
-            w_rook_open_mg: ROOK_OPEN_WEIGHTS[0],
-            w_rook_open_eg: ROOK_OPEN_WEIGHTS[1],
-            passed_pawn_mg: PASSED_PAWN_MG,
-            passed_pawn_eg: PASSED_PAWN_EG,
-            enemy_king_dist_mg: ENEMY_KING_DIST_MG,
-            enemy_king_dist_eg: ENEMY_KING_DIST_EG,
-            w_doubled_pawn_mg: DOUBLED_PAWN_WEIGHTS[0],
-            w_doubled_pawn_eg: DOUBLED_PAWN_WEIGHTS[1],
-            w_isolated_pawn_mg: ISOLATED_PAWN_WEIGHTS[0],
-            w_isolated_pawn_eg: ISOLATED_PAWN_WEIGHTS[1],
-            phalanx_mg: PHALANX_MG,
-            phalanx_eg: PHALANX_EG,
-            defended_pawn_mg: DEFENDED_PAWN_MG,
-            defended_pawn_eg: DEFENDED_PAWN_EG,
-            w_backward_pawn_mg: BACKWARD_PAWN_WEIGHTS[0],
-            w_backward_pawn_eg: BACKWARD_PAWN_WEIGHTS[1],
-            w_tempo_mg: TEMPO_WEIGHTS[0],
-            w_tempo_eg: TEMPO_WEIGHTS[1],
-            w_minor_behind_pawn_mg: MINOR_BEHIND_PAWN_WEIGHTS[0],
-            w_minor_behind_pawn_eg: MINOR_BEHIND_PAWN_WEIGHTS[1],
-        }
-    }
-}
-
-/// Everything a position's pawns alone determine, so it caches on the
-/// incremental `pawn_key`. The `passed_span` scan that detects passers is the
-/// hot part of `SharedFeatures::compute`; caching it is the point. Passer
-/// squares ride along so `enemy_king_dist`, the lone king-dependent bucket,
-/// rebuilds without re-running the scan.
+/// Cached on `pawn_key`; the passed-span scan is the hot part of
+/// `SharedFeatures::compute`. Passer squares retained so
+/// `enemy_king_dist` rebuilds without re-running the scan.
 #[derive(Clone, Copy, Default)]
 pub struct PawnFeatures {
     openness: i32,
@@ -333,28 +343,19 @@ impl PawnFeatures {
         let wp = board.pieces(PieceType::Pawn, Color::White);
         let bp = board.pieces(PieceType::Pawn, Color::Black);
 
-        // Passed pawns; no enemy pawn on the pawn's file or its neighbors ahead.
-        // Bucketed white-minus-black by relative rank (how far advanced). Passer
-        // squares are retained for the enemy-king distance rebucket downstream.
+        // Passed pawns; no enemy pawn on the file or adjacent files ahead. Passer squares
+        // retained for the enemy-king distance bucket in SharedFeatures::with_pawn.
         let mut passed_pawn = [0i32; 6];
         let mut w_passers = Bitboard::default();
         let mut b_passers = Bitboard::default();
-        let mut w = wp;
 
-        while w.is_not_empty() {
-            let sq = w.pop_lsb();
-
+        for sq in wp {
             if (bitboard::passed_span(sq, Color::White) & bp).is_empty() {
                 passed_pawn[(sq.rank() - 1) as usize] += 1;
                 w_passers |= sq.bitboard();
             }
         }
-
-        let mut b = bp;
-
-        while b.is_not_empty() {
-            let sq = b.pop_lsb();
-
+        for sq in bp {
             if (bitboard::passed_span(sq, Color::Black) & wp).is_empty() {
                 passed_pawn[(6 - sq.rank()) as usize] -= 1;
                 b_passers |= sq.bitboard();
@@ -369,56 +370,26 @@ impl PawnFeatures {
         let doubled_pawn_diff = w_doubled - b_doubled;
 
         // Isolated pawns; no friendly pawn on either adjacent file. file_fill smears
-        // each pawn across its file, so shifting east/west gives the neighbor-file mask.
-        // The adjacency masks are shared with the backward-pawn detection below.
+        // each pawn across its file; shifting east/west gives the neighbor-file mask.
+        // Adjacency masks shared with backward-pawn detection.
         let w_adj = wp.file_fill().shift(Direction::East) | wp.file_fill().shift(Direction::West);
         let b_adj = bp.file_fill().shift(Direction::East) | bp.file_fill().shift(Direction::West);
         let w_isolated = (wp & !w_adj).popcount() as i32;
         let b_isolated = (bp & !b_adj).popcount() as i32;
         let isolated_pawn_diff = w_isolated - b_isolated;
 
-        // Phalanx; side-by-side friendly pawns. & shift(East) marks the east pawn of
-        // each pair; bucket white-minus-black by relative rank.
-        let mut phalanx = [0i32; 6];
-        let mut wph = wp & wp.shift(Direction::East);
+        // Phalanx; side-by-side friendly pawns. & shift(East) marks the east pawn of each pair.
+        let phalanx = by_relative_rank(wp & wp.shift(Direction::East), bp & bp.shift(Direction::East));
 
-        while wph.is_not_empty() {
-            let sq = wph.pop_lsb();
-            phalanx[(sq.rank() - 1) as usize] += 1;
-        }
-
-        let mut bph = bp & bp.shift(Direction::East);
-
-        while bph.is_not_empty() {
-            let sq = bph.pop_lsb();
-            phalanx[(6 - sq.rank()) as usize] -= 1;
-        }
-
-        // Defended; a pawn standing on a square its own side's pawns attack.
-        // Bucket white-minus-black by relative rank. Pawn-attack maps are shared
-        // with the backward-pawn detection below.
+        // Defended; a pawn on a square its own side's pawns attack.
+        // Pawn-attack maps shared with backward-pawn detection.
         let w_pawn_atk = board.pawn_attacks(Color::White);
         let b_pawn_atk = board.pawn_attacks(Color::Black);
-        let mut defended_pawn = [0i32; 6];
-        let mut wdef = wp & w_pawn_atk;
+        let defended_pawn = by_relative_rank(wp & w_pawn_atk, bp & b_pawn_atk);
 
-        while wdef.is_not_empty() {
-            let sq = wdef.pop_lsb();
-            defended_pawn[(sq.rank() - 1) as usize] += 1;
-        }
-
-        let mut bdef = bp & b_pawn_atk;
-
-        while bdef.is_not_empty() {
-            let sq = bdef.pop_lsb();
-            defended_pawn[(6 - sq.rank()) as usize] -= 1;
-        }
-
-        // Backward pawns; behind all neighbors (no friendly pawn at or behind on an
-        // adjacent file) with a stop square the enemy controls, so it can neither
-        // advance nor be supported. Isolated pawns are excluded by the adjacency mask;
-        // they score as isolated, not backward. Smearing each pawn forward (north for
-        // white, south for black) then to adjacent files marks every square with a
+        // Backward pawns; behind all neighbors with a stop square the enemy controls.
+        // Isolated pawns are excluded by the adjacency mask (they score as isolated).
+        // north_fill/south_fill then shift to adjacent files marks every square with a
         // friendly pawn at or behind its rank.
         let w_fill = wp.north_fill();
         let b_fill = bp.south_fill();
@@ -513,17 +484,11 @@ impl SharedFeatures {
         // Enemy-king Chebyshev distance to each passer, bucketed (1..=6, 7 clamps
         // to 6). Walks the cached passer sets rather than re-detecting them.
         let mut enemy_king_dist = [0i32; 6];
-        let mut w = pawn.w_passers;
 
-        while w.is_not_empty() {
-            let sq = w.pop_lsb();
+        for sq in pawn.w_passers {
             enemy_king_dist[(b_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] += 1;
         }
-
-        let mut b = pawn.b_passers;
-
-        while b.is_not_empty() {
-            let sq = b.pop_lsb();
+        for sq in pawn.b_passers {
             enemy_king_dist[(w_ksq.chebyshev_distance(sq).clamp(1, 6) - 1) as usize] -= 1;
         }
 
@@ -559,12 +524,10 @@ impl SharedFeatures {
     }
 }
 
-/// Build the per-bucket accumulator by initializing the PSQT-level `mg_eg` bucket
-/// from the SIMD accumulator, zeroing the rest, and applying every registered term.
-/// Isolated so both `compute_macro_eval` and `detailed_eval` produce identical
-/// bucket values from one code path.
+/// Zero all buckets, seed PSQT from the SIMD accumulator, then `apply_all_terms`.
+/// Isolated so both `compute_macro_eval` and `detailed_eval` produce identical values.
 #[inline]
-fn fill_accumulators<T: EvalMath<Scalar = T>>(
+pub fn fill_accumulators<T: EvalMath<Scalar = T>>(
     acc: &T::Vec8,
     phase: T,
     features: &SharedFeatures,
@@ -577,96 +540,152 @@ fn fill_accumulators<T: EvalMath<Scalar = T>>(
         bonus_eg: T::zero(),
         safety_us: T::zero(),
         safety_them: T::zero(),
+        danger_us: T::zero(),
+        danger_them: T::zero(),
         xray: T::zero(),
     };
+
     apply_all_terms::<T>(features, params, phase, &mut buckets);
     buckets
 }
 
 impl term::LinearTerm for XrayTerm {
-    /// Scalar upstream; x-ray is tapered MG-only inside the combiner's
-    /// king-safety block, same cadence as king safety.
+    /// Scalar; x-ray is tapered MG-only inside the combiner's king-safety block.
     type Upstream = f64;
+    type Input = f64;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
         acc.xray = params.w_xray_ortho * T::from_i32(features.xray_ortho);
     }
 
-    #[inline]
-    fn scatter(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
-        grads[psqt::LAYOUT.xray_offset] += upstream * features.xray_ortho as f64;
+    #[inline(always)]
+    fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+        acc.xray = values[eval_params::LAYOUT.xray_offset] * feature;
+    }
+
+    #[inline(always)]
+    fn scatter(feature: f64, upstream: f64, grads: &mut [f64]) {
+        let off = eval_params::LAYOUT.xray_offset;
+        grads[off] += upstream * feature;
     }
 }
 
-/// Generates the `LinearTerm` impl for a taper bonus: a feature dotted with its
-/// (MG, EG) weight pair, summed into the bonus bucket. `scalar` is one feature on a
-/// contiguous `(mg, eg)` slot pair; `array` is an N-bucket vector with separate MG
-/// and EG slot blocks. Same forward/backward shape, so neither is hand-copied.
+impl term::TermSource<XrayTerm> for SharedFeatures {
+    type Input = f64;
+
+    #[inline(always)]
+    fn extract(&self) -> f64 {
+        self.xray_ortho as f64
+    }
+}
+
+/// Generates `LinearTerm` + `TermSource for SharedFeatures` for a tapered bonus.
+/// `scalar` writes one `(mg, eg)` slot pair; `array` writes MG/EG blocks of `$n` slots.
 macro_rules! tapered_bonus_term {
-    ( $( $term:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
-        $( tapered_bonus_term!(@$kind $term, $($spec)*); )*
+    ( [] $( $block:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
+        $( tapered_bonus_term!(@$kind $block, $($spec)*); )*
     };
 
-    (@scalar $term:ident, $feat:ident, $mg:ident, $eg:ident, $off:ident) => {
+    (@scalar $block:ident, $term:ident, $sf_field:ident, $mg:ident, $eg:ident) => {
         impl term::LinearTerm for $term {
             type Upstream = term::TaperPair;
+            type Input = f64;
 
             #[inline(always)]
             fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-                let feature = T::from_i32(features.$feat);
+                let feature = T::from_i32(features.$sf_field);
                 acc.bonus_mg += params.$mg * feature;
                 acc.bonus_eg += params.$eg * feature;
             }
 
-            #[inline]
-            fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
-                let off = eval_params::LAYOUT.$off;
-                let feature = features.$feat as f64;
+            #[inline(always)]
+            fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+                let off = paste::paste!(eval_params::LAYOUT.[<$block _offset>]);
+                acc.bonus_mg += values[off] * feature;
+                acc.bonus_eg += values[off + 1] * feature;
+            }
+
+            #[inline(always)]
+            fn scatter(feature: f64, upstream: term::TaperPair, grads: &mut [f64]) {
+                let off = paste::paste!(eval_params::LAYOUT.[<$block _offset>]);
                 grads[off] += upstream.d_mg * feature;
                 grads[off + 1] += upstream.d_eg * feature;
             }
         }
+
+        impl term::TermSource<$term> for SharedFeatures {
+            type Input = f64;
+
+            #[inline(always)]
+            fn extract(&self) -> f64 { self.$sf_field as f64 }
+        }
     };
 
-    (@array $term:ident, $feat:ident, $mg:ident, $eg:ident, $mg_off:ident, $eg_off:ident, $n:literal) => {
+    (@array $block:ident, $term:ident, $sf_field:ident, $mg:ident, $eg:ident, $n:literal) => {
         impl term::LinearTerm for $term {
             type Upstream = term::TaperPair;
+            type Input = [f64; $n];
 
             #[inline(always)]
             fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
                 for i in 0..$n {
-                    let feature = T::from_i32(features.$feat[i]);
+                    let feature = T::from_i32(features.$sf_field[i]);
                     acc.bonus_mg += params.$mg[i] * feature;
                     acc.bonus_eg += params.$eg[i] * feature;
                 }
             }
 
-            #[inline]
-            fn scatter(features: &SharedFeatures, upstream: term::TaperPair, grads: &mut [f64]) {
-                let mg = eval_params::LAYOUT.$mg_off;
-                let eg = eval_params::LAYOUT.$eg_off;
-
-                for i in 0..$n {
-                    let feature = features.$feat[i] as f64;
-                    grads[mg + i] += upstream.d_mg * feature;
-                    grads[eg + i] += upstream.d_eg * feature;
+            #[inline(always)]
+            fn apply_input(features: [f64; $n], values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+                if features.iter().all(|f| *f == 0.0) {
+                    return;
                 }
+
+                let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
+                let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
+                for i in 0..$n {
+                    acc.bonus_mg += values[mg + i] * features[i];
+                    acc.bonus_eg += values[eg + i] * features[i];
+                }
+            }
+
+            #[inline(always)]
+            fn scatter(features: [f64; $n], upstream: term::TaperPair, grads: &mut [f64]) {
+                if features.iter().all(|f| *f == 0.0) {
+                    return;
+                }
+
+                let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
+                let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
+                for i in 0..$n {
+                    grads[mg + i] += upstream.d_mg * features[i];
+                    grads[eg + i] += upstream.d_eg * features[i];
+                }
+            }
+        }
+
+        impl term::TermSource<$term> for SharedFeatures {
+            type Input = [f64; $n];
+
+            #[inline(always)]
+            fn extract(&self) -> [f64; $n] {
+                std::array::from_fn(|i| self.$sf_field[i] as f64)
             }
         }
     };
 }
 
-tapered_bonus_term! {
-    BishopPairTerm      = scalar(bishop_pair_diff, w_bp_mg, w_bp_eg, bishop_pair_offset);
-    RookOpenTerm        = scalar(rook_open_diff, w_rook_open_mg, w_rook_open_eg, rook_open_offset);
-    PassedPawnTerm      = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, passed_pawn_mg_offset, passed_pawn_eg_offset, 6);
-    EnemyKingDistTerm   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, enemy_king_dist_mg_offset, enemy_king_dist_eg_offset, 6);
-    DoubledPawnTerm     = scalar(doubled_pawn_diff, w_doubled_pawn_mg, w_doubled_pawn_eg, doubled_pawn_offset);
-    IsolatedPawnTerm    = scalar(isolated_pawn_diff, w_isolated_pawn_mg, w_isolated_pawn_eg, isolated_pawn_offset);
-    PhalanxTerm         = array(phalanx, phalanx_mg, phalanx_eg, phalanx_mg_offset, phalanx_eg_offset, 6);
-    DefendedPawnTerm    = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, defended_pawn_mg_offset, defended_pawn_eg_offset, 6);
-    BackwardPawnTerm    = scalar(backward_pawn_diff, w_backward_pawn_mg, w_backward_pawn_eg, backward_pawn_offset);
-    TempoTerm           = scalar(tempo, w_tempo_mg, w_tempo_eg, tempo_offset);
-    MinorBehindPawnTerm = scalar(minor_behind_pawn_diff, w_minor_behind_pawn_mg, w_minor_behind_pawn_eg, minor_behind_pawn_offset);
+bonus_terms!(tapered_bonus_term);
+
+/// White adds, Black subtracts, bucketed by the mover's own rank (rank 2 → index 0).
+fn by_relative_rank(white: Bitboard, black: Bitboard) -> [i32; 6] {
+    let mut buckets = [0i32; 6];
+    for sq in white {
+        buckets[(sq.rank() - 1) as usize] += 1;
+    }
+    for sq in black {
+        buckets[(6 - sq.rank()) as usize] -= 1;
+    }
+    buckets
 }

@@ -20,11 +20,10 @@ use crate::{
 /// Board state is stored in raw (non-normalized) form;
 /// occupancy bitboard + nibble-array of piece types/colors.
 /// The tuner normalizes the perspective during feature extraction.
-pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, search_score: Option<i32>) -> SoulEntry {
+pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> SoulEntry {
     let mut pieces = [0u8; 16];
     let mut idx = 0usize;
     let mut occ = board.occ.0;
-
     while occ != 0 {
         let lsb_idx = occ.trailing_zeros() as u8;
         occ &= occ - 1;
@@ -33,7 +32,6 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
         let piece = board.piece_at(sq);
         let color = board.color_at(sq);
         let pt_raw = piece.as_usize() & 0x07;
-
         let pt = if pt_raw == PieceType::Rook.as_usize() && is_castling_rook(board, sq, color) {
             CASTLING_ROOK
         } else {
@@ -50,7 +48,11 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
     SoulEntry {
         occupancy: board.occ.0,
         pieces,
-        score: search_score.unwrap_or(0).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        score: search_score.map_or(SoulEntry::NO_SCORE, |s| {
+            // One short of i16::MAX, so a clamped score can never become the
+            // NO_SCORE sentinel; real search scores cap at MATE anyway.
+            s.clamp(i16::MIN as i32, i16::MAX as i32 - 1) as i16
+        }),
         result: (result * 2.0) as u8,
         stm_and_ep: (u8::from(board.stm == Color::Black) << 7) | (board.en_passant.map_or(64, |sq| sq.0) & 0x7F),
         castling: board.castling_rights,
@@ -61,12 +63,10 @@ pub fn from_board(board: &Position, result: f64, _static_score: Option<i32>, sea
 fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
     for slot in 0..4 {
         let bit = 1u8 << slot;
-
         if board.castling_rights & bit != 0 && board.castling_rooks[slot] == sq && (slot < 2) == (color == Color::White) {
             return true;
         }
     }
-
     false
 }
 
@@ -99,7 +99,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         if pt_raw == 5 {
             king_sq[color_idx] = sq;
         }
-
         if pt_raw == CASTLING_ROOK {
             pending_rooks[pending_count] = (color_idx, sq);
             pending_count += 1;
@@ -107,8 +106,8 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     }
 
     for &(color_idx, sq) in &pending_rooks[..pending_count] {
-        let king_file = u8::from(king_sq[color_idx]) % 8;
-        let rook_file = u8::from(sq) % 8;
+        let king_file = king_sq[color_idx].file();
+        let rook_file = sq.file();
         let is_kingside = rook_file > king_file;
 
         let slot = match (color_idx, is_kingside) {
@@ -129,7 +128,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
 
         for file in 0..8usize {
             let ch = board[rank * 8 + file];
-
             if ch == b'.' {
                 empty += 1;
             } else {
@@ -144,7 +142,6 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         if empty > 0 {
             fen.push((b'0' + empty) as char);
         }
-
         if rank > 0 {
             fen.push('/');
         }
@@ -178,7 +175,7 @@ pub fn to_fen(entry: &SoulEntry) -> String {
         } else {
             for (slot, &rook) in castling_rooks.iter().enumerate() {
                 if castling_bits & (1u8 << slot) != 0 {
-                    let file = u8::from(rook) % 8;
+                    let file = rook.file();
                     let base = if slot < 2 { b'A' } else { b'a' };
 
                     fen.push((base + file) as char);
@@ -190,22 +187,69 @@ pub fn to_fen(entry: &SoulEntry) -> String {
     fen.push(' ');
 
     let ep = entry.stm_and_ep & 0x7F;
-
     if ep >= 64 {
         fen.push('-');
     } else {
         fen.push_str(&Square(ep).to_string());
     }
-
     fen.push_str(" 0 1");
     fen
+}
+
+/// Weighted material over both sides, the scale `wdl_model` clamps into 17..=78.
+///
+/// The king weighs nothing and the castling-rook encoding weighs a rook, the two
+/// cases [`to_fen`] also has to unpack.
+pub fn material_count(entry: &SoulEntry) -> u32 {
+    const WEIGHTS: [u32; 7] = [1, 3, 3, 5, 9, 0, 5];
+
+    let mut total = 0;
+    let mut idx = 0usize;
+    let mut occ = entry.occupancy;
+    while occ != 0 {
+        occ &= occ - 1;
+        total += WEIGHTS[usize::from(next_nibble(&entry.pieces, &mut idx) & 0x07)];
+    }
+    total
 }
 
 #[inline]
 pub(super) fn next_nibble(pieces: &[u8; 16], idx: &mut usize) -> u8 {
     let i = *idx;
     *idx += 1;
-
     let byte = pieces[i / 2];
     if i & 1 == 0 { byte & 0x0F } else { byte >> 4 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::board::STARTPOS;
+
+    /// The volatility filter measures every static eval against this field, so a
+    /// zero here quietly cuts an unsearched dataset down to its quiet positions.
+    #[test]
+    fn an_absent_search_score_encodes_as_the_sentinel() {
+        let board = Position::from_fen(STARTPOS);
+        assert_eq!(from_board(&board, 0.5, None).score, SoulEntry::NO_SCORE);
+        assert_eq!(from_board(&board, 0.5, Some(0)).score, 0);
+        assert_eq!(from_board(&board, 0.5, Some(-42)).score, -42);
+    }
+
+    /// Counting from the nibbles has to land where counting from the board does,
+    /// including the castling rooks the packing stores under their own code.
+    #[test]
+    fn material_counted_from_the_nibbles_matches_the_board() {
+        for fen in [
+            STARTPOS,
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+            "8/2k5/8/4q3/8/3N4/5PPP/6K1 b - - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        ] {
+            let board = Position::from_fen(fen);
+            assert_eq!(from_board(&board, 0.5, None).material_count(), board.material_count(), "{fen}");
+        }
+        assert_eq!(Position::from_fen(STARTPOS).material_count(), 78, "the scale wdl_model was fitted on");
+    }
 }

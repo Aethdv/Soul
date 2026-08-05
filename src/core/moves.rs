@@ -94,7 +94,6 @@ impl Move {
         let f = u16::from(from) & Self::MASK_SQ;
         let t = (u16::from(to) & Self::MASK_SQ) << Self::SHIFT_TO;
         let fl = (flag & Self::MASK_FLAG) << Self::SHIFT_FLAG;
-
         Self(f | t | fl)
     }
 
@@ -141,8 +140,6 @@ impl Move {
     }
 
     /// Move captures something.
-    /// Checks bit 12 directly: the capture flag is bit 0 of the 4-bit flag nibble,
-    /// which sits at bits [12..15] of the packed u16.
     #[inline(always)]
     pub const fn is_capture(self) -> bool {
         (self.0 & 0x1000) != 0
@@ -256,48 +253,41 @@ impl fmt::Debug for Move {
 }
 
 /// Stack-allocated move list. No heap allocation on the hot path.
-/// The theoretical maximum legal moves in any chess position is 218.
-/// In practice you'll rarely see more than 80, but this safely bounds all edge cases.
 pub struct MoveList {
     moves: [MaybeUninit<Move>; MAX_MOVES],
     len: usize,
 }
 
 impl MoveList {
-    /// Empty move list.
     #[inline(always)]
     pub const fn new() -> Self {
         Self { moves: [MaybeUninit::uninit(); MAX_MOVES], len: 0 }
     }
 
-    /// Append a move to the list.
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES, "MoveList capacity exceeded");
-        // SAFETY: Caller guarantees the list is not full; debug_assert above catches violations in debug builds.
+        // SAFETY: MAX_MOVES exceeds the 218 moves any legal position can offer, so a
+        // generator filling one list cannot reach the end of it.
         unsafe { self.moves.get_unchecked_mut(self.len).write(mv) };
         self.len += 1;
     }
 
-    /// Clear all moves.
     #[inline(always)]
     pub fn clear(&mut self) {
         self.len = 0;
     }
 
-    /// Number of moves in the list.
     #[inline(always)]
     pub const fn len(&self) -> usize {
         self.len
     }
 
-    /// List is empty.
     #[inline(always)]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Iterate over moves.
     #[inline(always)]
     pub fn iter(&self) -> std::slice::Iter<'_, Move> {
         self.as_slice().iter()

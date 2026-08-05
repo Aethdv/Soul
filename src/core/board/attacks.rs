@@ -23,18 +23,13 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
     if (atk_pawn(sq, attacker.opposite()) & pos.role_bb[PieceType::Pawn] & them).is_not_empty() {
         return true;
     }
-
     if (atk_knight(sq) & pos.role_bb[PieceType::Knight] & them).is_not_empty() {
         return true;
     }
-
     if (atk_king(sq) & pos.role_bb[PieceType::King] & them).is_not_empty() {
         return true;
     }
 
-    // Sliders: rook-movers (R+Q), then bishop-movers (B+Q).
-    // Pre-masking with the attacker's bitboard saves an AND in the hot intersection
-    // by restricting the occupancy-generated attack set to only relevant targets early.
     let rq = (pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen]) & them;
 
     if (atk_rook(sq, occ) & rq).is_not_empty() {
@@ -50,7 +45,6 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
 #[inline(always)]
 pub fn checkers(pos: &Position) -> Bitboard {
     let king_bb = pos.pieces(PieceType::King, pos.stm);
-
     if king_bb.is_empty() {
         return Bitboard(0);
     }
@@ -65,7 +59,6 @@ pub fn checkers(pos: &Position) -> Bitboard {
 pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
     let occ = pos.occ;
     let them = pos.side_bb[attacker];
-
     (atk_pawn(sq, attacker.opposite()) & pos.role_bb[PieceType::Pawn] & them)
         | (atk_knight(sq) & pos.role_bb[PieceType::Knight] & them)
         | (atk_king(sq) & pos.role_bb[PieceType::King] & them)
@@ -88,7 +81,6 @@ pub fn all_attackers_to(pos: &Position, sq: Square, occ: Bitboard) -> Bitboard {
     let pawns = pos.role_bb[PieceType::Pawn];
     let white_pawns = pawns & pos.side_bb[Color::White];
     let black_pawns = pawns & pos.side_bb[Color::Black];
-
     (atk_pawn(sq, Color::Black) & white_pawns)
         | (atk_pawn(sq, Color::White) & black_pawns)
         | (atk_knight(sq) & pos.role_bb[PieceType::Knight])
@@ -127,7 +119,6 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     let opp = color.opposite();
     let us = pos.side_bb[color];
     let king_bb = pos.pieces(PieceType::King, color);
-
     if king_bb.is_empty() {
         return Bitboard(0);
     }
@@ -142,13 +133,11 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
 
     for sniper_sq in snipers {
         let between = between_bb(king_sq, sniper_sq) & pos.occ;
-
         // One occupant on the ray, and it's ours: that piece is pinned.
         if between.popcount() == 1 && (between & us).is_not_empty() {
             pinned |= between;
         }
     }
-
     pinned
 }
 
@@ -165,6 +154,10 @@ pub struct Pins {
 impl Pins {
     #[inline]
     pub fn new(pos: &Position) -> Self {
+        debug_assert!(
+            pos.pieces(PieceType::King, Color::White).is_not_empty() && pos.pieces(PieceType::King, Color::Black).is_not_empty(),
+            "Pins reads both king squares, and a kingless position has none to give"
+        );
         Self {
             pinned: [pinned_pieces(pos, Color::White), pinned_pieces(pos, Color::Black)],
             king_sq: [pos.pieces(PieceType::King, Color::White).lsb(), pos.pieces(PieceType::King, Color::Black).lsb()],

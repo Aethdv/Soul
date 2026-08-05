@@ -163,7 +163,7 @@ pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceT
 }
 
 /// Compile-time add/remove of a piece on the board.
-/// The const generic eliminates the branch entirely: zero-cost abstraction.
+/// The const generic eliminates the branch entirely.
 #[inline(always)]
 pub fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceType, color: Color) {
     if ADD {

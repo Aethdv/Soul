@@ -11,8 +11,9 @@ use std::{
 
 use crate::{
     cli::Help,
+    core::defs::Color,
     engine::wdl::wdl_model,
-    tools::dataset::{self, SoulEntry},
+    tools::dataset::{self, SoulEntry, flip_result},
 };
 
 // SAFETY: Both byte arrays consist entirely of valid 7-bit ASCII characters (= and -).
@@ -33,7 +34,6 @@ macro_rules! load_or_bail {
     };
 }
 
-/// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
 /// The `encode` arm is split into two patterns: the match itself proves
 /// the argument count, replacing the original's `if args.len() < 3` guard.
 pub fn run(args: &[&str]) {
@@ -68,7 +68,8 @@ pub fn run(args: &[&str]) {
 
 fn load_any_dataset(path: &str) -> io::Result<Vec<SoulEntry>> {
     if path.ends_with(".viri") || path.ends_with(".vf") {
-        dataset::parse_viri_file(path)
+        // Inspection reports the file, so it reads every position in it.
+        dataset::parse_viri_file(path, &dataset::ReplayFilter::UNRESTRICTED).map(|(entries, ..)| entries)
     } else {
         dataset::load_encoded(path)
     }
@@ -119,7 +120,7 @@ fn inspect(path: &str, count: usize) {
         let result = entry.result;
         let piece_count = entry.occupancy.count_ones();
 
-        let (w, d, l) = wdl_model(i32::from(score), piece_count);
+        let (w, d, l) = wdl_model(i32::from(score), entry.material_count());
         let wdl_str = format!("W:{:.1}% D:{:.1}% L:{:.1}%", w * 100.0, d * 100.0, l * 100.0);
 
         let _ = writeln!(out, "[{i:05}] {fen}");
@@ -131,7 +132,7 @@ fn inspect(path: &str, count: usize) {
 /// Single-pass statistical summary.
 /// The output surfaces data-quality problems at a glance:
 /// heavily skewed W/D/L ratios usually point to broken adjudication,
-/// a non-zero average static score suggests the generator has a systematic side-to-move bias.
+/// a non-zero average search score suggests the generator has a systematic side-to-move bias.
 fn info(path: &str) {
     let entries: Vec<SoulEntry> = load_or_bail!(path);
 
@@ -142,6 +143,7 @@ fn info(path: &str) {
     // Scores use i64 to prevent overflow: WDL uses f64 because f32 loses
     // precision past 2²⁴ (~16.8M): adding 1.0 to 16_777_216.0f32 is a no-op.
     let mut total_search = 0i64;
+    let mut scored = 0u64;
     let mut white_wins = 0u64;
     let mut draw_count = 0u64;
     let mut black_wins = 0u64;
@@ -151,12 +153,14 @@ fn info(path: &str) {
         let result = entry.result;
         let stm_white = (entry.stm_and_ep & 0x80) == 0;
 
-        total_search += i64::from(score);
+        if score != SoulEntry::NO_SCORE {
+            total_search += i64::from(score);
+            scored += 1;
+        }
 
         // Result: 0=loss, 1=draw, 2=win from side-to-move perspective.
         // Convert to white-relative for the breakdown.
-        let white_result = if stm_white { result } else { 2 - result };
-
+        let white_result = flip_result(result, if stm_white { Color::White } else { Color::Black });
         if white_result >= 2 {
             white_wins += 1;
         } else if white_result == 0 {
@@ -178,8 +182,14 @@ fn info(path: &str) {
     println!("  Black wins: {black_wins} ({:.1}%)", (black_wins as f64) / n * 100.0);
     println!("  Draws:      {draw_count} ({:.1}%)", (draw_count as f64) / n * 100.0);
     println!();
+
     println!("Average Scores:");
-    println!("  Search:  {:+.2} cp", (total_search as f64) / n);
+
+    match (scored, entries.len() as u64 - scored) {
+        (0, _) => println!("  Search:  none, nothing here carries one"),
+        (s, 0) => println!("  Search:  {:+.2} cp", (total_search as f64) / s as f64),
+        (s, missing) => println!("  Search:  {:+.2} cp, {missing} entries carry none", (total_search as f64) / s as f64),
+    }
 }
 
 fn dump_scores(path: &str) {
@@ -201,7 +211,7 @@ fn dump_scores(path: &str) {
 ///
 /// Performance on large-scale conversion (100M+ positions):
 /// - Line buffer is reused across iterations: zero per-line allocation.
-/// - UTF-8 validation is skipped: EPD is pure 7-bit ASCII by definition.
+/// - Malformed lines are counted and skipped, so no line stops the pass.
 /// - Entry vector is pre-sized from file metadata to minimize growth.
 fn encode(input: &str, output: &str) {
     println!("Encoding {input} -> {output}...");
@@ -216,7 +226,6 @@ fn encode(input: &str, output: &str) {
 
     // Grab file size before the reader chain consumes the handle.
     let file_len = file.metadata().map_or(0, |m| m.len());
-
     let is_zst = Path::new(input).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zst"));
 
     let mut reader: Box<dyn BufRead> = if is_zst {
@@ -259,9 +268,7 @@ fn encode(input: &str, output: &str) {
             buf.pop();
         }
 
-        // SAFETY: EPD/FEN is strictly 7-bit ASCII: piece chars (KQRBNPkqrbnp),
-        // coordinates (a-h, 1-8), digits, slashes, spaces, and annotation tokens.
-        // Multi-byte UTF-8 codepoints are structurally impossible.
+        // Strip a possible BOM before validating.
         let buf = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);
         let Ok(line) = std::str::from_utf8(buf) else {
             line_idx += 1;
@@ -276,10 +283,8 @@ fn encode(input: &str, output: &str) {
             if bad < 5 {
                 eprintln!("Warning: failed to parse line {}: '{line}'", line_idx + 1);
             }
-
             bad += 1;
         }
-
         line_idx += 1;
     }
 

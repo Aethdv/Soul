@@ -10,7 +10,7 @@ use std::{
 
 use soul::{
     core::{
-        board::Position as Board,
+        board::{Position as Board, STARTPOS},
         defs::{Color, GameOutcome},
     },
     engine::{
@@ -100,7 +100,7 @@ pub fn load_openings(path: &str) -> Result<Vec<String>, Error> {
     };
 
     if path == "startpos" {
-        return Ok(vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]);
+        return Ok(vec![STARTPOS.to_string()]);
     }
 
     let file = File::open(path)?;

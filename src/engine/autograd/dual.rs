@@ -57,7 +57,6 @@ impl DualNode {
     pub fn seed(val: f64, idx: usize) -> Self {
         let mut grad = [0.0f32; DUAL_N];
         grad[idx] = 1.0;
-
         Self { grad, val, active: true }
     }
 
@@ -91,12 +90,10 @@ fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: i
     // and the last is [DUAL_N-8, DUAL_N), never out of bounds.
     unsafe {
         let (pa, pb, po) = (a.as_ptr(), b.as_ptr(), out.as_mut_ptr());
-
         for i in 0..DUAL_N / 8 {
             let off = i * 8;
             let ga = Vf32x8::loadu(pa.add(off));
             let gb = Vf32x8::loadu(pb.add(off));
-
             f(ga, gb).storeu(po.add(off));
         }
     }
@@ -108,10 +105,8 @@ fn grad_map1(a: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(Vf32x8) -> V
     // SAFETY: a, out are each exactly DUAL_N f32s, DUAL_N a multiple of 8; see grad_map2.
     unsafe {
         let (pa, po) = (a.as_ptr(), out.as_mut_ptr());
-
         for i in 0..DUAL_N / 8 {
             let off = i * 8;
-
             f(Vf32x8::loadu(pa.add(off))).storeu(po.add(off));
         }
     }
@@ -135,7 +130,6 @@ impl Add for DualNode {
     fn add(self, rhs: Self) -> Self {
         let val = self.val + rhs.val;
         let active = self.active || rhs.active;
-
         if !active {
             return Self { grad: self.grad, val, active };
         }
@@ -163,7 +157,6 @@ impl Sub for DualNode {
     fn sub(self, rhs: Self) -> Self {
         let val = self.val - rhs.val;
         let active = self.active || rhs.active;
-
         if !active {
             return Self { grad: self.grad, val, active };
         }
@@ -191,7 +184,6 @@ impl Mul for DualNode {
     fn mul(self, rhs: Self) -> Self {
         let val = self.val * rhs.val;
         let active = self.active || rhs.active;
-
         if !active {
             return Self { grad: self.grad, val, active };
         }
@@ -225,7 +217,6 @@ impl Div for DualNode {
     fn div(self, rhs: Self) -> Self {
         let val = self.val / rhs.val;
         let active = self.active || rhs.active;
-
         if !active {
             return Self { grad: self.grad, val, active };
         }
@@ -286,12 +277,10 @@ impl EvalMath for DualNode {
     #[inline(always)]
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4 {
         let mut out = [DualNode::zero(); 4];
-
         for i in 0..4 {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }
-
         DualVec4(out)
     }
 
@@ -299,24 +288,20 @@ impl EvalMath for DualNode {
     #[inline(always)]
     fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4 {
         let mut out = [DualNode::zero(); 4];
-
         for i in 0..4 {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }
-
         out
     }
 
     #[inline(always)]
     fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6 {
         let mut out = [DualNode::zero(); 6];
-
         for i in 0..6 {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }
-
         out
     }
 
@@ -376,7 +361,6 @@ impl EvalMath for DualNode {
         if self.val >= max.val {
             return Self { val: max.val, grad: [0.0; DUAL_N], active: false };
         }
-
         self
     }
 
@@ -387,7 +371,6 @@ impl EvalMath for DualNode {
         let p = phase;
         let eg_p = Self::from_i32(TOTAL_PHASE) - phase;
         let tot = Self::from_i32(TOTAL_PHASE);
-
         ((mg * p + eg * eg_p) / tot).trunc()
     }
 

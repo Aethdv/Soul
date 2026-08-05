@@ -1,0 +1,35 @@
+# Which positions a viriformat game replays into.
+
+min_ply = 16             # skip a game's first plies, counted from move 1
+min_pieces = 4           # skip below this many pieces on the board
+max_eval = 31339         # skip |eval| at or above this, exclusive bound
+
+filter_tactical = true   # skip where the move played was a capture or promotion
+filter_check = true      # skip where the side to move is in check
+filter_castling = false  # skip where the move played was a castle
+
+# Skip where the eval disagrees with how the game ended, by more than this many
+# centipawns: a draw scored far from zero, or a winner whose own eval went
+# negative. 4294967295 (u32::MAX) disables it.
+max_eval_incorrectness = 4294967295
+
+# Plain decimation. The probability is the chance a position is *dropped*, drawn
+# per epoch rather than at load. Everything above decides what loads at all.
+random_fen_skipping = true
+random_fen_skip_probability = 0.9
+
+# Skip a position with probability 1 - P(its game's result | eval, material),
+# thinning positions whose result the eval already predicted. The model is Soul's
+# own, from src/engine/wdl.rs, so it reads Soul's centipawn scale; there are no
+# coefficients to set here.
+wdl_filtered = false
+
+# Per-piece-count drop probabilities, indexed 0..=32. A short list reads as zero,
+# so it can stop early.
+material_count_filtered = false
+material_count_probabilities = []
+
+# Carried for parity with viriformat's own filter; nothing here reads it. The one
+# probabilistic gate, random_fen_skipping, drops its share per epoch from the run's
+# own seed, so --seed is what pins the draw.
+seed = 0

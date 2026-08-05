@@ -31,7 +31,6 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
     let stm = board.stm;
     let opp = stm.opposite();
     let k_bb = board.pieces(PieceType::King, stm);
-
     if k_bb.is_empty() {
         debug_assert!(false, "Position has no king for {stm:?}");
         return legal;
@@ -46,7 +45,6 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
             legal.push(mv);
         }
     }
-
     legal
 }
 
@@ -55,7 +53,6 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
 #[inline]
 pub fn gen_pseudo_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
-
     match board.stm {
         Color::White => gen_all::<{ Color::White }, false>(board, &mut list),
         Color::Black => gen_all::<{ Color::Black }, false>(board, &mut list),
@@ -67,7 +64,6 @@ pub fn gen_pseudo_moves(board: &Position) -> MoveList {
 #[inline]
 pub fn gen_tactical_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
-
     match board.stm {
         Color::White => gen_all::<{ Color::White }, true>(board, &mut list),
         Color::Black => gen_all::<{ Color::Black }, true>(board, &mut list),
@@ -90,7 +86,6 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
     let them = board.side_bb[stm.opposite()];
     let occ = board.occ;
 
-    // Must have a friendly piece on the origin square.
     if !us.check_bit(from) {
         return false;
     }
@@ -112,17 +107,14 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
             && board.is_castle_move_legal(stm, from, to);
     }
 
-    // Destination must not hold a friendly piece.
     if us.check_bit(to) {
         return false;
     }
 
-    // Capture flag consistency.
+    // The capture flag has to agree with the board, en passant excepted: its
+    // victim stands beside `to`, never on it.
     let enemy_on_to = them.check_bit(to);
-    if mv.is_capture() && !mv.is_en_passant() && !enemy_on_to {
-        return false;
-    }
-    if !mv.is_capture() && enemy_on_to {
+    if mv.is_capture() != enemy_on_to && !mv.is_en_passant() {
         return false;
     }
 
@@ -153,21 +145,19 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
             }
 
             if mv.is_double_push() {
-                // From the start rank only. Otherwise the move arms a phantom en
-                // passant square that a later EP capture turns into board corruption.
-                let mid = Square((from.0 as i8 + fwd) as u8);
-
+                // From the start rank only. Otherwise the move arms a phantom en passant
+                // square that a later EP capture turns into board corruption. The rank is
+                // tested first because the square between only exists once it holds.
                 return from.rank() == start_rank
                     && to.0 as i8 == from.0 as i8 + fwd * 2
-                    && !occ.check_bit(mid)
+                    && !occ.check_bit(Square((from.0 as i8 + fwd) as u8))
                     && !occ.check_bit(to);
             }
 
             if mv.is_capture() {
                 return atk_pawn(from, stm).check_bit(to);
             }
-
-            // Single push.
+            // Single push
             to.0 as i8 == from.0 as i8 + fwd && !occ.check_bit(to)
         },
         PieceType::Knight => atk_knight(from).check_bit(to),
@@ -192,7 +182,7 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
     let from = mv.from();
     let to = mv.to();
 
-    // ── King moves ──
+    // King moves
     if from == ksq {
         if mv.is_castling() {
             // Castling out of check is flatly illegal:
@@ -206,30 +196,28 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
         return !board.is_attacked::<true>(to, opp, from.bitboard());
     }
 
-    // ── Double check: only the king can escape ──
+    // Double check
     if checkers.popcount() > 1 {
         return false;
     }
 
-    // ── En passant ──
-    // The one move where the captured piece isn't on the destination square,
-    // requiring a special x-ray check.
+    // En passant: the one move where the captured piece isn't on the destination
+    // square, requiring a special x-ray check.
     if mv.is_en_passant() {
         return is_ep_legal(board, mv, ksq, pinned, checkers, opp);
     }
 
-    // ── Pinned piece: may only slide along its pin ray ──
-    // line_bb(from, to) returns the entire line through both squares.
-    // If the king isn't on that line, the piece is leaving the ray.
+    // Pinned pieces: line_bb(from, to) returns the entire line through both squares,
+    // so a king that isn't on it means the piece is leaving the ray.
     if pinned.check_bit(from) && !line_bb(from, to).check_bit(ksq) {
         return false;
     }
 
-    // ── Single check: capture the checker or interpose ──
     if checkers.is_empty() {
         return true;
     }
 
+    // Single check
     let checker = checkers.lsb();
     to == checker || between_bb(ksq, checker).check_bit(to)
 }
@@ -245,7 +233,6 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
 fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checkers: Bitboard, opp: Color) -> bool {
     let from = mv.from();
     let to = mv.to();
-
     // The captured pawn is exactly one rank behind the en passant destination square.
     // In our rank-major square encoding (index = rank · 8 + file), ±8 shifts by exactly one rank.
     // This is equivalent to the to ^ 8 trick used in update_accumulator.
@@ -266,10 +253,7 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
         return false;
     }
 
-    // ── Horizontal discovered checks ──
-    // En Passant is the only move where two pieces disappear from the same rank
-    // simultaneously. If both were masking a horizontal sliding attack against
-    // the king, the move is illegal.
+    // ── Horizontal discovered checks
     if ksq.rank() == from.rank() {
         let rq = board.pieces(PieceType::Rook, opp) | board.pieces(PieceType::Queen, opp);
 
@@ -282,20 +266,17 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
         }
     }
 
-    // ── Diagonal discovered check via captured-pawn removal ──
+    // ── Diagonal discovered check via captured-pawn removal
     // Unlike the horizontal case, the diagonal case involves only the captured pawn
     // (and the capturing pawn moving). We simulate post-EP occupancy and probe for
     // diagonal sliding attacks on the king.
     let bq = board.pieces(PieceType::Bishop, opp) | board.pieces(PieceType::Queen, opp);
-
     if bq.is_not_empty() {
         let ep_occ = (board.occ ^ from.bitboard() ^ cap_sq.bitboard()) | to.bitboard();
-
         if (atk_bishop(ksq, ep_occ) & bq).is_not_empty() {
             return false;
         }
     }
-
     true
 }
 
@@ -324,8 +305,6 @@ fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut Mo
 /// Pawns are special in five different ways:
 /// color-dependent direction, double push from home, diagonal capture,
 /// promotion on the back rank (four choices), and en passant.
-/// Bitboard parallelism tames this complexity:
-/// one shift computes every single push simultaneously.
 #[inline]
 fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList, them: Bitboard, occ: Bitboard) {
     let empty = !occ;
@@ -342,28 +321,26 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 
     let (promo_rank, third_rank) = if US == Color::White { (RANK_8, RANK_3) } else { (RANK_1, RANK_6) };
 
-    // ── Single pushes (non-promoting) ──
+    // ── Single pushes (non-promoting)
     let all_pushes = pawns.shift(up) & empty;
 
     if !TACTICAL {
         let mut quiet_pushes = all_pushes & !promo_rank;
-
         while quiet_pushes.is_not_empty() {
             let to = quiet_pushes.pop_lsb();
             acc.push(Move::new(to.offset_unchecked(-up_d), to, Move::QUIET));
         }
 
-        // ── Double pushes ──
+        // ── Double pushes
         // Must pass through the 3rd rank on the way, since it can't leap over pieces.
         let mut doubles = (all_pushes & third_rank).shift(up) & empty;
-
         while doubles.is_not_empty() {
             let to = doubles.pop_lsb();
             acc.push(Move::new(to.offset_unchecked(-up_d * 2), to, Move::DOUBLE_PUSH));
         }
     }
 
-    // ── Diagonal captures ──
+    // ── Diagonal captures
     // File masks prevent board wrapping.
     // Left and right directions are strictly relative to the side-to-move's
     // visual perspective (e.g. for Black, left shifts toward the H-file).
@@ -371,7 +348,6 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 
     let cap_l = (pawns & mask_l).shift(left) & them;
     let cap_r = (pawns & mask_r).shift(right) & them;
-
     let mut cap_l_promo = cap_l & promo_rank;
     let mut cap_l_standard = cap_l & !promo_rank;
 
@@ -379,7 +355,6 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
         let to = cap_l_promo.pop_lsb();
         emit_promotions(acc, to.offset_unchecked(-left_d), to, true);
     }
-
     while cap_l_standard.is_not_empty() {
         let to = cap_l_standard.pop_lsb();
         acc.push(Move::new(to.offset_unchecked(-left_d), to, Move::CAPTURE));
@@ -392,24 +367,21 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
         let to = cap_r_promo.pop_lsb();
         emit_promotions(acc, to.offset_unchecked(-right_d), to, true);
     }
-
     while cap_r_standard.is_not_empty() {
         let to = cap_r_standard.pop_lsb();
         acc.push(Move::new(to.offset_unchecked(-right_d), to, Move::CAPTURE));
     }
 
-    // ── Quiet promotions ──
+    // ── Quiet promotions
     let mut promo_pushes = all_pushes & promo_rank;
-
     while promo_pushes.is_not_empty() {
         let to = promo_pushes.pop_lsb();
         emit_promotions(acc, to.offset_unchecked(-up_d), to, false);
     }
 
-    // ── En passant ──
+    // ── En passant
     if let Some(ep_sq) = board.en_passant {
         let mut attackers = board.get_attackers_on(ep_sq, US) & pawns;
-
         while attackers.is_not_empty() {
             acc.push(Move::new(attackers.pop_lsb(), ep_sq, Move::EP_CAPTURE));
         }
@@ -421,11 +393,9 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::Knight] & us {
         let mut targets = atk_knight(from) & !us;
-
         if TACTICAL {
             targets &= them;
         }
-
         emit_from_mask(acc, from, targets, them);
     }
 }
@@ -437,11 +407,9 @@ fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: B
 fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: Bitboard, us: Bitboard, them: Bitboard) {
     // Diagonal movers: bishops + queen's diagonal component.
     let mut diags = (board.role_bb[PieceType::Bishop] | board.role_bb[PieceType::Queen]) & us;
-
     while diags.is_not_empty() {
         let from = diags.pop_lsb();
         let mut targets = atk_bishop(from, occ) & !us;
-
         if TACTICAL {
             targets &= them;
         }
@@ -450,15 +418,12 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
 
     // Orthogonal movers: rooks + queen's orthogonal component.
     let mut orthos = (board.role_bb[PieceType::Rook] | board.role_bb[PieceType::Queen]) & us;
-
     while orthos.is_not_empty() {
         let from = orthos.pop_lsb();
         let mut targets = atk_rook(from, occ) & !us;
-
         if TACTICAL {
             targets &= them;
         }
-
         emit_from_mask(acc, from, targets, them);
     }
 }
@@ -468,16 +433,14 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
 fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::King] & us {
         let mut targets = atk_king(from) & !us;
-
         if TACTICAL {
             targets &= them;
         }
-
         emit_from_mask(acc, from, targets, them);
     }
 }
 
-/// ── Castling (Chess960-compatible) ──
+/// ── Castling (Chess960-compatible)
 ///
 /// Encoded as king→rook (not king→destination) so it generalizes to
 /// Fischer Random positions where the rook can start on either side.
@@ -489,7 +452,6 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
 #[inline]
 fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList) {
     let k_bb = board.role_bb[PieceType::King] & board.side_bb[US];
-
     if k_bb.is_empty() {
         return;
     }
@@ -512,7 +474,6 @@ fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList) {
         }
 
         let rsq = board.castling_rooks[idx];
-
         if board.is_castle_move_legal(US, ksq, rsq) {
             acc.push(Move::new(ksq, rsq, Move::CASTLE));
         }
@@ -548,17 +509,13 @@ mod tests {
     fn ep_diagonal_discovered_check() {
         let pos = Position::from_fen("K7/8/8/3Pp3/8/8/8/4k2b w - e6 0 1");
         let moves = gen_legal_moves(&pos);
-
         let ep_move = Move::new(Square::from_coords(3, 4), Square::from_coords(4, 5), Move::EP_CAPTURE);
-
         assert!(
             !moves.contains(&ep_move),
             "EP move should be illegal due to diagonal discovered check exposing the mover's king"
         );
-
         let pos2 = Position::from_fen("4k3/8/8/r2Pp2K/8/8/8/8 w - e6 0 1");
         let moves2 = gen_legal_moves(&pos2);
-
         assert!(
             !moves2.contains(&ep_move),
             "EP move should be illegal due to horizontal discovered check exposing the mover's king"
@@ -573,11 +530,9 @@ mod tests {
         // onto the blocker and corrupt the board. is_pseudo_legal must run the
         // full legality check, not just the geometry.
         let pos = Position::from_fen("r3k2r/8/8/8/8/8/8/R3K1NR w KQkq - 0 1");
-
         let e1 = Square(4);
         let kingside = Move::new(e1, Square(7), Move::CASTLE); // blocked by the knight on g1
         let queenside = Move::new(e1, Square(0), Move::CASTLE); // corridor clear
-
         assert!(!is_pseudo_legal(&pos, kingside), "kingside castle through the g1 knight must be rejected");
         assert!(is_pseudo_legal(&pos, queenside), "queenside castle with a clear corridor must pass");
     }
@@ -590,12 +545,9 @@ mod tests {
         // outlives the move. The origin must be the pawn's start rank.
         let pos = Position::from_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1"); // pawn on e3
         let phantom = Move::new(Square::from_coords(4, 2), Square::from_coords(4, 4), Move::DOUBLE_PUSH);
-
         assert!(!is_pseudo_legal(&pos, phantom), "double push from the third rank must be rejected");
-
         let start = Position::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"); // pawn on e2
         let real = Move::new(Square::from_coords(4, 1), Square::from_coords(4, 3), Move::DOUBLE_PUSH);
-
         assert!(is_pseudo_legal(&start, real), "double push from the second rank must pass");
     }
 
@@ -619,7 +571,6 @@ mod tests {
 
         for (fen, expected) in cases {
             let pos = Position::from_fen(fen);
-
             for (depth, &want) in expected.iter().enumerate() {
                 assert_eq!(legality_perft(&pos, depth), want, "legality perft depth {depth} for {fen}");
             }
@@ -639,7 +590,6 @@ mod tests {
 
         for (fen, expected) in cases {
             let pos = Position::from_fen(fen);
-
             for (depth, &want) in expected.iter().enumerate() {
                 assert_eq!(legality_perft(&pos, depth), want, "deep legality perft depth {depth} for {fen}");
             }
@@ -670,18 +620,15 @@ mod tests {
             }
 
             let mv = Move::from_u16(raw);
-
             if !is_pseudo_legal(pos, mv) || !is_legal(pos, mv, ksq, pinned, checkers, opp) {
                 continue;
             }
 
             let mut child = *pos;
             let mut acc = child.get_initial_accumulator();
-
             child.make_move(mv, &mut acc);
             nodes += legality_perft(&child, depth - 1);
         }
-
         nodes
     }
 
@@ -703,7 +650,6 @@ mod tests {
             check_every_move(&pos);
 
             let legal = gen_legal_moves(&pos);
-
             if legal.is_empty() {
                 pos = Position::from_fen(STARTPOS);
                 acc = pos.get_initial_accumulator();

@@ -19,7 +19,7 @@ Options:
     -H, --hash MB       transposition table size in MB (default: engine default)
     -d, --depth INT     fixed search depth per move
     -o, --output PATH   image path (default: opening_prefs.png)
-    --dpi INT           output DPI (default: 250)
+    --dpi INT           output DPI (default: 300)
     --show              open interactively after saving
 """
 
@@ -137,18 +137,15 @@ def _draw(results: list[MoveEval], engine_name: str, nodes: int | None, movetime
         ax.imshow(grad, aspect="auto", interpolation="bilinear",
                   extent=(bar_l, bar_r, bar_b, bar_t), zorder=2)
 
-        # leading edge
         ax.plot([bar_r, bar_r], [bar_b + 0.03, bar_t - 0.03],
                 color=color, alpha=0.95, lw=1.4, solid_capstyle="round", zorder=3)
 
-        # value label: gold for the top move, else the bar's own color
         ax.text(bar_r + ev_range * 0.018, i, f"{mv.eval_cp:+d}",
                 ha="left", va="center",
                 fontsize=8.4 if is_best else 7.6,
                 fontweight="bold" if is_best else "normal",
                 color=sp.GOLD if is_best else tuple(color), zorder=4)
 
-    # y-axis: move labels, the top move in gold
     ax.set_yticks(range(n))
     labels = ax.set_yticklabels([f"1. {mv.san}" for mv in ordered], fontsize=9.5)
     best_san = f"1. {results[0].san}"
@@ -196,11 +193,10 @@ def main() -> None:
     ap.add_argument("--hash",     "-H", type=int, default=None)
     ap.add_argument("--depth",    "-d", type=int, default=None)
     ap.add_argument("--output",   "-o", default=None)
-    ap.add_argument("--dpi",            type=int, default=250)
+    ap.add_argument("--dpi",            type=int, default=sp.DPI)
     ap.add_argument("--show",           action="store_true")
     args = ap.parse_args()
 
-    # Default to 100k nodes if no limit is given
     if args.nodes is None and args.movetime is None and args.depth is None:
         args.nodes = 100_000
 

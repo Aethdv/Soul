@@ -48,7 +48,7 @@ def limit_str(*, nodes: int | None = None, movetime: int | None = None,
 
 def limit_label(*, nodes: int | None = None, movetime: int | None = None,
                 depth: int | None = None) -> str:
-    """Human-readable search budget: 'depth 8' / '200ms' / '100,000 nodes'."""
+    """Hooman readable search budget: 'depth 8' / '200ms' / '100,000 nodes'."""
     if depth is not None:
         return f"depth {depth}"
 

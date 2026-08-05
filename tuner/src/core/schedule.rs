@@ -42,8 +42,9 @@ impl LrScheduler for Constant {
     fn rate(&self, _epoch: usize, _total: usize) -> f64 {
         self.value
     }
+
     fn describe(&self) -> String {
-        format!("Constant({})", self.value)
+        format!("Constant ({})", self.value)
     }
 }
 
@@ -69,7 +70,7 @@ impl LrScheduler for Linear {
     }
 
     fn describe(&self) -> String {
-        format!("Linear({} → {})", self.start, self.end)
+        format!("Linear ({} → {})", self.start, self.end)
     }
 }
 
@@ -94,7 +95,7 @@ impl LrScheduler for Exponential {
     }
 
     fn describe(&self) -> String {
-        format!("Exponential({} × {}^n)", self.start, self.gamma)
+        format!("Exponential ({} × {}^n)", self.start, self.gamma)
     }
 }
 
@@ -121,7 +122,7 @@ impl LrScheduler for StepDecay {
     }
 
     fn describe(&self) -> String {
-        format!("StepDecay({} × {}^(n/{}))", self.start, self.gamma, self.step_epochs)
+        format!("StepDecay ({} × {}^(n/{}))", self.start, self.gamma, self.step_epochs)
     }
 }
 
@@ -145,6 +146,7 @@ impl CosineAnnealing {
         self.warmup_ratio = ratio;
         self
     }
+
     #[must_use]
     pub const fn cycles(mut self, n: usize) -> Self {
         self.cycles = n;
@@ -170,9 +172,9 @@ impl LrScheduler for CosineAnnealing {
 
     fn describe(&self) -> String {
         if self.cycles > 1 {
-            format!("CosineAnnealing({} → {}, {} cycles)", self.base, self.min, self.cycles)
+            format!("CosineAnnealing ({} → {}, {} cycles)", self.base, self.min, self.cycles)
         } else {
-            format!("CosineAnnealing({} → {})", self.base, self.min)
+            format!("CosineAnnealing ({} → {})", self.base, self.min)
         }
     }
 }
@@ -213,7 +215,7 @@ impl LrScheduler for WarmupStableDecay {
 
     fn describe(&self) -> String {
         format!(
-            "WarmupStableDecay({} → {}, warm: {:.0}%, stable: {:.0}%)",
+            "WarmupStableDecay ({} → {}, warm: {:.0}%, stable: {:.0}%)",
             self.base,
             self.min,
             self.warmup_ratio * 100.0,
@@ -252,7 +254,7 @@ impl LrScheduler for StableDecay {
     }
 
     fn describe(&self) -> String {
-        format!("StableDecay({} → {}, stable: {:.0}%)", self.base, self.min, self.stable_ratio * 100.0)
+        format!("StableDecay ({} → {}, stable: {:.0}%)", self.base, self.min, self.stable_ratio * 100.0)
     }
 }
 
@@ -275,7 +277,7 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
     }
 
     fn describe(&self) -> String {
-        format!("Warmup({} epochs, {})", self.warmup_epochs, self.inner.describe())
+        format!("Warmup ({} epochs, {})", self.warmup_epochs, self.inner.describe())
     }
 }
 
@@ -301,7 +303,7 @@ impl<A: LrScheduler, B: LrScheduler> LrScheduler for Sequence<A, B> {
     }
 
     fn describe(&self) -> String {
-        format!("Sequence({} → {} @{})", self.first.describe(), self.second.describe(), self.switch_epoch)
+        format!("Sequence ({} → {} @{})", self.first.describe(), self.second.describe(), self.switch_epoch)
     }
 }
 
@@ -331,7 +333,7 @@ impl WdlScheduler for ConstantWdl {
         self.value
     }
     fn describe(&self) -> String {
-        format!("ConstantWDL({})", self.value)
+        format!("ConstantWDL ({})", self.value)
     }
 }
 
@@ -357,7 +359,7 @@ impl WdlScheduler for LinearWdl {
     }
 
     fn describe(&self) -> String {
-        format!("LinearWDL({} → {})", self.start, self.end)
+        format!("LinearWDL ({} → {})", self.start, self.end)
     }
 }
 
@@ -383,7 +385,7 @@ impl WdlScheduler for CosineWdl {
     }
 
     fn describe(&self) -> String {
-        format!("CosineWDL({} → {})", self.start, self.end)
+        format!("CosineWDL ({} → {})", self.start, self.end)
     }
 }
 
@@ -406,6 +408,7 @@ impl WdlScheduler for StableDecayWdl {
     #[inline]
     fn blend(&self, epoch: usize, total: usize) -> f64 {
         let stable_epochs = (total as f64 * self.stable_ratio).round() as usize;
+
         if epoch <= stable_epochs {
             self.start
         } else {
@@ -416,7 +419,7 @@ impl WdlScheduler for StableDecayWdl {
     }
 
     fn describe(&self) -> String {
-        format!("StableDecayWDL({} → {}, stable: {:.0}%)", self.start, self.end, self.stable_ratio * 100.0)
+        format!("StableDecayWDL ({} → {}, stable: {:.0}%)", self.start, self.end, self.stable_ratio * 100.0)
     }
 }
 

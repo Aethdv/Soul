@@ -1,10 +1,13 @@
+//! PSQT adjacency analysis: finds outlier differences between adjacent
+//! squares in the mirrored half-board, written to correlation-report.txt.
+
 use std::{
     fs::File,
     io,
     io::{BufWriter, Write},
 };
 
-use soul::engine::eval_params;
+use super::engine::eval_params;
 
 const PIECES: [&str; 6] = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
 const PHASES: [&str; 2] = ["MG", "EG"];
@@ -12,31 +15,14 @@ const RANKS: usize = 8;
 const FILES: usize = 4; // half-board, mirrored
 const HALF: usize = RANKS * FILES; // 32
 
-/// Outlier threshold: any adjacent pair whose absolute difference exceeds
-/// 1.5× the piece-phase mean (floored at 5 cp) is flagged.
+// Outlier threshold: adjacent pairs whose difference exceeds
+// 1.5× the piece-phase mean (floored at 5 cp) are flagged.
 const OUTLIER_MULT: f64 = 1.5;
 const OUTLIER_FLOOR: f64 = 5.0;
 
-/// A pair of adjacent squares on the half-board and their value gap.
-struct Pair {
-    a: usize,
-    b: usize,
-    diff: i32,
-}
-
-/// Stats for one piece-phase slice.
-struct SliceStats {
-    piece: &'static str,
-    phase: &'static str,
-    count: usize,
-    mean: f64,
-    max: i32,
-    outliers: Vec<Pair>,
-}
-
 /// Run PSQT adjacency analysis on the current parameter values.
 pub fn run_correlation() {
-    let values: Vec<f64> = eval_params::collect_parameters().iter().map(|p| p.value).collect();
+    let values = eval_params::default_values(&eval_params::collect_parameters());
 
     let slices = analyse_all(&values);
 
@@ -53,6 +39,21 @@ pub fn run_correlation() {
     }
 }
 
+struct Pair {
+    a: usize,
+    b: usize,
+    diff: i32,
+}
+
+struct SliceStats {
+    piece: &'static str,
+    phase: &'static str,
+    count: usize,
+    mean: f64,
+    max: i32,
+    outliers: Vec<Pair>,
+}
+
 fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
     let mut slices = Vec::with_capacity(PIECES.len() * PHASES.len());
 
@@ -64,7 +65,6 @@ fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
             slices.push(analyse_slice(v, piece, phase));
         }
     }
-
     slices
 }
 
@@ -74,13 +74,10 @@ fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceSt
     for rank in 0..RANKS {
         for file in 0..FILES {
             let idx = rank * FILES + file;
-
-            // right neighbour
             if file + 1 < FILES {
                 let nb = idx + 1;
                 pairs.push(make_pair(v, idx, nb));
             }
-            // down neighbour
             if rank + 1 < RANKS {
                 let nb = idx + FILES;
                 pairs.push(make_pair(v, idx, nb));
@@ -93,7 +90,6 @@ fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceSt
     let mean = total as f64 / n.max(1) as f64;
     let max = pairs.iter().map(|p| p.diff).max().unwrap_or(0);
     let threshold = (mean * OUTLIER_MULT).max(OUTLIER_FLOOR) as i32;
-
     let outliers: Vec<Pair> = pairs.into_iter().filter(|p| p.diff > threshold).collect();
 
     SliceStats { piece, phase, count: n, mean, max, outliers }
@@ -130,11 +126,10 @@ fn write_report(slices: &[SliceStats]) -> io::Result<()> {
             writeln!(w, "  {line}")?;
         }
     }
-
     w.flush()
 }
 
-/// Convert half-board index (0..31) → human square name (A1..D8).
+// Convert (0..31) → (A1..D8).
 fn sq_name(idx: usize) -> String {
     let file = (b'A' + (idx % FILES) as u8) as char;
     let rank = idx / FILES + 1;

@@ -18,7 +18,6 @@ pub fn atk_rook(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
     let s = fill_south(generator, empty).shift_south();
     let e = fill_east(generator, empty).shift_east();
     let w = fill_west(generator, empty).shift_west();
-
     (n | s | e | w) & !generator
 }
 
@@ -29,7 +28,6 @@ pub fn atk_bishop(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
     let nw = fill_northwest(generator, empty).shift_nw();
     let se = fill_southeast(generator, empty).shift_se();
     let sw = fill_southwest(generator, empty).shift_sw();
-
     (ne | nw | se | sw) & !generator
 }
 
@@ -54,7 +52,6 @@ pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
 
     let h1 = west1 | east1;
     let h2 = west2 | east2;
-
     (h1.shl::<16>() | h1.shr::<16>()) | (h2.shl::<8>() | h2.shr::<8>())
 }
 

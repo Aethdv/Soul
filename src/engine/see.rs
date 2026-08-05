@@ -15,29 +15,35 @@
 //! the chain stops short: illegal recapture, not a trade. A `us` bool
 //! tracks who owns the trade; when flipped, break-even isn't good enough.
 
-use crate::{
-    core::{
-        board::{
-            Position,
-            attacks::{Pins, all_attackers_to},
-            bitboard::{atk_bishop, atk_rook, line_bb},
-        },
-        defs::{Bitboard, Color, PieceType, Square},
-        moves::Move,
+use crate::core::{
+    board::{
+        Position,
+        attacks::{Pins, all_attackers_to},
+        bitboard::{atk_bishop, atk_rook, line_bb},
     },
-    engine::eval_params::MG_MATERIAL,
+    defs::{Bitboard, Color, PieceType, Square},
+    moves::Move,
 };
 
-/// `King = 0` because the king is never captured.
+/// SEE's own scale, deliberately not the eval's `MG_MATERIAL`. Shifting a constant
+/// from `material[pt]` into every `PSQT[pt][sq]` leaves the eval bit-identical, so
+/// the tuner can move material anywhere at no cost to its loss; the thresholds
+/// callers pass are in these units and need them to hold still.
+///
+/// The king keeps its zero: a chain that reaches it has already ended.
 const SEE_VALUE: [i32; 8] = {
     let mut v = [0i32; 8];
-    v[PieceType::Pawn.as_usize()] = MG_MATERIAL[0];
-    v[PieceType::Knight.as_usize()] = MG_MATERIAL[1];
-    v[PieceType::Bishop.as_usize()] = MG_MATERIAL[2];
-    v[PieceType::Rook.as_usize()] = MG_MATERIAL[3];
-    v[PieceType::Queen.as_usize()] = MG_MATERIAL[4];
+    v[PieceType::Pawn.as_usize()] = 92;
+    v[PieceType::Knight.as_usize()] = 373;
+    v[PieceType::Bishop.as_usize()] = 372;
+    v[PieceType::Rook.as_usize()] = 568;
+    v[PieceType::Queen.as_usize()] = 1160;
     v
 };
+
+/// Capture order for the exchange loop: cheapest first, the king left out because
+/// reaching it ends the chain rather than continuing it.
+const LVA_ORDER: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen];
 
 /// Is the static exchange on `mv`'s destination square at least
 /// `threshold` centipawns for the side making `mv`?
@@ -71,10 +77,10 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
     let to = mv.to();
 
     // Resolve the initial exchange into two scalars:
-    //   gain      - material that moves into our column this ply
-    //               (captured piece + promotion upgrade, if any)
-    //   attacker  - piece sitting on to after our move, whose value
-    //               will be lost if the opponent recaptures
+    //   gain     - material that moves into our column this ply
+    //              (captured piece + promotion upgrade, if any)
+    //   attacker - piece sitting on to after our move, whose value
+    //              will be lost if the opponent recaptures
     let (gain, attacker) = if mv.is_en_passant() {
         (val(PieceType::Pawn), PieceType::Pawn)
     } else if let Some(promo) = mv.promo() {
@@ -136,21 +142,8 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
             return !us;
         }
 
-        // Pick the least-valuable attacker. A match cascade is the
-        // cleanest shape: each arm does exactly the work its piece
-        // type requires, and the compiler turns the chain into a tight
-        // priority-decoder on the bitboards.
-        let (lva, lva_sq) = if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Pawn]) {
-            (PieceType::Pawn, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Knight]) {
-            (PieceType::Knight, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Bishop]) {
-            (PieceType::Bishop, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Rook]) {
-            (PieceType::Rook, sq)
-        } else if let Some(sq) = lsb_of(mine & pos.role_bb[PieceType::Queen]) {
-            (PieceType::Queen, sq)
-        } else {
+        // Pick the least-valuable attacker.
+        let Some((lva, lva_sq)) = LVA_ORDER.into_iter().find_map(|pt| lsb_of(mine & pos.role_bb[pt]).map(|sq| (pt, sq))) else {
             // Only the king is left to capture. If the opposing side
             // still has any attacker on to, the king capture would
             // move the king into check, illegal, so the chain stops
@@ -184,12 +177,9 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
         // Negamax flip: the next player's running deficit is this
         // attacker's value minus the previous player's deficit.
         balance = val(lva) - balance;
-
-        // Asymmetric break encoding the tie-break rule. See module docs.
         if balance < i32::from(us) {
             return us;
         }
-
         us = !us;
     }
 }
@@ -225,14 +215,11 @@ mod tests {
     //! of these cases with a one-line failure.
 
     use super::*;
-    use crate::{
-        core::board::Position,
-        engine::{eval_params::MG_MATERIAL, movegen::gen_legal_moves},
-    };
+    use crate::{core::board::Position, engine::movegen::gen_legal_moves};
 
     macro_rules! pc {
         ($($n:ident = $p:expr;)*) => {
-            $(const fn $n() -> i32 { MG_MATERIAL[$p as usize] })*
+            $(const fn $n() -> i32 { SEE_VALUE[$p as usize] })*
         };
     }
 
@@ -241,6 +228,13 @@ mod tests {
         n = PieceType::Knight;
         r = PieceType::Rook;
         q = PieceType::Queen;
+    }
+
+    /// Every other assertion here is written in these units, so a shifted table
+    /// rescales the whole suite and all of them still pass.
+    #[test]
+    fn the_exchange_scale_holds_still() {
+        assert_eq!(SEE_VALUE[..6], [92, 373, 372, 568, 1160, 0]);
     }
 
     /// Resolve a UCI move string against the legal move list.

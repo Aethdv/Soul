@@ -60,10 +60,14 @@ fn main() {
                 let limit = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                 tools::speedtest::run(limit);
             },
-            "genfens" => {
+            "datagen" => {
                 let stop = Arc::new(AtomicBool::new(false));
+                let datagen_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+                tools::datagen::run(&datagen_args, &stop);
+            },
+            "genfens" => {
                 let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
-                tools::genfens::run(&genfens_args, &stop);
+                tools::genfens::run(&genfens_args);
             },
             "dataset" => {
                 let dataset_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
@@ -86,9 +90,13 @@ fn main() {
                 let mut history_table = History::new();
                 let mut searcher = Searcher::new(&cfg, &board, &[], Arc::new(TranspositionTable::new(16, 1)));
                 searcher.iterative_deepening(&mut history_table);
-                if let Some(best_move) = searcher.best_move() {
-                    println!("bestmove {}", best_move.to_uci(board.is_frc));
-                }
+            },
+            // A whole command in one argument is how a runner spawns an engine,
+            // soul "genfens 8 seed 42 book None" "quit", so it goes to the
+            // protocol rather than the subcommand table. A single word that
+            // matched nothing above is a typo and still says so.
+            _ if args[1].contains(' ') => {
+                protocols::uci::run_commands(&args[1..]);
             },
             _ => {
                 eprintln!("Unknown command. Try 'help' for usage.");

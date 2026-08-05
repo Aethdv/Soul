@@ -82,7 +82,6 @@ where I: Iterator<Item = &'a str> {
             pos.fullmove_number = token.parse().unwrap_or(1);
         }
     }
-
     finish_position(pos)
 }
 
@@ -104,7 +103,6 @@ impl Display for Fen<'_> {
             for file in 0..8u8 {
                 let sq = Square::from_coords(file, rank);
                 let pt = pos.piece_at(sq);
-
                 if pt == PieceType::None {
                     empty += 1;
                 } else {
@@ -133,7 +131,6 @@ impl Display for Fen<'_> {
             f.write_char('-')?;
         } else {
             let shredder = pos.is_frc && !has_standard_rook_homes(pos);
-
             for &(bit, slot, std_ch, frc_base) in &CASTLING_FEN {
                 if pos.castling_rights & bit != 0 {
                     if shredder {
@@ -152,7 +149,6 @@ impl Display for Fen<'_> {
             Some(sq) => f.write_str(&sq.to_algebraic())?,
             None => f.write_char('-')?,
         }
-
         // Move clocks
         write!(f, " {} {}", pos.halfmove_clock, pos.fullmove_number)
     }
@@ -222,18 +218,15 @@ pub fn pretty_print(pos: &Position) {
 fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     // 1. King Existence Invariant
     let kings = pos.role_bb[PieceType::King];
-
     if (kings & pos.side_bb[Color::White]).popcount() != 1 {
         return Err(FenError::MissingKing { color: "white" });
     }
-
     if (kings & pos.side_bb[Color::Black]).popcount() != 1 {
         return Err(FenError::MissingKing { color: "black" });
     }
 
     // 2. Pawn Rank Invariant (Pawns cannot exist on 1st/8th ranks)
     let illegal_pawns = pos.role_bb[PieceType::Pawn] & (RANK_1 | RANK_8);
-
     if illegal_pawns.is_not_empty() {
         let sq = illegal_pawns.lsb();
         let color = if pos.side_bb[Color::White].check_bit(sq) { Color::White } else { Color::Black };
@@ -254,7 +247,6 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     // 4. Castling/Rook Consistency (Crucial for DFRC/Shredder-FEN)
     for slot in 0..4 {
         let bit = 1 << slot;
-
         if pos.castling_rights & bit != 0 {
             let rsq = pos.castling_rooks[slot];
 
@@ -318,7 +310,6 @@ fn parse_placement(pos: &mut Position, field: &str) -> Result<(), FenError> {
             },
             _ => {
                 let pt = PieceType::from_char(ch);
-
                 if pt == PieceType::None {
                     return Err(FenError::InvalidPiece { ch, rank: rank as u8, file: file as u8 });
                 }
@@ -350,13 +341,11 @@ fn parse_placement(pos: &mut Position, field: &str) -> Result<(), FenError> {
 fn parse_en_passant(pos: &mut Position, token: &str) -> Result<(), FenError> {
     let b = token.as_bytes();
     let rank = b.get(1).copied().unwrap_or(0);
-
     if b.len() != 2 || !(b'a'..=b'h').contains(&b[0]) || (rank != b'3' && rank != b'6') {
         return Err(FenError::InvalidEnPassant { square: token.to_string() });
     }
 
     let sq = Square((b[1] - b'1') * 8 + (b[0] - b'a'));
-
     if pos.can_capture_ep(sq, pos.stm) {
         pos.en_passant = Some(sq);
     }
@@ -397,7 +386,6 @@ fn parse_castling_rights(pos: &mut Position, token: &str) {
                 pos.castling_rights |= bit;
                 pos.castling_rooks[slot] = Square::from_coords(file, 7); // rank 7
             },
-
             _ => {}, // Ignore unknown chars gracefully.
         }
     }
@@ -426,7 +414,6 @@ fn king_file(pos: &Position, color: Color) -> u8 {
 fn find_rook(pos: &Position, color: Color, start_file: u8, step: i8) -> Option<Square> {
     let rank = color.back_rank();
     let mut file = start_file as i8;
-
     while (0..8).contains(&file) {
         let sq = Square(rank * 8 + file as u8);
 

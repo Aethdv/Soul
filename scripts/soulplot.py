@@ -8,7 +8,7 @@ Shared plotting toolkit for Soul's scripts.
 Building blocks, not a fixed theme: each plotter picks its own data colors
 and composition over one palette and one set of helpers.
 
-  use_theme()          rcParams, warm-ink canvas, monospace
+  use_theme()          rcParams, near-black canvas, monospace
   style_axes(ax)       spines / grid / ticks, the per-file boilerplate once
   glow_line(...)       line with a soft halo under a crisp stroke
   dot(...)             crisp marker: colored core + ink moat ring
@@ -21,7 +21,8 @@ and composition over one palette and one set of helpers.
   confidence_alpha(e)  error width → opacity, tight solid / noisy soft
   diverging_cmap()     OkLCH diverging colormap, red↔green
   oklch_ramp(stops)    sequential OkLCH colormap
-  legend(...)          frameless key, placed off the plot bed
+  end_labels(...)      direct labels at the curves' right ends
+  legend(...)          frameless key, placed off the plot area
   title / save         headline + subtitle; write + confirm
   ema / format_count   smoothing + K/M/G formatting
   iter_log(path)       stream a JSONL file as dicts
@@ -45,15 +46,20 @@ from matplotlib.colors import to_rgb, to_rgba_array, LinearSegmentedColormap
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Polygon
 
-INK = "#14110b"   # figure ground, warm near-black
-PANEL = "#1b1710" # plot bed, lifted a hair off INK
-TEXT = "#e7ddc8"  # warm cream
-MUTE = "#8a7e68"  # labels, ticks; warm taupe, one dim
-LINE = "#332c20"  # spines, grid, warm
+INK = "#0b0c0e"   # figure ground, near-black
+PANEL = "#0b0c0e" # plot area, flush with the ground
+TEXT = "#e8e6e3"  # off-white
+MUTE = "#8b8f96"  # labels, ticks; one dim down
+LINE = "#23262b"  # grid, rules, anything structural behind the data
+AXIS = "#d0d0d0"  # the two spines, the only bright furniture
 GOLD = "#e6b450"  # markers, highlights
 
+MONO = ("Iosevka", "Geist Mono", "Intel One Mono", "DejaVu Sans Mono", "monospace")
+
+DPI = 300
+
 _ANSI_GREEN = "\x1b[38;2;127;176;105m"
-_ANSI_DIM = "\x1b[38;2;138;126;104m"
+_ANSI_DIM = "\x1b[38;2;139;143;150m"
 _ANSI_ROSE = "\x1b[38;2;193;125;125m"
 _ANSI_RESET = "\x1b[0m"
 
@@ -81,18 +87,22 @@ class HelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 
 def use_theme(font: str = "monospace") -> None:
-    """Apply the warm-ink monospace canvas to matplotlib globally."""
+    """Apply the near-black monospace canvas to matplotlib globally."""
     plt.rcParams.update({
         "figure.facecolor": INK,
         "savefig.facecolor": INK,
         "axes.facecolor": PANEL,
         "font.family": font,
-        "font.weight": "medium",
+        "font.monospace": list(MONO),
+        "font.weight": "normal",
         "text.color": TEXT,
         "axes.labelcolor": MUTE,
         "xtick.color": MUTE,
         "ytick.color": MUTE,
         "axes.titlecolor": TEXT,
+        # Values clustered in a narrow band trip the offset default, which floats
+        # a "1e-5+4.051e-1" tag over the axis instead of labeling the ticks.
+        "axes.formatter.useoffset": False,
         "figure.dpi": 110,
         "lines.solid_capstyle": "round",
         "lines.antialiased": True,
@@ -101,14 +111,14 @@ def use_theme(font: str = "monospace") -> None:
 
 
 def style_axes(ax, *, grid: bool = True, grain: bool = True) -> None:
-    """Two warm spines, dimmed ticks, a faint y-grid, and film grain."""
+    """Two off-white spines, dimmed ticks, a faint y-grid, and film grain."""
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
 
     for side in ("bottom", "left"):
         ax.spines[side].set_visible(True)
-        ax.spines[side].set_color(LINE)
-        ax.spines[side].set_linewidth(1.0)
+        ax.spines[side].set_color(AXIS)
+        ax.spines[side].set_linewidth(0.8)
     ax.tick_params(colors=MUTE, labelsize=8, length=3, width=0.7)
 
     if grid:
@@ -120,7 +130,7 @@ def style_axes(ax, *, grid: bool = True, grain: bool = True) -> None:
 
 
 def _grain(ax, *, alpha: float = 0.012, seed: int = 0) -> None:
-    """Faint film grain over the plot bed.
+    """Faint film grain over the plot area.
 
     Drawn in data coords spanning the current view, with the limits restored
     after; a data-coord image stays put under a linear axis. (Drawing it under
@@ -166,16 +176,24 @@ def end_labels(ax, x, entries, *, size: float = 9.0, pad_frac: float = 0.012, mi
                 fontweight="bold", va="center", ha="left", clip_on=False)
 
 
-def legend(ax, entries, *, anchor=(1.0, 1.0), loc: str = "lower right", size: float = 8.5):
-    """Frameless key in the plot's top-right corner, off the bed.
+def legend(ax, entries, *, anchor=(1.0, 1.0), loc: str = "lower right", size: float = 8.5,
+           pad: float = 0.0, title: str | None = None):
+    """Frameless key in the plot's top-right corner, outside the axes.
 
     `entries` is a list of `(artist, label)`: proxy `Line2D`s or markers styled
     to match the plot. Companion to `end_labels`, which labels line ends; this
-    keys a line with no end to label, a fit or a reference.
+    keys a line with no end to label, a fit or a reference. Pass `anchor=None`
+    to drop the corner pin and float the key inside the axes at `loc`, with `pad`
+    holding it off the spines. A `title` heads the key, dimmer than the rows, for
+    naming what a column of numbers is.
     """
     leg = ax.legend([a for a, _ in entries], [t for _, t in entries], loc=loc,
-                    bbox_to_anchor=anchor, frameon=False, fontsize=size,
-                    labelcolor=TEXT, handlelength=1.8, handletextpad=0.6, borderaxespad=0.0)
+                    **({} if anchor is None else {"bbox_to_anchor": anchor}),
+                    frameon=False, fontsize=size, labelcolor=TEXT, title=title,
+                    alignment="left", handlelength=1.8, handletextpad=0.6, borderaxespad=pad)
+
+    if title:
+        leg.get_title().set(color=MUTE, fontsize=size - 0.5)
     return leg
 
 
@@ -250,7 +268,7 @@ def density_band(ax, x, center, half, color, *, max_alpha: float = 0.16, shells:
     says what a CI actually is, densest at the estimate and thinning to the edge.
     Built from nested translucent shells: a point near the estimate is painted by
     every shell, one near the ±edge by only the outermost. Alpha-over compositing
-    bends the linear stack into a soft bell, most probable in the middle.
+    bends the linear stack into a soft bell.
     """
     x = np.asarray(x, dtype=float)
     center = np.asarray(center, dtype=float)
@@ -297,15 +315,18 @@ def band(ax, x, lo, hi, color, *, alpha: float = 0.06, hatch: str | None = "////
     ax.fill_between(x, lo, hi, color=color, alpha=alpha, lw=0, hatch=hatch, zorder=zorder)
 
 
-def title(fig, main: str, sub: str | None = None) -> None:
-    """Centered headline with an optional dim subtitle beneath."""
-    fig.text(0.5, 0.975, main, ha="center", va="top", fontsize=15, fontweight="bold", color=TEXT)
+def title(fig, main: str, sub: str | None = None, sub2: str | None = None) -> None:
+    """Centered headline over one or two dim subtitle lines."""
+    fig.text(0.5, 0.986, main, ha="center", va="top", fontsize=15, fontweight="bold", color=TEXT)
 
     if sub:
-        fig.text(0.5, 0.93, sub, ha="center", va="top", fontsize=9, color=MUTE)
+        fig.text(0.5, 0.944, sub, ha="center", va="top", fontsize=9, color=TEXT, alpha=0.75)
+
+    if sub2:
+        fig.text(0.5, 0.913, sub2, ha="center", va="top", fontsize=8.5, color=MUTE)
 
 
-def save(fig, path: str, *, show: bool = False, dpi: int = 200) -> None:
+def save(fig, path: str, *, show: bool = False, dpi: int = DPI) -> None:
     """Write the figure; print a colored confirmation line."""
     fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor=INK, pad_inches=0.3)
     tty = sys.stdout.isatty()
@@ -383,6 +404,9 @@ def format_count(v: float, sig: int = 3) -> str:
     scaled = v / 1000**mag
     places = max(0, sig - int(math.log10(scaled)) - 1)
     s = f"{scaled:.{places}f}"
+
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
 
     if float(s) >= 1000 and mag < len(suffixes) - 1:
         mag += 1

@@ -45,7 +45,7 @@ Soul uses a custom binary format (`.soul.zst`), a zstd-compressed nibble-array l
 Generate self-play data for evaluation tuning:
 
 ```bash
-./soul genfens -t <N> -n <N>
+./soul datagen -t <N> -n <N>
 ```
 
 *Inspect datasets or encode existing EPDs with the built-in utilities (`./soul dataset help`).*
@@ -108,5 +108,4 @@ TL;DR:
 
 <img src="assets/gemheartgreen.gif" alt="GemHeartGreen" width="16" height="16" /> [Lofty](https://github.com/yukarichess): the author of [Yukari](https://github.com/yukarichess/Yukari), for being a patient and understanding friend. Also helped me understand XBoard.\
 <img src="assets/gemheartpink.gif" alt="GemHeartPink" width="16" height="16" /> [Lily](https://github.com/87flowers): the author of [Rose](https://github.com/87flowers/Rose) and co-author of [Clockwork](https://github.com/official-clockwork/Clockwork), for always getting me. Check her [ByteBoard Attack Tables](<https://87flowers.com/byteboard-attack-tables-1/>) blog!\
-<img src="assets/gemheartpaleblue.gif" alt="GemHeartPaleBlue" width="16" height="16" /> [Cosmo](https://github.com/cosmobobak): the author of [Viridithas](https://github.com/cosmobobak/Viridithas), for being a cool dude and helping me start with The Rust Programming Language.\
 <img src="assets/gemheartcyan.gif" alt="GemHeartCyan" width="16" height="16" /> [Styx](https://github.com/styxdoto): the co-author of [Reckless](https://github.com/codedeliveryservice/Reckless), for being a nice friend and helping minimize my loss of sanity.

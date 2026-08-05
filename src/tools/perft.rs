@@ -46,7 +46,6 @@ pub fn run(board: &Position, depth: u8, divide: bool) {
 
         println!("nodes: {nodes} time: {elapsed:?} nps: {nps}");
     }
-
     io::stdout().flush().ok();
 }
 
@@ -56,7 +55,6 @@ pub fn perft(board: &mut Position, depth: u8, acc: &mut Vi16x8) -> u64 {
     }
 
     let moves = gen_legal_moves(board);
-
     if BULK_COUNTING && depth == 1 {
         return moves.len() as u64;
     }
@@ -71,7 +69,6 @@ pub fn perft(board: &mut Position, depth: u8, acc: &mut Vi16x8) -> u64 {
         board.unmake_move(*mv, &undo);
         *acc = saved_acc;
     }
-
     nodes
 }
 

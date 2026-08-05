@@ -27,7 +27,10 @@ use crate::{
         search_params::SearchParams,
         tt::TranspositionTable,
     },
-    protocols::{notation::parse_uci_move, smp::LazySmpPool},
+    protocols::{
+        notation::parse_uci_move,
+        smp::{LazySmpPool, table_and_pool},
+    },
     weave::Vi16x8,
 };
 
@@ -63,7 +66,6 @@ pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
 
     while let Some(Ok(line)) = lines.next() {
         let trimmed = line.trim();
-
         if trimmed.is_empty() {
             continue;
         }
@@ -86,14 +88,14 @@ impl XBoardState {
     fn new() -> Self {
         let board = Position::from_fen(STARTPOS);
         let history = vec![board.hash];
-        let tt = Arc::new(TranspositionTable::new(16, 1));
+        let (tt, smp_pool) = table_and_pool(16, 1);
 
         Self {
             accumulator: board.get_initial_accumulator(),
             board,
             history,
             persistent_history: Arc::new(Mutex::new(History::new())),
-            tt: tt.clone(),
+            tt,
             mode: Mode::Normal,
             stop_signal: Arc::new(AtomicBool::new(false)),
             search_thread: None,
@@ -105,7 +107,7 @@ impl XBoardState {
             is_frc: false,
             nps: None,
             threads: 1,
-            smp_pool: LazySmpPool::new(1, tt),
+            smp_pool,
         }
     }
 
@@ -167,12 +169,13 @@ impl XBoardState {
             cfg.threads = threads;
             cfg.node_slots = SearchConfig::node_slots(threads);
 
-            // ── Lazy SMP ──
+            // ── Lazy SMP
             // Persistent helpers fan out across the depth ladder alongside main;
             // the TT is the only shared surface. Main finishes, then we signal
             // the helpers and wait for them to park before clearing the flag.
             pool.launch(&cfg, board, &history);
 
+            tt.bind_search_thread(0, cfg.threads);
             let mut ctx = Searcher::new(&cfg, &board, &history, tt);
             ctx.iterative_deepening(&mut persistent_history);
 
@@ -284,10 +287,8 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             if let Some(arg) = args.next()
                 && let Ok(mb) = arg.parse::<usize>()
             {
-                let mb = mb.clamp(1, 524288);
-                state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
-                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
+                state.hash_size = mb.clamp(1, 524288);
+                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
 
@@ -361,11 +362,9 @@ fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
     }
 
     let engine_turn = state.engine_side == Some(state.board.stm);
-
     if state.mode == Mode::Normal && engine_turn {
         state.start_search();
     }
-
     true
 }
 
@@ -387,14 +386,12 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
         let secs = if parts.len() > 1 { parts[1].parse::<u64>().unwrap_or(0) } else { 0 };
 
         let total_ms = (mins * 60 + secs) * 1000;
-
         state.limits.wtime = total_ms;
         state.limits.btime = total_ms;
     }
 
     if let Some(inc) = args.next().and_then(|s| s.parse::<f64>().ok()) {
         let inc_ms = (inc * 1000.0) as u64;
-
         state.limits.winc = inc_ms;
         state.limits.binc = inc_ms;
     }
@@ -468,19 +465,15 @@ fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a s
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                let mb = mb.clamp(1, 524288);
-                state.hash_size = mb;
-                state.tt = Arc::new(TranspositionTable::new(mb, state.threads));
-                state.smp_pool = LazySmpPool::new(state.threads, state.tt.clone());
+                state.hash_size = mb.clamp(1, 524288);
+                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
             }
         },
-
         "overhead" => {
             if let Ok(v) = value.parse::<u64>() {
                 state.overhead = v.clamp(0, 2000);
             }
         },
-
         "showwdl" => {
             if let Ok(v) = value.parse::<u8>() {
                 state.show_wdl = v != 0;

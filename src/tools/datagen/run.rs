@@ -1,4 +1,4 @@
-//! Orchestrator for self-play data generation ("genfens").
+//! Orchestrator for self-play data generation.
 //!
 //! Spawns N persistent worker threads, each playing complete games
 //! from book openings, filtering positions by search verification
@@ -8,8 +8,7 @@
 //! the conductor: load books, dispatch work, flush to disk, print stats.
 
 use std::{
-    fs::File,
-    io::{BufRead, BufReader, Read, Result, Write, stdout},
+    io::{Write, stdout},
     num::NonZero,
     path::Path,
     process,
@@ -23,20 +22,20 @@ use std::{
 };
 
 use super::{
-    config::GenfensConfig,
+    config::DatagenConfig,
     stats::{GlobalStats, get_rss_kb},
     worker::WorkerState,
 };
 use crate::{
     cli::Help,
-    core::{board::Position, defs::MAX_DEPTH, util::format_comma as format_num},
-    tools::dataset::{MAGIC_V5, MAGIC_V6, SoulEntry, append_encoded, parse_epd_str},
+    color::RESET,
+    core::{board::STARTPOS, defs::MAX_DEPTH, util::format_comma as format_num},
+    tools::dataset::{SoulEntry, append_encoded, count_encoded, load_epd_fens},
 };
 
 const GREEN: &str = "\x1b[92m";
 const YELLOW: &str = "\x1b[93m";
 const RED: &str = "\x1b[91m";
-const RESET: &str = "\x1b[0m";
 
 const BADGE_OK: &str = "\x1b[92m[OK]\x1b[0m";
 const BADGE_LOW: &str = "\x1b[93m[LOW]\x1b[0m";
@@ -45,7 +44,6 @@ const BADGE_BAD: &str = "\x1b[91m[BAD]\x1b[0m";
 /// Dashboard refresh interval.
 /// 10 Hz is smooth enough without burning CPU on terminal writes.
 const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
-
 /// Number of lines the dashboard occupies. We print this many newlines on
 /// first render, then cursor-up by this amount on every subsequent frame.
 const DASHBOARD_LINES: usize = 14;
@@ -54,7 +52,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let (parsed, resume) = parse_args(args);
 
     let book_fens = if parsed.startpos {
-        vec!["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()]
+        vec![STARTPOS.to_string()]
     } else {
         let fens = load_books(&parsed.book_paths);
 
@@ -83,7 +81,6 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     // during multi-hour runs.
     let all_cores = available_parallelism().map_or(1, NonZero::get);
     let num_threads = config.thread_count.unwrap_or_else(|| (all_cores / 2).max(1));
-
     let global = Arc::new(GlobalStats::new());
 
     print_banner(&config, num_threads, book.len(), start_count);
@@ -142,14 +139,12 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
                 }
 
                 let entries = worker.play_game();
-
                 if !entries.is_empty() && tx.send(entries).is_err() {
                     break;
                 }
             }
         }));
     }
-
     drop(tx); // channel closes when all senders drop
 
     // Flush results to disk periodically
@@ -322,7 +317,6 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     // Quality badge reflects the underlying filter selectivity, not just how often
     // we skip positions for variety.
     let normalized = snap.pass_rate();
-
     let badge = if normalized > 30.0 {
         BADGE_OK
     } else if normalized > 10.0 {
@@ -336,7 +330,6 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
         for _ in 0..DASHBOARD_LINES {
             println!();
         }
-
         *first_frame = false;
     }
 
@@ -443,7 +436,6 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
 fn load_books(paths: &[String]) -> Vec<String> {
     println!("Loading opening books...");
     let mut all = Vec::new();
-
     for path in paths {
         match load_epd_fens(path) {
             Ok(fens) => {
@@ -453,24 +445,22 @@ fn load_books(paths: &[String]) -> Vec<String> {
             Err(e) => eprintln!("  {RED}Failed to load {path}: {e}{RESET}"),
         }
     }
-
     all
 }
 
 /// Resolves the generation config, optionally resuming a previous run by
 /// loading saved state from disk and re-applying the CLI's target and books.
-fn resolve_config(parsed: GenfensConfig, resume: bool) -> GenfensConfig {
-    if resume && let Ok(mut cfg) = GenfensConfig::load() {
+fn resolve_config(parsed: DatagenConfig, resume: bool) -> DatagenConfig {
+    if resume && let Ok(mut cfg) = DatagenConfig::load() {
         cfg.target_count = parsed.target_count;
         cfg.book_paths = parsed.book_paths;
         return cfg;
     }
-
     parsed
 }
 
 /// Prints the launch banner: what we're about to do and how.
-fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, start_count: usize) {
+fn print_banner(config: &DatagenConfig, num_threads: usize, book_count: usize, start_count: usize) {
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
     println!("Output: {}", config.output_path);
@@ -512,13 +502,12 @@ fn print_banner(config: &GenfensConfig, num_threads: usize, book_count: usize, s
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
     }
-
     println!();
 }
 
 /// Flushes pending entries to disk and saves config state.
 /// Called periodically during generation and once at the end.
-fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &GenfensConfig) {
+fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &DatagenConfig) {
     if pending.is_empty() {
         return;
     }
@@ -526,42 +515,28 @@ fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &Genfe
     if let Err(e) = append_encoded(output_path, pending) {
         eprintln!("{RED}[ERROR] Failed to save batch: {e}{RESET}");
     }
-
     pending.clear();
     let _ = config.save();
 }
 
-/// Reads the position count from a V5/V6 header. Unknown formats return 0.
+/// A resume appends to this file and counts up from what it already holds, so a count that
+/// cannot be read ends the run rather than generating the whole target on top of it.
 fn load_existing_count(path: &str) -> usize {
     if !Path::new(path).exists() {
         return 0;
     }
 
-    let Ok(file) = File::open(path) else { return 0 };
-    let mut reader = BufReader::new(file);
-
-    let mut magic = [0u8; 8];
-
-    if reader.read_exact(&mut magic).is_err() {
-        return 0;
-    }
-
-    if &magic == MAGIC_V5 || &magic == MAGIC_V6 {
-        let mut buf = [0u8; 8];
-
-        if reader.read_exact(&mut buf).is_ok() {
-            return u64::from_le_bytes(buf) as usize;
-        }
-    }
-
-    0
+    count_encoded(path).unwrap_or_else(|e| {
+        eprintln!("{RED}Error: cannot resume {path}: {e}{RESET}");
+        process::exit(1);
+    })
 }
 
 fn print_help() {
     let h = Help::new(22);
 
     h.header("Usage:");
-    println!("  soul genfens [OPTIONS]");
+    println!("  soul datagen [OPTIONS]");
     println!();
 
     h.header("Options:");
@@ -594,11 +569,11 @@ fn print_help() {
     );
 }
 
-fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
-    // Defaults come solely from GenfensConfig::default(); the CLI overrides
+fn parse_args(args: &[&str]) -> (DatagenConfig, bool) {
+    // Defaults come solely from DatagenConfig::default(); the CLI overrides
     // fields in place. depth stays a local Option so the node-limit resolution
     // can run after the loop; resume is a control flag, not config.
-    let mut cfg = GenfensConfig::default();
+    let mut cfg = DatagenConfig::default();
     let mut depth: Option<i32> = None;
     let mut book_override = false;
     let mut resume = false;
@@ -676,7 +651,6 @@ fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
                 print_help();
                 process::exit(0);
             },
-
             _ => {}, // Unknown flags silently ignored.
         }
     }
@@ -688,47 +662,19 @@ fn parse_args(args: &[&str]) -> (GenfensConfig, bool) {
     } else if cfg.soft_nodes.is_some() || cfg.hard_nodes.is_some() {
         cfg.depth = MAX_DEPTH;
     }
-
     (cfg, resume)
 }
 
 /// Parses a number string with optional K/M/B suffix.
 fn parse_suffix(s: &str) -> Option<u64> {
     let lower = s.to_lowercase();
-
     // Try stripping a magnitude suffix and multiplying.
     let suffixes: &[(&str, f64)] = &[("b", 1e9), ("m", 1e6), ("k", 1e3)];
-
     for &(suffix, multiplier) in suffixes {
         if let Some(stem) = lower.strip_suffix(suffix) {
             return stem.parse::<f64>().map(|n| (n * multiplier) as u64).ok();
         }
     }
-
     // No suffix: strip commas and parse directly.
     s.replace(',', "").parse().ok()
-}
-
-/// Loads opening positions from an EPD file, falling back to raw FEN parsing.
-/// Both formats are common in the chess datagen ecosystem.
-fn load_epd_fens(path: &str) -> Result<Vec<String>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut fens = Vec::new();
-
-    for line in reader.lines() {
-        let line = line?;
-
-        if let Some((board, _)) = parse_epd_str(&line) {
-            // EPD parsed successfully: re-export as FEN to normalize formatting.
-            fens.push(board.as_fen());
-        } else if Position::try_from_fen(&line).is_ok() {
-            // Fallback: raw FEN line (no EPD operations field).
-            fens.push(line);
-        }
-        // Lines that fail both parses are silently skipped,
-        // they're comments, blank lines, or corrupted entries.
-    }
-
-    Ok(fens)
 }
