@@ -12,8 +12,7 @@ Cautious Optimizers: Improving Training with One Line of Code.
 Ours withholds the sign step on `m·g ≤ 0 && |m| > 1e-6`; decay fires either way. Liang's
 canonical mask withholds on c·g ≤ 0, which at β₁ = 0.9 reads m·g ≤ -g²/9: a subset of ours on
 the m·g comparison, so it steps on reversals we sit out, while our epsilon steps where it
-would not. Attempted at 490 HCE parameters, two
-retunes on separate seeds:
+would not. Attempted at 490 HCE parameters, two retunes on separate seeds:
 
 ```text
   Elo   | -6.24 ± 6.43 (95%)
@@ -30,8 +29,8 @@ retunes on separate seeds:
 ```
 
 Liang pairs the mask with a φ/mean(φ) rescale, which we leave out: it would set the surviving step
-to lr·dim/nnz, forfeiting the uniform magnitude Lion is built on and pricing every coordinate
-off a global statistic.
+to lr·dim/nnz, forfeiting the uniform magnitude Lion is built on and pricing every coordinate off
+a global statistic.
 
 Leaving it out is not free. Gate width sets ‖Δθ‖₁ directly, so a wider gate is also a longer step,
 and the two runs above differ in step length as well as in mask shape. Any retry pins one of the
