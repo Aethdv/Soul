@@ -19,7 +19,7 @@ bin=$(RUSTFLAGS="-C target-cpu=native" cargo test --release -p soul --no-run --m
 
 # Four fields for one mode: retired ops, cycles, elapsed ms, positions.
 #
-# Cycles carry the comparison. Wall time on this laptop drifts 10% with boost
+# Cycles carry the comparison. Wall time on aeth's laptop drifts 10% with boost
 # state alone, enough to read a thermal change as a code change, while cycles
 # per position hold within about a percent.
 measure() {
