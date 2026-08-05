@@ -34,7 +34,6 @@ macro_rules! load_or_bail {
     };
 }
 
-/// Slice-pattern dispatch: exhaustive, zero-cost, no manual bounds checks.
 /// The `encode` arm is split into two patterns: the match itself proves
 /// the argument count, replacing the original's `if args.len() < 3` guard.
 pub fn run(args: &[&str]) {
