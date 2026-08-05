@@ -31,13 +31,16 @@ const LOSS_DEEP: (f64, f64, f64) = (0.64, 0.17, 22.0);
 #[must_use]
 pub fn advantage(t: f64) -> Rgb {
     let m = t.abs().min(1.0);
-    let (lo, hi, seg) = match (t >= 0.0, m < 0.5) {
-        (true, true) => (WIN_GOLD, WIN_GREEN, m / 0.5),
-        (true, false) => (WIN_GREEN, WIN_DEEP, (m - 0.5) / 0.5),
-        (false, true) => (LOSS_PEACH, LOSS_ORANGE, m / 0.5),
-        (false, false) => (LOSS_ORANGE, LOSS_DEEP, (m - 0.5) / 0.5),
+    let near = m < 0.5;
+
+    let (lo, hi) = match (t >= 0.0, near) {
+        (true, true) => (WIN_GOLD, WIN_GREEN),
+        (true, false) => (WIN_GREEN, WIN_DEEP),
+        (false, true) => (LOSS_PEACH, LOSS_ORANGE),
+        (false, false) => (LOSS_ORANGE, LOSS_DEEP),
     };
-    oklch_lerp(lo, hi, seg)
+
+    oklch_lerp(lo, hi, if near { m / 0.5 } else { (m - 0.5) / 0.5 })
 }
 
 /// ANSI truecolor foreground escape for `c`.
@@ -69,16 +72,13 @@ pub fn strip(text: &str) -> String {
 
         let params = rest.strip_prefix("\x1b[").unwrap_or_default();
         let Some(end) = params.find(|c: char| !c.is_ascii_digit() && c != ';') else { break };
-
         // Narrower than the CSI grammar on purpose: over-accepting eats prose,
         // under-accepting leaves an escape in a log.
         if !matches!(params.as_bytes()[end], b'm' | b'K') {
             break;
         }
-
         rest = &params[end + 1..];
     }
-
     out.push_str(rest);
     out
 }
