@@ -225,6 +225,8 @@ impl MovePicker {
                     if !self.is_qsearch && !mv.is_promotion() {
                         let attacker = board.piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
+                        // Both read the value table on purpose: mvvlva_a is an ordering
+                        // penalty, and comparing material needs one scale.
                         let victim_val = *debug_index!(self.mvvlva_v, victim as usize);
                         let attacker_val = *debug_index!(self.mvvlva_v, attacker as usize);
                         // A capture winning material (victim worth at least the attacker) has
