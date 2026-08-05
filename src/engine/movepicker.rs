@@ -41,13 +41,6 @@ use crate::{
 // Ensure move bit-packing assumes correctly.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
-// ── Staged Move Picker
-//
-// Pipeline:
-//   [ Hash Move ] ──> [ Good Captures ] ──> [ Quiets ] ──> [ Bad Captures ]
-//      (𝒪(1))          (MVV-LVA Sort)     (History Sort)  (SEE-losing, deferred)
-//
-// We fully sort the generated stages using Rust's sort_unstable.
 // Why not a lazy partial selection sort to save cycles on early cutoffs?
 // Because Big-O is a lie when it hits modern hardware.
 // An ipnsort beats a branch-heavy selection sort loop, even when K is small.
@@ -287,7 +280,6 @@ impl MovePicker {
                         self.stage = Stage::YieldBadCaptures;
                         continue;
                     }
-                    // Pop from the back: exploits the ascending sort to yield the strongest moves first.
                     self.count -= 1;
                     // SAFETY: self.count was strictly checked > 0 above, proving this index holds a valid move.
                     let mv = unsafe { self.read_move(self.count) };
