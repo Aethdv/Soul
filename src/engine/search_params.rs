@@ -45,14 +45,13 @@ impl ParamDef {
     pub fn denormalize(&self, normalized: f64) -> f64 {
         let val = normalized.mul_add(self.max - self.min, self.min);
         let snapped = if self.step > 1e-9 { self.min + ((val - self.min) / self.step).round() * self.step } else { val };
-
         snapped.clamp(self.min, self.max)
     }
 }
 
 /// Default-derived upper bound; symmetric around 1.5× magnitude with a floor.
 pub const fn auto_max(default: i32) -> i32 {
-    let abs_d = if default < 0 { -default } else { default };
+    let abs_d = default.abs();
     abs_d + 10 + abs_d / 2
 }
 
@@ -190,7 +189,6 @@ macro_rules! search_params {
                         i += 1;
                     }
                 )*
-
                 let _ = i;
                 out
             }
