@@ -268,7 +268,8 @@ impl MoveList {
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES, "MoveList capacity exceeded");
-        // SAFETY: Caller guarantees the list is not full; debug_assert above catches violations in debug builds.
+        // SAFETY: MAX_MOVES exceeds the 218 moves any legal position can offer, so a
+        // generator filling one list cannot reach the end of it.
         unsafe { self.moves.get_unchecked_mut(self.len).write(mv) };
         self.len += 1;
     }
