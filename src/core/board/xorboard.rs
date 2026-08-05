@@ -14,6 +14,8 @@
 //! a square-indexed table to recount, and here the contributor is the index.
 //! The unmake record is bounded by pieces touched, not squares attacked.
 
+use core::arch::x86_64::*;
+
 use crate::core::{
     board::{
         Position,
@@ -56,10 +58,19 @@ pub struct Undo {
     len: u8,
     ids: [u8; UNDO_CAP],
     rows: [u64; UNDO_CAP],
+    /// Make already worked out which slots move where; unmake reads it back off
+    /// the record rather than deriving it a second time from the flags.
+    plan: Plan,
 }
 
 const SLOTS: usize = 32;
 const NOWHERE: u8 = 0xFF;
+
+/// Slots 0 to 7 and 16 to 23: the eight-wide window each colour's sliders are
+/// seeded into. Only sliders can be affected by a move they did not make, so
+/// the gather only ever has to look here, and it looks at a fixed four groups
+/// rather than all eight.
+const SLIDER_WINDOW: u64 = 0x00FF_00FF;
 
 /// Two movers, one victim, and every slider on the board: a side cannot exceed
 /// two bishops, two rooks, a queen and eight promotions.
@@ -77,6 +88,11 @@ impl PieceId {
     }
 }
 
+#[inline(always)]
+fn is_slider(piece: PieceType) -> bool {
+    matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen)
+}
+
 impl XorBoard {
     /// Slots are assigned by a square walk, so two boards built from the same
     /// position agree slot for slot.
@@ -86,21 +102,27 @@ impl XorBoard {
 
         let mut next = [0usize, 16];
 
-        for raw in 0..64u8 {
-            let square = Square(raw);
-            let piece = pos.piece_at(square);
-            if piece == PieceType::None {
-                continue;
+        // Sliders first, so they land in the low half of each colour's range and
+        // the gather can skip the rest. A side can legally promote its way past
+        // eight, which the gather handles by widening rather than by anything
+        // here having to care.
+        for slider_pass in [true, false] {
+            for raw in 0..64u8 {
+                let square = Square(raw);
+                let piece = pos.piece_at(square);
+                if piece == PieceType::None || is_slider(piece) != slider_pass {
+                    continue;
+                }
+
+                let color = if pos.side_bb[Color::White].check_bit(square) { Color::White } else { Color::Black };
+                let slot = next[color as usize];
+                next[color as usize] += 1;
+
+                board.at[usize::from(square)] = (slot + 1) as u8;
+                board.sq[slot] = raw;
+                board.kind[slot] = piece;
+                board.class[piece as usize * 2 + color as usize] |= 1 << slot;
             }
-
-            let color = if pos.side_bb[Color::White].check_bit(square) { Color::White } else { Color::Black };
-            let slot = next[color as usize];
-            next[color as usize] += 1;
-
-            board.at[usize::from(square)] = (slot + 1) as u8;
-            board.sq[slot] = raw;
-            board.kind[slot] = piece;
-            board.class[piece as usize * 2 + color as usize] |= 1 << slot;
         }
         board.refresh(pos);
         board
@@ -156,13 +178,67 @@ impl XorBoard {
     /// The transpose, taken one column at a time: which pieces attack any square
     /// in `mask`. Testing a row against a multi-bit mask answers for every square
     /// in it at once, so a castling move's four changed squares cost one pass.
+    ///
+    /// Written by hand because the shape matters: eight lane tests folded into a
+    /// slot set, or four `vptestmq` where the wider registers exist. Left to the
+    /// autovectorizer this is a thirty-two iteration dependency chain, and it
+    /// sits in the update path of every move.
+    #[inline(always)]
+    pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
+        let sliders = self.sliders();
+
+        if sliders & !SLIDER_WINDOW == 0 {
+            self.probe_groups::<true>(mask) & sliders
+        } else {
+            self.probe_groups::<false>(mask) & sliders
+        }
+    }
+
     #[inline(always)]
     pub fn attackers_of(&self, mask: Bitboard) -> u64 {
-        let mut set = 0u64;
-        for (slot, row) in self.rows.iter().enumerate() {
-            set |= u64::from(row & mask.0 != 0) << slot;
+        self.probe_groups::<false>(mask)
+    }
+
+    /// `WINDOW` restricts the test to the slider window, four groups instead of
+    /// eight, both counts fixed so the loop unrolls either way.
+    #[inline(always)]
+    fn probe_groups<const WINDOW: bool>(&self, mask: Bitboard) -> u64 {
+        // SAFETY: AVX2 is guaranteed for every binary linking this crate by the
+        // compile_error gate in weave/mod.rs, and AVX-512 only under its own
+        // cfg. Each load covers one whole group of a 32-element array, so the
+        // last ends exactly at its end.
+        unsafe {
+            #[cfg(target_feature = "avx512f")]
+            {
+                let want = _mm512_set1_epi64(mask.0 as i64);
+                let groups: &[usize] = if WINDOW { &[0, 2] } else { &[0, 1, 2, 3] };
+                let mut set = 0u64;
+
+                for &group in groups {
+                    let rows = _mm512_loadu_si512(self.rows.as_ptr().add(group * 8).cast());
+                    set |= u64::from(_mm512_test_epi64_mask(rows, want)) << (group * 8);
+                }
+
+                set
+            }
+
+            #[cfg(not(target_feature = "avx512f"))]
+            {
+                let want = _mm256_set1_epi64x(mask.0 as i64);
+                let zero = _mm256_setzero_si256();
+                let groups: &[usize] = if WINDOW { &[0, 1, 4, 5] } else { &[0, 1, 2, 3, 4, 5, 6, 7] };
+                let mut set = 0u64;
+
+                for &group in groups {
+                    let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
+                    let idle = _mm256_cmpeq_epi64(_mm256_and_si256(rows, want), zero);
+                    let live = !(_mm256_movemask_pd(_mm256_castsi256_pd(idle)) as u32) & 0xF;
+                    set |= u64::from(live) << (group * 4);
+                }
+
+                set
+            }
         }
-        set
     }
 
     #[inline(always)]
@@ -202,7 +278,7 @@ impl XorBoard {
 
 impl Undo {
     pub const fn new() -> Self {
-        Self { len: 0, ids: [0; UNDO_CAP], rows: [0; UNDO_CAP] }
+        Self { len: 0, ids: [0; UNDO_CAP], rows: [0; UNDO_CAP], plan: Plan::EMPTY }
     }
 
     #[inline(always)]
@@ -221,11 +297,16 @@ impl Default for Undo {
 }
 
 /// Which slots the move disturbs and where they end up.
+#[derive(Clone, Copy, Debug)]
 struct Plan {
     movers: [(PieceId, Square, Square); 2],
     n_movers: usize,
     changed: Bitboard,
     victim: Option<(PieceId, Square)>,
+}
+
+impl Plan {
+    const EMPTY: Self = Self { movers: [(PieceId(0), Square(0), Square(0)); 2], n_movers: 0, changed: Bitboard(0), victim: None };
 }
 
 impl XorBoard {
@@ -241,8 +322,9 @@ impl XorBoard {
     pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
         let plan = self.read(mv);
         undo.len = 0;
+        undo.plan = plan;
 
-        let mut affected = self.attackers_of(plan.changed) & self.sliders();
+        let mut affected = self.slider_attackers_of(plan.changed);
         for m in 0..plan.n_movers {
             affected &= !(1 << plan.movers[m].0.index());
         }
@@ -283,8 +365,7 @@ impl XorBoard {
             self.rows[usize::from(undo.ids[i])] = undo.rows[i];
         }
 
-        let plan = self.read_back(mv, undo);
-        self.restore(mv, &plan);
+        self.restore(mv, &undo.plan);
     }
 
     /// Reads the move against pre-move bookkeeping.
@@ -313,36 +394,6 @@ impl XorBoard {
             victim = Some((PieceId(self.at[usize::from(to)] - 1), to));
         }
         Plan { movers, n_movers, changed, victim }
-    }
-
-    /// The same read against post-move bookkeeping. The movers sit at their
-    /// destinations; the victim's slot has to come from the record, because
-    /// once its square is overwritten nothing on the board points at it.
-    #[inline(always)]
-    fn read_back(&self, mv: Move, undo: &Undo) -> Plan {
-        let (from, to) = (mv.from(), mv.to());
-        let mut movers = [(PieceId(0), from, to); 2];
-        let mut n_movers = 1;
-
-        if mv.is_castling() {
-            let (king_to, rook_to) = super::castling_targets(from, to);
-            movers = [
-                (PieceId(self.at[usize::from(king_to)] - 1), from, king_to),
-                (PieceId(self.at[usize::from(rook_to)] - 1), to, rook_to),
-            ];
-            n_movers = 2;
-        } else {
-            movers[0].0 = PieceId(self.at[usize::from(to)] - 1);
-        }
-
-        // En passant sets the capture bit and castling does not, so the flag
-        // alone says whether slot zero of the record is a victim.
-        let victim = mv.is_capture().then(|| {
-            let square = if mv.is_en_passant() { Square(to.0 ^ 8) } else { to };
-            (PieceId(undo.ids[0]), square)
-        });
-
-        Plan { movers, n_movers, changed: Bitboard(0), victim }
     }
 
     /// Origins clear before any destination lands, so DFRC castling stays exact
