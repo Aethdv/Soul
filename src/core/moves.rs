@@ -254,21 +254,17 @@ impl fmt::Debug for Move {
 }
 
 /// Stack-allocated move list. No heap allocation on the hot path.
-/// The theoretical maximum legal moves in any chess position is 218.
-/// In practice you'll rarely see more than 80, but this safely bounds all edge cases.
 pub struct MoveList {
     moves: [MaybeUninit<Move>; MAX_MOVES],
     len: usize,
 }
 
 impl MoveList {
-    /// Empty move list.
     #[inline(always)]
     pub const fn new() -> Self {
         Self { moves: [MaybeUninit::uninit(); MAX_MOVES], len: 0 }
     }
 
-    /// Append a move to the list.
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < MAX_MOVES, "MoveList capacity exceeded");
@@ -277,25 +273,21 @@ impl MoveList {
         self.len += 1;
     }
 
-    /// Clear all moves.
     #[inline(always)]
     pub fn clear(&mut self) {
         self.len = 0;
     }
 
-    /// Number of moves in the list.
     #[inline(always)]
     pub const fn len(&self) -> usize {
         self.len
     }
 
-    /// List is empty.
     #[inline(always)]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Iterate over moves.
     #[inline(always)]
     pub fn iter(&self) -> std::slice::Iter<'_, Move> {
         self.as_slice().iter()
