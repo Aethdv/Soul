@@ -10,9 +10,11 @@ Cautious Optimizers: Improving Training with One Line of Code.
 <https://arxiv.org/abs/2411.16085v4>
 
 Ours withholds the sign step on `m·g ≤ 0 && |m| > 1e-6`; decay fires either way. Liang's
-canonical mask withholds on c·g ≤ 0, which at β₁ = 0.9 reads m·g ≤ -g²/9: a subset of ours on
-the m·g comparison, so it steps on reversals we sit out, while our epsilon steps where it
-would not. Attempted at 490 HCE parameters, two retunes on separate seeds:
+canonical mask withholds on c·g ≤ 0, which expands to m·g ≤ -g²(1-β₁)/β₁, so -g²/9 at our
+default β₁ = 0.9: a subset of ours on the m·g comparison, so it steps on reversals we sit out,
+while our epsilon steps where it would not. 
+
+Attempted at 490 HCE parameters, two retunes on separate seeds:
 
 ```text
   Elo   | -6.24 ± 6.43 (95%)
