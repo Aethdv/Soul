@@ -19,7 +19,7 @@ use core::arch::x86_64::*;
 use crate::core::{
     board::{
         Position,
-        bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook},
+        bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, line_bb},
     },
     defs::{Bitboard, Color, PieceType, Square},
     moves::Move,
@@ -86,6 +86,26 @@ impl PieceId {
     const fn index(self) -> usize {
         self.0 as usize
     }
+}
+
+/// Four lanes of all-ones or all-zeros, indexed by a nibble of the slot mask.
+static LANE_MASK: [[u64; 4]; 16] = {
+    let mut table = [[0u64; 4]; 16];
+    let mut nibble = 0;
+    while nibble < 16 {
+        let mut lane = 0;
+        while lane < 4 {
+            table[nibble][lane] = if nibble >> lane & 1 == 1 { u64::MAX } else { 0 };
+            lane += 1;
+        }
+        nibble += 1;
+    }
+    table
+};
+
+#[inline(always)]
+const fn color_slots(color: Color) -> u64 {
+    0xFFFF << (color as usize * 16)
 }
 
 #[inline(always)]
@@ -161,6 +181,33 @@ impl XorBoard {
         self.union(self.class[piece as usize * 2 + color as usize])
     }
 
+    /// The eval's attack map for `color`: everything but the king, with pins
+    /// honoured the way the tensor honours them.
+    ///
+    /// A pinned slider may only use its pin ray and a pinned knight has no legal
+    /// move at all; crediting either with more is mobility for a move that would
+    /// leave the king in check. Pinned pawns are left whole, which is not that
+    /// argument but a match for what the tensor does today.
+    #[inline(always)]
+    pub fn attack_map(&self, color: Color, pinned: Bitboard, ksq: Square) -> Bitboard {
+        let mut skip = self.class[PieceType::King as usize * 2 + color as usize];
+        let mut rays = Bitboard(0);
+
+        for square in pinned {
+            let Some(id) = self.id_at(square) else { continue };
+
+            match self.kind[id.index()] {
+                PieceType::Knight => skip |= 1 << id.index(),
+                PieceType::Bishop | PieceType::Rook | PieceType::Queen => {
+                    skip |= 1 << id.index();
+                    rays |= self.row(id) & line_bb(ksq, square);
+                },
+                _ => {},
+            }
+        }
+        self.union(color_slots(color) & !skip) | rays
+    }
+
     /// What one piece attacks: the from-side query the store exists to answer.
     #[inline(always)]
     pub fn row(&self, id: PieceId) -> Bitboard {
@@ -186,7 +233,6 @@ impl XorBoard {
     #[inline(always)]
     pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
         let sliders = self.sliders();
-
         if sliders & !SLIDER_WINDOW == 0 {
             self.probe_groups::<true>(mask) & sliders
         } else {
@@ -218,7 +264,6 @@ impl XorBoard {
                     let rows = _mm512_loadu_si512(self.rows.as_ptr().add(group * 8).cast());
                     set |= u64::from(_mm512_test_epi64_mask(rows, want)) << (group * 8);
                 }
-
                 set
             }
 
@@ -235,21 +280,84 @@ impl XorBoard {
                     let live = !(_mm256_movemask_pd(_mm256_castsi256_pd(idle)) as u32) & 0xF;
                     set |= u64::from(live) << (group * 4);
                 }
-
                 set
             }
         }
     }
 
+    /// Attacks that pass through exactly one friendly piece, orthogonal and
+    /// diagonal kept apart because the eval scores them apart.
+    ///
+    /// Lifting a slider's own first blockers out of occupancy and probing again
+    /// continues each ray from where it stopped, which is what the tensor's
+    /// second flood-fill does by feeding the friendly-hit squares back in as
+    /// generators. Pinned pieces contribute nothing, matching the tensor.
+    ///
+    /// Measured slower than the tensor at eval density: two probes per slider
+    /// against sixteen setwise fills covering both colours at once.
+    #[inline(always)]
+    pub fn xray_maps(&self, color: Color, pinned: Bitboard, own: Bitboard, occ: Bitboard) -> (Bitboard, Bitboard) {
+        let (mut ortho, mut diag) = (Bitboard(0), Bitboard(0));
+        let (mut ortho_direct, mut diag_direct) = (Bitboard(0), Bitboard(0));
+
+        let mut rest = (self.class_slots(PieceType::Rook) | self.class_slots(PieceType::Bishop)
+            | self.class_slots(PieceType::Queen))
+            & color_slots(color);
+
+        while rest != 0 {
+            let id = PieceId(rest.trailing_zeros() as u8);
+            rest &= rest - 1;
+            // A captured piece keeps its class bit; only its row, square and
+            // mailbox entry are cleared, so liveness has to be tested here.
+            if self.sq[id.index()] == NOWHERE {
+                continue;
+            }
+
+            let from = Square(self.sq[id.index()]);
+
+            if pinned.check_bit(from) {
+                continue;
+            }
+
+            let kind = self.kind[id.index()];
+            let behind = occ & !(self.row(id) & own);
+
+            if kind != PieceType::Bishop {
+                let direct = atk_rook(from, occ);
+                ortho_direct |= direct;
+                ortho |= atk_rook(from, behind);
+            }
+
+            if kind != PieceType::Rook {
+                let direct = atk_bishop(from, occ);
+                diag_direct |= direct;
+                diag |= atk_bishop(from, behind);
+            }
+        }
+
+        (ortho & !ortho_direct, diag & !diag_direct)
+    }
+
+    /// Reduce-OR over the selected slots. Masked rather than iterated: the
+    /// callers pass sixteen-bit selections, and a lane mask off a nibble table
+    /// beats walking the set bits at that density.
     #[inline(always)]
     fn union(&self, slots: u64) -> Bitboard {
-        let mut acc = 0u64;
-        let mut rest = slots;
-        while rest != 0 {
-            acc |= self.rows[rest.trailing_zeros() as usize];
-            rest &= rest - 1;
+        // SAFETY: AVX2 per the compile_error gate in weave/mod.rs. Each load
+        // covers one group of four of a 32-element array, and the nibble table
+        // is indexed by four bits so it stays inside its sixteen rows.
+        unsafe {
+            let mut acc = _mm256_setzero_si256();
+
+            for group in 0..8 {
+                let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
+                let keep = _mm256_loadu_si256(LANE_MASK.as_ptr().add((slots >> (group * 4)) as usize & 15).cast());
+                acc = _mm256_or_si256(acc, _mm256_and_si256(rows, keep));
+            }
+
+            let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+            Bitboard((_mm_extract_epi64(folded, 0) | _mm_extract_epi64(folded, 1)) as u64)
         }
-        Bitboard(acc)
     }
 
     #[inline(always)]
@@ -462,6 +570,19 @@ mod tests {
         "1rqbkrbn/1ppppp1p/1n6/p1N3p1/8/2P4P/PP1PPPP1/1RQBKRBN w FBfb - 0 1",
     ];
 
+    /// The tensor's x-ray fields for `color`.
+    fn tensor_xray(pos: &Position, color: Color) -> (Bitboard, Bitboard) {
+        use crate::core::board::spatial::SpatialTensor;
+
+        let t = SpatialTensor::compute(pos, pos.pinned_pieces(Color::White).0, pos.pinned_pieces(Color::Black).0);
+
+        if color == Color::White {
+            (Bitboard(t.w_ortho_xray()), Bitboard(t.w_diag_xray()))
+        } else {
+            (Bitboard(t.b_ortho_xray()), Bitboard(t.b_diag_xray()))
+        }
+    }
+
     /// Rows against a from-scratch rebuild, the danger view against the engine's
     /// own fill, and the record replayed, at every ply.
     #[test]
@@ -500,6 +621,15 @@ mod tests {
 
                     assert!((fill & !exact).is_empty(), "fill outside rows, {color:?}, {fen} ply {ply}\n{pos}");
                     assert!((exact & !fill & !sliders).is_empty(), "gap off own sliders, {color:?}, {fen} ply {ply}\n{pos}");
+                }
+
+                for color in [Color::White, Color::Black] {
+                    let pinned = pos.pinned_pieces(color);
+                    let own = pos.side_bb[color];
+                    let (ortho, diag) = board.xray_maps(color, pinned, own, pos.occ);
+                    let (want_o, want_d) = tensor_xray(&pos, color);
+                    assert_eq!(ortho, want_o, "xray ortho {color:?}, {fen} ply {ply}\n{pos}");
+                    assert_eq!(diag, want_d, "xray diag {color:?}, {fen} ply {ply}\n{pos}");
                 }
 
                 board.unmake(mv, &undo);
