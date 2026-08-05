@@ -52,14 +52,11 @@ pub trait LinearTerm {
     type Upstream: Copy;
     /// Every [`TermSource`] for this term provides exactly `Self::Input`.
     type Input;
-
     /// Write one or more buckets on [`Accumulators`] from features and params.
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>);
-
     /// The same buckets from extracted features, for sources with no board.
     /// Reads the flat vector at the layout offsets [`Self::scatter`] writes.
     fn apply_input(input: Self::Input, values: &[f64], phase: f64, acc: &mut Accumulators<f64>);
-
     /// Write parameter gradients from extracted features.
     fn scatter(input: Self::Input, upstream: Self::Upstream, grads: &mut [f64]);
 }
