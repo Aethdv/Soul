@@ -57,8 +57,7 @@ pub const fn auto_max(default: i32) -> i32 {
 
 /// Default-derived step. Floor of 1 prevents zero-step on tiny defaults.
 pub const fn auto_step(max: i32) -> i32 {
-    let s = max / 20;
-    if s < 1 { 1 } else { s }
+    (max / 20).max(1)
 }
 
 macro_rules! search_params {

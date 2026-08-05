@@ -12,6 +12,7 @@
 #![feature(stdarch_const_x86)]
 #![feature(stmt_expr_attributes)]
 #![feature(const_trait_impl)]
+#![feature(const_cmp)]
 #![feature(const_convert)]
 #![feature(const_ops)]
 #![feature(likely_unlikely)]

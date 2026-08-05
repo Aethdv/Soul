@@ -168,7 +168,6 @@ impl Bitboard {
         b |= b >> 8;
         b |= b >> 16;
         b |= b >> 32;
-
         Bitboard(b)
     }
 
@@ -180,7 +179,6 @@ impl Bitboard {
         b |= b << 8;
         b |= b << 16;
         b |= b << 32;
-
         Bitboard(b)
     }
 
@@ -192,7 +190,6 @@ impl Bitboard {
         b |= b >> 8;
         b |= b >> 16;
         b |= b >> 32;
-
         Bitboard(b)
     }
 
@@ -254,8 +251,7 @@ impl Square {
     pub const fn chebyshev_distance(self, other: Self) -> u8 {
         let file_d = self.file().abs_diff(other.file());
         let rank_d = self.rank().abs_diff(other.rank());
-
-        if file_d > rank_d { file_d } else { rank_d }
+        file_d.max(rank_d)
     }
 
     /// Returns `true` if the index is in `0..64`.
@@ -442,7 +438,6 @@ impl std::str::FromStr for Square {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = s.as_bytes();
-
         if bytes.len() != 2 {
             return Err(ParseSquareError);
         }
@@ -453,7 +448,6 @@ impl std::str::FromStr for Square {
         if file >= 8 || rank >= 8 {
             return Err(ParseSquareError);
         }
-
         Ok(Self::from_coords(file, rank))
     }
 }
@@ -621,7 +615,6 @@ impl fmt::Display for Bitboard {
                 writeln!(f)?;
             }
         }
-
         Ok(())
     }
 }

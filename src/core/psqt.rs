@@ -88,13 +88,7 @@ const fn init_psqt() -> [AlignedTable; 14] {
 
 /// Saturating i32 → i16 cast.
 const fn clamp_i16(v: i32) -> i16 {
-    if v < i16::MIN as i32 {
-        i16::MIN
-    } else if v > i16::MAX as i32 {
-        i16::MAX
-    } else {
-        v as i16
-    }
+    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
 #[inline]
