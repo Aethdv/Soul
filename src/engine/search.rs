@@ -1056,7 +1056,7 @@ impl Worker<'_> {
         let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
-        let checkers = self.pos.checkers();
+        let checkers = self.xorboard.checkers(&self.pos);
         let in_check = checkers.is_not_empty();
 
         // ── Check Extension (~11 Elo)
@@ -1712,7 +1712,7 @@ impl Worker<'_> {
         // A move that delivers check is forcing: the opponent must respond.
         // Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
-        if self.pos.checkers().is_not_empty() {
+        if self.xorboard.checkers(&self.pos).is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
         }
 
@@ -1882,7 +1882,7 @@ impl Worker<'_> {
                 (None, false, None)
             };
 
-        let checkers = self.pos.checkers();
+        let checkers = self.xorboard.checkers(&self.pos);
         let in_check = checkers.is_not_empty();
         let stm = self.pos.stm;
         let opp = stm.opposite();
