@@ -37,7 +37,11 @@ use std::{
 pub use crate::core::defs::Protocol;
 use crate::{
     core::{
-        board::{Position, attacks::Pins},
+        board::{
+            Position,
+            attacks::Pins,
+            xorboard::{Undo as XbUndo, XorBoard},
+        },
         defs::{INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in},
         moves::Move,
     },
@@ -141,6 +145,10 @@ pub struct Worker<'h> {
     pub pos: Position,
     pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 2]>,
+    /// Per-piece attack rows, carried through make and unmake beside the board.
+    pub xorboard: XorBoard,
+    /// One undo record per ply, boxed for the same reason the ply stack is.
+    pub xb_undo: Box<[XbUndo; MAX_PLY + 2]>,
     pub history: &'h mut History,
     /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
     pub pawn_cache: PawnCache,
@@ -474,6 +482,11 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
+            xorboard: XorBoard::new(&self.root_pos),
+            xb_undo: vec![XbUndo::default(); MAX_PLY + 2]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap_or_else(|_| unreachable!()),
 
             history,
             pawn_cache: PawnCache::new(),
@@ -555,6 +568,7 @@ impl<'cfg> Searcher<'cfg> {
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
+                worker.xorboard.refresh(&worker.pos);
                 // The node's own best score, not `root_moves[0]`: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
@@ -1214,6 +1228,7 @@ impl Worker<'_> {
 
                 let saved_acc = self.accumulator;
                 let undo = self.pos.make_move(mv, &mut self.accumulator);
+                self.xb_make(mv, ply);
 
                 searcher.tt.prefetch(self.pos.hash);
                 searcher.zobrist_trail.push(self.pos.hash);
@@ -1230,6 +1245,7 @@ impl Worker<'_> {
 
                 searcher.zobrist_trail.pop();
                 self.pos.unmake_move(mv, &undo);
+                self.xorboard.unmake(mv, &self.xb_undo[ply]);
                 self.accumulator = saved_acc;
 
                 let value = value?;
@@ -1662,6 +1678,16 @@ impl Worker<'_> {
     /// `mv` must be legal. Root legality is guaranteed by the root move
     /// list generated at search start; interior legality is verified by
     /// the explicit `is_legal` call in the move loop before each invocation.
+    /// Brings the rows up to date for a move the board has already made.
+    ///
+    /// The record is per ply because a child's make would otherwise overwrite
+    /// what its parent's unmake has to replay.
+    #[inline(always)]
+    fn xb_make(&mut self, mv: Move, ply: usize) {
+        self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
+        debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
+    }
+
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
@@ -1678,6 +1704,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
+        self.xb_make(mv, ply);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -1700,6 +1727,7 @@ impl Worker<'_> {
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
+        self.xorboard.unmake(mv, &self.xb_undo[ply]);
         self.accumulator = saved_acc;
 
         let eval = eval?;
@@ -1941,6 +1969,7 @@ impl Worker<'_> {
 
             let saved_acc = self.accumulator;
             let undo = self.pos.make_move(mv, &mut self.accumulator);
+            self.xb_make(mv, ply);
 
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);
@@ -1949,6 +1978,7 @@ impl Worker<'_> {
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_move(mv, &undo);
+            self.xorboard.unmake(mv, &self.xb_undo[ply]);
             self.accumulator = saved_acc;
 
             let score = -score?;

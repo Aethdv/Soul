@@ -593,6 +593,19 @@ impl XorBoard {
     /// piece saw one of the changed squares before the move. That makes the
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
+    /// Does the maintained store still say what a store built from `pos` says?
+    ///
+    /// Slots are handed out in seeding order, so the two boards can name the
+    /// same piece differently and the rows cannot be compared slot by slot. The
+    /// class unions are slot-independent and catch any row that drifted.
+    pub fn agrees_with(&self, pos: &Position) -> bool {
+        let fresh = Self::new(pos);
+
+        [Color::White, Color::Black]
+            .into_iter()
+            .all(|color| PieceType::ALL.into_iter().all(|pt| self.class_attacks(pt, color) == fresh.class_attacks(pt, color)))
+    }
+
     pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
         let plan = self.read(mv);
         undo.len = 0;

@@ -609,7 +609,7 @@ impl XorBoard {
     /// square before the move. The affected set is a theorem, not a scan.
     /// `GATHER` picks the finder: 1 tests every row against the changed squares,
     /// 2 tests only the slider prefixes, 3 casts a superpiece out from the changed
-    /// squares. `VISION` is independent of all three: it gates the whole gather
+    /// squares, 4 tests the two groups the sliders are seeded into. `VISION` is independent of all three: it gates the whole gather
     /// behind an OR of the slider rows, which has to be recomputed after any move
     /// that touched one. `XRAY` reaches one blocker further,
     /// since a second segment is fixed by the first and second blockers and both
@@ -665,15 +665,18 @@ impl XorBoard {
             let wg = usize::from(self.ids.slider_groups[0]);
             let bg = usize::from(self.ids.slider_groups[1]);
 
-            let mut set = if GATHER == 2 {
-                u64::from(column_prefix(&self.rows, changed, wg, bg))
-            } else {
-                u64::from(column(&self.rows, changed))
+            let mut set = match GATHER {
+                2 => u64::from(column_prefix(&self.rows, changed, wg, bg)),
+                4 => u64::from(column_fixed(&self.rows, changed, wg, bg)),
+                _ => u64::from(column(&self.rows, changed)),
             };
 
             if XRAY {
-                set |=
-                    u64::from(if GATHER == 2 { column_prefix(&self.xray, changed, wg, bg) } else { column(&self.xray, changed) });
+                set |= u64::from(match GATHER {
+                    2 => column_prefix(&self.xray, changed, wg, bg),
+                    4 => column_fixed(&self.xray, changed, wg, bg),
+                    _ => column(&self.xray, changed),
+                });
             }
 
             set & self.ids.sliders()
@@ -895,6 +898,32 @@ fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
     }
 }
 
+/// The same test over the two groups the seed packs a side's sliders into,
+/// unrolled like `column` because the bound is constant. A promotion turns a
+/// pawn's id into a slider's and can land it past the bound, so that position
+/// falls back to the full sweep.
+#[inline(always)]
+fn column_fixed(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 {
+    if wg > 2 || bg > 2 {
+        return column(rows, mask);
+    }
+
+    // SAFETY: as `column`; the four group indices are constants under 8.
+    unsafe {
+        let m = _mm256_set1_epi64x(mask.0 as i64);
+        let zero = _mm256_setzero_si256();
+        let mut live = 0u32;
+
+        for g in [0, 1, 4, 5] {
+            let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
+            let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
+            live |= (!(_mm256_movemask_pd(_mm256_castsi256_pd(miss)) as u32) & 0xF) << (g * 4);
+        }
+
+        live
+    }
+}
+
 /// The same test over the two slider prefixes only. Runtime bounds, so it does
 /// not unroll; it wins when the prefixes are short, which is whenever the side
 /// has not promoted into the leaper ids.
@@ -1073,6 +1102,7 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         "xorboard_pack" => variant_xorboard::<2, true, false, 0, false>(stream, repeats, "xorboard_pack"),
         // The prefix gather alone; every other variant reaching for it also pays the vision recount.
         "xorboard_prefix" => variant_xorboard::<2, false, false, 0, false>(stream, repeats, "xorboard_prefix"),
+        "xorboard_fixed" => variant_xorboard::<4, false, false, 0, false>(stream, repeats, "xorboard_fixed"),
         "xorboard_nogather" => variant_xorboard::<0, false, false, 0, false>(stream, repeats, "xorboard_nogather"),
         "xray_undo" => variant_xorboard::<2, true, true, 0, true>(stream, repeats, "xray_undo"),
         "threats" => play_stream(stream, repeats, |pos, _, _, _| pos.threats(pos.stm.opposite()).0),
