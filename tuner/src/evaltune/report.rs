@@ -41,7 +41,6 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ("bishop_pair",        "[MG, EG]"),
     ("rook_open",          "[MG, EG]"),
     ("minor_behind_pawn",  "[MG, EG]"),
-    ("piece_mobility",     "[MG, EG], mobility summed per piece rather than over the union"),
     ("doubled_pawn",       "[MG, EG]"),
     ("isolated_pawn",      "[MG, EG]"),
     ("backward_pawn",      "[MG, EG]"),

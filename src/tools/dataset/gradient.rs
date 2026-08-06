@@ -64,13 +64,12 @@ pub struct FeatureRecord {
     pub backward_pawn_diff: i8,
     pub tempo: i8,
     pub minor_behind_pawn_diff: i8,
-    pub piece_mobility_diff: i8,
     pub piece_count: u8,
     /// Slots below this are ours and add; the rest are theirs and subtract.
     pub us_count: u8,
 }
 
-const _: () = assert!(size_of::<FeatureRecord>() == 104);
+const _: () = assert!(size_of::<FeatureRecord>() == 100);
 
 impl FeatureRecord {
     /// The gather, split into the slots that add and the slots that subtract.
