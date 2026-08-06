@@ -6,7 +6,7 @@
 //!     soul measure validate <path>
 //!     perf stat -e instructions,cycles soul measure run <variant> <path> <repeats>
 
-use core::{arch::x86_64::*, hint::black_box};
+use core::{arch::x86_64::*, hint::black_box, marker::ConstParamTy};
 use std::fs;
 
 use crate::{
@@ -607,15 +607,15 @@ impl XorBoard {
     /// Attacks are a function of square and occupancy, so an unmoved piece can
     /// only change where its first blocker did, and any such piece saw a changed
     /// square before the move. The affected set is a theorem, not a scan.
-    /// `GATHER` picks the finder: 1 tests every row against the changed squares,
-    /// 2 tests only the slider prefixes, 3 casts a superpiece out from the changed
-    /// squares, 4 tests the two groups the sliders are seeded into. `VISION` is independent of all three: it gates the whole gather
-    /// behind an OR of the slider rows, which has to be recomputed after any move
-    /// that touched one. `XRAY` reaches one blocker further,
+    ///
+    /// [`Gather`] picks the finder. `VISION` is independent of it: it gates the
+    /// whole gather behind an OR of the slider rows, which has to be recomputed
+    /// after any move that touched one. `XRAY` reaches one blocker further,
     /// since a second segment is fixed by the first and second blockers and both
-    /// sit inside `rows | xray`.
+    /// sit inside `rows | xray`. `REC` writes the undo record, which only a
+    /// variant pricing hosting needs.
     #[inline(always)]
-    fn make<const GATHER: u8, const VISION: bool, const XRAY: bool, const REC: bool>(
+    fn make<const G: Gather, const VISION: bool, const XRAY: bool, const REC: bool>(
         &mut self,
         pre: Pre,
         occ: Bitboard,
@@ -631,9 +631,9 @@ impl XorBoard {
 
         // 0 leaves the store wrong on purpose: it is the ablation that prices
         // the search for affected sliders against the work it finds.
-        let mut cand = if GATHER == 0 || (VISION && (Bitboard(self.vision) & changed).is_empty()) {
+        let mut cand = if G == Gather::None || (VISION && (Bitboard(self.vision) & changed).is_empty()) {
             0
-        } else if GATHER == 3 {
+        } else if G == Gather::Probe {
             let mut orth = Bitboard(0);
             let mut diag = Bitboard(0);
 
@@ -665,16 +665,16 @@ impl XorBoard {
             let wg = usize::from(self.ids.slider_groups[0]);
             let bg = usize::from(self.ids.slider_groups[1]);
 
-            let mut set = match GATHER {
-                2 => u64::from(column_prefix(&self.rows, changed, wg, bg)),
-                4 => u64::from(column_fixed(&self.rows, changed, wg, bg)),
+            let mut set = match G {
+                Gather::Prefix => u64::from(column_prefix(&self.rows, changed, wg, bg)),
+                Gather::Fixed => u64::from(column_fixed(&self.rows, changed, wg, bg)),
                 _ => u64::from(column(&self.rows, changed)),
             };
 
             if XRAY {
-                set |= u64::from(match GATHER {
-                    2 => column_prefix(&self.xray, changed, wg, bg),
-                    4 => column_fixed(&self.xray, changed, wg, bg),
+                set |= u64::from(match G {
+                    Gather::Prefix => column_prefix(&self.xray, changed, wg, bg),
+                    Gather::Fixed => column_fixed(&self.xray, changed, wg, bg),
                     _ => column(&self.xray, changed),
                 });
             }
@@ -973,6 +973,36 @@ where F: FnMut(&mut Position, &mut Vi16x8, Move, PieceType) -> u64 {
     Outcome { variant: "", iterations, checksum }
 }
 
+/// How a variant finds the sliders a move disturbed.
+#[derive(PartialEq, Eq, ConstParamTy, Clone, Copy)]
+enum Gather {
+    /// Leaves the store wrong on purpose: prices the search for affected
+    /// sliders against the work it finds.
+    None,
+    /// Every row against the changed squares.
+    Column,
+    /// The slider prefixes only, on runtime bounds.
+    Prefix,
+    /// The two groups each colour's sliders are seeded into, on const bounds.
+    Fixed,
+    /// A superpiece cast out from the changed squares.
+    Probe,
+}
+
+/// Which derived map a variant reads, and on which side of the make.
+#[derive(PartialEq, Eq, ConstParamTy, Clone, Copy)]
+enum View {
+    None,
+    /// Both danger maps, read straight after the make.
+    FusedDanger,
+    /// Both, read before it.
+    LaggedDanger,
+    /// One side's, read before it, which is what the search does.
+    LaggedStmDanger,
+    /// Both colours' pins, read before it.
+    LaggedPins,
+}
+
 fn variant_baseline(stream: &Stream, repeats: usize) -> Outcome {
     play_stream(stream, repeats, |_, _, _, _| 0)
 }
@@ -1012,16 +1042,15 @@ fn variant_hosting(stream: &Stream, repeats: usize) -> Outcome {
     Outcome { variant: "hosting", iterations, checksum }
 }
 
-/// `UNDO` replays and re-makes to keep the stream in step, so one extra make
-/// sits in its delta.
+/// `UNDO` replays and re-makes to keep the stream in step, so one
+/// extra make sits in its delta.
 ///
-/// `VIEWS`: 0 nothing, 1 both danger maps after the make, 2 both before, 3 one
-/// before, 4 both colors' pins. Placement is not cosmetic. Read straight after
-/// the make, the reduction gets rows the compiler just stored and folds the
-/// loads away, a fusion the search never sees across a function boundary. Read
-/// before and it loads cold, paying no store-forwarding stall. The search reads
-/// one map per node, which is 3.
-fn variant_xorboard<const GATHER: u8, const VISION: bool, const XRAY: bool, const VIEWS: u8, const UNDO: bool>(
+/// Where a [`View`] is read is not cosmetic. Straight after the make, the
+/// reduction gets rows the compiler just stored and folds the loads away, a
+/// fusion the search never sees across a function boundary. Read before, it
+/// loads cold and pays no store-forwarding stall. The search reads one map per
+/// node, which is `LaggedStmDanger`.
+fn variant_xorboard<const G: Gather, const VISION: bool, const XRAY: bool, const VIEW: View, const UNDO: bool>(
     stream: &Stream,
     repeats: usize,
     name: &'static str,
@@ -1036,26 +1065,26 @@ fn variant_xorboard<const GATHER: u8, const VISION: bool, const XRAY: bool, cons
 
             for &mv in &game.moves {
                 checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
-                let pre = if GATHER == 3 { Pre::of(&pos) } else { Pre::ZERO };
+                let pre = if G == Gather::Probe { Pre::of(&pos) } else { Pre::ZERO };
 
-                checksum ^= match VIEWS {
-                    2 => xb.danger(0) | xb.danger(1),
-                    3 => xb.danger(usize::from(pos.stm.opposite())),
-                    4 => (xb.pinned(&pos, Color::White) | xb.pinned(&pos, Color::Black)).0,
+                checksum ^= match VIEW {
+                    View::LaggedDanger => xb.danger(0) | xb.danger(1),
+                    View::LaggedStmDanger => xb.danger(usize::from(pos.stm.opposite())),
+                    View::LaggedPins => (xb.pinned(&pos, Color::White) | xb.pinned(&pos, Color::Black)).0,
                     _ => 0,
                 };
 
                 pos.make_move(mv, &mut acc);
-                xb.make::<GATHER, VISION, XRAY, UNDO>(pre, pos.occ, mv, &mut undo);
+                xb.make::<G, VISION, XRAY, UNDO>(pre, pos.occ, mv, &mut undo);
 
-                checksum ^= match VIEWS {
-                    1 => xb.danger(0) | xb.danger(1),
+                checksum ^= match VIEW {
+                    View::FusedDanger => xb.danger(0) | xb.danger(1),
                     _ => xb.rows[0] | xb.rows[31],
                 };
 
                 if UNDO {
                     xb.unmake::<XRAY>(mv, &undo);
-                    xb.make::<GATHER, VISION, XRAY, false>(pre, pos.occ, mv, &mut undo);
+                    xb.make::<G, VISION, XRAY, false>(pre, pos.occ, mv, &mut undo);
                 }
                 iterations += 1;
             }
@@ -1090,21 +1119,43 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         "dest" => variant_dest(stream, repeats),
         "byteboard" => variant_byteboard(stream, repeats),
         "hosting" => variant_hosting(stream, repeats),
-        "xorboard" => variant_xorboard::<1, false, false, 0, false>(stream, repeats, "xorboard"),
-        "xorboard_probe" => variant_xorboard::<3, true, false, 0, false>(stream, repeats, "xorboard_probe"),
-        "xorboard_fused" => variant_xorboard::<2, true, false, 1, false>(stream, repeats, "xorboard_fused"),
-        "xorboard_lag" => variant_xorboard::<2, true, false, 2, false>(stream, repeats, "xorboard_lag"),
-        "xorboard_lag1" => variant_xorboard::<1, false, false, 3, false>(stream, repeats, "xorboard_lag1"),
-        "xorboard_undo" => variant_xorboard::<1, false, false, 0, true>(stream, repeats, "xorboard_undo"),
-        "xray" => variant_xorboard::<2, true, true, 0, false>(stream, repeats, "xray"),
-        "xray_pins" => variant_xorboard::<2, true, true, 4, false>(stream, repeats, "xray_pins"),
-        "xorboard_vision" => variant_xorboard::<1, true, false, 0, false>(stream, repeats, "xorboard_vision"),
-        "xorboard_pack" => variant_xorboard::<2, true, false, 0, false>(stream, repeats, "xorboard_pack"),
+        "xorboard" => variant_xorboard::<{ Gather::Column }, false, false, { View::None }, false>(stream, repeats, "xorboard"),
+        "xorboard_probe" => {
+            variant_xorboard::<{ Gather::Probe }, true, false, { View::None }, false>(stream, repeats, "xorboard_probe")
+        },
+        "xorboard_fused" => {
+            variant_xorboard::<{ Gather::Prefix }, true, false, { View::FusedDanger }, false>(stream, repeats, "xorboard_fused")
+        },
+        "xorboard_lag" => {
+            variant_xorboard::<{ Gather::Prefix }, true, false, { View::LaggedDanger }, false>(stream, repeats, "xorboard_lag")
+        },
+        "xorboard_lag1" => {
+            variant_xorboard::<{ Gather::Column }, false, false, { View::LaggedStmDanger }, false>(stream, repeats, "xorboard_lag1")
+        },
+        "xorboard_undo" => {
+            variant_xorboard::<{ Gather::Column }, false, false, { View::None }, true>(stream, repeats, "xorboard_undo")
+        },
+        "xray" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::None }, false>(stream, repeats, "xray"),
+        "xray_pins" => {
+            variant_xorboard::<{ Gather::Prefix }, true, true, { View::LaggedPins }, false>(stream, repeats, "xray_pins")
+        },
+        "xorboard_vision" => {
+            variant_xorboard::<{ Gather::Column }, true, false, { View::None }, false>(stream, repeats, "xorboard_vision")
+        },
+        "xorboard_pack" => {
+            variant_xorboard::<{ Gather::Prefix }, true, false, { View::None }, false>(stream, repeats, "xorboard_pack")
+        },
         // The prefix gather alone; every other variant reaching for it also pays the vision recount.
-        "xorboard_prefix" => variant_xorboard::<2, false, false, 0, false>(stream, repeats, "xorboard_prefix"),
-        "xorboard_fixed" => variant_xorboard::<4, false, false, 0, false>(stream, repeats, "xorboard_fixed"),
-        "xorboard_nogather" => variant_xorboard::<0, false, false, 0, false>(stream, repeats, "xorboard_nogather"),
-        "xray_undo" => variant_xorboard::<2, true, true, 0, true>(stream, repeats, "xray_undo"),
+        "xorboard_prefix" => {
+            variant_xorboard::<{ Gather::Prefix }, false, false, { View::None }, false>(stream, repeats, "xorboard_prefix")
+        },
+        "xorboard_fixed" => {
+            variant_xorboard::<{ Gather::Fixed }, false, false, { View::None }, false>(stream, repeats, "xorboard_fixed")
+        },
+        "xorboard_nogather" => {
+            variant_xorboard::<{ Gather::None }, false, false, { View::None }, false>(stream, repeats, "xorboard_nogather")
+        },
+        "xray_undo" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::None }, true>(stream, repeats, "xray_undo"),
         "threats" => play_stream(stream, repeats, |pos, _, _, _| pos.threats(pos.stm.opposite()).0),
         "pins" => play_stream(stream, repeats, |pos, _, _, _| {
             let pins = crate::core::board::attacks::Pins::new(pos);
@@ -1182,9 +1233,9 @@ fn validate(stream: &Stream) -> bool {
             let pre = Pre::of(&pos);
             let _ = pos.make_move(mv, &mut acc);
             dst.make(&pos, mv);
-            xb.make::<2, true, true, true>(pre, pos.occ, mv, &mut undo);
+            xb.make::<{ Gather::Prefix }, true, true, true>(pre, pos.occ, mv, &mut undo);
             bs.make(&g, mv);
-            col.make::<3, true, true, false>(pre, pos.occ, mv, &mut undo);
+            col.make::<{ Gather::Probe }, true, true, false>(pre, pos.occ, mv, &mut undo);
 
             // The victim's clear precedes the bookkeeping, as make orders it:
             // for a capture the victim's square is the mover's destination.
@@ -1362,7 +1413,7 @@ fn count_writes(stream: &Stream) {
             let pre = Pre::of(&pos);
             pos.make_move(mv, &mut acc);
             dst.make(&pos, mv);
-            xb.make::<2, true, false, true>(pre, pos.occ, mv, &mut undo);
+            xb.make::<{ Gather::Prefix }, true, false, true>(pre, pos.occ, mv, &mut undo);
 
             let mut delta = 0u32;
             for id in 0..32 {

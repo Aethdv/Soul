@@ -568,7 +568,7 @@ impl<'cfg> Searcher<'cfg> {
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
-                worker.xorboard.refresh(&worker.pos);
+                worker.xorboard = XorBoard::new(&worker.pos);
                 // The node's own best score, not `root_moves[0]`: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
@@ -1245,7 +1245,7 @@ impl Worker<'_> {
 
                 searcher.zobrist_trail.pop();
                 self.pos.unmake_move(mv, &undo);
-                self.xorboard.unmake(mv, &self.xb_undo[ply]);
+                self.xb_unmake(mv, ply);
                 self.accumulator = saved_acc;
 
                 let value = value?;
@@ -1688,6 +1688,11 @@ impl Worker<'_> {
         debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
     }
 
+    #[inline(always)]
+    fn xb_unmake(&mut self, mv: Move, ply: usize) {
+        self.xorboard.unmake(mv, &self.xb_undo[ply]);
+    }
+
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
@@ -1727,7 +1732,7 @@ impl Worker<'_> {
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
-        self.xorboard.unmake(mv, &self.xb_undo[ply]);
+        self.xb_unmake(mv, ply);
         self.accumulator = saved_acc;
 
         let eval = eval?;
@@ -1978,7 +1983,7 @@ impl Worker<'_> {
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_move(mv, &undo);
-            self.xorboard.unmake(mv, &self.xb_undo[ply]);
+            self.xb_unmake(mv, ply);
             self.accumulator = saved_acc;
 
             let score = -score?;
