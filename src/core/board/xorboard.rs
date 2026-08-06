@@ -18,13 +18,16 @@
 
 use core::arch::x86_64::*;
 
-use crate::core::{
-    board::{
-        Position,
-        bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, line_bb},
+use crate::{
+    core::{
+        board::{
+            Position,
+            bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, line_bb},
+        },
+        defs::{Bitboard, Color, PieceType, Square},
+        moves::Move,
     },
-    defs::{Bitboard, Color, PieceType, Square},
-    moves::Move,
+    weave::Vu64x4,
 };
 
 /// Dense slot for a piece, white 0 to 15 and black 16 to 31.
@@ -257,11 +260,66 @@ impl XorBoard {
     ///
     /// A setwise fill cannot produce this: ORing the sides together loses which
     /// piece reached where, so a square two pieces both attack is worth one to
-    /// the union and two here. The rows keep the identity, which is the same
-    /// reason a square-indexed table cannot maintain a danger view.
+    /// the union and two here. The rows keep the identity.
+    ///
+    /// Counted over all sixteen slots at once, then corrected. The king is not
+    /// a mobility piece and pinned pieces may use less than their row, and both
+    /// are rare enough that fixing them up beats branching per piece: dead slots
+    /// hold an empty row and correct themselves.
     #[inline(always)]
     pub fn mobility(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
-        self.legal_rows(color, pinned, ksq).map(|(_, row)| (row & area).popcount() as i32).sum()
+        let base = usize::from(color) * 16;
+        let mut total = self.count_rows(base, area);
+
+        if let Some(king) = self.id_at(ksq) {
+            total -= (self.row(king) & area).popcount() as i32;
+        }
+
+        for square in pinned {
+            let Some(id) = self.id_at(square) else { continue };
+
+            let legal = match self.kind[id.index()] {
+                PieceType::Knight => Bitboard(0),
+                PieceType::Bishop | PieceType::Rook | PieceType::Queen => self.row(id) & line_bb(ksq, square),
+                _ => continue,
+            };
+
+            total -= (self.row(id) & area).popcount() as i32;
+            total += (legal & area).popcount() as i32;
+        }
+        total
+    }
+
+    /// Squares of `area` reached, summed over sixteen consecutive slots.
+    #[inline(always)]
+    fn count_rows(&self, base: usize, area: Bitboard) -> i32 {
+        // SAFETY: AVX2 per the weave/mod.rs gate; `base` is 0 or 16, so the four
+        // loads cover slots base..base+16 of a 32-element array.
+        unsafe {
+            #[cfg(target_feature = "avx512vpopcntdq")]
+            {
+                let mask = _mm512_set1_epi64(area.0 as i64);
+                let mut acc = _mm512_setzero_si512();
+                for group in 0..2 {
+                    let rows = _mm512_loadu_si512(self.rows.as_ptr().add(base + group * 8).cast());
+                    acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(_mm512_and_si512(rows, mask)));
+                }
+                _mm512_reduce_add_epi64(acc) as i32
+            }
+
+            #[cfg(not(target_feature = "avx512vpopcntdq"))]
+            {
+                let mask = _mm256_set1_epi64x(area.0 as i64);
+                let mut acc = _mm256_setzero_si256();
+                for group in 0..4 {
+                    let rows = _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast());
+                    acc = _mm256_add_epi64(acc, Vu64x4(_mm256_and_si256(rows, mask)).popcount().0);
+                }
+
+                let folded = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+                (_mm_extract_epi64(folded, 0) + _mm_extract_epi64(folded, 1)) as i32
+            }
+        }
     }
 
     /// What one piece attacks: the from-side query the store exists to answer.
@@ -307,20 +365,17 @@ impl XorBoard {
     #[inline(always)]
     pub fn checkers(&self, pos: &Position) -> Bitboard {
         let king = pos.pieces(PieceType::King, pos.stm);
-
         if king.is_empty() {
             return Bitboard(0);
         }
 
         let mut slots = self.probe_side(king, pos.stm.opposite());
         let mut squares = Bitboard(0);
-
         while slots != 0 {
             let slot = slots.trailing_zeros() as usize;
             slots &= slots - 1;
             squares |= Square(self.sq[slot]).bitboard();
         }
-
         squares
     }
 
@@ -583,7 +638,6 @@ impl XorBoard {
         for i in 0..usize::from(undo.len) {
             self.rows[usize::from(undo.ids[i])] = undo.rows[i];
         }
-
         self.restore(mv, &undo.plan);
     }
 
@@ -752,15 +806,13 @@ mod tests {
                     let pinned = pos.pinned_pieces(color);
                     let ksq = pos.pieces(PieceType::King, color).lsb();
                     let area = !pos.side_bb[color];
-                    let want: i32 = board
-                        .legal_rows(color, pinned, ksq)
-                        .map(|(_, row)| (row & area).popcount() as i32)
-                        .sum();
+                    let want: i32 = board.legal_rows(color, pinned, ksq).map(|(_, row)| (row & area).popcount() as i32).sum();
 
                     assert_eq!(board.mobility(color, pinned, ksq, area), want, "mobility {color:?}, {fen} ply {ply}");
-                    assert!(board.mobility(color, pinned, ksq, area) >= (board.attack_map(color, pinned, ksq) & area).popcount() as i32);
+                    assert!(
+                        board.mobility(color, pinned, ksq, area) >= (board.attack_map(color, pinned, ksq) & area).popcount() as i32
+                    );
                 }
-
                 board.unmake(mv, &undo);
                 pos.unmake_move(mv, &state);
                 assert_eq!(board.rows, before.rows, "unmake rows, {fen} ply {ply}\n{pos}");

@@ -12,7 +12,7 @@
 use crate::{
     core::{
         board::{Position, bitboard, spatial::SpatialTensor},
-        defs::{Bitboard, Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
+        defs::{Bitboard, Color, Direction, LANE_PHASE, PieceType, Square, TOTAL_PHASE},
     },
     engine::{
         autograd::EvalMath,
@@ -104,6 +104,7 @@ macro_rules! bonus_terms {
             bishop_pair       = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
             rook_open         = scalar(RookOpenTerm, rook_open_diff, rook_open_mg, rook_open_eg); // ~5 Elo
             minor_behind_pawn = scalar(MinorBehindPawnTerm, minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg); // ~3 Elo
+            piece_mobility    = scalar(PieceMobilityTerm, piece_mobility_diff, piece_mobility_mg, piece_mobility_eg);
             doubled_pawn      = scalar(DoubledPawnTerm, doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg); // ~10 Elo
             isolated_pawn     = scalar(IsolatedPawnTerm, isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg); // ~8 Elo
             backward_pawn     = scalar(BackwardPawnTerm, backward_pawn_diff, backward_pawn_mg, backward_pawn_eg); // ~13 Elo
@@ -190,6 +191,8 @@ pub struct SharedFeatures {
     pub openness: i32,
     pub data: MobilityData,
     pub xray_ortho: i32,
+    /// Per-piece mobility minus the union it collapses to.
+    pub piece_mobility_diff: i32,
     /// +1/0/−1 per side's `more_than_one()`.
     pub bishop_pair_diff: i32,
     /// Rooks on fully open files (no pawns of either color).
@@ -461,6 +464,16 @@ impl SharedFeatures {
         let pinned_b = board.pinned_pieces(Color::Black);
         let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
 
+        let counts = [Color::White, Color::Black].map(|color| {
+            let pinned = if color == Color::White { pinned_w } else { pinned_b };
+            let ksq = board.pieces(PieceType::King, color).lsb();
+            let area = !board.side_bb[color] & !board.pawn_attacks(color.opposite());
+            doubled_control(board, color, pinned, ksq, area)
+        });
+        // Held inside the tuner's byte record, far outside what a legal position
+        // reaches. Clamping a feature keeps the eval linear in its parameters.
+        let piece_mobility_diff = (counts[0] - counts[1]).clamp(-127, 127);
+
         let data = Mobility::compute_all(board, &tensor, pinned_w, pinned_b);
 
         let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
@@ -509,6 +522,7 @@ impl SharedFeatures {
             openness: pawn.openness,
             data,
             xray_ortho,
+            piece_mobility_diff,
             bishop_pair_diff,
             rook_open_diff,
             passed_pawn: pawn.passed_pawn,
@@ -578,6 +592,48 @@ impl term::TermSource<XrayTerm> for SharedFeatures {
     fn extract(&self) -> f64 {
         self.xray_ortho as f64
     }
+}
+
+/// How much of a side's control is doubled: the per-piece mobility sum minus the
+/// union it collapses to.
+///
+/// The mobility term scores the union, which is all a setwise fill can give:
+/// ORing a side's attacks together loses which piece reached where, so a square
+/// two pieces both cover counts once. This is the remainder, orthogonal to the
+/// term beside it instead of collinear with it.
+///
+/// Rebuilt per call rather than read off a maintained attack store, because the
+/// full eval runs on barely half of nodes and only sliders need a probe at all.
+///
+/// Pins bind as they do in the tensor: a pinned slider may use only its pin ray,
+/// a pinned knight nothing.
+fn doubled_control(board: &Position, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
+    let us = board.side_bb[color];
+    let occ = board.occupancy();
+    let mut summed = 0;
+    let mut union = board.pawn_attacks(color) & area;
+
+    let count = |atk: Bitboard, summed: &mut i32, union: &mut Bitboard| {
+        let reach = atk & area;
+        *summed += reach.popcount() as i32;
+        *union |= reach;
+    };
+
+    for sq in (board.role_bb[PieceType::Bishop] | board.role_bb[PieceType::Queen]) & us {
+        let atk = bitboard::atk_bishop(sq, occ);
+        count(if pinned.check_bit(sq) { atk & bitboard::line_bb(ksq, sq) } else { atk }, &mut summed, &mut union);
+    }
+
+    for sq in (board.role_bb[PieceType::Rook] | board.role_bb[PieceType::Queen]) & us {
+        let atk = bitboard::atk_rook(sq, occ);
+        count(if pinned.check_bit(sq) { atk & bitboard::line_bb(ksq, sq) } else { atk }, &mut summed, &mut union);
+    }
+
+    for sq in (board.role_bb[PieceType::Knight] & us) & !pinned {
+        count(bitboard::atk_knight(sq), &mut summed, &mut union);
+    }
+
+    summed + (board.pawn_attacks(color) & area).popcount() as i32 - union.popcount() as i32
 }
 
 /// Generates `LinearTerm` + `TermSource for SharedFeatures` for a tapered bonus.
@@ -688,4 +744,28 @@ fn by_relative_rank(white: Bitboard, black: Bitboard) -> [i32; 6] {
         buckets[(6 - sq.rank()) as usize] -= 1;
     }
     buckets
+}
+
+#[cfg(test)]
+mod doubled_control_tests {
+    use super::*;
+    use crate::core::board::STARTPOS;
+
+    /// A column of zeros or a column of clamps teaches the tuner nothing.
+    #[test]
+    fn counts_what_the_union_collapses() {
+        for fen in [STARTPOS, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"] {
+            let board = Position::from_fen(fen);
+
+            for color in [Color::White, Color::Black] {
+                let pinned = board.pinned_pieces(color);
+                let ksq = board.pieces(PieceType::King, color).lsb();
+                let area = !board.side_bb[color] & !board.pawn_attacks(color.opposite());
+                let doubled = doubled_control(&board, color, pinned, ksq, area);
+
+                assert!(doubled > 0, "no doubled control for {color:?} in {fen}");
+                assert!(doubled < 127, "feature would clamp: {doubled} for {color:?} in {fen}");
+            }
+        }
+    }
 }
