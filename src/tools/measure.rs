@@ -1191,7 +1191,11 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
 /// A store that is only its own oracle proves nothing, so the XorBoard answers
 /// to four outside things: its rebuild, `AttackTable`'s rows, `AttackTable`'s
 /// recounted threat maps, and `pinned_pieces`.
-fn validate(stream: &Stream) -> bool {
+/// Returns the number of plies checked, so the count can be quoted rather than
+/// remembered. `None` means a check failed and the message has already printed.
+fn validate(stream: &Stream) -> Option<u64> {
+    let mut checked = 0u64;
+
     for (gi, game) in stream.games.iter().enumerate() {
         let mut pos = Position::from_fen(&game.fen);
         let mut acc = pos.get_initial_accumulator();
@@ -1227,7 +1231,7 @@ fn validate(stream: &Stream) -> bool {
                     pos.piece_at(mv.from()) as u8
                 );
 
-                return false;
+                return None;
             }
 
             let pre = Pre::of(&pos);
@@ -1262,7 +1266,7 @@ fn validate(stream: &Stream) -> bool {
             }
 
             if !mailbox_ok {
-                return false;
+                return None;
             }
 
             if dst != want {
@@ -1299,7 +1303,7 @@ fn validate(stream: &Stream) -> bool {
                         eprintln!("  masks[{i}]: got {a:#018x} want {b:#018x}");
                     }
                 }
-                return false;
+                return None;
             }
 
             let mut xb_want = xb;
@@ -1365,12 +1369,13 @@ fn validate(stream: &Stream) -> bool {
                             pos.pinned_pieces(color).0
                         );
                     }
-                    return false;
+                    return None;
                 }
             }
+            checked += 1;
         }
     }
-    true
+    Some(checked)
 }
 
 /// The write volume each axis commits to, counted rather than timed.
@@ -1475,10 +1480,9 @@ pub fn run(args: &[&str]) {
             let path = args.get(1).copied().expect("measure validate <path>");
             let stream = deserialize(&fs::read(path).expect("read stream"));
 
-            if validate(&stream) {
-                println!("measure validate OK");
-            } else {
-                std::process::exit(1);
+            match validate(&stream) {
+                Some(plies) => println!("measure validate OK, {plies} plies"),
+                None => std::process::exit(1),
             }
         },
         Some("dump") => {
