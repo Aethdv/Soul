@@ -146,21 +146,6 @@ fn is_slider(piece: PieceType) -> bool {
     matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen)
 }
 
-/// Takes the type rather than the slot, so a promotion's fresh row can be built
-/// before `reclass` has patched the slot's own.
-#[inline(always)]
-fn attacks_of(kind: PieceType, color: Color, from: Square, occ: Bitboard) -> Bitboard {
-    match kind {
-        PieceType::Pawn => atk_pawn(from, color),
-        PieceType::Knight => atk_knight(from),
-        PieceType::King => atk_king(from),
-        PieceType::Bishop => atk_bishop(from, occ),
-        PieceType::Rook => atk_rook(from, occ),
-        PieceType::Queen => atk_rook(from, occ) | atk_bishop(from, occ),
-        PieceType::None => Bitboard(0),
-    }
-}
-
 impl XorBoard {
     /// Slots are assigned by a square walk, so two boards built from the same
     /// position agree slot for slot.
@@ -350,7 +335,15 @@ impl XorBoard {
 
     #[inline(always)]
     fn attacks(&self, id: PieceId, from: Square, occ: Bitboard) -> Bitboard {
-        attacks_of(self.kind[id.index()], id.color(), from, occ)
+        match self.kind[id.index()] {
+            PieceType::Pawn => atk_pawn(from, id.color()),
+            PieceType::Knight => atk_knight(from),
+            PieceType::King => atk_king(from),
+            PieceType::Bishop => atk_bishop(from, occ),
+            PieceType::Rook => atk_rook(from, occ),
+            PieceType::Queen => atk_rook(from, occ) | atk_bishop(from, occ),
+            PieceType::None => Bitboard(0),
+        }
     }
 
     /// Does the maintained store still say what a store built from `pos` says?
@@ -382,24 +375,6 @@ impl XorBoard {
         undo.rows = self.rows;
         undo.plan = plan;
 
-        // A mover's fresh row needs the plan and the new occupancy, nothing the
-        // gather produces, so its probe issues while the gather's fold is still
-        // in flight. The rows land after it: storing into rows ahead of the
-        // gather's own loads trades the overlap for a forwarding stall. Written
-        // out rather than looped, since the loop's bound is a runtime one.
-        let mover = plan.movers[0];
-        let rook = plan.movers[1];
-        let kind = match mv.promo() {
-            Some(promoted) => promoted,
-            None => self.kind[mover.id.index()],
-        };
-
-        let mut fresh = [attacks_of(kind, mover.id.color(), mover.to, pos.occ).0, 0];
-
-        if plan.n_movers == 2 {
-            fresh[1] = attacks_of(self.kind[rook.id.index()], rook.id.color(), rook.to, pos.occ).0;
-        }
-
         let mut affected = self.slider_attackers_of(plan.changed);
         for mover in plan.movers() {
             affected &= !(1 << mover.id.index());
@@ -422,9 +397,8 @@ impl XorBoard {
             self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
         }
 
-        self.rows[mover.id.index()] = fresh[0];
-        if plan.n_movers == 2 {
-            self.rows[rook.id.index()] = fresh[1];
+        for mover in plan.movers() {
+            self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
         }
     }
 
