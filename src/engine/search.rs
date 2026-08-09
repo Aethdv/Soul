@@ -1222,7 +1222,7 @@ impl Worker<'_> {
 
             let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
 
-            while let Some(mv) = picker.next(&self.pos, self.history) {
+            while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
@@ -1326,7 +1326,7 @@ impl Worker<'_> {
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
 
-            while let Some(mv) = picker.next(&self.pos, self.history) {
+            while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
@@ -1728,6 +1728,19 @@ impl Worker<'_> {
         }
     }
 
+    /// The picker's slider source, which `nostore` empties out.
+    #[cfg(not(feature = "nostore"))]
+    #[inline(always)]
+    fn xb_rows(&self) -> &XorBoard {
+        &self.xorboard
+    }
+
+    #[cfg(feature = "nostore")]
+    #[inline(always)]
+    fn xb_rows(&self) -> core::marker::PhantomData<&()> {
+        core::marker::PhantomData
+    }
+
     #[inline(always)]
     fn xb_threats(&self, color: Color) -> Bitboard {
         #[cfg(not(feature = "nostore"))]
@@ -1993,7 +2006,7 @@ impl Worker<'_> {
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 
-        while let Some(mv) = picker.next(&self.pos, self.history) {
+        while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                 continue;
             }

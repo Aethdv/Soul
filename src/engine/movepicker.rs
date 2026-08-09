@@ -19,6 +19,8 @@
 
 use std::mem::MaybeUninit;
 
+#[cfg(not(feature = "nostore"))]
+use crate::core::board::xorboard::XorBoard;
 use crate::{
     core::{
         board::{
@@ -37,6 +39,13 @@ use crate::{
         see::see_ge_with,
     },
 };
+
+/// Where a slider's attacks come from. `nostore` has no store to read, so the
+/// argument carries nothing and every slider falls back to its probe.
+#[cfg(not(feature = "nostore"))]
+type Rows<'a> = &'a XorBoard;
+#[cfg(feature = "nostore")]
+type Rows<'a> = core::marker::PhantomData<&'a ()>;
 
 // Ensure move bit-packing assumes correctly.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
@@ -171,7 +180,7 @@ impl MovePicker {
 
     /// Produce the next move in priority order, or `None` when exhausted.
     #[inline(always)]
-    pub fn next(&mut self, board: &Position, history: &History) -> Option<Move> {
+    pub fn next(&mut self, board: &Position, rows: Rows<'_>, history: &History) -> Option<Move> {
         loop {
             match self.stage {
                 Stage::Hash => {
@@ -182,7 +191,7 @@ impl MovePicker {
                 },
 
                 Stage::GenCaptures => {
-                    self.gen_captures(board, history);
+                    self.gen_captures(board, rows, history);
                     // We sort captures independently of quiet moves.
                     // Even if a strong quiet move has a high history score,
                     // it will never override a capture because they are processed
@@ -257,7 +266,7 @@ impl MovePicker {
                 },
 
                 Stage::GenQuiets => {
-                    self.gen_quiets(board, history);
+                    self.gen_quiets(board, rows, history);
 
                     #[cfg(feature = "mvpstats")]
                     {
@@ -322,7 +331,7 @@ impl MovePicker {
     }
 
     #[inline]
-    fn gen_captures(&mut self, board: &Position, history: &History) {
+    fn gen_captures(&mut self, board: &Position, rows: Rows<'_>, history: &History) {
         let stm = board.stm;
         let us = board.side_bb[stm];
         // king captures are never legal
@@ -330,11 +339,11 @@ impl MovePicker {
         let occ = board.occ;
 
         self.gen_pawn_caps(board, us, them, history);
-        self.gen_piece_caps::<{ PieceType::Knight }>(board, us, them, occ, history);
-        self.gen_piece_caps::<{ PieceType::Bishop }>(board, us, them, occ, history);
-        self.gen_piece_caps::<{ PieceType::Rook }>(board, us, them, occ, history);
-        self.gen_piece_caps::<{ PieceType::Queen }>(board, us, them, occ, history);
-        self.gen_piece_caps::<{ PieceType::King }>(board, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Knight }>(board, rows, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Bishop }>(board, rows, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Rook }>(board, rows, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::Queen }>(board, rows, us, them, occ, history);
+        self.gen_piece_caps::<{ PieceType::King }>(board, rows, us, them, occ, history);
     }
 
     #[inline(always)]
@@ -384,6 +393,7 @@ impl MovePicker {
     fn gen_piece_caps<const PT: PieceType>(
         &mut self,
         board: &Position,
+        rows: Rows<'_>,
         us: Bitboard,
         them: Bitboard,
         occ: Bitboard,
@@ -393,7 +403,7 @@ impl MovePicker {
         let stm = board.stm;
 
         for from in board.role_bb[PT as usize] & us {
-            for to in Self::attacks::<PT>(from, occ) & them {
+            for to in Self::attacks::<PT>(rows, from, occ) & them {
                 let victim = board.piece_at(to);
                 let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
                 let chist = history.score_capture(stm, PT, to, victim);
@@ -491,17 +501,17 @@ impl MovePicker {
     }
 
     /// Generate all non-capturing pseudo-legal moves, including castling.
-    fn gen_quiets(&mut self, board: &Position, history: &History) {
+    fn gen_quiets(&mut self, board: &Position, rows: Rows<'_>, history: &History) {
         let us = board.side_bb[board.stm];
         let occ = board.occ;
         let empty = !occ;
 
         self.gen_pawn_quiets(board, us, empty, history);
-        self.gen_piece_quiets::<{ PieceType::Knight }>(board, us, empty, occ, history);
-        self.gen_piece_quiets::<{ PieceType::Bishop }>(board, us, empty, occ, history);
-        self.gen_piece_quiets::<{ PieceType::Rook }>(board, us, empty, occ, history);
-        self.gen_piece_quiets::<{ PieceType::Queen }>(board, us, empty, occ, history);
-        self.gen_piece_quiets::<{ PieceType::King }>(board, us, empty, occ, history);
+        self.gen_piece_quiets::<{ PieceType::Knight }>(board, rows, us, empty, occ, history);
+        self.gen_piece_quiets::<{ PieceType::Bishop }>(board, rows, us, empty, occ, history);
+        self.gen_piece_quiets::<{ PieceType::Rook }>(board, rows, us, empty, occ, history);
+        self.gen_piece_quiets::<{ PieceType::Queen }>(board, rows, us, empty, occ, history);
+        self.gen_piece_quiets::<{ PieceType::King }>(board, rows, us, empty, occ, history);
         self.gen_castling(board, us, occ, history);
     }
 
@@ -588,13 +598,14 @@ impl MovePicker {
     fn gen_piece_quiets<const PT: PieceType>(
         &mut self,
         board: &Position,
+        rows: Rows<'_>,
         us: Bitboard,
         empty: Bitboard,
         occ: Bitboard,
         history: &History,
     ) {
         for from in board.role_bb[PT as usize] & us {
-            for to in Self::attacks::<PT>(from, occ) & empty {
+            for to in Self::attacks::<PT>(rows, from, occ) & empty {
                 self.add_quiet_node(Move::new(from, to, Move::QUIET), PT, board.stm, history);
             }
         }
@@ -671,18 +682,49 @@ impl MovePicker {
     }
 
     #[inline(always)]
-    fn attacks<const PT: PieceType>(from: Square, occ: Bitboard) -> Bitboard {
+    fn attacks<const PT: PieceType>(rows: Rows<'_>, from: Square, occ: Bitboard) -> Bitboard {
         match PT {
             PieceType::Pawn => {
                 debug_assert!(false, "Pawn attacks must use dedicated generators");
                 Bitboard(0)
             },
             PieceType::Knight => atk_knight(from),
+            PieceType::King => atk_king(from),
+            PieceType::None => Bitboard(0),
+            _ => Self::slider_attacks::<PT>(rows, from, occ),
+        }
+    }
+
+    /// A slider's row is already what the probe would recompute, so the store
+    /// answers here and the magics stay for the leapers: a row costs the
+    /// mailbox load before the row load, where `atk_knight` is the load.
+    ///
+    /// The fallback is not dead code. The rows are derived data and a square
+    /// the position calls occupied must name a slot, but nothing in the type
+    /// system says so, and a store that disagreed would otherwise generate from
+    /// an empty row.
+    #[cfg(not(feature = "nostore"))]
+    #[inline(always)]
+    fn slider_attacks<const PT: PieceType>(rows: &XorBoard, from: Square, occ: Bitboard) -> Bitboard {
+        match rows.id_at(from) {
+            Some(id) => rows.row(id),
+            None => Self::probe::<PT>(from, occ),
+        }
+    }
+
+    #[cfg(feature = "nostore")]
+    #[inline(always)]
+    fn slider_attacks<const PT: PieceType>(_rows: Rows<'_>, from: Square, occ: Bitboard) -> Bitboard {
+        Self::probe::<PT>(from, occ)
+    }
+
+    #[inline(always)]
+    fn probe<const PT: PieceType>(from: Square, occ: Bitboard) -> Bitboard {
+        match PT {
             PieceType::Bishop => atk_bishop(from, occ),
             PieceType::Rook => atk_rook(from, occ),
             PieceType::Queen => atk_bishop(from, occ) | atk_rook(from, occ),
-            PieceType::King => atk_king(from),
-            PieceType::None => Bitboard(0),
+            _ => Bitboard(0),
         }
     }
 }
