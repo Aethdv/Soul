@@ -54,6 +54,10 @@ pub struct XorBoard {
     /// Slot masks per (type, colour), patched on promotion. Keyed by slot, so
     /// "every rook and queen" is an AND rather than a scan.
     class: [u64; 12],
+    /// The three slider classes, unioned once instead of on every gather. Only
+    /// a promotion moves a slot in or out: a captured slider keeps its bit and
+    /// drops out of the column test on its own, its row being empty.
+    slider_slots: u64,
 }
 
 /// The rows as they stood before one make, restored wholesale by unmake.
@@ -157,6 +161,7 @@ impl XorBoard {
             squares: [NOWHERE; SLOTS],
             kind: [PieceType::None; SLOTS],
             class: [0; 12],
+            slider_slots: 0,
         };
 
         let mut next = [0usize, 16];
@@ -181,6 +186,7 @@ impl XorBoard {
                 board.squares[slot] = raw;
                 board.kind[slot] = piece;
                 board.class[class_index(piece, color)] |= 1 << slot;
+                board.slider_slots |= u64::from(is_slider(piece)) << slot;
             }
         }
         board.refresh(pos);
@@ -232,7 +238,7 @@ impl XorBoard {
     /// dependency chain rather than eight lane tests folded into a slot set.
     #[inline(always)]
     pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
-        let sliders = self.sliders();
+        let sliders = self.slider_slots;
         if sliders & !SLIDER_WINDOW == 0 {
             self.column::<WINDOW_GROUPS>(mask) & sliders
         } else {
@@ -314,23 +320,16 @@ impl XorBoard {
         }
     }
 
-    #[inline(always)]
-    fn sliders(&self) -> u64 {
-        self.class_slots(PieceType::Bishop) | self.class_slots(PieceType::Rook) | self.class_slots(PieceType::Queen)
-    }
-
     /// Moves a slot from the class it holds to `piece`, on a promotion and on
     /// the unmake that walks one back.
     #[inline(always)]
     fn reclass(&mut self, id: PieceId, piece: PieceType) {
-        self.class[class_index(self.kind[id.index()], id.color())] &= !(1 << id.index());
-        self.class[class_index(piece, id.color())] |= 1 << id.index();
-        self.kind[id.index()] = piece;
-    }
+        let slot = id.index();
 
-    #[inline(always)]
-    fn class_slots(&self, piece: PieceType) -> u64 {
-        self.class[class_index(piece, Color::White)] | self.class[class_index(piece, Color::Black)]
+        self.class[class_index(self.kind[slot], id.color())] &= !(1 << slot);
+        self.class[class_index(piece, id.color())] |= 1 << slot;
+        self.kind[slot] = piece;
+        self.slider_slots = (self.slider_slots & !(1 << slot)) | (u64::from(is_slider(piece)) << slot);
     }
 
     #[inline(always)]
@@ -575,7 +574,7 @@ mod tests {
                     .flat_map(|pt| [Color::White, Color::Black].map(|color| pos.pieces(pt, color)))
                     .fold(Bitboard(0), |acc, bb| acc | bb);
 
-                for id in slots(board.sliders()) {
+                for id in slots(board.slider_slots) {
                     let from = Square(board.squares[id.index()]);
                     let mut want = Bitboard(0);
 

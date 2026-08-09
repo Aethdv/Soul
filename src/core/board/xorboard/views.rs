@@ -204,9 +204,7 @@ impl XorBoard {
         let (mut ortho, mut diag) = (Bitboard(0), Bitboard(0));
         let (mut ortho_direct, mut diag_direct) = (Bitboard(0), Bitboard(0));
 
-        let mut rest =
-            (self.class_slots(PieceType::Rook) | self.class_slots(PieceType::Bishop) | self.class_slots(PieceType::Queen))
-                & color_slots(color);
+        let mut rest = self.slider_slots & color_slots(color);
 
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
