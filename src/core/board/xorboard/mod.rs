@@ -55,15 +55,10 @@ pub struct XorBoard {
     class: [u64; 12],
 }
 
-/// What one make overwrote, replayed by unmake.
-///
-/// Bounded by the affected set, so it counts pieces where a square-indexed diff
-/// record would count attacked squares.
+/// The rows as they stood before one make, restored wholesale by unmake.
 #[derive(Clone, Copy, Debug)]
 pub struct Undo {
-    len: u8,
-    ids: [u8; UNDO_CAP],
-    rows: [u64; UNDO_CAP],
+    rows: [u64; SLOTS],
     /// Make already worked out which slots move where; unmake reads it back off
     /// the record rather than deriving it a second time from the flags.
     plan: Plan,
@@ -82,6 +77,9 @@ struct Mover {
 struct Plan {
     movers: [Mover; 2],
     n_movers: usize,
+    /// The squares whose occupancy flipped. A capture's destination is absent,
+    /// since the victim left it and the mover took it, and the same
+    /// cancellation covers a DFRC king landing on the rook's origin.
     changed: Bitboard,
     victim: Option<(PieceId, Square)>,
 }
@@ -101,10 +99,6 @@ const ALL_GROUPS: u8 = 0xFF;
 const WINDOW_GROUPS: u8 = 0b0011_0011;
 const WHITE_GROUPS: u8 = 0x0F;
 const BLACK_GROUPS: u8 = 0xF0;
-
-/// Two movers, one victim, and every slider on the board: a side cannot exceed
-/// two bishops, two rooks, a queen and eight promotions.
-const UNDO_CAP: usize = 29;
 
 impl PieceId {
     #[inline(always)]
@@ -373,7 +367,7 @@ impl XorBoard {
     /// answer it.
     pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
         let plan = self.read(mv);
-        undo.len = 0;
+        undo.rows = self.rows;
         undo.plan = plan;
 
         let mut affected = self.slider_attackers_of(plan.changed);
@@ -383,7 +377,6 @@ impl XorBoard {
 
         if let Some((victim, square)) = plan.victim {
             affected &= !(1 << victim.index());
-            undo.save(victim, self.rows[victim.index()]);
             self.rows[victim.index()] = 0;
             self.set_slot_at(square, 0);
             self.sq[victim.index()] = NOWHERE;
@@ -396,25 +389,16 @@ impl XorBoard {
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
             rest &= rest - 1;
-            undo.save(id, self.rows[id.index()]);
             self.rows[id.index()] = self.attacks(id, Square(self.sq[id.index()]), pos.occ).0;
         }
 
         for mover in plan.movers() {
-            undo.save(mover.id, self.rows[mover.id.index()]);
             self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
         }
     }
 
-    /// Replays the record and walks the bookkeeping back.
-    ///
-    /// Every affected piece appears once, because the candidate set has the
-    /// movers and the victim masked out of it, so the rows restore in any
-    /// order.
     pub fn unmake(&mut self, mv: Move, undo: &Undo) {
-        for i in 0..usize::from(undo.len) {
-            self.rows[usize::from(undo.ids[i])] = undo.rows[i];
-        }
+        self.rows = undo.rows;
         self.restore(mv, &undo.plan);
     }
 
@@ -424,9 +408,10 @@ impl XorBoard {
         let (from, to) = (mv.from(), mv.to());
         let mover = PieceId(self.slot_at(from) - 1);
         let mut movers = [Mover { id: mover, from, to }; 2];
-        let mut changed = from.bitboard() | to.bitboard();
         let mut n_movers = 1;
         let mut victim = None;
+        let mut vacated = from.bitboard();
+        let mut filled = to.bitboard();
 
         if mv.is_castling() {
             // The move encodes the rook's home square as its destination, so
@@ -434,16 +419,18 @@ impl XorBoard {
             let rook = PieceId(self.slot_at(to) - 1);
             let (king_to, rook_to) = super::castling_targets(from, to);
             movers = [Mover { id: mover, from, to: king_to }, Mover { id: rook, from: to, to: rook_to }];
-            changed |= king_to.bitboard() | rook_to.bitboard();
+            vacated |= to.bitboard();
+            filled = king_to.bitboard() | rook_to.bitboard();
             n_movers = 2;
         } else if mv.is_en_passant() {
             let square = Square(to.0 ^ 8);
-            changed |= square.bitboard();
+            vacated |= square.bitboard();
             victim = Some((PieceId(self.slot_at(square) - 1), square));
         } else if mv.is_capture() {
+            vacated |= to.bitboard();
             victim = Some((PieceId(self.slot_at(to) - 1), to));
         }
-        Plan { movers, n_movers, changed, victim }
+        Plan { movers, n_movers, changed: vacated ^ filled, victim }
     }
 
     /// Origins clear before any destination lands, so DFRC castling stays exact
@@ -504,15 +491,7 @@ impl Plan {
 
 impl Undo {
     pub const fn new() -> Self {
-        Self { len: 0, ids: [0; UNDO_CAP], rows: [0; UNDO_CAP], plan: Plan::EMPTY }
-    }
-
-    #[inline(always)]
-    fn save(&mut self, id: PieceId, row: u64) {
-        debug_assert!(usize::from(self.len) < UNDO_CAP, "affected set outgrew two movers, a victim and every slider");
-        self.ids[usize::from(self.len)] = id.0;
-        self.rows[usize::from(self.len)] = row;
-        self.len += 1;
+        Self { rows: [0; SLOTS], plan: Plan::EMPTY }
     }
 }
 
