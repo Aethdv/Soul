@@ -101,6 +101,17 @@ const WINDOW_GROUPS: u8 = 0b0011_0011;
 const WHITE_GROUPS: u8 = 0x0F;
 const BLACK_GROUPS: u8 = 0xF0;
 
+#[inline(always)]
+const fn color_slots(color: Color) -> u64 {
+    0xFFFF << (color as usize * 16)
+}
+
+/// `class` is keyed by piece type then colour; one place computes that.
+#[inline(always)]
+const fn class_index(piece: PieceType, color: Color) -> usize {
+    piece as usize * 2 + color as usize
+}
+
 impl PieceId {
     #[inline(always)]
     pub const fn color(self) -> Color {
@@ -129,17 +140,6 @@ fn slots(mask: u64) -> impl Iterator<Item = PieceId> {
             PieceId(slot)
         })
     })
-}
-
-#[inline(always)]
-const fn color_slots(color: Color) -> u64 {
-    0xFFFF << (color as usize * 16)
-}
-
-/// `class` is keyed by piece type then colour; one place computes that.
-#[inline(always)]
-const fn class_index(piece: PieceType, color: Color) -> usize {
-    piece as usize * 2 + color as usize
 }
 
 #[inline(always)]
@@ -301,7 +301,6 @@ impl XorBoard {
                 let want = _mm256_set1_epi64x(mask.0 as i64);
                 let zero = _mm256_setzero_si256();
                 let mut set = 0u64;
-
                 for group in 0..8 {
                     if GROUPS >> group & 1 != 0 {
                         let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
@@ -391,7 +390,6 @@ impl XorBoard {
         self.relocate(mv, &plan);
 
         let mut rest = affected;
-
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
             rest &= rest - 1;
@@ -511,7 +509,13 @@ impl Default for Undo {
 mod tests {
     use super::*;
     use crate::{
-        core::{board::STARTPOS, zobrist::ConstRng},
+        core::{
+            board::{
+                STARTPOS,
+                bitboard::{between_bb, line_bb},
+            },
+            zobrist::ConstRng,
+        },
         engine::movegen::gen_legal_moves,
     };
 
@@ -562,6 +566,44 @@ mod tests {
                 oracle.refresh(&pos);
                 assert_eq!(board.rows, oracle.rows, "{fen} ply {ply} move {}\n{pos}", mv.to_uci(pos.is_frc));
 
+                // Composition against the probe it replaces, for the blockers
+                // it claims: one running along the same line. Lifting such a
+                // blocker out of the occupancy has to reach the same squares
+                // past it as its own maintained row does.
+                let slider_squares = [PieceType::Bishop, PieceType::Rook, PieceType::Queen]
+                    .into_iter()
+                    .flat_map(|pt| [Color::White, Color::Black].map(|color| pos.pieces(pt, color)))
+                    .fold(Bitboard(0), |acc, bb| acc | bb);
+
+                for id in slots(board.sliders()) {
+                    let from = Square(board.squares[id.index()]);
+                    let mut want = Bitboard(0);
+
+                    for square in Bitboard(board.rows[id.index()]) & slider_squares {
+                        let blocker = board.id_at(square).expect("a slider square holds a piece");
+                        let straight = atk_rook(from, Bitboard(0)).check_bit(square);
+                        let kind = board.kind[blocker.index()];
+
+                        let aligned = match kind {
+                            PieceType::Queen => true,
+                            PieceType::Rook => straight,
+                            _ => !straight,
+                        };
+
+                        if aligned {
+                            // Past the blocker, said without a direction table:
+                            // the blocker lies between the front piece and it.
+                            let lifted = board.attacks(id, from, pos.occ & !square.bitboard());
+                            for target in lifted & line_bb(from, square) {
+                                if between_bb(from, target).check_bit(square) {
+                                    want |= target.bitboard();
+                                }
+                            }
+                        }
+                    }
+                    assert_eq!(board.xray_row(id, slider_squares), want, "{fen} ply {ply} slot {id:?}\n{pos}");
+                }
+
                 // The fill drops every square holding a same-class slider, so
                 // equality is the wrong assertion: it has to be containment, with
                 // the gap confined to that side's own sliders.
@@ -583,7 +625,6 @@ mod tests {
                     assert_eq!(ortho, want_o, "xray ortho {color:?}, {fen} ply {ply}\n{pos}");
                     assert_eq!(diag, want_d, "xray diag {color:?}, {fen} ply {ply}\n{pos}");
                 }
-
                 assert_eq!(board.checkers(&pos), pos.checkers(), "checkers, {fen} ply {ply}\n{pos}");
 
                 // Per-piece mobility against the same count taken the long way.

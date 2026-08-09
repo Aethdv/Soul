@@ -8,13 +8,12 @@
 use core::arch::x86_64::*;
 
 use super::{NOWHERE, PieceId, XorBoard, class_index, color_slots, slots};
-use crate::{
-    core::{
-        board::bitboard::{atk_bishop, atk_rook, line_bb},
-        defs::{Bitboard, Color, PieceType, Square},
-    },
-    weave::Vu64x4,
+use crate::core::{
+    board::bitboard::{atk_bishop, atk_rook, between_bb, line_bb},
+    defs::{Bitboard, Color, PieceType, Square},
 };
+#[cfg(not(target_feature = "avx512vpopcntdq"))]
+use crate::weave::Vu64x4;
 
 /// Four lanes of all-ones or all-zeros, indexed by a nibble of the slot mask.
 static LANE_MASK: [[u64; 4]; 16] = {
@@ -45,13 +44,12 @@ impl XorBoard {
         // slots 0 to 15 or 16 to 31, four whole groups either way, so the four
         // loads end exactly at the half's end.
         //
-        // Not `union`: its lane masks are all-ones or all-zeros for a whole
-        // group, so half its loads mask in nothing and the other half fetch a
-        // constant.
+        // The masked union would load a lane mask per group, and for a whole
+        // color those are all-ones or all-zeros: half of them mask in nothing
+        // and the rest fetch a constant.
         unsafe {
             let base = color as usize * 16;
             let mut acc = _mm256_setzero_si256();
-
             for group in 0..4 {
                 acc = _mm256_or_si256(acc, _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast()));
             }
@@ -59,6 +57,30 @@ impl XorBoard {
             let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
             Bitboard((_mm_extract_epi64(folded, 0) | _mm_extract_epi64(folded, 1)) as u64)
         }
+    }
+
+    /// What `id` attacks through a slider standing in its way.
+    ///
+    /// The phantom-piece rule says an x-ray needs an occupancy that does not
+    /// exist, and it holds for every blocker but this one: a slider's own row
+    /// already carries the continuation, so the answer is a load and an AND
+    /// instead of a probe. Only the far segment survives the mask, because the
+    /// stretch back toward `id` is `between_bb` and nothing past `id` is in the
+    /// blocker's row, `id` being what stops that ray.
+    ///
+    /// The blocker has to run along this line for its row to say anything about
+    /// it, so this answers batteries and not x-rays in general: a bishop in a
+    /// rook's way hides whatever is behind it, and no test is needed to drop it
+    /// because a bishop's row meets a rank nowhere.
+    pub fn xray_row(&self, id: PieceId, slider_squares: Bitboard) -> Bitboard {
+        let from = Square(self.squares[id.index()]);
+        let mut through = Bitboard(0);
+        for square in Bitboard(self.rows[id.index()]) & slider_squares {
+            let Some(blocker) = self.id_at(square) else { continue };
+            let past = line_bb(from, square) & !between_bb(from, square) & !from.bitboard() & !square.bitboard();
+            through |= Bitboard(self.rows[blocker.index()]) & past;
+        }
+        through
     }
 
     /// Every square the given class attacks.
@@ -105,7 +127,6 @@ impl XorBoard {
     pub fn mobility(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
         let base = usize::from(color) * 16;
         let mut total = self.count_rows(base, area);
-
         if let Some(king) = self.id_at(ksq) {
             total -= (self.row(king) & area).popcount() as i32;
         }
@@ -197,7 +218,6 @@ impl XorBoard {
             }
 
             let from = Square(self.squares[id.index()]);
-
             if pinned.check_bit(from) {
                 continue;
             }
