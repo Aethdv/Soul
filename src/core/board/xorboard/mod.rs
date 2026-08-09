@@ -11,8 +11,9 @@
 //! The unmake record counts pieces touched, not squares attacked.
 //!
 //! Maintained through the search's make and unmake, and not paying for itself:
-//! 156.3 instructions a node on AVX2 and 125.7 on AVX-512, against a query
-//! surface that has returned 7.0 so far. Hot magics and a setwise eval leave a
+//! 121.3 instructions a node on AVX2 and 82.6 on AVX-512, net of what `checkers`
+//! and the picker's threat map give back, and measurable by `make storecost`
+//! whenever either side of that moves. Hot magics and a setwise eval leave a
 //! from-side store little to win, and the one thing only incrementality gives,
 //! the add and remove events, has no consumer here yet. Threat inputs would
 //! change what the diff stream is for without settling it: Stockfish generates

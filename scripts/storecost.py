@@ -49,8 +49,7 @@ def measure(binary):
     if bench is None:
         raise SystemExit(f"no bench line from {binary}:\n{text}")
 
-    nodes = int(bench.group(1))
-    return counts["instructions"] / nodes, counts["cycles"] / nodes, nodes
+    return counts["instructions"], counts["cycles"], int(bench.group(1))
 
 
 def main():
@@ -64,20 +63,21 @@ def main():
             insn, cycles, nodes = measure(path)
             samples[label].append((insn, cycles))
 
-    print(f"\nbench {nodes} nodes, {runs} runs interleaved, per node\n")
-    print(f"{'':9}{'insn':>10}{'cyc min':>10}{'cyc med':>10}")
+    print(f"\nbench {nodes} nodes, {runs} runs interleaved\n")
+    print(f"{'':9}{'insn':>16}{'per node':>10}{'cyc min':>10}{'cyc med':>10}")
 
     stats = {}
     for label, rows in samples.items():
+        total = min(row[0] for row in rows)
         stats[label] = (
-            min(row[0] for row in rows),
-            min(row[1] for row in rows),
-            statistics.median(row[1] for row in rows),
+            total / nodes,
+            min(row[1] for row in rows) / nodes,
+            statistics.median(row[1] for row in rows) / nodes,
         )
-        print(f"{label:9}{stats[label][0]:10.1f}{stats[label][1]:10.1f}{stats[label][2]:10.1f}")
+        print(f"{label:9}{total:16,}{stats[label][0]:10.1f}{stats[label][1]:10.1f}{stats[label][2]:10.1f}")
 
     cost = [stats["with"][i] - stats["without"][i] for i in range(3)]
-    print(f"\n{'store':9}{cost[0]:+10.1f}{cost[1]:+10.1f}{cost[2]:+10.1f}")
+    print(f"\n{'store':9}{'':16}{cost[0]:+10.1f}{cost[1]:+10.1f}{cost[2]:+10.1f}")
 
     if abs(cost[0]) < 0.05:
         print("\ninstructions identical: the nostore gate did not take")
