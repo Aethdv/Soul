@@ -41,7 +41,24 @@ impl XorBoard {
     /// pieces, and not to one asking about the board.
     #[inline(always)]
     pub fn danger(&self, color: Color) -> Bitboard {
-        self.union(color_slots(color))
+        // SAFETY: AVX2 per the compile_error gate in weave/mod.rs. A color is
+        // slots 0 to 15 or 16 to 31, four whole groups either way, so the four
+        // loads end exactly at the half's end.
+        //
+        // Not `union`: its lane masks are all-ones or all-zeros for a whole
+        // group, so half its loads mask in nothing and the other half fetch a
+        // constant.
+        unsafe {
+            let base = color as usize * 16;
+            let mut acc = _mm256_setzero_si256();
+
+            for group in 0..4 {
+                acc = _mm256_or_si256(acc, _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast()));
+            }
+
+            let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+            Bitboard((_mm_extract_epi64(folded, 0) | _mm_extract_epi64(folded, 1)) as u64)
+        }
     }
 
     /// Every square the given class attacks.
