@@ -1694,14 +1694,18 @@ impl Worker<'_> {
     /// The record is per ply because a child's make would otherwise overwrite
     /// what its parent's unmake has to replay.
     #[inline(always)]
-    fn xb_make(&mut self, mv: Move, ply: usize) {
+    fn xb_make(&mut self, mv: Move, ply: usize) -> Bitboard {
         #[cfg(not(feature = "nostore"))]
         {
-            self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
+            let discovered = self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
             debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
+            discovered
         }
         #[cfg(feature = "nostore")]
-        let _ = (mv, ply);
+        {
+            let _ = (mv, ply);
+            Bitboard(0)
+        }
     }
 
     #[inline(always)]
@@ -1769,7 +1773,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
-        self.xb_make(mv, ply);
+        let discovered = self.xb_make(mv, ply);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -1779,6 +1783,17 @@ impl Worker<'_> {
         // depth so the resulting tactics are properly resolved.
         if self.xb_checkers().is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
+        }
+
+        // ── Discovered-Attack LMR Adjustment
+        // A quiet that steps off a friendly slider's ray leaves that slider
+        // hitting what it could not reach before. The threat bonus above cannot
+        // see it: the piece whose attacks changed is not the one that moved.
+        if discovered.is_not_empty() {
+            let queens = self.pos.role_bb[PieceType::Queen] & self.pos.side_bb[self.pos.stm];
+            if (discovered & queens).is_not_empty() {
+                reduction = (reduction - sp.opened_lmr_bonus).max(0);
+            }
         }
 
         res.move_count += 1;

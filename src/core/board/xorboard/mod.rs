@@ -370,7 +370,10 @@ impl XorBoard {
     /// piece saw one of the changed squares before the move. That makes the
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
-    pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
+    ///
+    /// Returns what the moving side's *other* pieces newly attack, which is the
+    /// move's discovered attacks, taken off rows the update rewrites anyway.
+    pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) -> Bitboard {
         let plan = self.decode(mv);
         undo.rows = self.rows;
         undo.plan = plan;
@@ -390,15 +393,26 @@ impl XorBoard {
         self.relocate(mv, &plan);
 
         let mut rest = affected;
+        let ours = color_slots(plan.movers[0].id.color());
+        let mut discovered = 0;
+
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
             rest &= rest - 1;
-            self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
+
+            let fresh = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
+            // All ones for a slot of the moving side, so lines reopened for the
+            // opponent stay out of the mask without a branch.
+            let keep = 0u64.wrapping_sub(ours >> id.index() & 1);
+            discovered |= fresh & !undo.rows[id.index()] & keep;
+            self.rows[id.index()] = fresh;
         }
 
         for mover in plan.movers() {
             self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
         }
+
+        Bitboard(discovered)
     }
 
     pub fn unmake(&mut self, mv: Move, undo: &Undo) {
