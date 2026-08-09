@@ -384,16 +384,20 @@ impl XorBoard {
 
         // A mover's fresh row needs the plan and the new occupancy, nothing the
         // gather produces, so its probe issues while the gather's fold is still
-        // in flight. The rows land after it: storing into `rows` ahead of the
-        // gather's own loads trades the overlap for a forwarding stall.
-        let mut fresh = [0; 2];
-        for (i, mover) in plan.movers().enumerate() {
-            let kind = match mv.promo() {
-                Some(promoted) if i == 0 => promoted,
-                _ => self.kind[mover.id.index()],
-            };
+        // in flight. The rows land after it: storing into rows ahead of the
+        // gather's own loads trades the overlap for a forwarding stall. Written
+        // out rather than looped, since the loop's bound is a runtime one.
+        let mover = plan.movers[0];
+        let rook = plan.movers[1];
+        let kind = match mv.promo() {
+            Some(promoted) => promoted,
+            None => self.kind[mover.id.index()],
+        };
 
-            fresh[i] = attacks_of(kind, mover.id.color(), mover.to, pos.occ).0;
+        let mut fresh = [attacks_of(kind, mover.id.color(), mover.to, pos.occ).0, 0];
+
+        if plan.n_movers == 2 {
+            fresh[1] = attacks_of(self.kind[rook.id.index()], rook.id.color(), rook.to, pos.occ).0;
         }
 
         let mut affected = self.slider_attackers_of(plan.changed);
@@ -418,8 +422,9 @@ impl XorBoard {
             self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
         }
 
-        for (i, mover) in plan.movers().enumerate() {
-            self.rows[mover.id.index()] = fresh[i];
+        self.rows[mover.id.index()] = fresh[0];
+        if plan.n_movers == 2 {
+            self.rows[rook.id.index()] = fresh[1];
         }
     }
 
