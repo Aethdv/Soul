@@ -1694,17 +1694,17 @@ impl Worker<'_> {
     /// The record is per ply because a child's make would otherwise overwrite
     /// what its parent's unmake has to replay.
     #[inline(always)]
-    fn xb_make(&mut self, mv: Move, ply: usize) -> Bitboard {
+    fn xb_make(&mut self, mv: Move, ply: usize) -> (Bitboard, Bitboard) {
         #[cfg(not(feature = "nostore"))]
         {
-            let discovered = self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
+            let lines = self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
             debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
-            discovered
+            lines
         }
         #[cfg(feature = "nostore")]
         {
             let _ = (mv, ply);
-            Bitboard(0)
+            (Bitboard(0), Bitboard(0))
         }
     }
 
@@ -1773,7 +1773,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
-        let discovered = self.xb_make(mv, ply);
+        let (opened, closed) = self.xb_make(mv, ply);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -1785,14 +1785,18 @@ impl Worker<'_> {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
         }
 
-        // ── Discovered-Attack LMR Adjustment
+        // ── Discovered-Line LMR Adjustment
         // A quiet that steps off a friendly slider's ray leaves that slider
-        // hitting what it could not reach before. The threat bonus above cannot
-        // see it: the piece whose attacks changed is not the one that moved.
-        if discovered.is_not_empty() {
+        // hitting what it could not reach before, and one that steps into a ray
+        // takes a line away. The threat bonus above sees neither: the piece
+        // whose attacks changed is not the one that moved. Paired so the average
+        // reduction holds and the test is which quiets deserve the depth.
+        if reduction > 0 {
             let queens = self.pos.role_bb[PieceType::Queen] & self.pos.side_bb[self.pos.stm];
-            if (discovered & queens).is_not_empty() {
-                reduction = (reduction - sp.opened_lmr_bonus).max(0);
+            if (opened & queens).is_not_empty() {
+                reduction = (reduction - sp.line_lmr_bonus).max(0);
+            } else if (closed & queens).is_not_empty() {
+                reduction = (reduction + sp.line_lmr_bonus).min((depth - 1).max(0));
             }
         }
 

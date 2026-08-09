@@ -371,9 +371,10 @@ impl XorBoard {
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
     ///
-    /// Returns what the moving side's *other* pieces newly attack, which is the
-    /// move's discovered attacks, taken off rows the update rewrites anyway.
-    pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) -> Bitboard {
+    /// Returns what the moving side's *other* pieces started and stopped
+    /// attacking: the move's discovered attacks and the lines it walked into,
+    /// both taken off rows the update rewrites anyway.
+    pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) -> (Bitboard, Bitboard) {
         let plan = self.decode(mv);
         undo.rows = self.rows;
         undo.plan = plan;
@@ -394,25 +395,27 @@ impl XorBoard {
 
         let mut rest = affected;
         let ours = color_slots(plan.movers[0].id.color());
-        let mut discovered = 0;
+        let mut opened = 0;
+        let mut closed = 0;
 
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
             rest &= rest - 1;
 
+            let was = undo.rows[id.index()];
             let fresh = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
-            // All ones for a slot of the moving side, so lines reopened for the
-            // opponent stay out of the mask without a branch.
+            // All ones for a slot of the moving side, so the opponent's own
+            // lines stay out of both masks without a branch.
             let keep = 0u64.wrapping_sub(ours >> id.index() & 1);
-            discovered |= fresh & !undo.rows[id.index()] & keep;
+            opened |= fresh & !was & keep;
+            closed |= was & !fresh & keep;
             self.rows[id.index()] = fresh;
         }
 
         for mover in plan.movers() {
             self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
         }
-
-        Bitboard(discovered)
+        (Bitboard(opened), Bitboard(closed))
     }
 
     pub fn unmake(&mut self, mv: Move, undo: &Undo) {
