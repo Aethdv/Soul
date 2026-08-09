@@ -48,7 +48,7 @@ pub struct XorBoard {
     /// Square to `1 + id`, so an empty square is zero.
     at: [u8; 64],
     /// Slot to square, `NOWHERE` when the piece is off the board.
-    sq: [u8; SLOTS],
+    squares: [u8; SLOTS],
     kind: [PieceType; SLOTS],
     /// Slot masks per (type, colour), patched on promotion. Keyed by slot, so
     /// "every rook and queen" is an AND rather than a scan.
@@ -106,7 +106,7 @@ impl PieceId {
         if self.0 < 16 { Color::White } else { Color::Black }
     }
 
-    /// Masked, so every `rows`/`sq`/`kind` access is in range by construction
+    /// Masked, so every `rows`/`squares`/`kind` access is in range by construction
     /// and the compiler drops the check. A slot out of range would be a bug the
     /// mask hides, and slots only ever come from a 32-bit mask's set bits or
     /// from `at`, both of which are already in range.
@@ -146,12 +146,32 @@ fn is_slider(piece: PieceType) -> bool {
     matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen)
 }
 
+/// Takes the type rather than the slot, so a promotion's fresh row can be built
+/// before `reclass` has patched the slot's own.
+#[inline(always)]
+fn attacks_of(kind: PieceType, color: Color, from: Square, occ: Bitboard) -> Bitboard {
+    match kind {
+        PieceType::Pawn => atk_pawn(from, color),
+        PieceType::Knight => atk_knight(from),
+        PieceType::King => atk_king(from),
+        PieceType::Bishop => atk_bishop(from, occ),
+        PieceType::Rook => atk_rook(from, occ),
+        PieceType::Queen => atk_rook(from, occ) | atk_bishop(from, occ),
+        PieceType::None => Bitboard(0),
+    }
+}
+
 impl XorBoard {
     /// Slots are assigned by a square walk, so two boards built from the same
     /// position agree slot for slot.
     pub fn new(pos: &Position) -> Self {
-        let mut board =
-            Self { rows: [0; SLOTS], at: [0; 64], sq: [NOWHERE; SLOTS], kind: [PieceType::None; SLOTS], class: [0; 12] };
+        let mut board = Self {
+            rows: [0; SLOTS],
+            at: [0; 64],
+            squares: [NOWHERE; SLOTS],
+            kind: [PieceType::None; SLOTS],
+            class: [0; 12],
+        };
 
         let mut next = [0usize, 16];
 
@@ -172,7 +192,7 @@ impl XorBoard {
                 next[color as usize] += 1;
 
                 board.set_slot_at(square, (slot + 1) as u8);
-                board.sq[slot] = raw;
+                board.squares[slot] = raw;
                 board.kind[slot] = piece;
                 board.class[class_index(piece, color)] |= 1 << slot;
             }
@@ -186,8 +206,8 @@ impl XorBoard {
     pub fn refresh(&mut self, pos: &Position) {
         self.rows = [0; SLOTS];
         for slot in 0..SLOTS {
-            if self.sq[slot] != NOWHERE {
-                self.rows[slot] = self.attacks(PieceId(slot as u8), Square(self.sq[slot]), pos.occ).0;
+            if self.squares[slot] != NOWHERE {
+                self.rows[slot] = self.attacks(PieceId(slot as u8), Square(self.squares[slot]), pos.occ).0;
             }
         }
     }
@@ -228,16 +248,16 @@ impl XorBoard {
     pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
         let sliders = self.sliders();
         if sliders & !SLIDER_WINDOW == 0 {
-            self.probe::<WINDOW_GROUPS>(mask) & sliders
+            self.column::<WINDOW_GROUPS>(mask) & sliders
         } else {
-            self.probe::<ALL_GROUPS>(mask) & sliders
+            self.column::<ALL_GROUPS>(mask) & sliders
         }
     }
 
     /// Which pieces attack any square in `mask`, sliders and leapers alike.
     #[inline(always)]
     pub fn attackers_of(&self, mask: Bitboard) -> u64 {
-        self.probe::<ALL_GROUPS>(mask)
+        self.column::<ALL_GROUPS>(mask)
     }
 
     /// The pieces of `stm`'s opponent giving check.
@@ -253,14 +273,14 @@ impl XorBoard {
         }
 
         let attackers = match pos.stm.opposite() {
-            Color::White => self.probe::<WHITE_GROUPS>(king),
-            Color::Black => self.probe::<BLACK_GROUPS>(king),
+            Color::White => self.column::<WHITE_GROUPS>(king),
+            Color::Black => self.column::<BLACK_GROUPS>(king),
         };
 
-        slots(attackers).fold(Bitboard(0), |squares, id| squares | Square(self.sq[id.index()]).bitboard())
+        slots(attackers).fold(Bitboard(0), |squares, id| squares | Square(self.squares[id.index()]).bitboard())
     }
 
-    /// The column test, over the groups of four slots `GROUPS` selects.
+    /// Over the groups of four slots `GROUPS` selects.
     ///
     /// Every caller wants a different slice of the thirty-two rows and none of
     /// them wants a runtime bound: a const mask keeps the loop unrolled and the
@@ -268,7 +288,7 @@ impl XorBoard {
     /// rows at a time, so a group mask that splits a pair would test slots the
     /// caller excluded, and the assert holds callers to pairs.
     #[inline(always)]
-    fn probe<const GROUPS: u8>(&self, mask: Bitboard) -> u64 {
+    fn column<const GROUPS: u8>(&self, mask: Bitboard) -> u64 {
         const { assert!(GROUPS & 0x55 == (GROUPS >> 1) & 0x55, "the group mask must select whole pairs") }
 
         // SAFETY: AVX2 is guaranteed for every binary linking this crate by the
@@ -330,15 +350,7 @@ impl XorBoard {
 
     #[inline(always)]
     fn attacks(&self, id: PieceId, from: Square, occ: Bitboard) -> Bitboard {
-        match self.kind[id.index()] {
-            PieceType::Pawn => atk_pawn(from, id.color()),
-            PieceType::Knight => atk_knight(from),
-            PieceType::King => atk_king(from),
-            PieceType::Bishop => atk_bishop(from, occ),
-            PieceType::Rook => atk_rook(from, occ),
-            PieceType::Queen => atk_rook(from, occ) | atk_bishop(from, occ),
-            PieceType::None => Bitboard(0),
-        }
+        attacks_of(self.kind[id.index()], id.color(), from, occ)
     }
 
     /// Does the maintained store still say what a store built from `pos` says?
@@ -366,9 +378,23 @@ impl XorBoard {
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
     pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
-        let plan = self.read(mv);
+        let plan = self.decode(mv);
         undo.rows = self.rows;
         undo.plan = plan;
+
+        // A mover's fresh row needs the plan and the new occupancy, nothing the
+        // gather produces, so its probe issues while the gather's fold is still
+        // in flight. The rows land after it: storing into `rows` ahead of the
+        // gather's own loads trades the overlap for a forwarding stall.
+        let mut fresh = [0; 2];
+        for (i, mover) in plan.movers().enumerate() {
+            let kind = match mv.promo() {
+                Some(promoted) if i == 0 => promoted,
+                _ => self.kind[mover.id.index()],
+            };
+
+            fresh[i] = attacks_of(kind, mover.id.color(), mover.to, pos.occ).0;
+        }
 
         let mut affected = self.slider_attackers_of(plan.changed);
         for mover in plan.movers() {
@@ -379,7 +405,7 @@ impl XorBoard {
             affected &= !(1 << victim.index());
             self.rows[victim.index()] = 0;
             self.set_slot_at(square, 0);
-            self.sq[victim.index()] = NOWHERE;
+            self.squares[victim.index()] = NOWHERE;
         }
 
         self.relocate(mv, &plan);
@@ -389,11 +415,11 @@ impl XorBoard {
         while rest != 0 {
             let id = PieceId(rest.trailing_zeros() as u8);
             rest &= rest - 1;
-            self.rows[id.index()] = self.attacks(id, Square(self.sq[id.index()]), pos.occ).0;
+            self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
         }
 
-        for mover in plan.movers() {
-            self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
+        for (i, mover) in plan.movers().enumerate() {
+            self.rows[mover.id.index()] = fresh[i];
         }
     }
 
@@ -402,9 +428,9 @@ impl XorBoard {
         self.restore(mv, &undo.plan);
     }
 
-    /// Reads the move against pre-move bookkeeping.
+    /// Decodes the move against pre-move bookkeeping.
     #[inline(always)]
-    fn read(&self, mv: Move) -> Plan {
+    fn decode(&self, mv: Move) -> Plan {
         let (from, to) = (mv.from(), mv.to());
         let mover = PieceId(self.slot_at(from) - 1);
         let mut movers = [Mover { id: mover, from, to }; 2];
@@ -442,7 +468,7 @@ impl XorBoard {
         }
         for mover in plan.movers() {
             self.set_slot_at(mover.to, mover.id.0 + 1);
-            self.sq[mover.id.index()] = mover.to.0;
+            self.squares[mover.id.index()] = mover.to.0;
         }
 
         if let Some(promoted) = mv.promo() {
@@ -464,12 +490,12 @@ impl XorBoard {
         }
         for mover in plan.movers() {
             self.set_slot_at(mover.from, mover.id.0 + 1);
-            self.sq[mover.id.index()] = mover.from.0;
+            self.squares[mover.id.index()] = mover.from.0;
         }
 
         if let Some((id, square)) = plan.victim {
             self.set_slot_at(square, id.0 + 1);
-            self.sq[id.index()] = square.0;
+            self.squares[id.index()] = square.0;
         }
     }
 }

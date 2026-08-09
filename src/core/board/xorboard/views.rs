@@ -57,7 +57,7 @@ impl XorBoard {
         let king = self.class[class_index(PieceType::King, color)];
 
         slots(color_slots(color) & !king).filter_map(move |id| {
-            let raw = self.sq[id.index()];
+            let raw = self.squares[id.index()];
             if raw == NOWHERE {
                 return None;
             }
@@ -175,11 +175,11 @@ impl XorBoard {
             rest &= rest - 1;
             // A captured piece keeps its class bit; only its row, square and
             // mailbox entry are cleared, so liveness has to be tested here.
-            if self.sq[id.index()] == NOWHERE {
+            if self.squares[id.index()] == NOWHERE {
                 continue;
             }
 
-            let from = Square(self.sq[id.index()]);
+            let from = Square(self.squares[id.index()]);
 
             if pinned.check_bit(from) {
                 continue;
