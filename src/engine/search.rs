@@ -1694,18 +1694,14 @@ impl Worker<'_> {
     /// The record is per ply because a child's make would otherwise overwrite
     /// what its parent's unmake has to replay.
     #[inline(always)]
-    fn xb_make(&mut self, mv: Move, ply: usize) -> (Bitboard, Bitboard) {
+    fn xb_make(&mut self, mv: Move, ply: usize) {
         #[cfg(not(feature = "nostore"))]
         {
-            let lines = self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
+            self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
             debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
-            lines
         }
         #[cfg(feature = "nostore")]
-        {
-            let _ = (mv, ply);
-            (Bitboard(0), Bitboard(0))
-        }
+        let _ = (mv, ply);
     }
 
     #[inline(always)]
@@ -1773,7 +1769,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
-        let (opened, closed) = self.xb_make(mv, ply);
+        self.xb_make(mv, ply);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -1783,21 +1779,6 @@ impl Worker<'_> {
         // depth so the resulting tactics are properly resolved.
         if self.xb_checkers().is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
-        }
-
-        // ── Discovered-Line LMR Adjustment
-        // A quiet that steps off a friendly slider's ray leaves that slider
-        // hitting what it could not reach before, and one that steps into a ray
-        // takes a line away. The threat bonus above sees neither: the piece
-        // whose attacks changed is not the one that moved. Paired so the average
-        // reduction holds and the test is which quiets deserve the depth.
-        if reduction > 0 {
-            let queens = self.pos.role_bb[PieceType::Queen] & self.pos.side_bb[self.pos.stm];
-            if (opened & queens).is_not_empty() {
-                reduction = (reduction - sp.line_lmr_bonus).max(0);
-            } else if (closed & queens).is_not_empty() {
-                reduction = (reduction + sp.line_lmr_bonus).min((depth - 1).max(0));
-            }
         }
 
         res.move_count += 1;
