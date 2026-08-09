@@ -1121,7 +1121,7 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         "hosting" => variant_hosting(stream, repeats),
         "xorboard" => variant_xorboard::<{ Gather::Column }, false, false, { View::None }, false>(stream, repeats, "xorboard"),
         "xorboard_probe" => {
-            variant_xorboard::<{ Gather::Probe }, true, false, { View::None }, false>(stream, repeats, "xorboard_probe")
+            variant_xorboard::<{ Gather::Probe }, false, false, { View::None }, false>(stream, repeats, "xorboard_probe")
         },
         "xorboard_fused" => {
             variant_xorboard::<{ Gather::Prefix }, true, false, { View::FusedDanger }, false>(stream, repeats, "xorboard_fused")
