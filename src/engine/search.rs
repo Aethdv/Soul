@@ -34,15 +34,15 @@ use std::{
     time::Instant,
 };
 
+#[cfg(not(feature = "nostore"))]
+use crate::core::board::xorboard::{Undo as XbUndo, XorBoard};
 pub use crate::core::defs::Protocol;
 use crate::{
     core::{
-        board::{
-            Position,
-            attacks::Pins,
-            xorboard::{Undo as XbUndo, XorBoard},
+        board::{Position, attacks::Pins},
+        defs::{
+            Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in,
         },
-        defs::{INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in},
         moves::Move,
     },
     engine::{
@@ -146,8 +146,10 @@ pub struct Worker<'h> {
     pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 2]>,
     /// Per-piece attack rows, carried through make and unmake beside the board.
+    #[cfg(not(feature = "nostore"))]
     pub xorboard: XorBoard,
     /// One undo record per ply, boxed for the same reason the ply stack is.
+    #[cfg(not(feature = "nostore"))]
     pub xb_undo: Box<[XbUndo; MAX_PLY + 2]>,
     pub history: &'h mut History,
     /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
@@ -482,7 +484,9 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
+            #[cfg(not(feature = "nostore"))]
             xorboard: XorBoard::new(&self.root_pos),
+            #[cfg(not(feature = "nostore"))]
             xb_undo: vec![XbUndo::default(); MAX_PLY + 2]
                 .into_boxed_slice()
                 .try_into()
@@ -568,7 +572,10 @@ impl<'cfg> Searcher<'cfg> {
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
-                worker.xorboard = XorBoard::new(&worker.pos);
+                #[cfg(not(feature = "nostore"))]
+                {
+                    worker.xorboard = XorBoard::new(&worker.pos);
+                }
                 // The node's own best score, not `root_moves[0]`: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
@@ -1056,7 +1063,7 @@ impl Worker<'_> {
         let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
-        let checkers = self.xorboard.checkers(&self.pos);
+        let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
 
         // ── Check Extension (~11 Elo)
@@ -1302,7 +1309,7 @@ impl Worker<'_> {
             // drops the squares holding that side's own rooks and queens. Our
             // pieces can never stand there, so the two maps are interchangeable
             // here and the node count does not move.
-            let threats = self.xorboard.danger(opp);
+            let threats = self.xb_threats(opp);
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
@@ -1688,13 +1695,49 @@ impl Worker<'_> {
     /// what its parent's unmake has to replay.
     #[inline(always)]
     fn xb_make(&mut self, mv: Move, ply: usize) {
-        self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
-        debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
+            debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
+        }
+        #[cfg(feature = "nostore")]
+        let _ = (mv, ply);
     }
 
     #[inline(always)]
     fn xb_unmake(&mut self, mv: Move, ply: usize) {
-        self.xorboard.unmake(mv, &self.xb_undo[ply]);
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.unmake(mv, &self.xb_undo[ply]);
+        }
+        #[cfg(feature = "nostore")]
+        let _ = (mv, ply);
+    }
+
+    /// Every read of the store has a from-scratch twin, so `nostore` prices the
+    /// whole thing: maintenance minus what the reads give back.
+    #[inline(always)]
+    fn xb_checkers(&self) -> Bitboard {
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.checkers(&self.pos)
+        }
+        #[cfg(feature = "nostore")]
+        {
+            self.pos.checkers()
+        }
+    }
+
+    #[inline(always)]
+    fn xb_threats(&self, color: Color) -> Bitboard {
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.danger(color)
+        }
+        #[cfg(feature = "nostore")]
+        {
+            self.pos.threats(color)
+        }
     }
 
     fn search_move<N: NodeType>(
@@ -1721,7 +1764,7 @@ impl Worker<'_> {
         // A move that delivers check is forcing: the opponent must respond.
         // Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
-        if self.xorboard.checkers(&self.pos).is_not_empty() {
+        if self.xb_checkers().is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
         }
 
@@ -1891,7 +1934,7 @@ impl Worker<'_> {
                 (None, false, None)
             };
 
-        let checkers = self.xorboard.checkers(&self.pos);
+        let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
         let stm = self.pos.stm;
         let opp = stm.opposite();
