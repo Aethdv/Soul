@@ -380,10 +380,10 @@ impl XorBoard {
         let (first, second) = (plan.movers[0], plan.movers[1]);
         let castling = plan.castling;
 
-        // Idempotent without a branch: a move that relocates one piece leaves
-        // the second mover a copy of the first.
-        let mut affected = self.slider_attackers_of(changed);
-        affected &= !((1 << first.id.index()) | (1 << second.id.index()));
+        let mut affected = self.slider_attackers_of(changed) & !(1 << first.id.index());
+        if castling {
+            affected &= !(1 << second.id.index());
+        }
 
         if let Some((victim, square)) = plan.victim {
             affected &= !(1 << victim.index());
