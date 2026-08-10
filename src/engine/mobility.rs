@@ -8,8 +8,9 @@ use crate::{
     core::{
         board::{
             Position,
-            bitboard::{atk_bishop, atk_king, atk_knight, atk_rook, line_bb},
+            bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, line_bb},
             spatial::SpatialTensor,
+            xorboard::XorBoard,
         },
         defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
     },
@@ -53,7 +54,7 @@ pub struct MobilityData {
 
 /// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.
 ///
-/// - `mobility`: safe squares controlled, with exclusive squares counted twice.
+/// - `mobility`: squares off enemy pawn attacks, summed per piece rather than over the union.
 /// - `shadow_mobility`: safe x-ray (battery) squares we control.
 /// - `threats`: enemy pieces our direct attacks touch.
 /// - `shadow_threats`: enemy pieces our x-rays touch.
@@ -116,11 +117,6 @@ struct EvalCtx {
     // doesn't help assault the opponent's king zone.
     atk_us: Bitboard,
     atk_them: Bitboard,
-    // piece + pawn + king attacks.
-    // Used for mobility and piece-protection calculations
-    // where the king's influence matters.
-    area_us: Bitboard,
-    area_them: Bitboard,
     // Pawn-only attack maps, cached to avoid recomputation.
     pawn_atk_us: Bitboard,
     pawn_atk_them: Bitboard,
@@ -170,13 +166,21 @@ impl SafetyMetrics {
 
 impl Mobility {
     #[inline]
-    pub fn compute_all(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> MobilityData {
+    pub fn compute_all(
+        pos: &Position,
+        tensor: &SpatialTensor,
+        pinned_w: Bitboard,
+        pinned_b: Bitboard,
+        rows: Option<&XorBoard>,
+    ) -> MobilityData {
         let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
+        let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them);
+        let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us);
         // King safety: analyzed once per side, stored raw for both consumers.
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
-        let metrics_us = score_side(ctx.them, ctx.atk_us, ctx.area_us, ctx.area_them, ctx.pawn_atk_them, ctx.xray_us);
-        let metrics_them = score_side(ctx.us, ctx.atk_them, ctx.area_them, ctx.area_us, ctx.pawn_atk_us, ctx.xray_them);
+        let metrics_us = score_side(ctx.them, ctx.atk_us, mob_us, ctx.pawn_atk_them, ctx.xray_us);
+        let metrics_them = score_side(ctx.us, ctx.atk_them, mob_them, ctx.pawn_atk_us, ctx.xray_them);
         MobilityData { metrics_us, metrics_them, safety_us, safety_them }
     }
 
@@ -457,8 +461,6 @@ impl EvalCtx {
         Self {
             atk_us,
             atk_them,
-            area_us: atk_us | atk_king(ksq_us),
-            area_them: atk_them | atk_king(ksq_them),
             pawn_atk_us,
             pawn_atk_them,
             ksq_us,
@@ -484,23 +486,87 @@ fn king_sq(king_bb: Bitboard) -> Square {
     king_bb.lsb()
 }
 
+/// What each piece of `color` reaches inside `area`, summed over the side.
+///
+/// A fill cannot produce this. ORing the sides together loses which piece got
+/// where, so a square two of our pieces attack is worth one to the union and two
+/// here. The rows keep the identity and answer in one vectorised pass; without
+/// them the same sum is a probe per piece, which only an offline tuner can
+/// afford.
+///
+/// The pin policy matches the tensor's: a pinned knight has nothing legal, a
+/// pinned slider keeps its pin ray, a pinned pawn is left whole.
+fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
+    if let Some(rows) = rows {
+        return rows.mobility(color, pinned, ksq, area);
+    }
+
+    let occ = pos.occupancy();
+    let mut total = 0;
+
+    for square in pos.side_bb[color] & !pos.role_bb[PieceType::King] {
+        let piece = pos.piece_at(square);
+        let attacks = match piece {
+            PieceType::Pawn => atk_pawn(square, color),
+            PieceType::Knight => atk_knight(square),
+            PieceType::Bishop => atk_bishop(square, occ),
+            PieceType::Rook => atk_rook(square, occ),
+            PieceType::Queen => atk_rook(square, occ) | atk_bishop(square, occ),
+            _ => Bitboard(0),
+        };
+
+        let legal = match piece {
+            _ if !pinned.check_bit(square) => attacks,
+            PieceType::Knight => Bitboard(0),
+            PieceType::Bishop | PieceType::Rook | PieceType::Queen => attacks & line_bb(ksq, square),
+            _ => attacks,
+        };
+
+        total += (legal & area).popcount() as i32;
+    }
+    total
+}
+
 #[inline(always)]
-fn score_side(
-    them: Bitboard,
-    atk_us: Bitboard,
-    area_us: Bitboard,
-    area_them: Bitboard,
-    enemy_pawn_atk: Bitboard,
-    xray_us: Bitboard,
-) -> SideMetrics {
-    // Squares we control that aren't under enemy pawn fire.
-    let safe = area_us & !enemy_pawn_atk;
-    // Double count exclusive squares, single count shared ones.
-    let mobility = (safe & !area_them).popcount() as i32 + safe.popcount() as i32;
+fn score_side(them: Bitboard, atk_us: Bitboard, mobility: i32, enemy_pawn_atk: Bitboard, xray_us: Bitboard) -> SideMetrics {
     // Enemy pieces our direct attacks touch (king excluded from attack map).
     let threats = (atk_us & them).popcount() as i32;
     let shadow_mobility = (xray_us & !enemy_pawn_atk).popcount() as i32;
     let shadow_threats = (xray_us & them).popcount() as i32;
 
     SideMetrics { mobility, shadow_mobility, threats, shadow_threats }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::board::{STARTPOS, xorboard::XorBoard};
+
+    /// The rows and the probes have to agree, or the tuner fits a feature the
+    /// search does not compute.
+    #[test]
+    fn per_piece_mobility_matches_the_probes() {
+        const FENS: [&str; 5] = [
+            STARTPOS,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "1rqbkrbn/1ppppp1p/1n6/p1N3p1/8/2P4P/PP1PPPP1/1RQBKRBN w FBfb - 0 1",
+        ];
+
+        for fen in FENS {
+            let pos = Position::from_fen(fen);
+            let rows = XorBoard::new(&pos);
+
+            for color in [Color::White, Color::Black] {
+                let pinned = pos.pinned_pieces(color);
+                let ksq = king_sq(pos.pieces(PieceType::King, color));
+                let area = !pos.pawn_attacks(color.opposite());
+
+                let from_rows = piece_mobility(&pos, Some(&rows), color, pinned, ksq, area);
+                let from_probes = piece_mobility(&pos, None, color, pinned, ksq, area);
+                assert_eq!(from_rows, from_probes, "{fen} {color:?}");
+            }
+        }
+    }
 }

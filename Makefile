@@ -31,7 +31,7 @@ DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
         evaltune searchtune test oracle flops seeformat format clippy profile etprofile \
-        releases avx2 avx2-bmi2 avx512 corrstats movepicker
+        releases avx2 avx2-bmi2 avx512 corrstats movepicker storecost
 
 all: openbench
 
@@ -94,6 +94,9 @@ native: ## Build optimized for your CPU
 bench: ## Fast compile w/ bench
 	@RUSTFLAGS="-C target-cpu=native" cargo build --profile quick --quiet
 	@./target/quick/$(EXE_NAME) bench $(DEPTH)
+
+storecost: ## Price XorBoard against a build without it (RUNS=5)
+	@python3 scripts/storecost.py $(RUNS)
 
 corrstats: ## Native build with correction-history stats
 	@echo "Building $(EXE_NAME)-corrstats..."

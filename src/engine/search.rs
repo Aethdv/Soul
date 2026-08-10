@@ -34,11 +34,15 @@ use std::{
     time::Instant,
 };
 
+#[cfg(not(feature = "nostore"))]
+use crate::core::board::xorboard::Undo as XbUndo;
 pub use crate::core::defs::Protocol;
 use crate::{
     core::{
-        board::{Position, attacks::Pins},
-        defs::{INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in},
+        board::{Position, attacks::Pins, xorboard::XorBoard},
+        defs::{
+            Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in,
+        },
         moves::Move,
     },
     engine::{
@@ -141,6 +145,12 @@ pub struct Worker<'h> {
     pub pos: Position,
     pub accumulator: Vi16x8,
     pub stack: Box<[Stack; MAX_PLY + 2]>,
+    /// Per-piece attack rows, carried through make and unmake beside the board.
+    #[cfg(not(feature = "nostore"))]
+    pub xorboard: XorBoard,
+    /// One undo record per ply, boxed for the same reason the ply stack is.
+    #[cfg(not(feature = "nostore"))]
+    pub xb_undo: Box<[XbUndo; MAX_PLY + 2]>,
     pub history: &'h mut History,
     /// Per-search pawn-structure cache, keyed on the incremental `pawn_key`.
     pub pawn_cache: PawnCache,
@@ -474,6 +484,13 @@ impl<'cfg> Searcher<'cfg> {
                 .into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!()),
+            #[cfg(not(feature = "nostore"))]
+            xorboard: XorBoard::new(&self.root_pos),
+            #[cfg(not(feature = "nostore"))]
+            xb_undo: vec![XbUndo::default(); MAX_PLY + 2]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap_or_else(|_| unreachable!()),
 
             history,
             pawn_cache: PawnCache::new(),
@@ -497,7 +514,6 @@ impl<'cfg> Searcher<'cfg> {
         // shared hard cap (same start_time, same limits) via check_signals;
         // they just don't gate their own iterations on the clock; they feed
         // the TT for as long as the main thread is still running.
-
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
             let elapsed = self.tm.elapsed().as_millis() as u64;
@@ -555,6 +571,10 @@ impl<'cfg> Searcher<'cfg> {
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
+                #[cfg(not(feature = "nostore"))]
+                {
+                    worker.xorboard = XorBoard::new(&worker.pos);
+                }
                 // The node's own best score, not `root_moves[0]`: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
@@ -915,7 +935,7 @@ impl Worker<'_> {
     fn evaluate(&mut self) -> i32 {
         let phase = extract_phase(&self.accumulator);
         let pawn = self.pawn_cache.probe(&self.pos);
-        let features = SharedFeatures::with_pawn(&self.pos, &pawn);
+        let features = SharedFeatures::with_pawn(&self.pos, &pawn, self.xb_store());
         evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &self.eval_params, Some(&features))
     }
 
@@ -1042,7 +1062,7 @@ impl Worker<'_> {
         let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
         let hash_move = tt_move.or(pv_move);
 
-        let checkers = self.pos.checkers();
+        let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
 
         // ── Check Extension (~11 Elo)
@@ -1201,7 +1221,9 @@ impl Worker<'_> {
 
             let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
 
-            while let Some(mv) = picker.next(&self.pos, self.history) {
+            self.xb_enter(ply);
+
+            while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
@@ -1214,6 +1236,7 @@ impl Worker<'_> {
 
                 let saved_acc = self.accumulator;
                 let undo = self.pos.make_move(mv, &mut self.accumulator);
+                self.xb_make(mv);
 
                 searcher.tt.prefetch(self.pos.hash);
                 searcher.zobrist_trail.push(self.pos.hash);
@@ -1230,6 +1253,7 @@ impl Worker<'_> {
 
                 searcher.zobrist_trail.pop();
                 self.pos.unmake_move(mv, &undo);
+                self.xb_unmake(mv, ply);
                 self.accumulator = saved_acc;
 
                 let value = value?;
@@ -1255,6 +1279,8 @@ impl Worker<'_> {
         let mut res = MoveResult { move_count: 0, best_eval: -INF, alpha, best_move: Move::null() };
 
         if N::ROOT {
+            self.xb_enter(ply);
+
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
 
@@ -1282,7 +1308,11 @@ impl Worker<'_> {
         } else {
             let stm = self.pos.stm;
             let opp = stm.opposite();
-            let threats = self.pos.threats(opp);
+            // Wider than the setwise fill, which ends in `& !generator` and so
+            // drops the squares holding that side's own rooks and queens. Our
+            // pieces can never stand there, so the two maps are interchangeable
+            // here and the node count does not move.
+            let threats = self.xb_threats(opp);
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
@@ -1299,7 +1329,9 @@ impl Worker<'_> {
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
 
-            while let Some(mv) = picker.next(&self.pos, self.history) {
+            self.xb_enter(ply);
+
+            while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
                 }
@@ -1655,6 +1687,87 @@ impl Worker<'_> {
         Ok(res.best_eval)
     }
 
+    /// The rows a ply's moves all return to. Taken once, before the moves,
+    /// because a child's make would otherwise overwrite what its parent's
+    /// unmake has to replay.
+    #[inline(always)]
+    fn xb_enter(&mut self, ply: usize) {
+        #[cfg(not(feature = "nostore"))]
+        self.xorboard.snapshot(&mut self.xb_undo[ply]);
+        #[cfg(feature = "nostore")]
+        let _ = ply;
+    }
+
+    #[cfg(not(feature = "nostore"))]
+    #[inline(always)]
+    fn xb_store(&self) -> Option<&XorBoard> {
+        Some(&self.xorboard)
+    }
+
+    #[cfg(feature = "nostore")]
+    #[inline(always)]
+    fn xb_store(&self) -> Option<&XorBoard> {
+        None
+    }
+
+    /// Brings the rows up to date for a move the board has already made.
+    #[inline(always)]
+    fn xb_make(&mut self, mv: Move) {
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.make(&self.pos, mv);
+            debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
+        }
+        #[cfg(feature = "nostore")]
+        let _ = mv;
+    }
+
+    #[inline(always)]
+    fn xb_unmake(&mut self, mv: Move, ply: usize) {
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.unmake(mv, &self.xb_undo[ply]);
+        }
+        #[cfg(feature = "nostore")]
+        let _ = (mv, ply);
+    }
+
+    #[inline(always)]
+    fn xb_checkers(&self) -> Bitboard {
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.checkers(&self.pos)
+        }
+        #[cfg(feature = "nostore")]
+        {
+            self.pos.checkers()
+        }
+    }
+
+    #[cfg(not(feature = "nostore"))]
+    #[inline(always)]
+    fn xb_rows(&self) -> &XorBoard {
+        &self.xorboard
+    }
+
+    #[cfg(feature = "nostore")]
+    #[inline(always)]
+    fn xb_rows(&self) -> core::marker::PhantomData<&()> {
+        core::marker::PhantomData
+    }
+
+    #[inline(always)]
+    fn xb_threats(&self, color: Color) -> Bitboard {
+        #[cfg(not(feature = "nostore"))]
+        {
+            self.xorboard.danger(color)
+        }
+        #[cfg(feature = "nostore")]
+        {
+            self.pos.threats(color)
+        }
+    }
+
     /// Make a move, search it, unmake it. The innermost loop body every
     /// move in the tree passes through exactly once.
     ///
@@ -1678,6 +1791,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
+        self.xb_make(mv);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -1685,7 +1799,7 @@ impl Worker<'_> {
         // A move that delivers check is forcing: the opponent must respond.
         // Don't reduce it as aggressively; give it a bit more
         // depth so the resulting tactics are properly resolved.
-        if self.pos.checkers().is_not_empty() {
+        if self.xb_checkers().is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
         }
 
@@ -1700,6 +1814,7 @@ impl Worker<'_> {
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
+        self.xb_unmake(mv, ply);
         self.accumulator = saved_acc;
 
         let eval = eval?;
@@ -1854,7 +1969,7 @@ impl Worker<'_> {
                 (None, false, None)
             };
 
-        let checkers = self.pos.checkers();
+        let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
         let stm = self.pos.stm;
         let opp = stm.opposite();
@@ -1913,7 +2028,9 @@ impl Worker<'_> {
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 
-        while let Some(mv) = picker.next(&self.pos, self.history) {
+        self.xb_enter(ply);
+
+        while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                 continue;
             }
@@ -1941,6 +2058,7 @@ impl Worker<'_> {
 
             let saved_acc = self.accumulator;
             let undo = self.pos.make_move(mv, &mut self.accumulator);
+            self.xb_make(mv);
 
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);
@@ -1949,6 +2067,7 @@ impl Worker<'_> {
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_move(mv, &undo);
+            self.xb_unmake(mv, ply);
             self.accumulator = saved_acc;
 
             let score = -score?;

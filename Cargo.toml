@@ -46,6 +46,8 @@ atomic-wait = "1.1"
 searchtune = []
 corrstats = []
 mvpstats = []
+# Builds without XorBoard, so the store can be priced against its own absence.
+nostore = []
 
 [profile.release]
 lto = "fat"

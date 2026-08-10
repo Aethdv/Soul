@@ -218,7 +218,7 @@ pub fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square)
 ///   O-O-O → king lands on c-file, rook on d-file
 ///   O-O   → king lands on g-file, rook on f-file
 #[inline(always)]
-fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Square) {
+pub(crate) fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Square) {
     let queenside = rook_sq.file() < king_sq.file();
     let rank = king_sq.rank();
     (

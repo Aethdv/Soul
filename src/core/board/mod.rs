@@ -26,6 +26,7 @@ pub mod bitboard;
 mod fen;
 mod make;
 pub mod spatial;
+pub mod xorboard;
 
 #[cfg(test)] mod tests;
 
@@ -99,6 +100,7 @@ const _: () = {
 };
 
 pub use fen::Fen;
+pub(crate) use make::castling_targets;
 
 //  192 bytes, spans three cache lines.
 //
@@ -562,7 +564,13 @@ impl Position {
         }
     }
 
-    /// Every square `color` attacks: the threat map.
+    /// The threat map: nearly every square `color` attacks.
+    ///
+    /// The setwise fill ends in `& !generator`, and the generator is the whole
+    /// rook-plus-queen union, so a square holding one of them is dropped even
+    /// when another attacks it. A rook defending a rook does not appear. Safe
+    /// for callers asking about their own pieces, which can never stand there,
+    /// and wrong for anything asking about the board.
     #[inline]
     pub fn threats(&self, color: Color) -> Bitboard {
         let us = self.side_bb[color];
