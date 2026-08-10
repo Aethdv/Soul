@@ -1237,7 +1237,7 @@ impl Worker<'_> {
 
                 let saved_acc = self.accumulator;
                 let undo = self.pos.make_move(mv, &mut self.accumulator);
-                self.xb_make(mv, ply);
+                self.xb_make(mv);
 
                 searcher.tt.prefetch(self.pos.hash);
                 searcher.zobrist_trail.push(self.pos.hash);
@@ -1709,14 +1709,14 @@ impl Worker<'_> {
     }
 
     #[inline(always)]
-    fn xb_make(&mut self, mv: Move, ply: usize) {
+    fn xb_make(&mut self, mv: Move) {
         #[cfg(not(feature = "nostore"))]
         {
-            self.xorboard.make(&self.pos, mv, &mut self.xb_undo[ply]);
+            self.xorboard.make(&self.pos, mv);
             debug_assert!(self.xorboard.agrees_with(&self.pos), "xorboard drift after {mv:?}");
         }
         #[cfg(feature = "nostore")]
-        let _ = (mv, ply);
+        let _ = mv;
     }
 
     #[inline(always)]
@@ -1784,7 +1784,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
-        self.xb_make(mv, ply);
+        self.xb_make(mv);
 
         searcher.tt.prefetch(self.pos.hash);
 
@@ -2051,7 +2051,7 @@ impl Worker<'_> {
 
             let saved_acc = self.accumulator;
             let undo = self.pos.make_move(mv, &mut self.accumulator);
-            self.xb_make(mv, ply);
+            self.xb_make(mv);
 
             moves_made += 1;
             searcher.zobrist_trail.push(self.pos.hash);

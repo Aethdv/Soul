@@ -60,17 +60,17 @@ pub struct XorBoard {
     slider_slots: u64,
 }
 
-/// The rows as they stood at the node, restored wholesale by unmake.
+/// The store as it stood at the node, restored wholesale by unmake.
 ///
 /// One snapshot serves every move tried at a ply: each make and its unmake put
-/// the rows back where they were, so all of a node's siblings would otherwise
-/// save the same 256 bytes over and over.
+/// the state back where it was, so all of a node's siblings would otherwise
+/// save the same 352 bytes over and over. `kind` and `class` stay out of it,
+/// since only a promotion moves them.
 #[derive(Clone, Copy, Debug)]
 pub struct Undo {
     rows: [u64; SLOTS],
-    /// Make already worked out which slots move where; unmake reads it back off
-    /// the record rather than deriving it a second time from the flags.
-    plan: Plan,
+    at: [u8; 64],
+    squares: [u8; SLOTS],
 }
 
 /// One piece the move itself relocates: the mover, and the rook of a castling.
@@ -369,11 +369,11 @@ impl XorBoard {
     /// piece saw one of the changed squares before the move. That makes the
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
+    ///
     /// [`XorBoard::snapshot`] must have run for this ply, or unmake restores
-    /// rows that belong to another node.
-    pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
+    /// state that belongs to another node.
+    pub fn make(&mut self, pos: &Position, mv: Move) {
         let (plan, changed) = self.decode(mv);
-        undo.plan = plan;
 
         let mut affected = self.slider_attackers_of(changed);
         for mover in plan.movers() {
@@ -406,11 +406,21 @@ impl XorBoard {
     #[inline(always)]
     pub fn snapshot(&self, undo: &mut Undo) {
         undo.rows = self.rows;
+        undo.at = self.at;
+        undo.squares = self.squares;
     }
 
+    /// The victim, the movers and the mailbox all come back with the arrays. A
+    /// promotion's class is the one thing a copy cannot undo, and the restored
+    /// mailbox names the piece to undo it for.
     pub fn unmake(&mut self, mv: Move, undo: &Undo) {
         self.rows = undo.rows;
-        self.restore(mv, &undo.plan);
+        self.at = undo.at;
+        self.squares = undo.squares;
+
+        if mv.is_promotion() {
+            self.reclass(PieceId(self.slot_at(mv.from()) - 1), PieceType::Pawn);
+        }
     }
 
     /// Decodes the move against pre-move bookkeeping, and with it the squares
@@ -466,33 +476,9 @@ impl XorBoard {
             self.reclass(id, promoted);
         }
     }
-
-    /// `relocate` run backwards. The victim lands last: for a capture its square
-    /// is the mover's destination, so the later write has to be the one to win.
-    #[inline(always)]
-    fn restore(&mut self, mv: Move, plan: &Plan) {
-        if mv.is_promotion() {
-            self.reclass(plan.movers[0].id, PieceType::Pawn);
-        }
-
-        for mover in plan.movers() {
-            self.set_slot_at(mover.to, 0);
-        }
-        for mover in plan.movers() {
-            self.set_slot_at(mover.from, mover.id.0 + 1);
-            self.squares[mover.id.index()] = mover.from.0;
-        }
-
-        if let Some((id, square)) = plan.victim {
-            self.set_slot_at(square, id.0 + 1);
-            self.squares[id.index()] = square.0;
-        }
-    }
 }
 
 impl Plan {
-    const EMPTY: Self = Self { movers: [Mover { id: PieceId(0), from: Square(0), to: Square(0) }; 2], n_movers: 0, victim: None };
-
     /// The pieces the move relocates, which is one for anything but a castling.
     #[inline(always)]
     fn movers(&self) -> impl Iterator<Item = &Mover> {
@@ -502,7 +488,7 @@ impl Plan {
 
 impl Undo {
     pub const fn new() -> Self {
-        Self { rows: [0; SLOTS], plan: Plan::EMPTY }
+        Self { rows: [0; SLOTS], at: [0; 64], squares: [NOWHERE; SLOTS] }
     }
 }
 
@@ -568,7 +554,7 @@ mod tests {
                 let before = board.clone();
                 let state = pos.make_move(mv, &mut acc);
                 board.snapshot(&mut undo);
-                board.make(&pos, mv, &mut undo);
+                board.make(&pos, mv);
 
                 let mut oracle = board.clone();
                 oracle.refresh(&pos);
@@ -656,7 +642,7 @@ mod tests {
                 assert_eq!(board.kind, before.kind, "unmake types, {fen} ply {ply}\n{pos}");
                 pos.make_move(mv, &mut acc);
                 board.snapshot(&mut undo);
-                board.make(&pos, mv, &mut undo);
+                board.make(&pos, mv);
             }
         }
     }
