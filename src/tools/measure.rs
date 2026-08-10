@@ -126,15 +126,12 @@ struct Outcome {
 impl ByteStore {
     fn from_scratch(pos: &Position) -> Self {
         let mut st = Self { bb: byteboard::ByteBoard::empty(), ids: Ids::seed(pos) };
-
         for id in 0..32 {
             let sq = st.ids.list[id];
-
             if sq != 0xFF {
                 st.bb.put(Square(sq), byteboard::place(color(id), st.ids.lut[id], (id & 15) as u8));
             }
         }
-
         st.rebuild(pos);
         st
     }
@@ -147,7 +144,6 @@ impl ByteStore {
 
         for id in 0..32 {
             let sq = self.ids.list[id];
-
             if sq == 0xFF {
                 continue;
             }
@@ -164,7 +160,6 @@ impl ByteStore {
     #[inline(always)]
     fn make(&mut self, g: &byteboard::Geometry, mv: Move) {
         let plan = self.ids.read_move(mv);
-
         // A capture replaces one blocker with another, so the lines through the
         // destination never change and the toggle there is skipped on both the
         // victim and the arriving piece.
@@ -174,7 +169,6 @@ impl ByteStore {
             if !replaced {
                 self.bb.remove(g, victim_sq, color(vid), (vid & 15) as u8);
             }
-
             self.ids.mailbox[usize::from(victim_sq)] = 0;
             self.ids.list[vid] = 0xFF;
         }
@@ -485,11 +479,9 @@ fn attacks_of(pt: PieceType, sq: Square, color: usize, occ: Bitboard) -> Bitboar
 #[inline(always)]
 fn planes_of(pt: PieceType, sq: Square, color: usize, occ: Bitboard) -> (Bitboard, Bitboard) {
     let direct = attacks_of(pt, sq, color, occ);
-
     if !is_slider(pt) {
         return (direct, Bitboard(0));
     }
-
     (direct, attacks_of(pt, sq, color, occ & !direct) & !direct)
 }
 
@@ -840,7 +832,6 @@ impl XorBoard {
             self.rows[id] = direct.0;
             self.xray[id] = behind.0;
         }
-
         self.vision = self.slider_vision();
     }
 }
@@ -905,7 +896,6 @@ fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
                 let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
                 live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
             }
-
             live
         }
     }
@@ -932,7 +922,6 @@ fn column_fixed(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 {
             let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
             live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
         }
-
         live
     }
 }

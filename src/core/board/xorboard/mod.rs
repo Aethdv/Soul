@@ -369,7 +369,6 @@ impl XorBoard {
     /// state that belongs to another node.
     pub fn make(&mut self, pos: &Position, mv: Move) {
         let (plan, changed) = self.decode(mv);
-
         let (first, second) = (plan.movers[0], plan.movers[1]);
         let castling = plan.castling;
 
