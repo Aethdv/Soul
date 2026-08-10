@@ -10,14 +10,7 @@
 //! forgets which piece set the bit, where here the contributor is the index.
 //! The unmake record counts pieces touched, not squares attacked.
 //!
-//! Maintained through the search's make and unmake, and not paying for itself:
-//! 121.3 instructions a node on AVX2 and 82.6 on AVX-512, net of what `checkers`
-//! and the picker's threat map give back, and measurable by `make storecost`
-//! whenever either side of that moves. Hot magics and a setwise eval leave a
-//! from-side store little to win, and the one thing only incrementality gives,
-//! the add and remove events, has no consumer here yet. Threat inputs would
-//! change what the diff stream is for without settling it: Stockfish generates
-//! the same events from probes and keeps no table.
+//! Maintained through the search's make and unmake.
 
 mod views;
 
@@ -292,7 +285,7 @@ impl XorBoard {
         unsafe {
             #[cfg(target_feature = "avx512f")]
             {
-                let want = _mm512_set1_epi64(mask.0 as i64);
+                let want = _mm512_set1_epi64(mask.0.cast_signed());
                 let mut set = 0u64;
 
                 for wide in 0..4 {
@@ -306,14 +299,14 @@ impl XorBoard {
 
             #[cfg(not(target_feature = "avx512f"))]
             {
-                let want = _mm256_set1_epi64x(mask.0 as i64);
+                let want = _mm256_set1_epi64x(mask.0.cast_signed());
                 let zero = _mm256_setzero_si256();
                 let mut set = 0u64;
                 for group in 0..8 {
                     if GROUPS >> group & 1 != 0 {
                         let rows = _mm256_loadu_si256(self.rows.as_ptr().add(group * 4).cast());
                         let idle = _mm256_cmpeq_epi64(_mm256_and_si256(rows, want), zero);
-                        let live = !(_mm256_movemask_pd(_mm256_castsi256_pd(idle)) as u32) & 0xF;
+                        let live = !_mm256_movemask_pd(_mm256_castsi256_pd(idle)).cast_unsigned() & 0xF;
                         set |= u64::from(live) << (group * 4);
                     }
                 }

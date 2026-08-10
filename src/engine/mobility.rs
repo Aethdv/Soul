@@ -54,7 +54,7 @@ pub struct MobilityData {
 
 /// Spatial metrics for one side: `[mobility, shadow_mobility, threats, shadow_threats]`.
 ///
-/// - `mobility`: safe squares controlled, with exclusive squares counted twice.
+/// - `mobility`: squares off enemy pawn attacks, summed per piece rather than over the union.
 /// - `shadow_mobility`: safe x-ray (battery) squares we control.
 /// - `threats`: enemy pieces our direct attacks touch.
 /// - `shadow_threats`: enemy pieces our x-rays touch.
@@ -117,9 +117,6 @@ struct EvalCtx {
     // doesn't help assault the opponent's king zone.
     atk_us: Bitboard,
     atk_them: Bitboard,
-    // piece + pawn + king attacks.
-    // Used for mobility and piece-protection calculations
-    // where the king's influence matters.
     // Pawn-only attack maps, cached to avoid recomputation.
     pawn_atk_us: Bitboard,
     pawn_atk_them: Bitboard,

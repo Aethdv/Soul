@@ -1,3 +1,9 @@
+//! Rose's ByteBoard, the square-indexed store the rig measures XorBoard against.
+//!
+//! A byte per square packs type, colour and slot, and `attack[colour][square]`
+//! is the sixteen-bit set of that side's slots hitting the square. Updates run
+//! setwise over 64-byte vectors against the ray geometry in [`Geometry`].
+
 use core::arch::x86_64::*;
 
 use crate::core::defs::{Color, PieceType, Square};
@@ -135,11 +141,6 @@ impl ByteBoard {
     }
 
     #[inline(always)]
-    pub fn strip(&mut self, color: Color, id: u8) {
-        self.clear(color, id);
-    }
-
-    #[inline(always)]
     pub fn add(&mut self, g: &Geometry, sq: Square, p: u8, color: Color, pt: PieceType) {
         self.toggle(g, sq);
         self.land(g, sq, p, color, pt);
@@ -174,11 +175,11 @@ impl ByteBoard {
     }
 
     #[inline(always)]
-    fn clear(&mut self, color: Color, id: u8) {
+    pub fn clear(&mut self, color: Color, id: u8) {
         // SAFETY: AVX2 per the weave/mod.rs gate; four 32-byte accesses of a
         // 128-byte wordboard.
         unsafe {
-            let m = _mm256_set1_epi16(!(1u16 << id) as i16);
+            let m = _mm256_set1_epi16((!(1u16 << id)).cast_signed());
             let p = self.attack[usize::from(color)].as_mut_ptr();
 
             for q in 0..4 {
@@ -219,7 +220,10 @@ impl V64 {
     #[inline(always)]
     pub fn splat(b: u8) -> Self {
         // SAFETY: AVX2 per the gate.
-        unsafe { Self(_mm256_set1_epi8(b as i8), _mm256_set1_epi8(b as i8)) }
+        unsafe {
+            let v = _mm256_set1_epi8(b.cast_signed());
+            Self(v, v)
+        }
     }
 
     #[inline(always)]
@@ -248,20 +252,20 @@ impl V64 {
         unsafe {
             #[cfg(all(target_feature = "avx512vbmi", target_feature = "avx512bw"))]
             {
-                let src = _mm512_inserti64x4(_mm512_castsi256_si512(self.0), self.1, 1);
+                let src = _mm512_inserti64x4::<1>(_mm512_castsi256_si512(self.0), self.1);
                 let i = _mm512_loadu_si512(idx.as_ptr().cast());
                 let live = _mm512_cmplt_epu8_mask(i, _mm512_set1_epi8(64));
                 let r = _mm512_maskz_permutexvar_epi8(live, i, src);
-                Self(_mm512_castsi512_si256(r), _mm512_extracti64x4_epi64(r, 1))
+                Self(_mm512_castsi512_si256(r), _mm512_extracti64x4_epi64::<1>(r))
             }
 
             #[cfg(not(all(target_feature = "avx512vbmi", target_feature = "avx512bw")))]
             {
                 let chunks = [
-                    _mm256_permute2x128_si256(self.0, self.0, 0x00),
-                    _mm256_permute2x128_si256(self.0, self.0, 0x11),
-                    _mm256_permute2x128_si256(self.1, self.1, 0x00),
-                    _mm256_permute2x128_si256(self.1, self.1, 0x11),
+                    _mm256_permute2x128_si256::<0x00>(self.0, self.0),
+                    _mm256_permute2x128_si256::<0x11>(self.0, self.0),
+                    _mm256_permute2x128_si256::<0x00>(self.1, self.1),
+                    _mm256_permute2x128_si256::<0x11>(self.1, self.1),
                 ];
 
                 let sign = _mm256_set1_epi8(-128);
@@ -269,7 +273,7 @@ impl V64 {
 
                 for (h, o) in out.iter_mut().enumerate() {
                     let want = _mm256_loadu_si256(idx.as_ptr().add(h * 32).cast());
-                    let over = _mm256_slli_epi16(_mm256_and_si256(want, _mm256_set1_epi8(0x40)), 1);
+                    let over = _mm256_slli_epi16::<1>(_mm256_and_si256(want, _mm256_set1_epi8(0x40)));
                     let low = _mm256_or_si256(_mm256_and_si256(want, _mm256_set1_epi8(15)), _mm256_and_si256(want, sign));
                     let low = _mm256_or_si256(low, _mm256_and_si256(over, sign));
                     let which = _mm256_and_si256(want, _mm256_set1_epi8(0x30));
@@ -298,8 +302,8 @@ impl V64 {
             #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
             {
                 let z = _mm256_setzero_si256();
-                let lo = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.0, z)) as u32;
-                let hi = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.1, z)) as u32;
+                let lo = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.0, z)).cast_unsigned();
+                let hi = _mm256_movemask_epi8(_mm256_cmpeq_epi8(self.1, z)).cast_unsigned();
                 !(u64::from(lo) | u64::from(hi) << 32)
             }
         }
@@ -310,7 +314,7 @@ impl V64 {
         // SAFETY: AVX2 per the gate; the lane-kind reads cover 64 bytes of a
         // 64-byte array.
         unsafe {
-            let s = _mm256_set1_epi8(SLIDER as i8);
+            let s = _mm256_set1_epi8(SLIDER.cast_signed());
             let z = _mm256_setzero_si256();
             let mut out = 0u64;
             for (h, v) in [self.0, self.1].into_iter().enumerate() {
@@ -319,7 +323,7 @@ impl V64 {
                 let right_way = _mm256_cmpeq_epi8(_mm256_and_si256(v, kind), kind);
                 let knight = _mm256_cmpeq_epi8(kind, z);
                 let m = _mm256_andnot_si256(knight, _mm256_and_si256(is_slider, right_way));
-                out |= u64::from(_mm256_movemask_epi8(m) as u32) << (h * 32);
+                out |= u64::from(_mm256_movemask_epi8(m).cast_unsigned()) << (h * 32);
             }
             out
         }
@@ -360,7 +364,7 @@ impl V64 {
         // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
         // register-only.
         unsafe {
-            let v = _mm256_set1_epi8(b as i8);
+            let v = _mm256_set1_epi8(b.cast_signed());
 
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
@@ -410,15 +414,15 @@ impl V64 {
 
                 let w0 = _mm256_or_si256(
                     _mm256_cvtepu8_epi16(_mm256_castsi256_si128(lo)),
-                    _mm256_slli_epi16(_mm256_cvtepu8_epi16(_mm256_castsi256_si128(hi)), 8),
+                    _mm256_slli_epi16::<8>(_mm256_cvtepu8_epi16(_mm256_castsi256_si128(hi))),
                 );
                 let w1 = _mm256_or_si256(
-                    _mm256_cvtepu8_epi16(_mm256_extracti128_si256(lo, 1)),
-                    _mm256_slli_epi16(_mm256_cvtepu8_epi16(_mm256_extracti128_si256(hi, 1)), 8),
+                    _mm256_cvtepu8_epi16(_mm256_extracti128_si256::<1>(lo)),
+                    _mm256_slli_epi16::<8>(_mm256_cvtepu8_epi16(_mm256_extracti128_si256::<1>(hi))),
                 );
 
                 let m0 = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(blk));
-                let m1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(blk, 1));
+                let m1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(blk));
 
                 white[h * 2] = _mm256_andnot_si256(m0, w0);
                 black[h * 2] = _mm256_and_si256(m0, w0);
@@ -435,7 +439,7 @@ impl V64 {
 fn spread(bits: u32) -> __m256i {
     // SAFETY: AVX2 per the gate; register-only.
     unsafe {
-        let v = _mm256_set1_epi32(bits as i32);
+        let v = _mm256_set1_epi32(bits.cast_signed());
         let idx = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
         let sel = _mm256_setr_epi8(
             1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128,

@@ -514,7 +514,6 @@ impl<'cfg> Searcher<'cfg> {
         // shared hard cap (same start_time, same limits) via check_signals;
         // they just don't gate their own iterations on the clock; they feed
         // the TT for as long as the main thread is still running.
-
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
             let elapsed = self.tm.elapsed().as_millis() as u64;
@@ -1688,18 +1687,9 @@ impl Worker<'_> {
         Ok(res.best_eval)
     }
 
-    /// Make a move, search it, unmake it. The innermost loop body every
-    /// move in the tree passes through exactly once.
-    ///
-    /// # Precondition
-    /// `mv` must be legal. Root legality is guaranteed by the root move
-    /// list generated at search start; interior legality is verified by
-    /// the explicit `is_legal` call in the move loop before each invocation.
-    /// Brings the rows up to date for a move the board has already made.
-    ///
-    /// The record is per ply because a child's make would otherwise overwrite
-    /// what its parent's unmake has to replay.
-    /// The rows a ply's moves all return to. Taken once, before the moves.
+    /// The rows a ply's moves all return to. Taken once, before the moves,
+    /// because a child's make would otherwise overwrite what its parent's
+    /// unmake has to replay.
     #[inline(always)]
     fn xb_enter(&mut self, ply: usize) {
         #[cfg(not(feature = "nostore"))]
@@ -1708,8 +1698,6 @@ impl Worker<'_> {
         let _ = ply;
     }
 
-    /// The rows the eval's per-piece mobility reads. A `nostore` build has none
-    /// and falls back to a probe per piece.
     #[cfg(not(feature = "nostore"))]
     #[inline(always)]
     fn xb_store(&self) -> Option<&XorBoard> {
@@ -1722,6 +1710,7 @@ impl Worker<'_> {
         None
     }
 
+    /// Brings the rows up to date for a move the board has already made.
     #[inline(always)]
     fn xb_make(&mut self, mv: Move) {
         #[cfg(not(feature = "nostore"))]
@@ -1743,8 +1732,6 @@ impl Worker<'_> {
         let _ = (mv, ply);
     }
 
-    /// Every read of the store has a from-scratch twin, so `nostore` prices the
-    /// whole thing: maintenance minus what the reads give back.
     #[inline(always)]
     fn xb_checkers(&self) -> Bitboard {
         #[cfg(not(feature = "nostore"))]
@@ -1757,7 +1744,6 @@ impl Worker<'_> {
         }
     }
 
-    /// The picker's slider source, which `nostore` empties out.
     #[cfg(not(feature = "nostore"))]
     #[inline(always)]
     fn xb_rows(&self) -> &XorBoard {
@@ -1782,6 +1768,13 @@ impl Worker<'_> {
         }
     }
 
+    /// Make a move, search it, unmake it. The innermost loop body every
+    /// move in the tree passes through exactly once.
+    ///
+    /// # Precondition
+    /// `mv` must be legal. Root legality is guaranteed by the root move
+    /// list generated at search start; interior legality is verified by
+    /// the explicit `is_legal` call in the move loop before each invocation.
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,

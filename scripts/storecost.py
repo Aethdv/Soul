@@ -60,7 +60,11 @@ def main():
 
     for _ in range(runs):
         for label, path in binaries.items():
-            insn, cycles, nodes = measure(path)
+            insn, cycles, count = measure(path)
+            # Per node only means something if both builds walked the same tree.
+            if nodes and count != nodes:
+                raise SystemExit(f"{label} searched {count} nodes against {nodes}; the two builds disagree")
+            nodes = count
             samples[label].append((insn, cycles))
 
     print(f"\nbench {nodes} nodes, {runs} runs interleaved\n")

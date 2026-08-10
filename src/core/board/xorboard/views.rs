@@ -54,8 +54,8 @@ impl XorBoard {
                 acc = _mm256_or_si256(acc, _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast()));
             }
 
-            let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
-            Bitboard((_mm_extract_epi64(folded, 0) | _mm_extract_epi64(folded, 1)) as u64)
+            let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
+            Bitboard((_mm_extract_epi64::<0>(folded) | _mm_extract_epi64::<1>(folded)).cast_unsigned())
         }
     }
 
@@ -165,7 +165,7 @@ impl XorBoard {
         unsafe {
             #[cfg(target_feature = "avx512vpopcntdq")]
             {
-                let mask = _mm512_set1_epi64(area.0 as i64);
+                let mask = _mm512_set1_epi64(area.0.cast_signed());
                 let mut acc = _mm512_setzero_si512();
                 for group in 0..2 {
                     let rows = _mm512_loadu_si512(self.rows.as_ptr().add(base + group * 8).cast());
@@ -176,15 +176,15 @@ impl XorBoard {
 
             #[cfg(not(target_feature = "avx512vpopcntdq"))]
             {
-                let mask = _mm256_set1_epi64x(area.0 as i64);
+                let mask = _mm256_set1_epi64x(area.0.cast_signed());
                 let mut acc = _mm256_setzero_si256();
                 for group in 0..4 {
                     let rows = _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast());
                     acc = _mm256_add_epi64(acc, Vu64x4(_mm256_and_si256(rows, mask)).popcount().0);
                 }
 
-                let folded = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
-                (_mm_extract_epi64(folded, 0) + _mm_extract_epi64(folded, 1)) as i32
+                let folded = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
+                (_mm_extract_epi64::<0>(folded) + _mm_extract_epi64::<1>(folded)) as i32
             }
         }
     }
@@ -196,9 +196,6 @@ impl XorBoard {
     /// continues each ray from where it stopped, which is what the tensor's
     /// second flood-fill does by feeding the friendly-hit squares back in as
     /// generators. Pinned pieces contribute nothing, matching the tensor.
-    ///
-    /// Measured slower than the tensor at eval density: two probes per slider
-    /// against sixteen setwise fills covering both colours at once.
     #[inline(always)]
     pub fn xray_maps(&self, color: Color, pinned: Bitboard, own: Bitboard, occ: Bitboard) -> (Bitboard, Bitboard) {
         let (mut ortho, mut diag) = (Bitboard(0), Bitboard(0));
@@ -224,13 +221,11 @@ impl XorBoard {
             let behind = occ & !(self.row(id) & own);
 
             if kind != PieceType::Bishop {
-                let direct = atk_rook(from, occ);
-                ortho_direct |= direct;
+                ortho_direct |= atk_rook(from, occ);
                 ortho |= atk_rook(from, behind);
             }
             if kind != PieceType::Rook {
-                let direct = atk_bishop(from, occ);
-                diag_direct |= direct;
+                diag_direct |= atk_bishop(from, occ);
                 diag |= atk_bishop(from, behind);
             }
         }
@@ -253,8 +248,8 @@ impl XorBoard {
                 acc = _mm256_or_si256(acc, _mm256_and_si256(rows, keep));
             }
 
-            let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
-            Bitboard((_mm_extract_epi64(folded, 0) | _mm_extract_epi64(folded, 1)) as u64)
+            let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
+            Bitboard((_mm_extract_epi64::<0>(folded) | _mm_extract_epi64::<1>(folded)).cast_unsigned())
         }
     }
 }

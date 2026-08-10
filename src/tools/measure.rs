@@ -4,6 +4,8 @@
 //!     soul measure gen <path> [ply_cap]
 //!     soul measure export <path> <out>
 //!     soul measure validate <path>
+//!     soul measure count <path>
+//!     soul measure dump <path> [plies]
 //!     perf stat -e instructions,cycles soul measure run <variant> <path> <repeats>
 
 use core::{arch::x86_64::*, hint::black_box, marker::ConstParamTy};
@@ -185,7 +187,7 @@ impl ByteStore {
         // Stripped after the mover's toggle: that toggle still sees the victim
         // on the board and would hand its bits straight back.
         if let Some((vid, _)) = plan.captured.filter(|_| replaced) {
-            self.bb.strip(color(vid), (vid & 15) as u8);
+            self.bb.clear(color(vid), (vid & 15) as u8);
         }
 
         self.ids.apply(mv, &plan);
@@ -233,14 +235,17 @@ fn generate(seed: u64, ply_cap: usize) -> Stream {
     Stream { games }
 }
 
+/// Counts go out as `u16` and lengths as `u8`, so a stream that outgrew either
+/// has to say so here. Silently truncating one writes a file that parses and
+/// replays the wrong plies.
 fn serialize(stream: &Stream) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend((stream.games.len() as u16).to_le_bytes());
+    out.extend(u16::try_from(stream.games.len()).expect("too many games for the stream header").to_le_bytes());
 
     for game in &stream.games {
-        out.push(game.fen.len() as u8);
+        out.push(u8::try_from(game.fen.len()).expect("fen too long for the stream header"));
         out.extend(game.fen.as_bytes());
-        out.extend((game.moves.len() as u16).to_le_bytes());
+        out.extend(u16::try_from(game.moves.len()).expect("too many plies for the stream header").to_le_bytes());
         for mv in &game.moves {
             out.extend(mv.inner().to_le_bytes());
         }
@@ -248,27 +253,35 @@ fn serialize(stream: &Stream) -> Vec<u8> {
     out
 }
 
+/// The cursor is the slice: each read splits its own header off the front, so a
+/// length and the bytes it governs cannot drift apart, and a truncated file
+/// says so instead of indexing off the end.
 fn deserialize(bytes: &[u8]) -> Stream {
-    let mut pos = 0usize;
-    let n_games = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-    pos += 2;
+    let mut rest = bytes;
+    let n_games = take_u16(&mut rest);
     let mut games = Vec::with_capacity(n_games);
+
     for _ in 0..n_games {
-        let fen_len = bytes[pos] as usize;
-        pos += 1;
-        let fen = String::from_utf8(bytes[pos..pos + fen_len].to_vec()).expect("stream fen");
-        pos += fen_len;
-        let n_moves = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]) as usize;
-        pos += 2;
-        let mut moves = Vec::with_capacity(n_moves);
-        for _ in 0..n_moves {
-            let raw = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]);
-            pos += 2;
-            moves.push(Move::from_u16(raw));
-        }
-        games.push(Game { fen, moves });
+        let (&fen_len, tail) = rest.split_first().expect("stream truncated");
+        let (fen, tail) = tail.split_at_checked(usize::from(fen_len)).expect("stream truncated");
+        rest = tail;
+
+        let n_moves = take_u16(&mut rest);
+        let (packed, tail) = rest.split_at_checked(n_moves * 2).expect("stream truncated");
+        rest = tail;
+
+        games.push(Game {
+            fen: String::from_utf8(fen.to_vec()).expect("stream fen"),
+            moves: packed.as_chunks::<2>().0.iter().map(|&raw| Move::from_u16(u16::from_le_bytes(raw))).collect(),
+        });
     }
     Stream { games }
+}
+
+fn take_u16(rest: &mut &[u8]) -> usize {
+    let (head, tail) = rest.split_first_chunk::<2>().expect("stream truncated");
+    *rest = tail;
+    usize::from(u16::from_le_bytes(*head))
 }
 
 impl Ids {
@@ -747,7 +760,7 @@ impl XorBoard {
             }
 
             let folded = _mm_or_si128(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
-            (_mm_extract_epi64::<0>(folded) | _mm_extract_epi64::<1>(folded)) as u64
+            (_mm_extract_epi64::<0>(folded) | _mm_extract_epi64::<1>(folded)).cast_unsigned()
         }
     }
 
@@ -870,7 +883,7 @@ fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
     unsafe {
         #[cfg(target_feature = "avx512f")]
         {
-            let m = _mm512_set1_epi64(mask.0 as i64);
+            let m = _mm512_set1_epi64(mask.0.cast_signed());
             let mut live = 0u32;
 
             for g in 0..4 {
@@ -883,14 +896,14 @@ fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
 
         #[cfg(not(target_feature = "avx512f"))]
         {
-            let m = _mm256_set1_epi64x(mask.0 as i64);
+            let m = _mm256_set1_epi64x(mask.0.cast_signed());
             let zero = _mm256_setzero_si256();
             let mut live = 0u32;
 
             for g in 0..8 {
                 let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
                 let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-                live |= (!(_mm256_movemask_pd(_mm256_castsi256_pd(miss)) as u32) & 0xF) << (g * 4);
+                live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
             }
 
             live
@@ -910,14 +923,14 @@ fn column_fixed(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 {
 
     // SAFETY: as `column`; the four group indices are constants under 8.
     unsafe {
-        let m = _mm256_set1_epi64x(mask.0 as i64);
+        let m = _mm256_set1_epi64x(mask.0.cast_signed());
         let zero = _mm256_setzero_si256();
         let mut live = 0u32;
 
         for g in [0, 1, 4, 5] {
             let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
             let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-            live |= (!(_mm256_movemask_pd(_mm256_castsi256_pd(miss)) as u32) & 0xF) << (g * 4);
+            live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
         }
 
         live
@@ -931,13 +944,13 @@ fn column_fixed(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 {
 fn column_prefix(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 {
     // SAFETY: as `column`; g never exceeds 7.
     unsafe {
-        let m = _mm256_set1_epi64x(mask.0 as i64);
+        let m = _mm256_set1_epi64x(mask.0.cast_signed());
         let zero = _mm256_setzero_si256();
         let mut live = 0u32;
         for g in (0..wg).chain(4..4 + bg) {
             let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
             let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-            live |= (!(_mm256_movemask_pd(_mm256_castsi256_pd(miss)) as u32) & 0xF) << (g * 4);
+            live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
         }
         live
     }
@@ -1189,8 +1202,10 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
 /// from-scratch recompute after every ply.
 ///
 /// A store that is only its own oracle proves nothing, so the XorBoard answers
-/// to four outside things: its rebuild, `AttackTable`'s rows, `AttackTable`'s
-/// recounted threat maps, and `pinned_pieces`.
+/// to things outside itself: its own rebuild, the other gather, `AttackTable`'s
+/// rows and recounted threat maps, `pinned_pieces`, the byteboard transpose,
+/// and its own unmake replay.
+///
 /// Returns the number of plies checked, so the count can be quoted rather than
 /// remembered. `None` means a check failed and the message has already printed.
 fn validate(stream: &Stream) -> Option<u64> {
@@ -1235,7 +1250,7 @@ fn validate(stream: &Stream) -> Option<u64> {
             }
 
             let pre = Pre::of(&pos);
-            let _ = pos.make_move(mv, &mut acc);
+            pos.make_move(mv, &mut acc);
             dst.make(&pos, mv);
             xb.make::<{ Gather::Prefix }, true, true, true>(pre, pos.occ, mv, &mut undo);
             bs.make(&g, mv);
@@ -1347,10 +1362,7 @@ fn validate(stream: &Stream) -> Option<u64> {
 
                     for sq in 0..64 {
                         for c in 0..2 {
-                            let mut w = 0u16;
-                            for i in 0..16 {
-                                w |= ((xb.rows[c * 16 + i] >> sq & 1) as u16) << i;
-                            }
+                            let w = wordboard_at(&xb, c, sq);
                             if bs.bb.attack[c][sq] != w {
                                 eprintln!(
                                     "  sq {sq} c{c}: bb {:#06x} want {:#06x} place {:#04x}",
@@ -1378,30 +1390,28 @@ fn validate(stream: &Stream) -> Option<u64> {
     Some(checked)
 }
 
+/// The byteboard's wordboards are the XorBoard's rows transposed, so one is the
+/// other's oracle and neither gets to grade its own homework.
+fn byteboard_agrees(bs: &ByteStore, xb: &XorBoard) -> bool {
+    (0..64).all(|sq| (0..2).all(|c| bs.bb.attack[c][sq] == wordboard_at(xb, c, sq)))
+}
+
+/// One square's column of the transpose: which of a colour's slots reach it.
+#[inline]
+fn wordboard_at(xb: &XorBoard, color: usize, sq: usize) -> u16 {
+    let mut set = 0u16;
+    for slot in 0..16 {
+        set |= ((xb.rows[color * 16 + slot] >> sq & 1) as u16) << slot;
+    }
+    set
+}
+
 /// The write volume each axis commits to, counted rather than timed.
 ///
 /// Rebel's byte, Rookie's direction bits, Muller's distance fields, KnightCap's
 /// id bitset and Rose's color-split pair all store one entry per (piece, square)
 /// pair whose visibility moved. The entry differs between them; the pair count
 /// does not. Transposed, the same move is a couple of whole rows.
-/// The byteboard's wordboards are the XorBoard's rows transposed, so one is the
-/// other's oracle and neither gets to grade its own homework.
-fn byteboard_agrees(bs: &ByteStore, xb: &XorBoard) -> bool {
-    for sq in 0..64 {
-        for c in 0..2 {
-            let mut want = 0u16;
-            for i in 0..16 {
-                want |= ((xb.rows[c * 16 + i] >> sq & 1) as u16) << i;
-            }
-
-            if bs.bb.attack[c][sq] != want {
-                return false;
-            }
-        }
-    }
-    true
-}
-
 fn count_writes(stream: &Stream) {
     let (mut moves, mut pairs, mut rows, mut touched) = (0u64, 0u64, 0u64, 0u64);
     let mut worst = 0u32;
@@ -1495,8 +1505,7 @@ pub fn run(args: &[&str]) {
                 let mut acc = pos.get_initial_accumulator();
 
                 for &prior in game.moves.iter().take(ply) {
-                    let info = pos.make_move(prior, &mut acc);
-                    let _ = info;
+                    pos.make_move(prior, &mut acc);
                 }
 
                 let pre_fen = pos.as_fen();
@@ -1516,7 +1525,7 @@ pub fn run(args: &[&str]) {
             println!("measure {} {} {}", outcome.variant, outcome.iterations, outcome.checksum);
         },
         _ => {
-            eprintln!("measure: expected 'gen', 'validate', or 'run'");
+            eprintln!("measure: expected 'gen', 'export', 'validate', 'count', 'dump', or 'run'");
             std::process::exit(1);
         },
     }
