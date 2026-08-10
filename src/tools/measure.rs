@@ -234,12 +234,20 @@ fn generate(seed: u64, ply_cap: usize) -> Stream {
 /// replays the wrong plies.
 fn serialize(stream: &Stream) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend(u16::try_from(stream.games.len()).expect("too many games for the stream header").to_le_bytes());
+    out.extend(
+        u16::try_from(stream.games.len())
+            .expect("too many games for the stream header")
+            .to_le_bytes(),
+    );
 
     for game in &stream.games {
         out.push(u8::try_from(game.fen.len()).expect("fen too long for the stream header"));
         out.extend(game.fen.as_bytes());
-        out.extend(u16::try_from(game.moves.len()).expect("too many plies for the stream header").to_le_bytes());
+        out.extend(
+            u16::try_from(game.moves.len())
+                .expect("too many plies for the stream header")
+                .to_le_bytes(),
+        );
         for mv in &game.moves {
             out.extend(mv.inner().to_le_bytes());
         }
@@ -266,7 +274,12 @@ fn deserialize(bytes: &[u8]) -> Stream {
 
         games.push(Game {
             fen: String::from_utf8(fen.to_vec()).expect("stream fen"),
-            moves: packed.as_chunks::<2>().0.iter().map(|&raw| Move::from_u16(u16::from_le_bytes(raw))).collect(),
+            moves: packed
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&raw| Move::from_u16(u16::from_le_bytes(raw)))
+                .collect(),
         });
     }
     Stream { games }
