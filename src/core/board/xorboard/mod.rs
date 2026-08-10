@@ -81,7 +81,7 @@ struct Mover {
 #[derive(Clone, Copy, Debug)]
 struct Plan {
     movers: [Mover; 2],
-    n_movers: u8,
+    n_movers: usize,
     victim: Option<(PieceId, Square)>,
 }
 
@@ -484,7 +484,7 @@ impl Plan {
     /// The pieces the move relocates, which is one for anything but a castling.
     #[inline(always)]
     fn movers(&self) -> impl Iterator<Item = &Mover> {
-        self.movers.iter().take(usize::from(self.n_movers))
+        self.movers.iter().take(self.n_movers)
     }
 }
 
