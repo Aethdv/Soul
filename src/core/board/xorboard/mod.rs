@@ -85,7 +85,9 @@ struct Mover {
 #[derive(Clone, Copy, Debug)]
 struct Plan {
     movers: [Mover; 2],
-    n_movers: usize,
+    /// The only move that relocates two pieces. Otherwise the second mover is
+    /// a copy of the first, which the masks in `make` rely on.
+    castling: bool,
     victim: Option<(PieceId, Square)>,
 }
 
@@ -375,10 +377,13 @@ impl XorBoard {
     pub fn make(&mut self, pos: &Position, mv: Move) {
         let (plan, changed) = self.decode(mv);
 
+        let (first, second) = (plan.movers[0], plan.movers[1]);
+        let castling = plan.castling;
+
+        // Idempotent without a branch: a move that relocates one piece leaves
+        // the second mover a copy of the first.
         let mut affected = self.slider_attackers_of(changed);
-        for mover in plan.movers() {
-            affected &= !(1 << mover.id.index());
-        }
+        affected &= !((1 << first.id.index()) | (1 << second.id.index()));
 
         if let Some((victim, square)) = plan.victim {
             affected &= !(1 << victim.index());
@@ -396,8 +401,9 @@ impl XorBoard {
             self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
         }
 
-        for mover in plan.movers() {
-            self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
+        self.rows[first.id.index()] = self.attacks(first.id, first.to, pos.occ).0;
+        if castling {
+            self.rows[second.id.index()] = self.attacks(second.id, second.to, pos.occ).0;
         }
     }
 
@@ -434,12 +440,12 @@ impl XorBoard {
         let (from, to) = (mv.from(), mv.to());
         let mover = PieceId(self.slot_at(from) - 1);
         let mut movers = [Mover { id: mover, from, to }; 2];
-        let mut n_movers = 1;
         let mut victim = None;
         let mut vacated = from.bitboard();
         let mut filled = to.bitboard();
+        let castling = mv.is_castling();
 
-        if mv.is_castling() {
+        if castling {
             // The move encodes the rook's home square as its destination, so
             // both pieces and all four squares come out of that one pair.
             let rook = PieceId(self.slot_at(to) - 1);
@@ -447,7 +453,6 @@ impl XorBoard {
             movers = [Mover { id: mover, from, to: king_to }, Mover { id: rook, from: to, to: rook_to }];
             vacated |= to.bitboard();
             filled = king_to.bitboard() | rook_to.bitboard();
-            n_movers = 2;
         } else if mv.is_en_passant() {
             let square = Square(to.0 ^ 8);
             vacated |= square.bitboard();
@@ -456,33 +461,32 @@ impl XorBoard {
             vacated |= to.bitboard();
             victim = Some((PieceId(self.slot_at(to) - 1), to));
         }
-        (Plan { movers, n_movers, victim }, vacated ^ filled)
+        (Plan { movers, castling, victim }, vacated ^ filled)
     }
 
     /// Origins clear before any destination lands, so DFRC castling stays exact
     /// when the king comes to rest on the rook's own origin square.
     #[inline(always)]
     fn relocate(&mut self, mv: Move, plan: &Plan) {
-        for mover in plan.movers() {
-            self.set_slot_at(mover.from, 0);
+        let (first, second) = (plan.movers[0], plan.movers[1]);
+        let castling = plan.castling;
+
+        self.set_slot_at(first.from, 0);
+        if castling {
+            self.set_slot_at(second.from, 0);
         }
-        for mover in plan.movers() {
-            self.set_slot_at(mover.to, mover.id.0 + 1);
-            self.squares[mover.id.index()] = mover.to.0;
+
+        self.set_slot_at(first.to, first.id.0 + 1);
+        self.squares[first.id.index()] = first.to.0;
+
+        if castling {
+            self.set_slot_at(second.to, second.id.0 + 1);
+            self.squares[second.id.index()] = second.to.0;
         }
 
         if let Some(promoted) = mv.promo() {
-            let id = plan.movers[0].id;
-            self.reclass(id, promoted);
+            self.reclass(first.id, promoted);
         }
-    }
-}
-
-impl Plan {
-    /// The pieces the move relocates, which is one for anything but a castling.
-    #[inline(always)]
-    fn movers(&self) -> impl Iterator<Item = &Mover> {
-        self.movers.iter().take(self.n_movers)
     }
 }
 
