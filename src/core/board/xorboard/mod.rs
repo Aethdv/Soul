@@ -81,11 +81,7 @@ struct Mover {
 #[derive(Clone, Copy, Debug)]
 struct Plan {
     movers: [Mover; 2],
-    n_movers: usize,
-    /// The squares whose occupancy flipped. A capture's destination is absent,
-    /// since the victim left it and the mover took it, and the same
-    /// cancellation covers a DFRC king landing on the rook's origin.
-    changed: Bitboard,
+    n_movers: u8,
     victim: Option<(PieceId, Square)>,
 }
 
@@ -370,11 +366,11 @@ impl XorBoard {
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
     pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
-        let plan = self.decode(mv);
+        let (plan, changed) = self.decode(mv);
         undo.rows = self.rows;
         undo.plan = plan;
 
-        let mut affected = self.slider_attackers_of(plan.changed);
+        let mut affected = self.slider_attackers_of(changed);
         for mover in plan.movers() {
             affected &= !(1 << mover.id.index());
         }
@@ -405,9 +401,14 @@ impl XorBoard {
         self.restore(mv, &undo.plan);
     }
 
-    /// Decodes the move against pre-move bookkeeping.
+    /// Decodes the move against pre-move bookkeeping, and with it the squares
+    /// whose occupancy flipped.
+    ///
+    /// A capture's destination is absent from that mask, since the victim left
+    /// it and the mover took it, and the same cancellation covers a DFRC king
+    /// landing on the rook's origin.
     #[inline(always)]
-    fn decode(&self, mv: Move) -> Plan {
+    fn decode(&self, mv: Move) -> (Plan, Bitboard) {
         let (from, to) = (mv.from(), mv.to());
         let mover = PieceId(self.slot_at(from) - 1);
         let mut movers = [Mover { id: mover, from, to }; 2];
@@ -433,7 +434,7 @@ impl XorBoard {
             vacated |= to.bitboard();
             victim = Some((PieceId(self.slot_at(to) - 1), to));
         }
-        Plan { movers, n_movers, changed: vacated ^ filled, victim }
+        (Plan { movers, n_movers, victim }, vacated ^ filled)
     }
 
     /// Origins clear before any destination lands, so DFRC castling stays exact
@@ -478,17 +479,12 @@ impl XorBoard {
 }
 
 impl Plan {
-    const EMPTY: Self = Self {
-        movers: [Mover { id: PieceId(0), from: Square(0), to: Square(0) }; 2],
-        n_movers: 0,
-        changed: Bitboard(0),
-        victim: None,
-    };
+    const EMPTY: Self = Self { movers: [Mover { id: PieceId(0), from: Square(0), to: Square(0) }; 2], n_movers: 0, victim: None };
 
     /// The pieces the move relocates, which is one for anything but a castling.
     #[inline(always)]
     fn movers(&self) -> impl Iterator<Item = &Mover> {
-        self.movers.iter().take(self.n_movers)
+        self.movers.iter().take(usize::from(self.n_movers))
     }
 }
 
