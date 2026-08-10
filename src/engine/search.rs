@@ -1222,6 +1222,8 @@ impl Worker<'_> {
 
             let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
 
+            self.xb_enter(ply);
+
             while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -1278,6 +1280,8 @@ impl Worker<'_> {
         let mut res = MoveResult { move_count: 0, best_eval: -INF, alpha, best_move: Move::null() };
 
         if N::ROOT {
+            self.xb_enter(ply);
+
             for i in 0..searcher.root_moves.len() {
                 let mv = searcher.root_moves[i].mv;
 
@@ -1325,6 +1329,8 @@ impl Worker<'_> {
 
             // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+
+            self.xb_enter(ply);
 
             while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
@@ -1693,6 +1699,15 @@ impl Worker<'_> {
     ///
     /// The record is per ply because a child's make would otherwise overwrite
     /// what its parent's unmake has to replay.
+    /// The rows a ply's moves all return to. Taken once, before the moves.
+    #[inline(always)]
+    fn xb_enter(&mut self, ply: usize) {
+        #[cfg(not(feature = "nostore"))]
+        self.xorboard.snapshot(&mut self.xb_undo[ply]);
+        #[cfg(feature = "nostore")]
+        let _ = ply;
+    }
+
     #[inline(always)]
     fn xb_make(&mut self, mv: Move, ply: usize) {
         #[cfg(not(feature = "nostore"))]
@@ -2005,6 +2020,8 @@ impl Worker<'_> {
         let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, pins, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
+
+        self.xb_enter(ply);
 
         while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
             if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {

@@ -60,7 +60,11 @@ pub struct XorBoard {
     slider_slots: u64,
 }
 
-/// The rows as they stood before one make, restored wholesale by unmake.
+/// The rows as they stood at the node, restored wholesale by unmake.
+///
+/// One snapshot serves every move tried at a ply: each make and its unmake put
+/// the rows back where they were, so all of a node's siblings would otherwise
+/// save the same 256 bytes over and over.
 #[derive(Clone, Copy, Debug)]
 pub struct Undo {
     rows: [u64; SLOTS],
@@ -365,9 +369,10 @@ impl XorBoard {
     /// piece saw one of the changed squares before the move. That makes the
     /// affected set a theorem rather than a scan, and the rows themselves
     /// answer it.
+    /// [`XorBoard::snapshot`] must have run for this ply, or unmake restores
+    /// rows that belong to another node.
     pub fn make(&mut self, pos: &Position, mv: Move, undo: &mut Undo) {
         let (plan, changed) = self.decode(mv);
-        undo.rows = self.rows;
         undo.plan = plan;
 
         let mut affected = self.slider_attackers_of(changed);
@@ -394,6 +399,13 @@ impl XorBoard {
         for mover in plan.movers() {
             self.rows[mover.id.index()] = self.attacks(mover.id, mover.to, pos.occ).0;
         }
+    }
+
+    /// Takes the rows a ply's snapshot holds, which is what every move tried
+    /// there has to return them to.
+    #[inline(always)]
+    pub fn snapshot(&self, undo: &mut Undo) {
+        undo.rows = self.rows;
     }
 
     pub fn unmake(&mut self, mv: Move, undo: &Undo) {
@@ -555,6 +567,7 @@ mod tests {
                 let mv = legal[(rng.next() % legal.len() as u64) as usize];
                 let before = board.clone();
                 let state = pos.make_move(mv, &mut acc);
+                board.snapshot(&mut undo);
                 board.make(&pos, mv, &mut undo);
 
                 let mut oracle = board.clone();
@@ -642,6 +655,7 @@ mod tests {
                 assert_eq!(board.at, before.at, "unmake mailbox, {fen} ply {ply}\n{pos}");
                 assert_eq!(board.kind, before.kind, "unmake types, {fen} ply {ply}\n{pos}");
                 pos.make_move(mv, &mut acc);
+                board.snapshot(&mut undo);
                 board.make(&pos, mv, &mut undo);
             }
         }
