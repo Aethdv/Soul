@@ -11,7 +11,7 @@
 
 use crate::{
     core::{
-        board::{Position, bitboard, spatial::SpatialTensor},
+        board::{Position, bitboard, spatial::SpatialTensor, xorboard::XorBoard},
         defs::{Bitboard, Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
     },
     engine::{
@@ -450,18 +450,18 @@ impl PawnCache {
 impl SharedFeatures {
     #[inline]
     pub fn compute(board: &Position) -> Self {
-        Self::with_pawn(board, &PawnFeatures::compute(board))
+        Self::with_pawn(board, &PawnFeatures::compute(board), None)
     }
 
     /// The piece-dependent terms computed fresh, the pawn terms taken from
     /// `pawn`. `enemy_king_dist` is the one pawn-derived bucket rebuilt here;
     /// it moves with the enemy king, not the pawns.
-    pub fn with_pawn(board: &Position, pawn: &PawnFeatures) -> Self {
+    pub fn with_pawn(board: &Position, pawn: &PawnFeatures, rows: Option<&XorBoard>) -> Self {
         let pinned_w = board.pinned_pieces(Color::White);
         let pinned_b = board.pinned_pieces(Color::Black);
         let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
 
-        let data = Mobility::compute_all(board, &tensor, pinned_w, pinned_b);
+        let data = Mobility::compute_all(board, &tensor, pinned_w, pinned_b, rows);
 
         let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
         let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();

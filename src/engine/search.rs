@@ -35,11 +35,11 @@ use std::{
 };
 
 #[cfg(not(feature = "nostore"))]
-use crate::core::board::xorboard::{Undo as XbUndo, XorBoard};
+use crate::core::board::xorboard::Undo as XbUndo;
 pub use crate::core::defs::Protocol;
 use crate::{
     core::{
-        board::{Position, attacks::Pins},
+        board::{Position, attacks::Pins, xorboard::XorBoard},
         defs::{
             Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in,
         },
@@ -936,7 +936,7 @@ impl Worker<'_> {
     fn evaluate(&mut self) -> i32 {
         let phase = extract_phase(&self.accumulator);
         let pawn = self.pawn_cache.probe(&self.pos);
-        let features = SharedFeatures::with_pawn(&self.pos, &pawn);
+        let features = SharedFeatures::with_pawn(&self.pos, &pawn, self.xb_store());
         evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &self.eval_params, Some(&features))
     }
 
@@ -1706,6 +1706,20 @@ impl Worker<'_> {
         self.xorboard.snapshot(&mut self.xb_undo[ply]);
         #[cfg(feature = "nostore")]
         let _ = ply;
+    }
+
+    /// The rows the eval's per-piece mobility reads. A `nostore` build has none
+    /// and falls back to a probe per piece.
+    #[cfg(not(feature = "nostore"))]
+    #[inline(always)]
+    fn xb_store(&self) -> Option<&XorBoard> {
+        Some(&self.xorboard)
+    }
+
+    #[cfg(feature = "nostore")]
+    #[inline(always)]
+    fn xb_store(&self) -> Option<&XorBoard> {
+        None
     }
 
     #[inline(always)]

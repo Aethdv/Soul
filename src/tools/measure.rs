@@ -1167,7 +1167,7 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
             let pinned_w = pos.pinned_pieces(Color::White);
             let pinned_b = pos.pinned_pieces(Color::Black);
             let tensor = SpatialTensor::compute(pos, pinned_w.0, pinned_b.0);
-            let mob = Mobility::compute_all(pos, &tensor, pinned_w, pinned_b);
+            let mob = Mobility::compute_all(pos, &tensor, pinned_w, pinned_b, None);
             (mob.metrics_us.mobility ^ mob.metrics_them.mobility) as u64 ^ (mob.safety_us.weak ^ mob.safety_them.weak) as u64
         }),
         "see" => play_stream(stream, repeats, |pos, _, mv, _| {
