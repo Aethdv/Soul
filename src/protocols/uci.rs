@@ -71,6 +71,8 @@ pub struct UciState {
     search_tx: Sender<SearchCommand>,
     history_tx: mpsc::Sender<History>,
     history_rx: mpsc::Receiver<History>,
+    /// Relaxed everywhere; a finished search hands its history table back over
+    /// `history_rx`, so this flag never has to publish anything.
     is_searching: Arc<AtomicBool>,
     smp_pool: Arc<LazySmpPool>,
     threads: usize,
@@ -115,11 +117,11 @@ impl UciState {
 
                         // Main is done. Signal helpers, wait for them to park,
                         // then clear the flag so the next search starts clean.
-                        cfg.stop.store(true, Ordering::Release);
+                        cfg.stop.store(true, Ordering::Relaxed);
                         pool.wait();
-                        cfg.stop.store(false, Ordering::Release);
+                        cfg.stop.store(false, Ordering::Relaxed);
 
-                        is_searching_worker.store(false, Ordering::Release);
+                        is_searching_worker.store(false, Ordering::Relaxed);
                         let _ = result_tx.send(history_table);
                     },
                     SearchCommand::Quit => break,
@@ -153,13 +155,13 @@ impl UciState {
     }
 
     fn stop_search(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::Relaxed);
 
-        while self.is_searching.load(Ordering::Acquire) {
+        while self.is_searching.load(Ordering::Relaxed) {
             thread::yield_now();
         }
 
-        self.stop.store(false, Ordering::Release);
+        self.stop.store(false, Ordering::Relaxed);
     }
 
     /// Reset to a fresh root position; rebuild the accumulator and reseed the
@@ -221,7 +223,7 @@ pub fn run_commands(lines: &[String]) {
         // `go` hands the search to another thread and returns, so a `quit` on the
         // next line would stop it before it reported. `cmd_go` raises the flag
         // before it sends, so this cannot miss the start of a search.
-        while state.is_searching.load(Ordering::Acquire) {
+        while state.is_searching.load(Ordering::Relaxed) {
             thread::yield_now();
         }
 
@@ -249,7 +251,7 @@ pub fn run_cli_go(args: &[String]) {
 
     let search_tx = state.search_tx.clone();
 
-    is_searching.store(true, Ordering::Release);
+    is_searching.store(true, Ordering::Relaxed);
     search_tx
         .send(SearchCommand::Go(
             Box::new(cfg),
@@ -262,7 +264,7 @@ pub fn run_cli_go(args: &[String]) {
         ))
         .unwrap();
 
-    while is_searching.load(Ordering::Acquire) {
+    while is_searching.load(Ordering::Relaxed) {
         thread::yield_now();
     }
 }
@@ -388,13 +390,17 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                     let _ = io::stdout().flush();
                 },
                 "quit" => {
-                    stop.store(true, Ordering::Release);
+                    stop.store(true, Ordering::Relaxed);
                     let _ = tx.send(line);
                     break;
                 },
                 "stop" => {
-                    stop.store(true, Ordering::Release);
-                    let _ = tx.send(line);
+                    stop.store(true, Ordering::Relaxed);
+                    // The flag ends the search; main still needs the line itself to
+                    // run stop_search() and reset state.
+                    if tx.send(line).is_err() {
+                        break; // Main thread died
+                    }
                 },
                 _ => {
                     // Always forward to the main thread's command channel.
@@ -433,7 +439,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "isready" => println!("readyok"),
         "ucinewgame" => {
             state.stop_search();
-            state.is_searching.store(false, Ordering::Release);
+            state.is_searching.store(false, Ordering::Relaxed);
             state.persistent_history.clear();
             state.tt.clear(state.threads);
             state.load_position(Position::from_fen(STARTPOS));
@@ -442,7 +448,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "go" => cmd_go(state, &mut tokens),
         "stop" => {
             state.stop_search();
-            state.is_searching.store(false, Ordering::Release);
+            state.is_searching.store(false, Ordering::Relaxed);
         },
 
         "setoption" => cmd_setoption(state, &mut tokens),
@@ -570,7 +576,7 @@ where I: Iterator<Item = &'a str> {
     cfg.threads = state.threads;
     cfg.node_slots = SearchConfig::node_slots(state.threads);
 
-    state.is_searching.store(true, Ordering::Release);
+    state.is_searching.store(true, Ordering::Relaxed);
 
     // persistent_history carries the move-ordering heuristic table across
     // positions within a game; it's reset by ucinewgame.
