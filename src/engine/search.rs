@@ -999,7 +999,7 @@ impl Worker<'_> {
 
         // ── Mate Distance Pruning
         // Scores are bounded; no line from here can find mate faster than
-        // MATE - ply plies, and we can't be mated before -MATE + ply.
+        // MATE - (ply + 1) plies, and we can't be mated before -MATE + ply.
         // Tighten the search window to those limits. If the tightened
         // window collapses (a >= b), every achievable score in this
         // subtree already satisfies the bound; return a, the tightest
@@ -2076,6 +2076,12 @@ impl Worker<'_> {
                 best_move = mv;
 
                 if score > alpha {
+                    // The last plies of a line are searched here; without
+                    // the compose the PV stops at the negamax boundary and
+                    // a mate line is reported without its mating move.
+                    let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
+                    current_stack[ply].pv.compose(mv, &next_stack[0].pv);
+
                     if score >= beta {
                         break;
                     }
