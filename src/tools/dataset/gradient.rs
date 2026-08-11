@@ -19,7 +19,7 @@ use crate::{
         eval::{SharedFeatures, XrayTerm, apply_all_inputs, evaluate_fast, extract_phase, scatter_all_terms},
         eval_params::LAYOUT,
         mobility::{
-            KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, SideMetrics, compute_openness_raw,
+            KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, compute_openness_raw,
         },
         term::{self, TermSource},
     },
