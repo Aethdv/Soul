@@ -774,11 +774,11 @@ impl<'cfg> Searcher<'cfg> {
         // (plain mov on x86); this slot has exactly one writer.
         self.cfg.node_slots[self.cfg.thread_id].store(self.nodes, Ordering::Relaxed);
 
-        if self.cfg.stop.load(Ordering::Acquire)
+        if self.cfg.stop.load(Ordering::Relaxed)
             || self.tm.is_hard_limit_reached()
             || (self.cfg.limits.nodes > 0 && self.node_count() >= self.cfg.limits.nodes)
         {
-            self.cfg.stop.store(true, Ordering::Release);
+            self.cfg.stop.store(true, Ordering::Relaxed);
             // The flag is stored either way, so the pool stops on time; this thread
             // carries its first iteration to the end, where `may_stop` picks it up.
             return self.iter_depth > 1;
@@ -803,7 +803,7 @@ impl<'cfg> Searcher<'cfg> {
 
     #[inline]
     fn is_stopped(&self) -> bool {
-        self.cfg.stop.load(Ordering::Acquire)
+        self.cfg.stop.load(Ordering::Relaxed)
     }
 
     /// Sums per-thread node counters. Each thread publishes its local count

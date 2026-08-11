@@ -61,7 +61,7 @@ pub fn run(limit: usize) {
         let limits = Limits { movetime: move_time, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
         let history = vec![board.hash];
-        stop_signal.store(false, Ordering::Release);
+        stop_signal.store(false, Ordering::Relaxed);
 
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
         let mut history_table = History::new();

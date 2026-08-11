@@ -112,7 +112,7 @@ impl XBoardState {
     }
 
     fn stop_search(&mut self) {
-        self.stop_signal.store(true, Ordering::Release);
+        self.stop_signal.store(true, Ordering::Relaxed);
 
         if let Some(handle) = self.search_thread.take()
             && let Err(e) = handle.join()
@@ -120,7 +120,7 @@ impl XBoardState {
             eprintln!("Error: {}", EngineError::from_panic(e.as_ref()));
         }
 
-        self.stop_signal.store(false, Ordering::Release);
+        self.stop_signal.store(false, Ordering::Relaxed);
     }
 
     /// Reset to a fresh root position: rebuild the accumulator and reseed the
@@ -179,9 +179,9 @@ impl XBoardState {
             let mut ctx = Searcher::new(&cfg, &board, &history, tt);
             ctx.iterative_deepening(&mut persistent_history);
 
-            cfg.stop.store(true, Ordering::Release);
+            cfg.stop.store(true, Ordering::Relaxed);
             pool.wait();
-            cfg.stop.store(false, Ordering::Release);
+            cfg.stop.store(false, Ordering::Relaxed);
 
             *history_arc.lock() = persistent_history;
         }));
