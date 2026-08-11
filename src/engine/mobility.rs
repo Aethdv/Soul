@@ -196,11 +196,15 @@ impl Mobility {
         w_eg_o: T::Vec4,
         w_eg_c: T::Vec4,
     ) -> T {
+        // The tuner's record packs each side's metrics into i8 (±127), so the
+        // engine must clamp the same way or the fitted weights see a feature
+        // the search evaluates raw. Normal positions peak around 113; only
+        // promotion-heavy ones reach the clamp.
         let diff = T::Vec4::from_lanes(
-            T::from_i32(metrics_us.mobility - metrics_them.mobility),
-            T::from_i32(metrics_us.shadow_mobility - metrics_them.shadow_mobility),
-            T::from_i32(metrics_us.threats - metrics_them.threats),
-            T::from_i32(metrics_us.shadow_threats - metrics_them.shadow_threats),
+            T::from_i32(metrics_us.mobility.clamp(-127, 127) - metrics_them.mobility.clamp(-127, 127)),
+            T::from_i32(metrics_us.shadow_mobility.clamp(-127, 127) - metrics_them.shadow_mobility.clamp(-127, 127)),
+            T::from_i32(metrics_us.threats.clamp(-127, 127) - metrics_them.threats.clamp(-127, 127)),
+            T::from_i32(metrics_us.shadow_threats.clamp(-127, 127) - metrics_them.shadow_threats.clamp(-127, 127)),
         );
 
         let o = T::Vec4::splat(openness);
