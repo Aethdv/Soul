@@ -42,8 +42,10 @@ pub struct FeatureRecord {
     pub enemy_king_dist: [i8; 6],
     pub phalanx: [i8; 6],
     pub defended_pawn: [i8; 6],
-    /// `[us·4, them·4]`: mobility, shadow_mobility, threats, shadow_threats.
-    pub mobility: [i8; 8],
+    /// Raw us − them differential per metric: mobility, shadow_mobility,
+    /// threats, shadow_threats. i16 holds the full range; the i8 halves it
+    /// replaced clamped at ±127, which the search never did.
+    pub mobility_diff: [i16; 4],
     /// `[attackers, weak, shield, ortho<<4 | diag]`, king-safety metrics.
     pub safety_us: [u8; 4],
     pub safety_them: [u8; 4],
@@ -96,18 +98,14 @@ impl FeatureRecord {
             (&sf.data.metrics_us, &sf.data.metrics_them, &sf.data.safety_us, &sf.data.safety_them)
         };
 
-        let pack_side = |m: &SideMetrics| {
-            [
-                m.mobility.clamp(-127, 127) as i8,
-                m.shadow_mobility.clamp(-127, 127) as i8,
-                m.threats.clamp(-127, 127) as i8,
-                m.shadow_threats.clamp(-127, 127) as i8,
-            ]
-        };
-
-        let mut mobility = [0i8; 8];
-        mobility[..4].copy_from_slice(&pack_side(mob_us));
-        mobility[4..].copy_from_slice(&pack_side(mob_them));
+        // The engine differences the same raw values; even with several
+        // promoted queens the differential stays far inside i16.
+        let mobility_diff = [
+            (mob_us.mobility - mob_them.mobility) as i16,
+            (mob_us.shadow_mobility - mob_them.shadow_mobility) as i16,
+            (mob_us.threats - mob_them.threats) as i16,
+            (mob_us.shadow_threats - mob_them.shadow_threats) as i16,
+        ];
 
         let sign = if black { -1 } else { 1 };
 
@@ -115,7 +113,7 @@ impl FeatureRecord {
         let phase = extract_phase(&acc);
 
         let mut record = Self {
-            mobility,
+            mobility_diff,
             safety_us: pack_safety(saf_us),
             safety_them: pack_safety(saf_them),
             // The tables carry material and negate Black's entries, so this is an
@@ -444,10 +442,10 @@ impl TermSource<MobilityTerm> for FeatureRecord {
     fn extract(&self) -> MobilityInput {
         MobilityInput {
             diff: Vf64x4::from([
-                f64::from(self.mobility[0]) - f64::from(self.mobility[4]),
-                f64::from(self.mobility[1]) - f64::from(self.mobility[5]),
-                f64::from(self.mobility[2]) - f64::from(self.mobility[6]),
-                f64::from(self.mobility[3]) - f64::from(self.mobility[7]),
+                f64::from(self.mobility_diff[0]),
+                f64::from(self.mobility_diff[1]),
+                f64::from(self.mobility_diff[2]),
+                f64::from(self.mobility_diff[3]),
             ]),
             openness: self.open_raw,
         }
