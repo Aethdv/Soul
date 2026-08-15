@@ -1105,7 +1105,7 @@ impl Worker<'_> {
         // Inheritance above makes one hop reach the last eval;
         // a reference still missing means the root edge, which counts
         // as improving.
-        let _improving = !in_check
+        let improving = !in_check
             && (ply >= 2)
                 .then(|| self.stack[ply - 2].static_eval)
                 .filter(|&e| e != tt::SCORE_NONE)
@@ -1127,7 +1127,7 @@ impl Worker<'_> {
             && !is_mate(tt_adjusted_eval)
         {
             let margin = sp.rfp_base_margin
-                + sp.rfp_margin * depth
+                + sp.rfp_margin * (depth - improving as i32)
                 + sp.rfp_quad_margin * depth * depth;
 
             if tt_adjusted_eval - margin >= beta {
