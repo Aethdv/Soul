@@ -1379,7 +1379,7 @@ impl Worker<'_> {
                     && mv.is_quiet()
                     && !N::PV
                     && depth <= sp.lmp_depth
-                    && res.move_count as i32 >= sp.lmp_base + depth * depth
+                    && res.move_count as i32 >= sp.lmp_base + depth * depth + (improving as i32)
                 {
                     continue;
                 }
