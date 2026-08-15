@@ -1163,7 +1163,7 @@ impl Worker<'_> {
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
             let eval_r = ((tt_adjusted_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
-            let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
+            let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r + (improving as i32);
             let null_depth = (depth - r - sp.nmp_ply_offset).max(0);
 
             self.stack[ply].moved_pt = PieceType::None;
