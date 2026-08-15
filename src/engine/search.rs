@@ -1142,7 +1142,7 @@ impl Worker<'_> {
             && !N::PV
             && excluded.is_null()
             && depth <= sp.razoring_depth
-            && static_eval + sp.razoring_margin * depth < alpha
+            && static_eval + sp.razoring_margin * (depth - improving as i32) < alpha
         {
             let score = self.qsearch::<N>(searcher, alpha, beta, ply, None, 0)?;
             if score <= alpha {
