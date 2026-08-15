@@ -1367,7 +1367,7 @@ impl Worker<'_> {
                     && !N::PV
                     && res.move_count >= 1
                     && depth <= sp.fp_depth
-                    && static_eval + sp.fp_margin * depth <= res.alpha
+                    && static_eval + sp.fp_margin * (depth - improving as i32).max(1) <= res.alpha
                 {
                     continue;
                 }
