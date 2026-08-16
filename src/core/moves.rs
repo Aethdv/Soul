@@ -38,18 +38,18 @@ use crate::core::defs::{MAX_MOVES, PieceType, Square};
 #[repr(transparent)]
 pub struct Move(u16);
 
-// No niche (0 is valid null move), so Option<Move> = 4 bytes.
+// No niche: 0 is a valid null move, so Option<Move> cannot pack into the same two bytes.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
+const _: () = assert!(std::mem::size_of::<Option<Move>>() == 4);
 
 impl Move {
     pub const QUIET: u16 = 0;
     pub const CAPTURE: u16 = 1;
 
-    // Bit 1 of the flag nibble = promotion. MovePicker relies on this ordering:
-    // Since PROM_Q (14) > PROM_R (10) > PROM_B (6) > PROM_N (2), and MovePicker
-    // bitpacks the move's inner value into its sort key, Queen promotions natively
-    // evaluate as larger u16 values and sort to the back of the array, which is popped first.
-    // If you break this numeric hierarchy, quiet promotion ordering will silently regress!
+    // Bit 1 of the flag nibble marks a promotion, and the values run PROM_Q (14) > PROM_R (10)
+    // > PROM_B (6) > PROM_N (2) on purpose: MovePicker bitpacks the move into its sort key, so
+    // queen promotions land at the back of the array and pop first. Reordering these regresses
+    // quiet promotion ordering with nothing to catch it.
     pub const PROM_N: u16 = 2;
     pub const PROM_N_CAPTURE: u16 = 3;
 

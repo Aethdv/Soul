@@ -21,8 +21,8 @@ pub const CASTLING_KEYS_LEN: usize = 16; // 2⁴
 
 /// A compile-time pseudo-random number generator (PRNG).
 ///
-/// We need to generate hundreds of 64-bit random numbers to populate the Zobrist tables,
-/// but we want to do it at compile-time to avoid any runtime overhead during engine startup.
+/// The Zobrist tables need hundreds of 64-bit values, and a `const fn` generator puts them
+/// in the binary instead of on the startup path.
 pub struct ConstRng {
     state: u64,
 }

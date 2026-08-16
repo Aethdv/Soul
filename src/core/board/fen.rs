@@ -398,7 +398,7 @@ fn king_file(pos: &Position, color: Color) -> u8 {
 /// returning the first rook encountered.
 ///
 /// Used to resolve `KQkq` notation in both standard and FRC positions; the
-/// edge-inward scan guarantees we find the outermost rook on the correct side.
+/// edge-inward scan lands on the outermost rook of the correct side.
 fn find_rook(pos: &Position, color: Color, start_file: u8, step: i8) -> Option<Square> {
     let rank = color.back_rank();
     let mut file = start_file as i8;
