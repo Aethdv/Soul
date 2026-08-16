@@ -1,47 +1,50 @@
 //! Search-specific tunable parameters.
 //!
-//! Each entry generates a struct field and a `PARAM_DEFS` slice entry in
-//! declaration order; the tuner shows and iterates params in the order they
-//! appear in this file.
+//! Each entry generates a struct field and a `PARAM_DEFS` entry in declaration
+//! order, which is the order `./soul spsa` prints them in.
 //!
 //! Entry forms:
 //!
-//!   `T (name, default)`                      tune; auto-derive bounds + step
-//!   `T (name, default, min)`                 tune; explicit min, auto max + step
-//!   `T (name, default, min, max)`            tune; explicit bounds, auto step
-//!   `T (name, default, min, max, step)`      tune; fully explicit
-//!   `NT(name, default)`                      frozen; auto-derive still applies but tuner skips
+//!   `T (name, default)`                 tune; auto-derive bounds and step
+//!   `T (name, default, min)`            tune; explicit min, auto max and step
+//!   `T (name, default, min, max)`       tune; explicit bounds, auto step
+//!   `NT(name, default)`                 frozen; auto-derive still applies
+//!   `NT(name, default, min, max)`       frozen; bounds kept for when it is not
 //!
 //! Auto-derive: `min = 0`, `max = default + default/2 + 10`, `step = max/20` (≥ 1).
 //!
-//! Search reads each value from its own [`SearchParams`]; the tuner reads
-//! bounds and the tunable set from [`PARAM_DEFS`].
+//! Search reads each value from its own [`SearchParams`]. A frozen entry stays out
+//! of the SPSA table, and its bounds are the range it would be tuned over.
 
-/// Static metadata for one tunable parameter. The live value rides in a
-/// [`SearchParams`], one per searcher; this is only the bounds the tuner reasons over.
+/// Static metadata for one tunable parameter.
 #[derive(Debug)]
-pub struct ParamDef {
-    pub name: &'static str,
-    pub min: f64,
-    pub max: f64,
-    pub step: f64,
-    pub default: f64,
-    /// Tuner skips frozen entries when assembling the search vector.
-    pub frozen: bool,
+struct ParamDef {
+    name: &'static str,
+    min: f64,
+    max: f64,
+    step: f64,
+    default: f64,
+    frozen: bool,
 }
 
-impl ParamDef {
-}
-
-/// Default-derived upper bound; symmetric around 1.5× magnitude with a floor.
-pub const fn auto_max(default: i32) -> i32 {
+// Default-derived upper bound; symmetric around 1.5× magnitude with a floor.
+const fn auto_max(default: i32) -> i32 {
     let abs_d = default.abs();
     abs_d + 10 + abs_d / 2
 }
 
-/// Default-derived step. Floor of 1 prevents zero-step on tiny defaults.
-pub const fn auto_step(max: i32) -> i32 {
+// Default-derived step. Floor of 1 prevents zero-step on tiny defaults.
+const fn auto_step(max: i32) -> i32 {
     (max / 20).max(1)
+}
+
+/// The tunables as an SPSA table, one parameter a line:
+/// `name, int, value, min, max, c_end, r_end`.
+pub fn spsa_table() -> String {
+    tunable_param_defs()
+        .iter()
+        .map(|p| format!("{}, int, {}, {}, {}, {}, {SPSA_R_END}\n", p.name, p.default, p.min, p.max, p.step))
+        .collect()
 }
 
 macro_rules! search_params {
@@ -70,25 +73,10 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // NT(name, default, min): auto max + step
-    (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal, $min:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, $min, $crate::engine::search_params::auto_max($def),
-             $crate::engine::search_params::auto_step($crate::engine::search_params::auto_max($def) - $min), true)
-        ] $($rest)*);
-    };
-
     // T(name, default, min, max): auto step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $max, $crate::engine::search_params::auto_step($max - $min), false)
-        ] $($rest)*);
-    };
-
-    // T(name, default, min, max, step): fully explicit
-    (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal, $step:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, $min, $max, $step, false)
         ] $($rest)*);
     };
 
@@ -107,13 +95,6 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // NT(name, default, min, max, step)
-    (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal, $min:literal, $max:literal, $step:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, $min, $max, $step, true)
-        ] $($rest)*);
-    };
-
     (@emit $name:ident [$( ($field:ident, $def:literal, $min:expr, $max:expr, $step:expr, $frozen:expr) )*]) => {
         #[derive(Clone, Copy, Debug)]
         pub struct $name {
@@ -126,9 +107,7 @@ macro_rules! search_params {
             }
         }
 
-        /// All registered params in source-declaration order, frozen + tunable mixed.
-        /// Use [`tunable_param_defs`] when the tuner only needs the active set.
-        pub static PARAM_DEFS: &[ParamDef] = &[
+        static PARAM_DEFS: &[ParamDef] = &[
             $(
                 ParamDef {
                     name: stringify!($field),
@@ -144,9 +123,10 @@ macro_rules! search_params {
     };
 }
 
-/// Active tunable params in source-declaration order, frozen entries filtered out.
-/// `PARAM_DEFS` is the unfiltered list.
-pub fn tunable_param_defs() -> Vec<&'static ParamDef> {
+/// Terminal learning rate for the SPSA table.
+const SPSA_R_END: f64 = 0.002;
+
+fn tunable_param_defs() -> Vec<&'static ParamDef> {
     PARAM_DEFS.iter().filter(|p| !p.frozen).collect()
 }
 
@@ -289,5 +269,36 @@ search_params! {
         //                default min  max  step
         T (minor_corr_weight, 128,  8),
         T (major_corr_weight, 128,  8),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spsa_table;
+
+    #[test]
+    fn spsa_table_is_well_formed() {
+        let table = spsa_table();
+        let mut seen: Vec<&str> = Vec::new();
+
+        for line in table.lines() {
+            let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+            let [name, kind, value, min, max, c_end, r_end] = fields[..] else {
+                panic!("expected seven fields: {line}");
+            };
+
+            assert!(!name.is_empty() && !name.contains(char::is_whitespace) && !name.contains('='), "bad name: {line}");
+            assert!(!seen.contains(&name), "duplicate: {name}");
+            seen.push(name);
+            assert_eq!(kind, "int", "{line}");
+
+            let num = |field: &str| field.parse::<f64>().expect("a number");
+            let (value, min, max) = (num(value), num(min), num(max));
+            assert!(min <= max, "{line}");
+            assert!((min..=max).contains(&value), "{name} defaults outside its bounds: {line}");
+            assert!(num(c_end) > 0.0, "{name} has a zero probe width: {line}");
+            assert!(num(r_end) >= 0.0, "{line}");
+        }
+        assert!(!seen.is_empty());
     }
 }

@@ -347,6 +347,7 @@ pub fn print_help(use_ansi: bool) {
     h.command_args("bench", "<N>", "Benchmark to depth N");
     h.command_args("divide", "<N>", "Perft divide test");
     h.command("speedtest", "Run performance test");
+    h.command("spsa", "Print the tunable search params as an SPSA table");
     h.command("datagen", "Generate self-play training data");
     h.command("dataset", "Manage datasets (inspect, info, encode)");
     h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
