@@ -1,7 +1,9 @@
-//! Static evaluation parameters and weight arrays.
+//! The tunable parameter vector: its layout, and the weights it ships with.
 //!
-//! Contains the constants and tunable structures that map piece-square placement
-//! and spatial features to centipawn scores.
+//! Weights are declared in groups, and one const-evaluated table assigns every block its
+//! offset and length. `LAYOUT` is that table under named accessors, and the eval, the
+//! gradient scatter and the tuner all index through it, so a block that moves moves
+//! everywhere at once.
 
 #![allow(non_snake_case)]
 
@@ -65,7 +67,6 @@ const BLOCK_SOURCES: &[(Group, SectionDecls)] = param_groups!(block_sources);
 const BLOCK_COUNT: usize = {
     let mut count = 0;
     let mut g = 0;
-
     while g < BLOCK_SOURCES.len() {
         let sections = BLOCK_SOURCES[g].1;
         let mut s = 0;
@@ -84,14 +85,12 @@ const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
     let mut offset = 0;
     let mut next = 0;
     let mut g = 0;
-
     while g < BLOCK_SOURCES.len() {
         let (group, sections) = BLOCK_SOURCES[g];
         let mut s = 0;
 
         while s < sections.len() {
             let mut i = 0;
-
             while i < sections[s].len() {
                 let (name, len) = sections[s][i];
                 table[next] = Block { name, group, section: s as u8, offset, len };
@@ -110,10 +109,8 @@ const BLOCK_TABLE: [Block; BLOCK_COUNT] = {
 const fn block_slots(sections: SectionDecls) -> usize {
     let mut slots = 0;
     let mut s = 0;
-
     while s < sections.len() {
         let mut i = 0;
-
         while i < sections[s].len() {
             slots += sections[s][i].1;
             i += 1;
@@ -131,7 +128,6 @@ const fn str_eq(a: &str, b: &str) -> bool {
     }
 
     let mut i = 0;
-
     while i < a.len() {
         if a[i] != b[i] {
             return false;
@@ -180,7 +176,7 @@ pub struct Tunable {
 /// V(v)       flat weight
 ///
 /// The `C` prefix pins a slot; the tuner reads it as `is_fixed` and never steps it.
-pub enum Param {
+enum Param {
     S(i32, i32),
     CS(i32, i32),
     Val(i32),
@@ -262,7 +258,6 @@ macro_rules! define_psqt_params {
                 ];
             )*
 
-            // The six tables are one block; every square carries an MG and an EG slot.
             const PSQT_BLOCKS: SectionDecls = &[&[("psqt", (0 $( + [<MG_ $name>].len() )*) * 2)]];
 
             fn collect_psqt_params() -> Vec<Tunable> {
@@ -435,7 +430,6 @@ macro_rules! define_layout {
                     pub [<$name _offset>]: usize,
                     pub [<$name _len>]: usize,
                 )*
-                /// One past the last slot: the full tunable-region length.
                 pub total: usize,
             }
 
@@ -468,8 +462,6 @@ macro_rules! define_layout {
     };
 }
 
-// The core blocks, then one per bonus term: a scalar owns a block under its own
-// name, an array owns an MG and an EG block.
 crate::bonus_terms! { @blocks define_layout,
     psqt,
     material,
@@ -513,8 +505,6 @@ pub fn collect_parameters() -> Vec<Tunable> {
     param_groups!(collect_groups)
 }
 
-/// The values the declarations ship, in slot order: what a tuner starts from and what
-/// every diagnostic measures the shipped eval at.
 #[must_use]
 pub fn default_values(params: &[Tunable]) -> Vec<f64> {
     params.iter().map(|p| p.value).collect()
