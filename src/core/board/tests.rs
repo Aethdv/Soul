@@ -1,8 +1,4 @@
 //! Regression tests for board state, move application, and game logic.
-//!
-//! These validate invariants that incremental updates (make/unmake, Zobrist,
-//! accumulator) are correct. Any future refactor that silently breaks
-//! these will be caught immediately.
 
 use crate::{
     core::{
@@ -54,16 +50,12 @@ fn zobrist_make_unmake_identity() {
 
         let original_hash = pos.hash;
         let original_fen = pos.as_fen();
-
         let moves = gen_legal_moves(&pos);
-
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);
-
             pos.unmake_move(*mv, &undo);
             acc = saved_acc;
-
             assert_eq!(pos.hash, original_hash, "Zobrist hash not restored after make/unmake {} in {fen}", mv.to_uci(false));
             assert_eq!(pos.as_fen(), original_fen, "FEN not restored after make/unmake {} in {fen}", mv.to_uci(false));
         }
@@ -76,11 +68,9 @@ fn zobrist_incremental_matches_full() {
     let mut acc = pos.get_initial_accumulator();
 
     let moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"];
-
     for uci in moves {
         let mv = find_uci_move(&pos, uci);
         pos.make_move(mv, &mut acc);
-
         let expected = pos.calc_zobrist();
         assert_eq!(pos.hash, expected, "Incremental hash diverged after {uci}: got {:#x}, expected {:#x}", pos.hash, expected);
     }
@@ -101,11 +91,9 @@ fn zobrist_long_sequence() {
         let mv = find_uci_move(&pos, uci);
         pos.make_move(mv, &mut acc);
         assert_eq!(pos.hash, pos.calc_zobrist(), "Hash diverged after move {uci}. Position: {}", pos.as_fen());
-
         assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after move {uci}. Position: {}", pos.as_fen());
         assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after move {uci}. Position: {}", pos.as_fen());
         assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after move {uci}. Position: {}", pos.as_fen());
-
         let fresh_acc = pos.get_initial_accumulator();
         assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator diverged after move {uci}");
     }
@@ -123,14 +111,11 @@ fn correction_keys_promotion_and_en_passant() {
         let mut pos = Position::from_fen(fen);
         let mut acc = pos.get_initial_accumulator();
         let before = (pos.pawn_key, pos.minor_key, pos.major_key);
-
         let mv = find_uci_move(&pos, uci);
         let undo = pos.make_move(mv, &mut acc);
-
         assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after {uci} from {fen}");
         assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after {uci} from {fen}");
         assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after {uci} from {fen}");
-
         pos.unmake_move(mv, &undo);
         assert_eq!((pos.pawn_key, pos.minor_key, pos.major_key), before, "Keys not restored after unmaking {uci} from {fen}");
     }
@@ -139,20 +124,16 @@ fn correction_keys_promotion_and_en_passant() {
 #[test]
 fn accumulator_incremental_matches_full() {
     let positions = [STARTPOS, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -"];
-
     for fen in positions {
         let mut pos = Position::from_fen(fen);
         let mut acc = pos.get_initial_accumulator();
 
         let moves = gen_legal_moves(&pos);
-
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);
-
             let fresh_acc = pos.get_initial_accumulator();
             assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator mismatch after {} in {fen}", mv.to_uci(false));
-
             pos.unmake_move(*mv, &undo);
             acc = saved_acc;
         }
@@ -166,15 +147,12 @@ fn castling_kingside_white() {
 
     let mv = Move::new(Square(4), Square(7), Move::CASTLE);
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.piece_at(Square(6)), PieceType::King, "King should be on g1");
     assert_eq!(pos.piece_at(Square(5)), PieceType::Rook, "Rook should be on f1");
     assert_eq!(pos.piece_at(Square(4)), PieceType::None, "e1 should be empty");
     assert_eq!(pos.piece_at(Square(7)), PieceType::None, "h1 should be empty");
-
     let expected_hash = pos.calc_zobrist();
     assert_eq!(pos.hash, expected_hash, "Hash mismatch after O-O");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.piece_at(Square(4)), PieceType::King, "King not restored to e1");
     assert_eq!(pos.piece_at(Square(7)), PieceType::Rook, "Rook not restored to h1");
@@ -187,12 +165,10 @@ fn castling_queenside_black() {
 
     let mv = Move::new(Square(60), Square(56), Move::CASTLE);
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.piece_at(Square(58)), PieceType::King, "King should be on c8");
     assert_eq!(pos.piece_at(Square(59)), PieceType::Rook, "Rook should be on d8");
     assert_eq!(pos.piece_at(Square(60)), PieceType::None, "e8 should be empty");
     assert_eq!(pos.piece_at(Square(56)), PieceType::None, "a8 should be empty");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.piece_at(Square(60)), PieceType::King, "King not restored to e8");
     assert_eq!(pos.piece_at(Square(56)), PieceType::Rook, "Rook not restored to a8");
@@ -202,17 +178,14 @@ fn castling_queenside_black() {
 fn en_passant_capture() {
     let mut pos = Position::from_fen("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1");
     let mut acc = pos.get_initial_accumulator();
-    let original_hash = pos.hash;
 
+    let original_hash = pos.hash;
     let mv = Move::new(Square::from_coords(3, 4), Square::from_coords(4, 5), Move::EP_CAPTURE);
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.piece_at(Square::from_coords(4, 4)), PieceType::None, "EP victim should be removed");
     assert_eq!(pos.piece_at(Square::from_coords(4, 5)), PieceType::Pawn, "Pawn should land on e6");
-
     let expected_hash = pos.calc_zobrist();
     assert_eq!(pos.hash, expected_hash, "Hash mismatch after EP capture");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.hash, original_hash, "Hash not restored after EP unmake");
     assert_eq!(pos.piece_at(Square::from_coords(4, 4)), PieceType::Pawn, "EP victim not restored");
@@ -225,13 +198,10 @@ fn promotion_queen() {
 
     let mv = Move::new(Square::from_coords(0, 6), Square::from_coords(0, 7), Move::PROM_Q);
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.piece_at(Square::from_coords(0, 7)), PieceType::Queen, "Promoted piece should be queen");
     assert_eq!(pos.piece_at(Square::from_coords(0, 6)), PieceType::None, "Old square should be empty");
-
     let expected_hash = pos.calc_zobrist();
     assert_eq!(pos.hash, expected_hash, "Hash mismatch after promotion");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.piece_at(Square::from_coords(0, 6)), PieceType::Pawn, "Pawn not restored after promotion unmake");
 }
@@ -263,7 +233,6 @@ fn not_draw_with_pawns() {
 #[test]
 fn threefold_repetition() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 10 1");
-    // Same position hash appearing 3 times in history
     let history = vec![pos.hash, 999, pos.hash, 888, pos.hash];
     assert!(pos.is_threefold_repetition(&history));
 }
@@ -337,7 +306,7 @@ fn move_promotion_piece_types() {
 #[test]
 fn material_count_startpos() {
     let pos = Position::from_fen(STARTPOS);
-    // 16P + 4N + 4B + 4R + 2Q = 16·1 + 4·3 + 4·3 + 4·5 + 2·9 = 16+12+12+20+18 = 78
+    // 16P + 4N + 4B + 4R + 2Q = 16·1 + 4·3 + 4·3 + 4·5 + 2·9 = 78
     assert_eq!(pos.material_count(), 78);
 }
 
@@ -370,7 +339,6 @@ fn eval_startpos_tempo_only() {
     let pos = Position::from_fen(STARTPOS);
     let acc = pos.get_initial_accumulator();
     let score = evaluate(&pos, &acc);
-
     assert_eq!(score, TEMPO[0], "got {score}");
 }
 
@@ -380,13 +348,10 @@ fn eval_stm_symmetry() {
 
     let w = Position::from_fen("rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq e6 0 1");
     let b = Position::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
-
     let w_acc = w.get_initial_accumulator();
     let b_acc = b.get_initial_accumulator();
-
     let w_score = evaluate(&w, &w_acc);
     let b_score = evaluate(&b, &b_acc);
-
     assert_eq!(w_score, b_score, "Mirror positions should eval identically, got w={w_score}, b={b_score}");
 }
 
@@ -396,13 +361,10 @@ fn eval_strict_symmetry() {
 
     let w = Position::from_fen(STARTPOS);
     let b = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
-
     let w_acc = w.get_initial_accumulator();
     let b_acc = b.get_initial_accumulator();
-
     let w_score = evaluate(&w, &w_acc);
     let b_score = evaluate(&b, &b_acc);
-
     assert_eq!(w_score, b_score);
 }
 
@@ -526,7 +488,6 @@ fn phase_startpos() {
     let pos = Position::from_fen(STARTPOS);
     let acc = pos.get_initial_accumulator();
     let phase = extract_phase(&acc);
-
     assert_eq!(phase, TOTAL_PHASE, "Startpos should have full phase (24)");
 }
 
@@ -537,7 +498,6 @@ fn phase_endgame() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
     let acc = pos.get_initial_accumulator();
     let phase = extract_phase(&acc);
-
     assert_eq!(phase, 0, "Bare kings should have phase 0");
 }
 
@@ -551,11 +511,9 @@ fn wdl_monotonicity() {
     // As score increases, win prob should increase, loss prob should decrease.
     for score in (-1500..=2000).step_by(500) {
         let (w, d, l) = wdl_model(score, material);
-
         assert!(w >= last_w, "Win prob decreased at score {score}");
         assert!(l <= last_l, "Loss prob increased at score {score}");
         assert!((w + d + l - 1.0).abs() < 1e-6, "Probabilities should sum to 1.0");
-
         last_w = w;
         last_l = l;
     }
@@ -568,13 +526,11 @@ fn square_coordinate_mapping() {
     assert_eq!(a1.0, 0);
     assert_eq!(a1.rank(), 0);
     assert_eq!(a1.file(), 0);
-
     // Square 63 = H8
     let h8 = Square::from_coords(7, 7);
     assert_eq!(h8.0, 63);
     assert_eq!(h8.rank(), 7);
     assert_eq!(h8.file(), 7);
-
     // Mirroring/Flipping
     assert_eq!(a1.flip_rank().0, 56); // a8
     assert_eq!(a1.flip_file().0, 7); // h1
@@ -586,12 +542,10 @@ fn pinned_pieces_detection() {
     let pos = Position::from_fen("k3r3/8/8/8/8/8/4P3/4K3 w - - 0 1");
     let pinned = pos.pinned_pieces(Color::White);
     assert!(pinned.check_bit(Square::from_coords(4, 1)), "Pawn on e2 should be pinned orthogonally");
-
     // 2. Diagonal Pin
     let pos = Position::from_fen("4k3/8/8/b7/8/2P5/8/4K3 w - - 0 1");
     let pinned = pos.pinned_pieces(Color::White);
     assert!(pinned.check_bit(Square::from_coords(2, 2)), "Pawn on c3 should be pinned diagonally");
-
     // 3. Verify pins don't apply to the other side
     let pinned_b = pos.pinned_pieces(Color::Black);
     assert!(pinned_b.is_empty(), "Black should have no pinned pieces");
@@ -613,7 +567,6 @@ fn not_draw_rook_vs_king() {
 fn fifty_move_draw_detection() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 100 50");
     assert!(pos.is_fifty_move_draw(), "halfmove=100 should be a 50-move draw");
-
     let pos2 = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 99 50");
     assert!(!pos2.is_fifty_move_draw(), "halfmove=99 is not yet a draw");
 }
@@ -624,7 +577,6 @@ fn double_push_sets_en_passant() {
     let mut acc = pos.get_initial_accumulator();
     let mv = find_uci_move(&pos, "e2e4");
     pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.en_passant, Some(Square(20)), "e2e4 double push should set EP square e3 when capture is possible");
 }
 
@@ -636,7 +588,6 @@ fn promotion_capture_and_undo() {
     let mv = Move::new(Square::from_coords(1, 6), Square::from_coords(2, 7), Move::PROM_Q_CAPTURE);
     let original_hash = pos.hash;
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(
         pos.piece_at(Square::from_coords(2, 7)),
         PieceType::Queen,
@@ -644,7 +595,6 @@ fn promotion_capture_and_undo() {
     );
     assert_eq!(pos.color_at(Square::from_coords(2, 7)), Color::White);
     assert!(pos.pieces(PieceType::Rook, Color::Black).is_empty(), "Black rook on c8 should be captured");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.piece_at(Square::from_coords(1, 6)), PieceType::Pawn, "Pawn not restored to b7");
     assert_eq!(pos.piece_at(Square::from_coords(2, 7)), PieceType::Rook, "Rook not restored to c8");
@@ -663,7 +613,6 @@ fn checkmate_no_legal_moves() {
 fn double_check_only_king_moves() {
     let pos = Position::from_fen("4r3/8/8/8/8/8/8/2k1K2q w - - 0 1");
     let moves = gen_legal_moves(&pos);
-
     assert!(!moves.is_empty(), "Should have some escaping moves");
     for mv in &moves {
         assert_eq!(
@@ -681,10 +630,8 @@ fn knight_under_promotion_check() {
     let mut acc = pos.get_initial_accumulator();
     let mv = Move::new(Square::from_coords(2, 6), Square::from_coords(3, 7), Move::PROM_N); // c7d8=N
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.piece_at(Square::from_coords(3, 7)), PieceType::Knight);
     assert!(!pos.checkers().is_empty(), "Promoted knight to d8 should check king on b7");
-
     pos.unmake_move(mv, &undo);
     assert!(pos.checkers().is_empty(), "Unmaking promotion should remove check");
     assert_eq!(pos.piece_at(Square::from_coords(2, 6)), PieceType::Pawn);
@@ -693,7 +640,6 @@ fn knight_under_promotion_check() {
 #[test]
 fn stalemate_no_legal_moves() {
     let pos = Position::from_fen("7k/5K2/6Q1/8/8/8/8/8 b - - 0 1");
-
     let moves = gen_legal_moves(&pos);
     assert!(moves.is_empty(), "Stalemate position should have 0 legal moves");
     assert!(pos.checkers().is_empty(), "Should NOT be in check in stalemate");
@@ -723,7 +669,6 @@ fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x
     }
 
     let moves = gen_legal_moves(pos);
-
     if depth == 1 {
         return moves.len() as u64;
     }
@@ -733,7 +678,6 @@ fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x
     for &mv in &moves {
         let saved_acc = *acc;
         let undo = pos.make_move(mv, acc);
-
         total += perft_recursive(pos, depth - 1, acc);
         pos.unmake_move(mv, &undo);
         *acc = saved_acc;
@@ -749,10 +693,8 @@ fn king_move_removes_castling_rights() {
     let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "e1d1");
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.castling_rights & (WHITE_OO | WHITE_OOO), 0, "White should lose all castling rights after moving the King");
     assert_ne!(pos.castling_rights & (BLACK_OO | BLACK_OOO), 0, "Black should retain castling rights");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.castling_rights, original_rights, "Castling rights should be restored after unmake");
 }
@@ -765,10 +707,8 @@ fn rook_capture_removes_castling_rights() {
     let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "g7h8");
     let undo = pos.make_move(mv, &mut acc);
-
     assert_eq!(pos.castling_rights & BLACK_OO, 0, "Black should lose kingside rights after rook is captured");
     assert_ne!(pos.castling_rights & BLACK_OOO, 0, "Black should keep queenside rights");
-
     pos.unmake_move(mv, &undo);
     assert_eq!(pos.castling_rights, original_rights, "Castling rights should be restored after rook-capture unmake");
 }
@@ -779,13 +719,10 @@ fn castling_legality_checks() {
     let pos = Position::from_fen("1k2r3/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
     assert!(!moves.iter().any(|m| m.is_castling()), "Should not be able to castle out of check");
-
     // 2. Cannot castle through check
     let pos = Position::from_fen("1k3r2/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
-
     assert!(!moves.iter().any(|m| m.is_castling() && m.to().0 == 7), "Should not castle through check on f1");
-
     // 3. Cannot castle into check
     let pos = Position::from_fen("1k4r1/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
@@ -794,7 +731,6 @@ fn castling_legality_checks() {
 
 fn find_uci_move(pos: &Position, uci: &str) -> Move {
     let moves = gen_legal_moves(pos);
-
     for mv in &moves {
         if mv.to_uci(pos.is_frc) == uci {
             return *mv;

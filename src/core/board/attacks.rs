@@ -8,18 +8,16 @@ use crate::core::{
     defs::{Bitboard, Color, PieceType, Square},
 };
 
-/// Tests whether `sq` is attacked by any piece belonging to `attacker`.
+/// Returns whether `sq` is attacked by any piece of `attacker`.
 ///
-/// The `VIRTUAL` const generic enables transparent-king mode:
-/// `mask_out` is erased from occupancy before slider rays are cast.
-/// This is essential when checking if the king's destination is safe,
-/// slider rays must see through the king's departure square, not stop on it.
+/// `VIRTUAL` removes `mask_out` from occupancy before the slider rays are cast, so a
+/// king's departure square stops blocking the check it was hiding from.
 #[inline(always)]
 pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Color, mask_out: Bitboard) -> bool {
     let occ = if VIRTUAL { pos.occ & !mask_out } else { pos.occ };
     let them = pos.side_bb[attacker];
 
-    // Leapers first: cheapest to test, no occupancy dependency.
+    // Non-slider attacks: evaluated first as they are independent of occupancy.
     if (atk_pawn(sq, attacker.opposite()) & pos.role_bb[PieceType::Pawn] & them).is_not_empty() {
         return true;
     }
@@ -30,8 +28,8 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
         return true;
     }
 
+    // Slider attacks: evaluated against the (potentially masked) occupancy.
     let rq = (pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen]) & them;
-
     if (atk_rook(sq, occ) & rq).is_not_empty() {
         return true;
     }
@@ -40,8 +38,7 @@ pub fn is_attacked<const VIRTUAL: bool>(pos: &Position, sq: Square, attacker: Co
     (atk_bishop(sq, occ) & bq).is_not_empty()
 }
 
-/// Returns a bitboard of every enemy piece
-/// currently giving check to the side-to-move's king.
+/// Returns a bitboard of every enemy piece currently giving check to the side-to-move's king.
 #[inline(always)]
 pub fn checkers(pos: &Position) -> Bitboard {
     let king_bb = pos.pieces(PieceType::King, pos.stm);
@@ -66,16 +63,11 @@ pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
         | (atk_bishop(sq, occ) & (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]) & them)
 }
 
-/// All pieces of either color attacking `sq`, computed against an explicit
-/// occupancy mask.
+/// All pieces of both colors attacking `sq`, against an occupancy the caller supplies.
 ///
-/// Unlike `attackers_of` (which takes `pos.occ` implicitly and filters by
-/// one color), this accepts an arbitrary `occ` so the caller can simulate
-/// mid-exchange board states; the primary use case is SEE, where the set
-/// of revealed attackers changes as each capture removes a blocker.
-///
-/// Pawn attacks are symmetric: `atk_pawn(sq, color.opposite())` returns the
-/// squares from which a pawn of `color` would attack `sq`.
+/// SEE needs that: each capture removes a blocker, and the attackers behind it only
+/// appear against an occupancy that already has it gone. Pawns come off an inverse
+/// lookup, since `atk_pawn(sq, opp)` names the squares a pawn of `color` strikes from.
 #[inline(always)]
 pub fn all_attackers_to(pos: &Position, sq: Square, occ: Bitboard) -> Bitboard {
     let pawns = pos.role_bb[PieceType::Pawn];
@@ -89,31 +81,20 @@ pub fn all_attackers_to(pos: &Position, sq: Square, occ: Bitboard) -> Bitboard {
         | (atk_bishop(sq, occ) & (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]))
 }
 
-/// Can any pawn of `color` legally reach `ep_sq`?
+/// Whether a pawn of `color` can capture onto `ep_sq`, pseudo-legally.
 ///
-/// Uses the symmetry trick:
-/// pawn attacks generated from the EP square with the opponent's perspective
-/// land exactly on the squares where a friendly pawn could capture.
-/// If any such pawn exists, en passant is pseudo-legal.
-///
-/// Takes `color` explicitly rather than reading `pos.stm` to avoid
-/// temporal coupling: callers always know which side is capturing.
+/// The side is a parameter and not `pos.stm`, because `make_move` asks after the
+/// turn has already flipped.
 #[inline]
 pub fn can_capture_ep(pos: &Position, ep_sq: Square, color: Color) -> bool {
     let us = pos.side_bb[color];
     (atk_pawn(ep_sq, color.opposite()) & pos.role_bb[PieceType::Pawn] & us).is_not_empty()
 }
 
-/// Identifies friendly pieces pinned to our king by enemy sliders.
+/// Identifies friendly pieces absolutely pinned to the king along enemy slider rays.
 ///
-/// A piece is a King-blocker if it is the sole occupant of the ray between
-/// our king and an enemy slider aligned with that ray.
-/// Moving it off the line would expose the king to check.
-///
-/// 1. Cast rays from the king on an empty board to spot
-///    enemy "snipers", sliders that sit on a potential attack line.
-/// 2. For each sniper, inspect the segment between it and the king.
-/// 3. If exactly one piece occupies that segment and it's ours → pinned.
+/// Finds enemy sliders sharing an unobstructed line of sight with the king,
+/// then flags rays containing exactly one intervening friendly blocker.
 #[inline]
 pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     let opp = color.opposite();
@@ -124,7 +105,7 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     }
     let king_sq = king_bb.lsb();
 
-    // Enemy sliders that would threaten the king on a completely empty board.
+    // Potential enemy sliders aligned along empty-board king rays ("snipers").
     let rq = pos.pieces(PieceType::Rook, opp) | pos.pieces(PieceType::Queen, opp);
     let bq = pos.pieces(PieceType::Bishop, opp) | pos.pieces(PieceType::Queen, opp);
     let snipers = (PSEUDO_ROOK_ATTACKS[usize::from(king_sq)] & rq) | (PSEUDO_BISHOP_ATTACKS[usize::from(king_sq)] & bq);
@@ -133,7 +114,7 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
 
     for sniper_sq in snipers {
         let between = between_bb(king_sq, sniper_sq) & pos.occ;
-        // One occupant on the ray, and it's ours: that piece is pinned.
+        // Exactly one intervening blocker, and it is friendly.
         if between.popcount() == 1 && (between & us).is_not_empty() {
             pinned |= between;
         }
@@ -141,10 +122,10 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     pinned
 }
 
-/// Both colors' king-pinned pieces and their king squares. A pin is one fact, a
-/// piece tied to the line through its king, and it binds that piece the same way
-/// whether legality asks if a move leaves the line or SEE asks if a recapture
-/// would. So the position is scanned once here, and both read the one answer.
+/// Both colors' king-pinned pieces and their king squares.
+///
+/// A pin binds the same way whichever question is asked, so the position is scanned
+/// once and legality and SEE read the one answer.
 #[derive(Clone, Copy)]
 pub struct Pins {
     pinned: [Bitboard; 2],
