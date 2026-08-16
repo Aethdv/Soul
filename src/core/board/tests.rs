@@ -235,6 +235,9 @@ fn threefold_repetition() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 10 1");
     let history = vec![pos.hash, 999, pos.hash, 888, pos.hash];
     assert!(pos.is_threefold_repetition(&history));
+    let twice = vec![pos.hash, 999, 777, 888, pos.hash];
+    assert!(!pos.is_threefold_repetition(&twice), "two occurrences is not threefold");
+    assert!(!pos.is_threefold_repetition(&[pos.hash, 999, pos.hash]), "a history this short cannot hold three");
 }
 
 #[test]
