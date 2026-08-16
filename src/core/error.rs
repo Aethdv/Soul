@@ -93,4 +93,3 @@ pub enum SoulError {
     #[error(transparent)]
     Option(#[from] OptionError),
 }
-
