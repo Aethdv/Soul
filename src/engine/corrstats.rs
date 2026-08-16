@@ -1,16 +1,14 @@
-//! Correction-history instrumentation: is a table dead, sparse, or noisy?
+//! Runtime instrumentation and diagnostics for correction history tables.
 //!
-//! Four numbers per table answer the question that key-shape guessing can't:
-//! - hit rate (`hits/reads`): does a read find a trained value? Low = dead key.
+//! Five metrics per table:
+//! - hit rate (`hit%`): reads that return a non-zero correction, `hits / reads`.
 //! - updates: how often the table is trained, its sampling density.
-//! - mean |correction|: how large the value is when it hits. Tiny = noise.
-//! - saturation: share of hits pinned at the clamp, railed rather than averaged.
+//! - mean magnitude (`mean|c|`): the average correction on a hit.
+//! - effective score (`eff cp`): that mean scaled by the table's blend weight, the
+//!   centipawns it actually moves the eval, and the number that ranks tables.
+//! - saturation (`sat%`): hits pinned at [`CORRECTION_LIMIT`].
 //!
-//! A table that reads often but hits rarely is sparse; one that hits but
-//! corrects near zero is noise; one with few updates is starved; one that
-//! saturates is railing instead of learning. Each is a distinct signature.
-//!
-//! Compiled only under the `corrstats` feature; zero cost in release builds.
+//! Compiled under the `corrstats` feature; zero cost in release builds.
 
 use std::{
     io::IsTerminal,
@@ -51,10 +49,10 @@ pub enum Table {
 struct Counters {
     reads: AtomicU64,
     hits: AtomicU64,
-    /// Sum of |value| over hits, in raw fixed-point (`/CORRECTION_SCALE` → cp).
+    /// Accumulated `|value|` across non-zero reads (fixed-point units).
     abs_sum: AtomicU64,
-    /// Hits whose |value| is pinned at `CORRECTION_LIMIT`, the EMA railed,
-    /// so the entry is a clamped extreme, not a learned average.
+    /// Hits pinned at [`CORRECTION_LIMIT`], where the EMA railed
+    /// and the entry is a clamped extreme rather than a learned average.
     saturated: AtomicU64,
     updates: AtomicU64,
 }
@@ -73,8 +71,7 @@ impl Counters {
 
 static STATS: [Counters; TABLES] = [Counters::new(), Counters::new(), Counters::new()];
 
-/// Record one read of `table` returning raw fixed-point `value`.
-/// A nonzero value is a hit; its magnitude feeds the mean.
+/// Records a read from `table` with the returned raw fixed-point `value`.
 #[inline]
 pub fn record_read(table: Table, value: i32) {
     let c = &STATS[table as usize];
@@ -88,25 +85,16 @@ pub fn record_read(table: Table, value: i32) {
     }
 }
 
-/// Record one training update of `table`.
+/// Records a training update to `table`.
 #[inline]
 pub fn record_update(table: Table) {
     STATS[table as usize].updates.fetch_add(1, Relaxed);
 }
 
-/// Print the per-table summary. Call once after a workload (e.g. bench).
-///
-/// `mean|c|` is the learned correction's raw magnitude; `eff` folds in the
-/// blend weight, the centipawns the table actually moves the eval, the
-/// number that ranks tables against each other. `hit%` and `sat%` carry the
-/// only true verdicts; a cold hit rate means a dead key, high saturation
-/// means entries pinned at the clamp. The magnitudes are descriptive; only
-/// an SPRT says whether they're worth their slot.
+/// The per-table summary, printed once after a workload such as bench.
 pub fn report() {
     let weights = weights();
     let ansi = std::io::stdout().is_terminal();
-
-    // Title and column labels in the section-header gold.
     let gold = if ansi { color::ansi_fg(GOLD) } else { String::new() };
     let (bold, reset) = if ansi { (BOLD, RESET) } else { ("", "") };
 
@@ -118,7 +106,6 @@ pub fn report() {
         let c = &STATS[i];
         let hit = hit_pct(i);
         let sat = sat_pct(i);
-
         let hit_rgb = color::advantage((hit / 35.0 - 1.0).clamp(-1.0, 1.0));
         let sat_rgb = color::advantage(1.0 - sat / 25.0);
 
@@ -150,22 +137,20 @@ fn eff_cp(i: usize, weight: i32) -> f64 {
     mean_cp(i) * weight as f64 / f64::from(CORRECTION_WEIGHT_SCALE)
 }
 
-/// Share of hits pinned at `CORRECTION_LIMIT`, clamped extremes, not averages.
 fn sat_pct(i: usize) -> f64 {
     let (hits, sat) = (STATS[i].hits.load(Relaxed), STATS[i].saturated.load(Relaxed));
     if hits > 0 { 100.0 * sat as f64 / hits as f64 } else { 0.0 }
 }
 
-/// Blend weight each table contributes at, over `CORRECTION_WEIGHT_SCALE`.
+/// Blend weight each table contributes at, over [`CORRECTION_WEIGHT_SCALE`].
 /// Pawn is unscaled, so it sits at full weight.
 fn weights() -> [i32; TABLES] {
     let sp = SearchParams::default();
     [CORRECTION_WEIGHT_SCALE, sp.minor_corr_weight, sp.major_corr_weight]
 }
 
-/// Pad `text` to the given column's width and alignment, then wrap in `rgb`
-/// if coloring is on. Padding is applied first so the visible width holds
-/// regardless of the zero-width escape codes.
+/// Pads to the column's width and alignment first, then wraps in `rgb`,
+/// so the visible width holds regardless of the zero-width escape codes.
 fn cell(text: &str, col: usize, rgb: Option<color::Rgb>, ansi: bool) -> String {
     let (_, w, right) = COLS[col];
     let padded = if right { format!("{text:>w$}") } else { format!("{text:<w$}") };
