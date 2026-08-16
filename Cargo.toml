@@ -43,7 +43,6 @@ zerocopy = { version = "0.8.52", default-features = false, features = ["derive",
 atomic-wait = "1.1"
 
 [features]
-searchtune = []
 corrstats = []
 mvpstats = []
 # Builds without XorBoard, so the store can be priced against its own absence.

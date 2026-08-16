@@ -31,22 +31,6 @@ pub struct ParamDef {
 }
 
 impl ParamDef {
-    /// Normalize a raw value to `[0, 1]`.
-    #[inline]
-    pub fn normalize(&self, raw: f64) -> f64 {
-        let range = self.max - self.min;
-        if range > 1e-9 { ((raw - self.min) / range).clamp(0.0, 1.0) } else { 0.5 }
-    }
-
-    /// Denormalize a `[0, 1]` value back to the parameter's range.
-    /// Snap grid is anchored at `min` so both endpoints round-trip exactly,
-    /// then clamped to `[min, max]` against any drift from the rounding.
-    #[inline]
-    pub fn denormalize(&self, normalized: f64) -> f64 {
-        let val = normalized.mul_add(self.max - self.min, self.min);
-        let snapped = if self.step > 1e-9 { self.min + ((val - self.min) / self.step).round() * self.step } else { val };
-        snapped.clamp(self.min, self.max)
-    }
 }
 
 /// Default-derived upper bound; symmetric around 1.5× magnitude with a floor.
@@ -157,46 +141,11 @@ macro_rules! search_params {
             ),*
         ];
 
-        impl $name {
-            /// Build from a normalized tunable vector: frozen params keep their
-            /// default, tunables take `values` in declaration order.
-            pub fn from_normalized(values: &[f64]) -> Self {
-                let defs = tunable_param_defs();
-                let mut sp = Self::default();
-                let mut i = 0;
-
-                $(
-                    if !$frozen {
-                        sp.$field = defs[i].denormalize(values[i]).round() as i32;
-                        i += 1;
-                    }
-                )*
-
-                let _ = i;
-                sp
-            }
-
-            /// Normalize this struct's tunable params back to `[0, 1]`, declaration order.
-            pub fn to_normalized(&self) -> Vec<f64> {
-                let defs = tunable_param_defs();
-                let mut out = Vec::with_capacity(defs.len());
-                let mut i = 0;
-
-                $(
-                    if !$frozen {
-                        out.push(defs[i].normalize(self.$field as f64));
-                        i += 1;
-                    }
-                )*
-                let _ = i;
-                out
-            }
-        }
     };
 }
 
-/// Active tunable params (frozen entries filtered out) in source-declaration order.
-/// Tuner uses this as the canonical view; `PARAM_DEFS` is the unfiltered list.
+/// Active tunable params in source-declaration order, frozen entries filtered out.
+/// `PARAM_DEFS` is the unfiltered list.
 pub fn tunable_param_defs() -> Vec<&'static ParamDef> {
     PARAM_DEFS.iter().filter(|p| !p.frozen).collect()
 }

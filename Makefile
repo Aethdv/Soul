@@ -30,7 +30,7 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune searchtune test oracle flops seeformat format clippy profile etprofile \
+        evaltune test oracle flops seeformat format clippy profile etprofile \
         releases avx2 avx2-bmi2 avx512 corrstats movepicker storecost
 
 all: openbench
@@ -176,13 +176,6 @@ evaltune:
 		cargo build --release -p tuner --bin evaltune --quiet
 	@cp target/release/evaltune eval$(EXE_EXT)
 	@echo "Done: ./eval$(EXE_EXT)"
-
-searchtune:
-	@echo "Building searchtune..."
-	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release -p tuner --bin searchtune --features searchtune --quiet
-	@cp target/release/searchtune search$(EXE_EXT)
-	@echo "Done: ./search$(EXE_EXT)"
 
 test: ## Run test suite
 	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="-C target-cpu=native" cargo test --workspace -- --nocapture

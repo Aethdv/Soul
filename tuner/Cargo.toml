@@ -11,10 +11,6 @@ path = "src/lib.rs"
 name = "evaltune"
 path = "src/bin/evaltune.rs"
 
-[[bin]]
-name = "searchtune"
-path = "src/bin/searchtune.rs"
-
 [dependencies]
 soul = { path = "../" }
 clap = { version = "4.6.1", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
@@ -32,4 +28,3 @@ ctrlc = "3.5.2"
 
 [features]
 default = []
-searchtune = ["soul/searchtune"]

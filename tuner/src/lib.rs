@@ -7,4 +7,3 @@
 
 pub mod core;
 pub mod evaltune;
-pub mod searchtune;
