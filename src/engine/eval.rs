@@ -16,7 +16,7 @@ use crate::{
     },
     engine::{
         autograd::EvalMath,
-        combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
+        combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, safety_block, taper},
         eval_params::{
             self, ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
             XRAY,
@@ -228,9 +228,10 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
     let buckets = fill_accumulators::<i32>(acc, phase, &features, &params);
     let psqt = buckets.mg_eg;
     let mobility = buckets.mobility;
+    let combiner_params = CombinerParams::from_eval(&params);
     let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
-    let total = LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(&params));
-    let safety = total - psqt - mobility - bonus;
+    let safety = safety_block(&buckets, phase, &combiner_params);
+    let total = LinearCombiner::forward(&buckets, phase, &combiner_params);
 
     let (p, m, b, s, t) = if board.stm == Color::White {
         (psqt, mobility, bonus, safety, total)
@@ -291,12 +292,7 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
 }
 
 #[inline(always)]
-pub fn compute_macro_eval<T: EvalMath<Scalar = T>>(
-    acc: &T::Vec8,
-    phase: T,
-    features: &SharedFeatures,
-    params: &EvalParams<T>,
-) -> T {
+fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &SharedFeatures, params: &EvalParams<T>) -> T {
     let buckets = fill_accumulators::<T>(acc, phase, features, params);
     LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(params))
 }
@@ -345,6 +341,8 @@ impl PawnFeatures {
 
         // Passed pawns; no enemy pawn on the file or adjacent files ahead. Passer squares
         // retained for the enemy-king distance bucket in SharedFeatures::with_pawn.
+        // Bucketed inline rather than through `by_relative_rank`: a second walk of the
+        // passer sets to reuse it measured +0.8 instructions a node.
         let mut passed_pawn = [0i32; 6];
         let mut w_passers = Bitboard::default();
         let mut b_passers = Bitboard::default();
@@ -372,8 +370,9 @@ impl PawnFeatures {
         // Isolated pawns; no friendly pawn on either adjacent file. file_fill smears
         // each pawn across its file; shifting east/west gives the neighbor-file mask.
         // Adjacency masks shared with backward-pawn detection.
-        let w_adj = wp.file_fill().shift(Direction::East) | wp.file_fill().shift(Direction::West);
-        let b_adj = bp.file_fill().shift(Direction::East) | bp.file_fill().shift(Direction::West);
+        let (w_files, b_files) = (wp.file_fill(), bp.file_fill());
+        let w_adj = w_files.shift(Direction::East) | w_files.shift(Direction::West);
+        let b_adj = b_files.shift(Direction::East) | b_files.shift(Direction::West);
         let w_isolated = (wp & !w_adj).popcount() as i32;
         let b_isolated = (bp & !b_adj).popcount() as i32;
         let isolated_pawn_diff = w_isolated - b_isolated;

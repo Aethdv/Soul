@@ -94,6 +94,16 @@ pub fn taper<T: EvalMath<Scalar = T>>(mg: T, eg: T, phase: T) -> T {
     ((mg * phase + eg * (total - phase)) / total).trunc()
 }
 
+/// Shelter, danger and x-ray as one middlegame-tapered block, the shape the score is
+/// built from and the shape a breakdown has to reconstruct. One definition, so a caller
+/// wanting the component alone never re-derives it by subtraction.
+#[inline(always)]
+pub fn safety_block<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T, params: &CombinerParams<T>) -> T {
+    let c = params.king_danger;
+    let danger = king_danger(buckets.danger_us, c) - king_danger(buckets.danger_them, c);
+    taper(buckets.safety_us - buckets.safety_them - danger + buckets.xray, T::zero(), phase)
+}
+
 /// Combines [`Accumulators`] into a final evaluation scalar.
 ///
 /// Combiners operate strictly on aggregate bucket values and combiner parameters;
@@ -119,12 +129,8 @@ pub struct LinearCombiner;
 impl Combiner for LinearCombiner {
     #[inline(always)]
     fn forward<T: EvalMath<Scalar = T>>(buckets: &Accumulators<T>, phase: T, params: &CombinerParams<T>) -> T {
-        let c = params.king_danger;
-        let danger = king_danger(buckets.danger_us, c) - king_danger(buckets.danger_them, c);
-        let safety_diff = buckets.safety_us - buckets.safety_them - danger + buckets.xray;
         let bonus = taper(buckets.bonus_mg, buckets.bonus_eg, phase);
-        let safety = taper(safety_diff, T::zero(), phase);
-        buckets.mg_eg + buckets.mobility + bonus + safety
+        buckets.mg_eg + buckets.mobility + bonus + safety_block(buckets, phase, params)
     }
 
     #[inline]
