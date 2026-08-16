@@ -94,5 +94,3 @@ pub enum SoulError {
     Option(#[from] OptionError),
 }
 
-/// Convenient Result alias for engine operations.
-pub type SoulResult<T> = Result<T, SoulError>;

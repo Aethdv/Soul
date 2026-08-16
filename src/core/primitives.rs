@@ -55,8 +55,6 @@ const _: () = assert!(std::mem::size_of::<Bitboard>() == 8);
 impl Bitboard {
     /// Empty bitboard with no bits set.
     pub const EMPTY: Self = Self(0);
-    /// Full bitboard with all 64 bits set.
-    pub const FULL: Self = Self(!0);
 
     /// Returns `true` if no bits are set.
     #[inline(always)]
@@ -132,12 +130,6 @@ impl Bitboard {
     #[inline(always)]
     pub fn clear_bit(&mut self, sq: Square) {
         self.0 &= !(1u64 << sq.0);
-    }
-
-    /// Toggles the bit for `sq`.
-    #[inline(always)]
-    pub fn toggle_bit(&mut self, sq: Square) {
-        self.0 ^= 1u64 << sq.0;
     }
 
     /// Removes and returns the least significant set bit as a [`Square`],

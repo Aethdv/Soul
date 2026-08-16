@@ -31,12 +31,6 @@ pub fn atk_bishop(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
     (ne | nw | se | sw) & !generator
 }
 
-/// Queen attacks (all 8 directions).
-#[inline(always)]
-pub fn atk_queen(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
-    atk_rook(generator, empty) | atk_bishop(generator, empty)
-}
-
 /// Knight attacks.
 #[inline(always)]
 pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
@@ -60,18 +54,6 @@ pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
 pub fn atk_king(kings: Vu64x4) -> Vu64x4 {
     let attacks = kings | kings.shift_east() | kings.shift_west();
     (attacks | attacks.shift_north() | attacks.shift_south()) & !kings
-}
-
-/// White Pawn attacks: NW and NE.
-#[inline(always)]
-pub fn atk_pawn_w(pawns: Vu64x4) -> Vu64x4 {
-    pawns.shift_nw() | pawns.shift_ne()
-}
-
-/// Black Pawn attacks: SW and SE.
-#[inline(always)]
-pub fn atk_pawn_b(pawns: Vu64x4) -> Vu64x4 {
-    pawns.shift_sw() | pawns.shift_se()
 }
 
 /// All eight spatial influence surfaces, computed in two vectorized passes.
