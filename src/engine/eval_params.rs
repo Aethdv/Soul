@@ -2,8 +2,8 @@
 //!
 //! Weights are declared in groups, and one const-evaluated table assigns every block its
 //! offset and length. `LAYOUT` is that table under named accessors, and the eval, the
-//! gradient scatter and the tuner all index through it, so a block that moves moves
-//! everywhere at once.
+//! gradient scatter and the tuner all index through it, so moving a block updates every
+//! consumer at once.
 
 #![allow(non_snake_case)]
 
