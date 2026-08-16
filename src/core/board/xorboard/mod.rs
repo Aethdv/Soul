@@ -377,10 +377,7 @@ impl XorBoard {
 
         self.relocate(mv, &plan);
 
-        let mut rest = affected;
-        while rest != 0 {
-            let id = PieceId(rest.trailing_zeros() as u8);
-            rest &= rest - 1;
+        for id in slots(affected) {
             self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
         }
 
