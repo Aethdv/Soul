@@ -55,7 +55,6 @@ pub const fn mirror_sq(sq: usize) -> usize {
 const fn init_psqt() -> [AlignedTable; 14] {
     let mut tables = [AlignedTable([[0; 8]; 64]); 14];
     let mut pt = 0;
-
     while pt < 6 {
         let mg_w = MG_MATERIAL[pt];
         let eg_w = EG_MATERIAL[pt];

@@ -3,7 +3,7 @@
 //!
 //! Every feature a position can carry, a white pawn on e4, an en passant target
 //! on e6, the castling rights as a whole, gets its own random 64-bit key, drawn
-//! once at startup. A position's hash is the XOR of the keys for every
+//! once at compile time. A position's hash is the XOR of the keys for every
 //! feature it currently has.
 //!
 //! XOR being its own inverse is the whole trick: one key toggles a feature on or
@@ -33,7 +33,6 @@ impl ConstRng {
     }
 
     /// Marsaglia's xorshift.
-    /// The shifts (13, 7, 17) are optimal constants that create a full-period generator.
     #[inline]
     pub const fn next(&mut self) -> u64 {
         let mut x = self.state;
@@ -117,8 +116,7 @@ const fn init_keys() -> ZobristKeys {
     }
     // Empty rights must hash to nothing. make_move XORs key_castling on every rights
     // change, so a non-zero key at index 0 desyncs the incremental hash from
-    // calc_zobrist (which skips zero rights) the moment castling rights run out. Drawn
-    // above, then zeroed, so the non-zero-rights keys keep their values.
+    // calc_zobrist (which skips zero rights) the moment castling rights run out.
     castling[0] = 0;
 
     let side = rng.next();

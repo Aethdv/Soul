@@ -95,29 +95,11 @@ impl Bitboard {
         Square(self.0.trailing_zeros() as u8)
     }
 
-    /// Returns the most significant set bit as a [`Square`].
-    ///
-    /// # Panics
-    /// In debug if the bitboard is empty.
-    #[inline(always)]
-    #[must_use]
-    pub const fn msb(self) -> Square {
-        debug_assert!(self.is_not_empty(), "msb() called on empty bitboard");
-        Square(63 - self.0.leading_zeros() as u8)
-    }
-
     /// Returns `true` if the bit for `sq` is set.
     #[inline(always)]
     #[must_use]
     pub const fn check_bit(self, sq: Square) -> bool {
         self.0 & (1u64 << sq.0) != 0
-    }
-
-    /// Returns `true` if `self` and `other` share any set bits.
-    #[inline(always)]
-    #[must_use]
-    pub const fn overlaps(self, other: Self) -> bool {
-        self.0 & other.0 != 0
     }
 
     /// Sets the bit for `sq`.
@@ -244,23 +226,6 @@ impl Square {
         let file_d = self.file().abs_diff(other.file());
         let rank_d = self.rank().abs_diff(other.rank());
         file_d.max(rank_d)
-    }
-
-    /// Returns `true` if the index is in `0..64`.
-    #[inline(always)]
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.0 < 64
-    }
-
-    /// Returns `self` if valid, otherwise panics.
-    #[inline]
-    #[must_use]
-    pub const fn checked(self) -> Self {
-        if !self.is_valid() {
-            panic!("Invalid square index");
-        }
-        self
     }
 
     /// Returns a [`Bitboard`] with exactly this square's bit set.
@@ -425,6 +390,11 @@ impl fmt::Display for ParseSquareError {
 
 impl std::error::Error for ParseSquareError {}
 
+/// Iterator over the set bits of a [`Bitboard`],
+/// yielding [`Square`]s from low to high.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct BitboardIter(pub Bitboard);
+
 impl std::str::FromStr for Square {
     type Err = ParseSquareError;
 
@@ -443,12 +413,6 @@ impl std::str::FromStr for Square {
         Ok(Self::from_coords(file, rank))
     }
 }
-
-/// Iterator over the set bits of a [`Bitboard`],
-/// yielding [`Square`]s from low to high.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct BitboardIter(pub Bitboard);
-
 impl Iterator for BitboardIter {
     type Item = Square;
 

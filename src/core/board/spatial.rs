@@ -104,7 +104,7 @@ impl SpatialTensor {
             .0
             & !pinned_b;
 
-        let gen_ortho = Vu64x4::from_lanes(w_rq, b_rq, 0, 0); // Lanes: [W_direct, B_direct, unused, unused]
+        let gen_ortho = Vu64x4::from_lanes(w_rq, b_rq, 0, 0);
         let us_pcs_ortho = Vu64x4::from_lanes(w_pcs, b_pcs, 0, 0);
 
         let (gen_n, gen_s, gen_e, gen_w) = (

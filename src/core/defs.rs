@@ -21,20 +21,25 @@ pub const MAX_MOVES: usize = 256;
 /// Absolute deepest ply the engine will ever explore.
 pub const MAX_PLY: usize = 246;
 pub const MAX_DEPTH: i32 = MAX_PLY as i32;
-/// Stands in for +∞ in alpha-beta windows. Beats every evaluation but not mate.
+/// Stands in for +∞ in alpha-beta windows: above every score the search can reach,
+/// mate included, with 2000 to spare.
 pub const INF: i32 = 32_000;
 /// Checkmate at the root. Actual mates are scored `MATE - ply_distance`.
 pub const MATE: i32 = 30_000;
 /// Any |score| above this threshold is a forced mate, not merely a large eval.
 pub const MATE_BOUND: i32 = MATE - MAX_PLY as i32 - 1;
-/// Total game phase material: N=1, B=1, R=2, Q=4 → 2·(1+1+2+4) = 24
+
+/// Phase of the opening board, at N=1, B=1, R=2, Q=4: 4+4 minors, 4 rooks, 2 queens
+/// give 4 + 4 + 8 + 8.
 pub const TOTAL_PHASE: i32 = 24;
+
 /// Middlegame terms
 pub const LANE_MG: usize = 0;
 /// Endgame terms
 pub const LANE_EG: usize = 1;
 /// Tapered-eval phase counter
 pub const LANE_PHASE: usize = 2;
+
 /// |score| < this for N plies → Draw
 pub const ADJ_DRAW_SCORE: i32 = 10;
 /// |score| < ADJ_DRAW_SCORE for this many consecutive plies
@@ -58,13 +63,12 @@ pub enum Protocol {
     XBoard,
 }
 
-/// White = 0, Black = 1
+/// White = 0, Black = 1. The rank accessors mirror around the board:
 ///
-/// | expression               | White | Black |
-/// |--------------------------|-------|-------|
-/// | `back_rank`              | 0     | 7     |
-/// | `pawn_start_rank`        | 1     | 6     |
-/// | `promotion_rank`         | 7     | 0     |
+/// || `back_rank` | `pawn_start_rank` | `promotion_rank` |
+/// |-------|---|---|---|
+/// | White | 0 | 1 | 7 |
+/// | Black | 7 | 6 | 0 |
 #[derive(Copy, Clone, PartialEq, Eq, Debug, std::marker::ConstParamTy)]
 #[repr(u8)]
 pub enum Color {
@@ -97,19 +101,19 @@ impl Color {
         DIRS[self as usize]
     }
 
-    /// First rank from this side's perspective (0 or 7).
+    /// First rank from this side's perspective.
     #[inline(always)]
     pub const fn back_rank(self) -> u8 {
         (self as u8) * 7
     }
 
-    /// Where this side's pawns stand in the starting position (1 or 6).
+    /// Where this side's pawns stand in the starting position.
     #[inline(always)]
     pub const fn pawn_start_rank(self) -> u8 {
         1 + (self as u8) * 5
     }
 
-    /// The rank where pawns promote (0 or 7).
+    /// The rank where pawns promote.
     #[inline(always)]
     pub const fn promotion_rank(self) -> u8 {
         7 - (self as u8) * 7
@@ -333,15 +337,11 @@ impl GameOutcome {
     }
 }
 
-/// Deterministic ±8 cp jitter for draw scores, keyed by the node counter.
+/// Deterministic [-3, +4] cp jitter for draw scores, keyed by the node counter.
 ///
-/// Returning exactly 0 for every draw makes the search indifferent between
-/// drawing lines: it picks whichever comes first in move order and sticks.
-/// In positions with multiple drawish paths, that can mean repeating the
-/// same sequence when a slightly-less-drawn alternative exists. A small
-/// node-keyed jitter breaks the tie without perturbing non-draw scores,
-/// so the search naturally explores alternate draw routes where the
-/// opponent has a chance to stray.
+/// A flat `0` leaves alpha-beta indifferent between drawing lines, so it locks onto
+/// the first one examined. Breaking that tie lets the search reach draw routes where
+/// the opponent still has a chance to stray.
 #[inline]
 pub fn draw_score(nodes: u64) -> i32 {
     (nodes & 0x7) as i32 - 3

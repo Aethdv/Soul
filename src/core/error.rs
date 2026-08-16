@@ -1,7 +1,6 @@
 //! Unified error handling.
 //!
-//! Defines strongly typed error variants for FEN parsing, move application,
-//! option handling, and engine runtime faults.
+//! Typed error variants for FEN parsing, move application, and engine faults.
 
 use thiserror::Error;
 
