@@ -54,13 +54,7 @@ pub fn checkers(pos: &Position) -> Bitboard {
 /// this builds the full attacker set: needed for check evasion, SEE, and similar.
 #[inline(always)]
 pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
-    let occ = pos.occ;
-    let them = pos.side_bb[attacker];
-    (atk_pawn(sq, attacker.opposite()) & pos.role_bb[PieceType::Pawn] & them)
-        | (atk_knight(sq) & pos.role_bb[PieceType::Knight] & them)
-        | (atk_king(sq) & pos.role_bb[PieceType::King] & them)
-        | (atk_rook(sq, occ) & (pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen]) & them)
-        | (atk_bishop(sq, occ) & (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]) & them)
+    all_attackers_to(pos, sq, pos.occ) & pos.side_bb[attacker]
 }
 
 /// All pieces of both colors attacking `sq`, against an occupancy the caller supplies.
