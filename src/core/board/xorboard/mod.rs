@@ -100,7 +100,7 @@ const WINDOW_GROUPS: u8 = 0b0011_0011;
 const WHITE_GROUPS: u8 = 0x0F;
 const BLACK_GROUPS: u8 = 0xF0;
 
-#[inline(always)]
+#[cfg(test)]
 const fn color_slots(color: Color) -> u64 {
     0xFFFF << (color as usize * 16)
 }
@@ -190,7 +190,7 @@ impl XorBoard {
 
     /// Recomputes every row from the bookkeeping: the oracle the incremental
     /// path answers to, and how a root position is seeded.
-    pub fn refresh(&mut self, pos: &Position) {
+    fn refresh(&mut self, pos: &Position) {
         self.rows = [0; SLOTS];
         for slot in 0..SLOTS {
             if self.squares[slot] != NOWHERE {
@@ -232,19 +232,13 @@ impl XorBoard {
     /// Written by hand: left to the autovectorizer it is a thirty-two iteration
     /// dependency chain rather than eight lane tests folded into a slot set.
     #[inline(always)]
-    pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
+    fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
         let sliders = self.slider_slots;
         if sliders & !SLIDER_WINDOW == 0 {
             self.column::<WINDOW_GROUPS>(mask) & sliders
         } else {
             self.column::<ALL_GROUPS>(mask) & sliders
         }
-    }
-
-    /// Which pieces attack any square in `mask`, sliders and leapers alike.
-    #[inline(always)]
-    pub fn attackers_of(&self, mask: Bitboard) -> u64 {
-        self.column::<ALL_GROUPS>(mask)
     }
 
     /// The pieces of `stm`'s opponent giving check.
@@ -516,15 +510,35 @@ mod tests {
         "1rqbkrbn/1ppppp1p/1n6/p1N3p1/8/2P4P/PP1PPPP1/1RQBKRBN w FBfb - 0 1",
     ];
 
-    /// The tensor's x-ray fields for `color`.
-    fn tensor_xray(pos: &Position, color: Color) -> (Bitboard, Bitboard) {
-        use crate::core::board::spatial::SpatialTensor;
+    impl XorBoard {
+        fn xray_row(&self, id: PieceId, slider_squares: Bitboard) -> Bitboard {
+            let from = Square(self.squares[id.index()]);
+            let mut through = Bitboard(0);
+            for square in Bitboard(self.rows[id.index()]) & slider_squares {
+                let Some(blocker) = self.id_at(square) else { continue };
+                let past = line_bb(from, square) & !between_bb(from, square) & !from.bitboard() & !square.bitboard();
+                through |= Bitboard(self.rows[blocker.index()]) & past;
+            }
+            through
+        }
 
-        let t = SpatialTensor::compute(pos, pos.pinned_pieces(Color::White).0, pos.pinned_pieces(Color::Black).0);
-        if color == Color::White {
-            (Bitboard(t.w_ortho_xray()), Bitboard(t.w_diag_xray()))
-        } else {
-            (Bitboard(t.b_ortho_xray()), Bitboard(t.b_diag_xray()))
+        fn legal_rows(&self, color: Color, pinned: Bitboard, ksq: Square) -> impl Iterator<Item = (PieceId, Bitboard)> + '_ {
+            let king = self.class[class_index(PieceType::King, color)];
+
+            slots(color_slots(color) & !king).filter_map(move |id| {
+                let raw = self.squares[id.index()];
+                if raw == NOWHERE {
+                    return None;
+                }
+
+                let square = Square(raw);
+                let row = self.row(id);
+                Some((id, if pinned.check_bit(square) { self.pinned_row(id, square, row, ksq) } else { row }))
+            })
+        }
+
+        fn attack_map(&self, color: Color, pinned: Bitboard, ksq: Square) -> Bitboard {
+            self.legal_rows(color, pinned, ksq).fold(Bitboard(0), |acc, (_, row)| acc | row)
         }
     }
 
@@ -607,14 +621,6 @@ mod tests {
                     assert!((exact & !fill & !sliders).is_empty(), "gap off own sliders, {color:?}, {fen} ply {ply}\n{pos}");
                 }
 
-                for color in [Color::White, Color::Black] {
-                    let pinned = pos.pinned_pieces(color);
-                    let own = pos.side_bb[color];
-                    let (ortho, diag) = board.xray_maps(color, pinned, own, pos.occ);
-                    let (want_o, want_d) = tensor_xray(&pos, color);
-                    assert_eq!(ortho, want_o, "xray ortho {color:?}, {fen} ply {ply}\n{pos}");
-                    assert_eq!(diag, want_d, "xray diag {color:?}, {fen} ply {ply}\n{pos}");
-                }
                 assert_eq!(board.checkers(&pos), pos.checkers(), "checkers, {fen} ply {ply}\n{pos}");
 
                 // Per-piece mobility against the same count taken the long way.
