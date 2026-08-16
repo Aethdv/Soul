@@ -1,9 +1,6 @@
-//! What the rows are read for: the union views, the eval's per-piece counts and
-//! the x-ray planes.
-//!
-//! Separate from the store because none of it is storage. These are reductions
-//! over `rows` that happen to know what the evaluation wants, most of all the
-//! pin policy, which is a scoring decision rather than a fact about the board.
+//! Reductions over `rows`, as opposed to keeping them. The pin policy lives here
+//! rather than in the store, being a scoring decision rather than a fact about
+//! the board.
 
 use core::arch::x86_64::*;
 
@@ -16,22 +13,14 @@ use crate::core::{
 use crate::weave::Vu64x4;
 
 impl XorBoard {
-    /// Every square `color` attacks.
-    ///
-    /// Wider than `Position::threats`, which ends its setwise fill with
-    /// `& !generator` over the whole rook-plus-queen union and so drops the
-    /// squares holding that side's own rooks and queens. Nothing can stand on
-    /// those, so the two are interchangeable to a consumer asking about its own
-    /// pieces, and not to one asking about the board.
+    /// Every square `color` attacks. Wider than `Position::threats`, whose fill
+    /// ends `& !generator` and so drops the squares holding that side's own rooks
+    /// and queens.
     #[inline(always)]
     pub fn danger(&self, color: Color) -> Bitboard {
         // SAFETY: AVX2 per the compile_error gate in weave/mod.rs. A color is
         // slots 0 to 15 or 16 to 31, four whole groups either way, so the four
         // loads end exactly at the half's end.
-        //
-        // The masked union would load a lane mask per group, and for a whole
-        // color those are all-ones or all-zeros: half of them mask in nothing
-        // and the rest fetch a constant.
         unsafe {
             let base = color as usize * 16;
             let mut acc = _mm256_setzero_si256();
@@ -49,16 +38,7 @@ impl XorBoard {
         slots(self.class[class_index(piece, color)]).fold(Bitboard(0), |acc, id| acc | self.row(id))
     }
 
-    /// Mobility counted per piece rather than over the union.
-    ///
-    /// A setwise fill cannot produce this: ORing the sides together loses which
-    /// piece reached where, so a square two pieces both attack is worth one to
-    /// the union and two here. The rows keep the identity.
-    ///
-    /// Counted over all sixteen slots at once, then corrected. The king is not
-    /// a mobility piece and pinned pieces may use less than their row, and both
-    /// are rare enough that fixing them up beats branching per piece: dead slots
-    /// hold an empty row and correct themselves.
+    /// Per piece, so a square two pieces attack counts twice.
     #[inline(always)]
     pub fn mobility(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
         let base = usize::from(color) * 16;
@@ -80,10 +60,8 @@ impl XorBoard {
         total
     }
 
-    /// What a pinned piece may still use: a slider keeps its pin ray, a pinned
-    /// knight has no legal move at all, and a pawn is left whole to match what
-    /// the tensor does today. Crediting either of the first two with more is
-    /// mobility for a move that would leave the king in check.
+    /// A pawn is left whole to match the tensor; crediting a pinned slider or
+    /// knight with more would count moves that leave the king in check.
     #[inline(always)]
     pub(super) fn pinned_row(&self, id: PieceId, square: Square, row: Bitboard, ksq: Square) -> Bitboard {
         match self.kind[id.index()] {
@@ -93,7 +71,6 @@ impl XorBoard {
         }
     }
 
-    /// Squares of `area` reached, summed over sixteen consecutive slots.
     #[inline(always)]
     fn count_rows(&self, base: usize, area: Bitboard) -> i32 {
         // SAFETY: AVX2 per the weave/mod.rs gate; `base` is 0 or 16, so the four
