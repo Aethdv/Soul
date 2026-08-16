@@ -153,7 +153,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    // dJ/dPhaseWeight is deliberately omitted: phase weights must stay at their
+    // ∂J/∂PhaseWeight is deliberately omitted: phase weights must stay at their
     // engineered values for the MG/EG interpolation to be meaningful.
     let phase = compute_phase_f64(&piece_counts, values);
 

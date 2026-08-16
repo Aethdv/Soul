@@ -11,18 +11,11 @@ use crate::{
     weave::{Vi16x8, Vi32x4},
 };
 
-/// The unified math interface behind evaluation and tuning. `evaluate` is written
-/// once, generic over `T`, and monomorphized two ways so search and the tuner run
-/// the exact same code path.
+/// The interface `evaluate` is generic over: `i32` with `Vi16x8`/`Vi32x4` for search,
+/// `DualNode` for the tuner, `f64` for the oracle. The module doc has the why.
 ///
-/// For search, `T` is `i32`: plain integer arithmetic, with the associated SIMD
-/// vector types (`Vi16x8`, `Vi32x4`) carrying the PSQT accumulator. Zero overhead
-/// over hand-written eval.
-///
-/// For tuning, `T` is `DualNode`: forward-mode automatic differentiation by dual
-/// numbers. Each value carries its partials alongside it, so one forward pass of
-/// `evaluate` yields the exact gradient with respect to every parameter. No tape,
-/// no backward pass.
+/// `to_i32` and `to_f64` hand back a raw value to branch on, and the gradient stops
+/// there: whatever the branch decides is invisible to the derivative.
 pub trait EvalMath:
     Sized
     + Copy
@@ -48,40 +41,25 @@ pub trait EvalMath:
     fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4;
     fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6;
 
-    /// Construct the zero value.
     fn zero() -> Self;
-
-    /// Construct from a float.
     fn new(val: f64) -> Self;
 
-    /// Construct from an integer.
-    fn from_i32(val: i32) -> Self;
-
-    /// Maximum of two values.
     fn max(self, other: Self) -> Self;
-
-    /// Minimum of two values.
     fn min(self, other: Self) -> Self;
 
-    /// Bulk-convert a SIMD vector of 4 i32s into a Vec4.
+    fn from_i32(val: i32) -> Self;
     fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4;
-
-    /// Bulk-convert an array of 4 i32s into a Vec4.
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4;
 
-    /// Absolute value.
     fn abs(self) -> Self;
 
-    /// Extract the underlying integer value (for logic branches).
     fn to_i32(self) -> i32;
-
-    /// Extract the underlying float value.
     fn to_f64(self) -> f64;
 
     /// Truncate the fractional part (acts as identity for integers).
     fn trunc(self) -> Self;
 
-    /// Clamp the value between min and max.
+    /// `clamp` is taken by the inherent methods on both `i32` and `f64`, hence the name.
     fn math_clamp(self, min: Self, max: Self) -> Self;
 
     /// Tapered interpolation: (MG · phase + EG · (TOTAL_PHASE - phase)) / TOTAL_PHASE.
@@ -214,15 +192,13 @@ impl EvalMath for i32 {
     #[inline(always)]
     fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
         let eg_p = TOTAL_PHASE - phase;
-        // phase ∈ [0, TOTAL_PHASE] (clamped by extract_phase), so eg_p ∈ [0, TOTAL_PHASE]. Both fit in
-        // 16 bits and stay non-negative, so the two halves pack into one i32 losslessly,
-        // no sign bit bleeding from the low lane into the high.
+        // Both halves sit in [0, TOTAL_PHASE], so they pack into one i32 with no sign bit
+        // bleeding from the low lane into the high.
         let packed = (phase as u32) | ((eg_p as u32) << 16);
-        // _mm_cvtsi32_si128 drops the 32-bit packed phase [MG, EG] into the low lane
-        // of an XMM register; _mm_madd_epi16 then takes the pairwise dot product
-        // (acc.mg · phase) + (acc.eg · eg_phase), folding both products and their sum
-        // into one multiply-add.
-        let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed as i32) });
+        // SAFETY: AVX2 per the compile_error gate in weave/mod.rs; a register move with no
+        // memory operand and no further precondition.
+        let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed.cast_signed()) });
+        // madd's pairwise dot product folds mg·phase + eg·eg_phase into one instruction.
         acc.madd(weights).extract::<0>() / TOTAL_PHASE
     }
 }

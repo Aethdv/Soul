@@ -139,11 +139,11 @@ impl LossFn {
     pub fn grad_scale(self, sig: f64, target: f64, k: f64) -> f64 {
         let err = sig - target;
         match self {
-            // dJ/dx = 2·(S − target)·K·S·(1 − S)
+            // ∂J/∂x = 2·(S − target)·K·S·(1 − S)
             Self::MeanSquaredError => 2.0 * err * sig * (1.0 - sig) * k,
-            // dL/dx = (S − target)·K
+            // ∂L/∂x = (S − target)·K
             Self::CrossEntropy => err * k,
-            // dFL/dx = |s-T|^γ·(s-T)·K + γ·|s-T|^(γ-1)·sign(s-T)·K·s·(1-s)·CE
+            // ∂FL/∂x = |s-T|^γ·(s-T)·K + γ·|s-T|^(γ-1)·sign(s-T)·K·s·(1-s)·CE
             Self::Focal { gamma } => {
                 let prob = sig.clamp(1e-7, 1.0 - 1e-7);
                 let ce = Self::CrossEntropy.loss(sig, target);
@@ -170,14 +170,14 @@ impl LossFn {
     /// the probe cannot drift to a different loss than the run trains.
     pub fn hessian_scale(self, sig: f64, target: f64, k: f64) -> f64 {
         match self {
-            // d²J/dx² = 2K²·S(1−S)·[S(1−S) + (S−T)(1−2S)]
+            // ∂²J/∂x² = 2K²·S(1−S)·[S(1−S) + (S−T)(1−2S)]
             Self::MeanSquaredError => {
                 let u = sig * (1.0 - sig);
                 2.0 * k * k * u * (u + (sig - target) * (1.0 - 2.0 * sig))
             },
-            // d²L/dx² = K²·S(1−S)
+            // ∂²L/∂x² = K²·S(1−S)
             Self::CrossEntropy => k * k * sig * (1.0 - sig),
-            // d²FL/dx² = K²·[(2γ+1)·u·b^γ + γ(γ−1)·u²·CE·b^(γ−2)
+            // ∂²FL/∂x² = K²·[(2γ+1)·u·b^γ + γ(γ−1)·u²·CE·b^(γ−2)
             //            + γ·sign(S−T)·u·(1−2S)·CE·b^(γ−1)], u = S(1−S), b = |S−T|.
             // FL = b^γ·CE; differentiating the product twice by the product rule
             // yields three terms, and the two that come from the |S−T| factor's
@@ -209,14 +209,14 @@ impl LossFn {
     /// gradient stays on `grad_scale` because the target never depends on them.
     pub fn grad_target(self, sig: f64, target: f64) -> f64 {
         match self {
-            // dJ/dT = −2·(S − T)
+            // ∂J/∂T = −2·(S − T)
             Self::MeanSquaredError => -2.0 * (sig - target),
-            // dL/dT = −ln S + ln(1 − S)
+            // ∂L/∂T = −ln S + ln(1 − S)
             Self::CrossEntropy => {
                 let s = sig.clamp(1e-7, 1.0 - 1e-7);
                 (1.0 - s).ln() - s.ln()
             },
-            // dFL/dT = −γ·|s-T|^(γ-1)·sign(s-T)·CE + |s-T|^γ·dL/dT(CE)
+            // ∂FL/∂T = −γ·|s-T|^(γ-1)·sign(s-T)·CE + |s-T|^γ·∂L/∂T(CE)
             Self::Focal { gamma } => {
                 let prob = sig.clamp(1e-7, 1.0 - 1e-7);
                 let ce = Self::CrossEntropy.loss(sig, target);
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn hessian_matches_finite_differences_of_the_gradient() {
-        // hessian_scale is d/dscore of grad_scale; the check is central differences
+        // hessian_scale is ∂/∂score of grad_scale; the check is central differences
         // in score space, so a wrong sign or a dropped term in any arm fails loudly.
         let losses = [
             LossFn::CrossEntropy,

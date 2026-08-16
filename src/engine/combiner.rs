@@ -138,7 +138,7 @@ impl Combiner for LinearCombiner {
         let safety_block = d_loss * t_mg;
         let scale = f64::from(DANGER_SCALE);
 
-        // d/dp of p + c·p²/scale, and the block subtracts our danger and adds theirs.
+        // ∂/∂p of p + c·p²/scale, and the block subtracts our danger and adds theirs.
         let slope = |p: f64| 1.0 + 2.0 * p * params.king_danger / scale;
         let king_safety = KingSafetyUpstream {
             shelter: safety_block,
@@ -146,7 +146,7 @@ impl Combiner for LinearCombiner {
             danger_them: safety_block * slope(buckets.danger_them),
         };
 
-        // d/dc: the parameter the combiner owns rather than routes.
+        // ∂/∂c: the parameter the combiner owns rather than routes.
         let (us, them) = (buckets.danger_us, buckets.danger_them);
         grads[LAYOUT.king_danger_offset] += safety_block * (them * them - us * us) / scale;
 
