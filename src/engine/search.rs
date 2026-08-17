@@ -61,21 +61,21 @@ use crate::{
     weave::{Vi16x8, Vu64x4},
 };
 
-pub const NODE_CHECK_INTERVAL: u64 = 2048;
+const NODE_CHECK_INTERVAL: u64 = 2048;
 /// Minimum node count before printing `currmove` UCI output.
-pub const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
-pub const PRINT_UPDATE_MS: u128 = 25;
+const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
+const PRINT_UPDATE_MS: u128 = 25;
 /// Matches MAX_MOVES, so the list never truncates. Only the prefix searched before
 /// a cutoff takes the malus, so less would serve.
-pub const MAX_TRACKED_QUIETS: usize = 256;
+const MAX_TRACKED_QUIETS: usize = 256;
 /// Captures are far fewer per position than quiets. 64 covers all realistic
 /// legal capture counts with headroom.
-pub const MAX_TRACKED_CAPTURES: usize = 64;
+const MAX_TRACKED_CAPTURES: usize = 64;
 
 /// One ply in LMR units. Reductions accumulate in fractions of a ply, so an
 /// adjustment like the fail-high malus can move one by half a ply instead of
 /// rounding to nothing or to a whole one.
-pub const LMR_SCALE: i32 = 1024;
+const LMR_SCALE: i32 = 1024;
 
 /// Chess search has three distinct contexts:
 /// root (first ply, owns the move list), PV, and non-PV
@@ -115,11 +115,11 @@ impl NodeType for NonPvNode {
     type Next = NonPvNode;
 }
 
-pub struct MoveResult {
-    pub move_count: usize,
-    pub best_eval: i32,
-    pub alpha: i32,
-    pub best_move: Move,
+struct MoveResult {
+    move_count: usize,
+    best_eval: i32,
+    alpha: i32,
+    best_move: Move,
 }
 
 pub struct Searcher<'cfg> {
