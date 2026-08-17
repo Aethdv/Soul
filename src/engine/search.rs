@@ -3,8 +3,8 @@
 //! Iterative deepening is the outer loop: depth 1, then 2, then 3, each pass
 //! seeding the next's move ordering. Every interior node runs negamax alpha-beta
 //! with PVS on top, a full window for the first move and zero-width scouts for
-//! the rest, and the leaves fall through to quiescence so the horizon never
-//! lands mid-capture.
+//! the rest, and the leaves fall through to quiescence so the horizon never falls
+//! in the middle of an exchange.
 //!
 //! Lazy SMP is a parallel search algorithm that never divides the work. Each
 //! thread runs its own iterative-deepening search on the same root position,
@@ -13,13 +13,14 @@
 //! what it can reach, thread B probes it mid-search and redirects its tree along a
 //! branch A already explored. The TT is the coordination surface.
 //!
-//! State splits into two entities per thread:
-//! - `Searcher`: Owns global engine state (time management, history table, root moves).
-//! - `Worker`: Owns thread-local mutability (the board, SIMD accumulator, ply stack).
+//! Each thread holds a [`Searcher`] and a [`Worker`]:
+//! - [`Searcher`]: the root position and its move list, the time manager, the PV,
+//!   and the search-wide counters, all of it read by the iteration and the protocol.
+//! - [`Worker`]: the board, the SIMD accumulator, the ply stack, and the caches
+//!   maintained beside them through make and unmake. Built once per search and
+//!   dropped with it; its history tables are borrowed, since they outlive it.
 //!
-//! NodeType specialization: `RootNode`, `PvNode`, and `NonPvNode` are zero-cost
-//! marker types, so negamax monomorphizes into three variants with the dead
-//! branches compiled out of the hot path.
+//! [`NodeType`] monomorphizes negamax three ways, root, PV and non-PV.
 
 use std::{
     cmp::Reverse,
@@ -62,21 +63,19 @@ use crate::{
 
 pub const NODE_CHECK_INTERVAL: u64 = 2048;
 /// Minimum node count before printing `currmove` UCI output.
-/// Suppresses per-move noise during fast games while still
-/// reporting progress during long analysis.
 pub const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
 pub const PRINT_UPDATE_MS: u128 = 25;
-/// MAX_TRACKED_QUIETS matches MAX_MOVES today, and only because the legal quiet
-/// count is bounded by the total pseudo-legal count. If MAX_MOVES grows, this
-/// can shrink independently; we only care that quiet penalties cover all
-/// quiets searched before a cutoff, not all possible quiets in a position.
+/// Quiets recorded per ply for the cutoff penalty. Only the ones searched before
+/// the cutoff are ever penalized, so this bounds a move loop's prefix rather than
+/// the position's legal quiet count.
 pub const MAX_TRACKED_QUIETS: usize = 256;
 /// Captures are far fewer per position than quiets. 64 covers all realistic
 /// legal capture counts with headroom.
 pub const MAX_TRACKED_CAPTURES: usize = 64;
-/// One ply expressed in LMR table units. Sub-ply granularity lets each
-/// per-move adjustment dose uniformly across the table, regardless of
-/// the cell's absolute reduction.
+
+/// One ply in LMR units. Reductions accumulate in fractions of a ply, so an
+/// adjustment like the fail-high malus can move one by half a ply instead of
+/// rounding to nothing or to a whole one.
 pub const LMR_SCALE: i32 = 1024;
 
 /// Chess search has three distinct contexts:
@@ -156,9 +155,9 @@ pub struct Worker<'h> {
     pub pawn_cache: PawnCache,
     /// Search-constant eval weights, built once instead of per leaf.
     pub eval_params: EvalParams<i32>,
-    /// Set while a null-move verification search is on the stack.
-    /// Suppresses nested NMP, which would otherwise recurse forever on
-    /// the same position at ever-shrinking depth.
+    /// Set while a null-move verification search is on the stack. Without it the
+    /// verification would try its own null move and verify that in turn, each pass
+    /// re-searching the same position a little shallower.
     pub is_nmp_verif: bool,
 }
 
@@ -203,14 +202,12 @@ pub struct SearchConfig {
     pub thread_id: usize,
     /// Per-thread node counters, one slot per thread.
     /// Each thread writes only its own slot, inside `check_signals`
-    /// (every 2048 nodes), with a Relaxed store: no lock prefix,
-    /// no cross-core contention. The display and node-limit paths sum
-    /// all slots. Slightly stale, invisible at display intervals.
+    /// (every 2048 nodes), with a Relaxed store.
     pub node_slots: Arc<[AtomicU64]>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
-    /// Reduction composes as `base + table[d] · table[m] / div`, all in milli-plies.
+    /// Reduction composes as `base + table[d] · table[m] / div`, all in LMR_SCALE units.
     pub lmr_table: Box<[i16; MAX_PLY + 1]>,
 }
 
@@ -422,11 +419,10 @@ impl Default for Stack {
 impl<'cfg> Searcher<'cfg> {
     /// Search depth 1, then 2, then 3, ...
     ///
-    /// Seems wasteful. Why redo shallow work? Two reasons:
-    ///   1. Each iteration's move ordering feeds the next. A deep search with
-    ///      good ordering is faster than a blind deep search.
-    ///   2. Natural anytime algorithm: always have a best move ready from the
-    ///      last completed iteration.
+    /// The repeated shallow work pays for itself: each iteration's move ordering
+    /// feeds the next, and a deep search with good ordering costs far less than a
+    /// blind one. It also makes the search stoppable at any moment, since the last
+    /// completed iteration always has a move ready.
     #[inline]
     pub fn iterative_deepening(&mut self, history: &mut History) {
         let sp = &self.cfg.search_params;
@@ -476,7 +472,7 @@ impl<'cfg> Searcher<'cfg> {
         let root_acc = self.root_pos.get_initial_accumulator();
 
         // The worker is built once here, not inside the loop: a fresh one per
-        // iteration would memset 123KB of ply stack every pass, for nothing.
+        // iteration would memset 287 KB of ply stack every pass, for nothing.
         let mut worker = Worker {
             pos: self.root_pos,
             accumulator: root_acc,
@@ -508,12 +504,11 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         // ── Lazy SMP
-        // Helpers search the full depth ladder alongside main. The only
+        // Helpers search the full depth ladder alongside main, and the only
         // asymmetry is soft time management: main alone decides when to stop
-        // starting iterations. Helpers still honor the global flag and the
-        // shared hard cap (same start_time, same limits) via check_signals;
-        // they just don't gate their own iterations on the clock; they feed
-        // the TT for as long as the main thread is still running.
+        // starting iterations. Helpers still stop on the global flag and the
+        // shared hard cap through check_signals, so they feed the TT for as
+        // long as main is still running.
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
             let elapsed = self.tm.elapsed().as_millis() as u64;
@@ -528,7 +523,7 @@ impl<'cfg> Searcher<'cfg> {
             // Bail if soft limits say we probably
             // can't finish the next depth in time.
             //
-            // prev_depth_time * 2 is a rough branching-factor proxy;
+            // prev_depth_time · 2 is a rough branching-factor proxy;
             // each additional ply typically costs about twice the previous one,
             // so if we can't afford that estimate we stop before starting it.
             //
@@ -575,7 +570,7 @@ impl<'cfg> Searcher<'cfg> {
                 {
                     worker.xorboard = XorBoard::new(&worker.pos);
                 }
-                // The node's own best score, not `root_moves[0]`: the list is still
+                // The node's own best score, not root_moves[0]: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
                 let Ok(score) = worker.negamax::<RootNode>(self, depth, alpha, beta, 0, None) else {
@@ -609,9 +604,9 @@ impl<'cfg> Searcher<'cfg> {
             }
 
             if aborted {
-                // On abort, we deliberately don't sort. The array is already correctly sorted
-                // from the last fully completed iteration context. Sorting a partially aborted
-                // iteration would corrupt the strict root ordering with cross-depth horizon nodes.
+                // Don't sort: this iteration scored only the moves it reached, so ranking
+                // them now would rank a half-finished depth against a complete one. The
+                // order the last completed iteration left still stands.
                 break;
             }
 
@@ -619,7 +614,7 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            // best move floats to front, feeding the next iteration's ordering.
+            // Best move floats to the front, feeding the next iteration's ordering.
             self.root_moves.sort_by_key(|m| Reverse(m.score));
 
             if self.may_stop() {
@@ -770,8 +765,7 @@ impl<'cfg> Searcher<'cfg> {
     #[inline]
     fn check_signals(&mut self) -> bool {
         // Publish the local node count into this thread's slot so the
-        // display and node-limit paths see the aggregate. Relaxed store
-        // (plain mov on x86); this slot has exactly one writer.
+        // display and node-limit paths see the aggregate.
         self.cfg.node_slots[self.cfg.thread_id].store(self.nodes, Ordering::Relaxed);
 
         if self.cfg.stop.load(Ordering::Relaxed)
@@ -780,7 +774,7 @@ impl<'cfg> Searcher<'cfg> {
         {
             self.cfg.stop.store(true, Ordering::Relaxed);
             // The flag is stored either way, so the pool stops on time; this thread
-            // carries its first iteration to the end, where `may_stop` picks it up.
+            // carries its first iteration to the end, where may_stop picks it up.
             return self.iter_depth > 1;
         }
 
@@ -815,8 +809,6 @@ impl<'cfg> Searcher<'cfg> {
     }
 
     /// Assemble the display snapshot shared by depth-complete and realtime reporting.
-    /// `pv` and `history` are borrowed by the returned struct,
-    /// so the caller owns them for the duration of the print.
     #[cold]
     fn search_info_data<'a>(&'a self, depth: i32, score: i32, pv: &'a Line, history: &'a [PvSnapshot]) -> tui::SearchInfoData<'a> {
         let ms = self.tm.elapsed().as_millis().max(1);
@@ -957,8 +949,8 @@ impl Worker<'_> {
     /// PVS layered on top:
     /// After the presumed best move gets a full-window search,
     /// all others are probed with a zero-width "scout" window (alpha, alpha+1).
-    /// Most confirm they're worse. The rare fail-high triggers a re-search,
-    /// and that's rare enough to be a net win.
+    /// Most confirm they're worse, and a fail-high costs a re-search rarely
+    /// enough to stay a net win.
     fn negamax<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
@@ -993,8 +985,8 @@ impl Worker<'_> {
             return Ok(self.evaluate());
         }
 
-        // Clear the grandchild fail-high counter; our own [ply + 1], read in LMR,
-        // was cleared by the parent's reset two plies up.
+        // Zero the slot this node's children accumulate their fail-highs into.
+        // The slot LMR reads here, ply + 1, was zeroed by the parent the same way.
         self.stack[ply + 2].cutoff_count = 0;
 
         // ── Mate Distance Pruning
@@ -1086,9 +1078,9 @@ impl Worker<'_> {
         // ── Correction History
         // The evaluator has systematic biases tied to structural features
         // it can't see directly. Correction tables observe (search - eval)
-        // deltas keyed by such features: pawn structure, non-pawn material,
-        // and whatever else we add. They then nudge future evals of positions
-        // sharing those keys toward the truth.
+        // deltas keyed by such features: pawn structure, minor and major piece
+        // placement. They then nudge future evals of positions sharing those
+        // keys toward the truth.
         // raw_static_eval stays untouched so the update at the end of this
         // frame learns from the unshifted baseline, not the already-corrected
         // value we use for pruning.
@@ -1118,7 +1110,10 @@ impl Worker<'_> {
         // ── Reverse Futility Pruning (~52 Elo)
         // Position is already so good that even after subtracting a generous
         // margin, we're still above beta. The opponent wouldn't have let us
-        // get here, so just return the eval and move on.
+        // get here, so cut the node without searching it.
+        //
+        // The eval is an unsearched guess and beta is the least this node
+        // proved, so the score handed back splits the difference.
         #[rustfmt::skip]
         if !in_check
             && !N::PV
@@ -1308,7 +1303,7 @@ impl Worker<'_> {
         } else {
             let stm = self.pos.stm;
             let opp = stm.opposite();
-            // Wider than the setwise fill, which ends in `& !generator` and so
+            // Wider than the setwise fill, which ends in & !generator and so
             // drops the squares holding that side's own rooks and queens. Our
             // pieces can never stand there, so the two maps are interchangeable
             // here and the node count does not move.
@@ -1326,7 +1321,6 @@ impl Worker<'_> {
             // picker incorporate recent positional context into quiet ordering.
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
-            // Interior: staged move generation via MovePicker.
             let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
 
             self.xb_enter(ply);
@@ -1394,12 +1388,9 @@ impl Worker<'_> {
                 // filters captures, and pruning a queen promotion on
                 // global history would be absurd.
                 //
-                // Killers are exempt; a killer is a per-ply tactical
-                // refutation whose global history is often deeply negative
-                // (terrible in most positions, saving in this one).
-                // The picker's ordering already says "this move works here",
-                // pruning it on global stats would nuke the exact move
-                // MovePicker promoted.
+                // Killers are exempt; a killer is a per-ply refutation whose
+                // global history is often deeply negative, terrible in most
+                // positions and saving in this one.
                 if !in_check
                     && !N::PV
                     && !mv.is_tactical()
@@ -1564,8 +1555,8 @@ impl Worker<'_> {
                     // no single deep search permanently dominates the table's ±16384 attractor.
                     let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
 
-                    // Only reward if the cutoff itself was caused by a quiet move.
-                    // Captures and structural moves (castling) are handled differently.
+                    // Castling reaches neither branch: is_history_quiet excludes it and
+                    // it is no capture, so a castling cutoff trains nothing here.
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
 
@@ -1609,7 +1600,6 @@ impl Worker<'_> {
                     for i in 0..penalty_limit {
                         let qm = self.stack[ply].quiet_moves[i];
                         let q_pt = self.pos.expect_piece_at(qm.from());
-                        // Over time, this "anti-history" pushes bad moves deeper into the list.
                         self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                     }
 
@@ -1771,10 +1761,8 @@ impl Worker<'_> {
     /// Make a move, search it, unmake it. The innermost loop body every
     /// move in the tree passes through exactly once.
     ///
-    /// # Precondition
-    /// `mv` must be legal. Root legality is guaranteed by the root move
-    /// list generated at search start; interior legality is verified by
-    /// the explicit `is_legal` call in the move loop before each invocation.
+    /// `mv` must be legal: at the root the move list was generated legal, and in
+    /// the interior the move loop calls `is_legal` before every invocation.
     fn search_move<N: NodeType>(
         &mut self,
         searcher: &mut Searcher,
@@ -1837,11 +1825,6 @@ impl Worker<'_> {
 
             if eval > res.alpha {
                 res.alpha = eval;
-                // Borrow checker requires a disjoint split; we need a mutable
-                // reference to stack[ply].pv and a shared one to stack[ply+1].pv
-                // simultaneously. Rust can't prove ply and ply+1 don't alias
-                // through two separate borrows of self.stack, so split_at_mut
-                // gives us two non-overlapping slices as proof.
                 let (current_stack, next_stack) = self.stack.split_at_mut(ply + 1);
                 current_stack[ply].pv.compose(mv, &next_stack[0].pv);
             }
@@ -2112,9 +2095,8 @@ impl Worker<'_> {
 
     /// Fifty move rule, insufficient material, or repetition → immediate draw.
     ///
-    /// Checked before move generation, so a theoretical checkmate on
-    /// exactly the 100th half-move is scored as a draw. This is the
-    /// standard compromise; every top engine accepts this edge case.
+    /// Checked before move generation, so a checkmate delivered on exactly the
+    /// 100th half-move is scored as a draw, the standard compromise.
     #[inline]
     pub fn is_draw(&self, ply: usize, history: &[u64]) -> bool {
         self.pos.is_fifty_move_draw() || self.pos.is_draw_by_material() || (ply > 0 && self.is_repetition(self.pos.hash, history))
