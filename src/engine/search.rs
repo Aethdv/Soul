@@ -475,18 +475,11 @@ impl<'cfg> Searcher<'cfg> {
         let mut worker = Worker {
             pos: self.root_pos,
             accumulator: root_acc,
-            stack: vec![Stack::default(); MAX_PLY + 2]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap_or_else(|_| unreachable!()),
+            stack: boxed_array(Stack::default()),
             #[cfg(not(feature = "nostore"))]
             xorboard: XorBoard::new(&self.root_pos),
             #[cfg(not(feature = "nostore"))]
-            xb_undo: vec![XbUndo::default(); MAX_PLY + 2]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap_or_else(|_| unreachable!()),
-
+            xb_undo: boxed_array(XbUndo::default()),
             history,
             pawn_cache: PawnCache::new(),
             eval_params: EvalParams::<i32>::from_const(),
@@ -898,6 +891,11 @@ impl<'cfg> Searcher<'cfg> {
         let data = self.search_info_data(self.iter_depth, self.prev_score, &self.prev_pv, &history_vec);
         tui::print_pretty_search_info(&data);
     }
+}
+
+/// A heap `[T; N]` built through a `Vec`, so the array never lands on the stack.
+fn boxed_array<T: Clone, const N: usize>(value: T) -> Box<[T; N]> {
+    vec![value; N].into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
 }
 
 /// Piece-to-square contexts 1, 2, and 4 plies back, for cont-hist lookup.
