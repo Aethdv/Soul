@@ -5,7 +5,7 @@
 //!
 //! - Quiet sort utilization. A node at the quiet stage sorts every quiet,
 //!   then yields best-first until a cutoff. Generated-vs-consumed and the
-//!   consumption histogram say whether that full sort is load-bearing or thrown
+//!   consumption histogram say whether that full sort is needed or thrown
 //!   away: back-loaded means justified, front-loaded (mass at 0–1) means a
 //!   lazy max-scan would win. The catch is selection bias: cut-nodes usually
 //!   cut before quiets are even generated, so the nodes that pay the sort are

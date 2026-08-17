@@ -151,6 +151,10 @@ pub struct Position {
     /// Mailbox, read through `piece_at`; `PieceType::None` where a square is empty.
     pub pieces: [PieceType; 64],
     /// Original castling rook squares for Chess960 (FRC), indexed by right's bit position.
+    ///
+    /// A slot is only meaningful while its right is held. Losing the right clears the bit
+    /// and leaves the slot naming the square it named before, so a reader that skips the
+    /// rights check sees a rook home the side no longer owns.
     pub castling_rooks: [Square; 4],
     /// Packed castling rights mask (bits 0–3: White KS, White QS, Black KS, Black QS).
     pub castling_rights: u8,
@@ -387,6 +391,36 @@ impl Position {
         };
 
         self.castling_rights & mask != 0 && self.is_castle_legal(self.occ, ksq, rsq, data, check_sqs, empty, color.opposite())
+    }
+
+    /// Emits `color`'s castling moves, at most one per wing.
+    ///
+    /// The right gates the slot read, or a stale slot aliases the other side's and
+    /// double-generates. [`Self::is_castle_move_legal`] owns the rest.
+    #[inline]
+    pub fn for_each_castle(&self, color: Color, mut emit: impl FnMut(Move)) {
+        let king_bb = self.pieces(PieceType::King, color);
+        if king_bb.is_empty() {
+            return;
+        }
+
+        let ksq = king_bb.lsb();
+        let (oo, ooo, ks, qs) = if color == Color::White {
+            (WHITE_OO, WHITE_OOO, ROOK_W_KS, ROOK_W_QS)
+        } else {
+            (BLACK_OO, BLACK_OOO, ROOK_B_KS, ROOK_B_QS)
+        };
+
+        for (mask, slot) in [(oo, ks), (ooo, qs)] {
+            if self.castling_rights & mask == 0 {
+                continue;
+            }
+
+            let rsq = self.castling_rooks[slot];
+            if self.is_castle_move_legal(color, ksq, rsq) {
+                emit(Move::new(ksq, rsq, Move::CASTLE));
+            }
+        }
     }
 
     /// Verifies path clearance and king transit safety for a castling move.

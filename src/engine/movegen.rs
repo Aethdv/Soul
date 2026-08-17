@@ -7,7 +7,7 @@
 
 use crate::core::{
     board::{
-        BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO,
+        Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS,
         bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb, line_bb},
     },
     defs::{Bitboard, Color, Direction, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
@@ -94,10 +94,9 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
     // `to` makes apply_castling lift a non-rook and drop a phantom rook, corruption that
     // unmake compounds instead of repairing.
     //
-    // Only the mover's own two slots count. An unheld slot still holds the square it named
-    // before the right was lost, so scanning all four accepts a castle onto a square the
-    // enemy rook abandoned and one of ours later took. is_castle_move_legal owns the rest:
-    // the right, the corridor, and the squares the king crosses.
+    // Only the mover's own two slots count. Scanning all four reaches a stale enemy slot,
+    // and accepts a castle onto the square that rook abandoned and one of ours later took.
+    // is_castle_move_legal owns the rest: the right, the corridor, and the king's path.
     if mv.is_castling() {
         let (ks, qs) = if stm == Color::White { (ROOK_W_KS, ROOK_W_QS) } else { (ROOK_B_KS, ROOK_B_QS) };
         return piece == PieceType::King
@@ -281,7 +280,7 @@ fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut Mo
     gen_king::<TACTICAL>(board, acc, us, them);
 
     if !TACTICAL {
-        gen_castling::<US>(board, acc);
+        board.for_each_castle(US, |mv| acc.push(mv));
     }
 }
 
@@ -417,41 +416,6 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
             targets &= them;
         }
         emit_from_mask(acc, from, targets, them);
-    }
-}
-
-/// Castling, Chess960 included.
-///
-/// Encoded king→rook rather than king→destination, so a rook starting on any file needs
-/// no special case: the destination follows from the rook's home square.
-#[inline]
-fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList) {
-    let k_bb = board.role_bb[PieceType::King] & board.side_bb[US];
-    if k_bb.is_empty() {
-        return;
-    }
-
-    let ksq = k_bb.lsb();
-
-    let (oo_mask, oo_idx, ooo_mask, ooo_idx) = if US == Color::White {
-        (WHITE_OO, ROOK_W_KS, WHITE_OOO, ROOK_W_QS)
-    } else {
-        (BLACK_OO, ROOK_B_KS, BLACK_OOO, ROOK_B_QS)
-    };
-
-    // The right must be held before we read its rook-home slot: an unheld slot
-    // can alias the other side's and double-generate. With the right held the
-    // slot is live, and is_castle_move_legal, shared verbatim with TT-move
-    // validation, owns the corridor and through-check logic.
-    for (mask, idx) in [(oo_mask, oo_idx), (ooo_mask, ooo_idx)] {
-        if board.castling_rights & mask == 0 {
-            continue;
-        }
-
-        let rsq = board.castling_rooks[idx];
-        if board.is_castle_move_legal(US, ksq, rsq) {
-            acc.push(Move::new(ksq, rsq, Move::CASTLE));
-        }
     }
 }
 
