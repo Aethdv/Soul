@@ -1486,23 +1486,15 @@ impl Worker<'_> {
                     // The verification recurses at this same ply and stomps the quiet
                     // and capture lists this node is still building for its own history
                     // update, so snapshot them and restore once it returns.
-                    let saved_quiet_count = self.stack[ply].quiet_count;
-                    let mut saved_quiets = [Move::null(); MAX_TRACKED_QUIETS];
-
-                    saved_quiets[..saved_quiet_count].copy_from_slice(&self.stack[ply].quiet_moves[..saved_quiet_count]);
-
-                    let saved_capture_count = self.stack[ply].capture_count;
-                    let mut saved_captures = [Move::null(); MAX_TRACKED_CAPTURES];
-
-                    saved_captures[..saved_capture_count].copy_from_slice(&self.stack[ply].capture_moves[..saved_capture_count]);
+                    let saved = self.stack[ply];
 
                     self.stack[ply].excluded = mv;
                     let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply, None);
                     self.stack[ply].excluded = Move::null();
-                    self.stack[ply].quiet_count = saved_quiet_count;
-                    self.stack[ply].quiet_moves[..saved_quiet_count].copy_from_slice(&saved_quiets[..saved_quiet_count]);
-                    self.stack[ply].capture_count = saved_capture_count;
-                    self.stack[ply].capture_moves[..saved_capture_count].copy_from_slice(&saved_captures[..saved_capture_count]);
+                    self.stack[ply].quiet_moves = saved.quiet_moves;
+                    self.stack[ply].quiet_count = saved.quiet_count;
+                    self.stack[ply].capture_moves = saved.capture_moves;
+                    self.stack[ply].capture_count = saved.capture_count;
 
                     let sing_score = sing_score?;
                     if sing_score < sing_beta {
