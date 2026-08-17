@@ -667,12 +667,7 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         if !self.cfg.limits.silent {
-            let mut best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
-            // Guard: if the PV move is somehow illegal for the root position,
-            // fall back to root_moves[0], which was generated legally.
-            if !is_pseudo_legal(&self.root_pos, best) {
-                best = self.root_moves[0].mv;
-            }
+            let best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
 
             match self.cfg.limits.protocol {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
