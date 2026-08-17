@@ -889,7 +889,7 @@ impl<'cfg> Searcher<'cfg> {
     /// order while this one overwrites its scores in place, so its head can pair
     /// a fresh score with a line from an older depth.
     #[cold]
-    fn print_realtime(&mut self) {
+    fn print_realtime(&self) {
         if self.cfg.limits.silent || self.prev_pv.len == 0 {
             return;
         }
