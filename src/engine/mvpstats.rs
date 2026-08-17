@@ -1,26 +1,21 @@
-//! Move-picker instrumentation: does the ordering earn its keep?
+//! Move-picker diagnostics and heuristic efficiency profiling.
 //!
-//! Two questions, two metric blocks. Adding a third is a static block, a
-//! `record_*` hook, and one line in [`report`].
+//! Tracks two primary metrics to evaluate move ordering performance:
 //!
-//! - Quiet sort utilization. A node at the quiet stage sorts every quiet,
-//!   then yields best-first until a cutoff. Generated-vs-consumed and the
-//!   consumption histogram say whether that full sort is needed or thrown
-//!   away: back-loaded means justified, front-loaded (mass at 0–1) means a
-//!   lazy max-scan would win. The catch is selection bias: cut-nodes usually
-//!   cut before quiets are even generated, so the nodes that pay the sort are
-//!   the ones that consume it.
+//! - Quiet Sort Utilization: Ratio of quiets sorted versus actually consumed.
+//!   High utilization justifies eager `sort_unstable`; heavy mass at 0–1 quiets
+//!   indicates a lazy partial-sort or linear scan would be cheaper. Read it against
+//!   the selection bias: cut-nodes usually cut before quiets are generated at all,
+//!   so the nodes that pay for the sort are the ones that consume it.
 //!
-//! - Beta-cutoff ordering. At a fail-high node, which move number caused the
-//!   cutoff and which heuristic surfaced it. The first-move cutoff rate is the
-//!   single number that says the staging is good: the whole point of ordering
-//!   is to make the cutoff happen on move one.
+//! - Beta-Cutoff Distribution: Move index (1-based) and heuristic tier that
+//!   triggered a fail-high. The first-move cutoff percentage directly measures
+//!   ordering quality.
 //!
-//! Compiled only under the `mvpstats` feature; zero cost in release builds.
+//! Gated by the `mvpstats` feature, and compiled out entirely when it is off.
 
 use std::{
-    io,
-    io::IsTerminal,
+    io::{self, IsTerminal},
     sync::atomic::{AtomicU64, Ordering::Relaxed},
 };
 
@@ -29,7 +24,7 @@ use crate::{
     core::util::human,
 };
 
-/// Consumption buckets: index = quiets used, the last bucket is "11 or more".
+/// Quiet consumption buckets: index = moves consumed; last bucket represents `N-1+`.
 const QUIET_BUCKETS: usize = 12;
 
 static QUIET_HIST: [AtomicU64; QUIET_BUCKETS] = [const { AtomicU64::new(0) }; QUIET_BUCKETS];
@@ -37,18 +32,32 @@ static QUIET_GENERATED: AtomicU64 = AtomicU64::new(0);
 static QUIET_CONSUMED: AtomicU64 = AtomicU64::new(0);
 static QUIET_NODES: AtomicU64 = AtomicU64::new(0);
 
-const KINDS: usize = 4;
-const KIND_NAMES: [&str; KINDS] = ["hash", "capture", "killer", "quiet"];
+/// Ordered to match [`CutoffKind`]'s discriminants, which index the counters.
+const KIND_NAMES: [&str; 4] = ["hash", "capture", "killer", "quiet"];
 
-/// Cutoff move-index buckets: 1-based move number, the last bucket is "8 or more".
+/// Cutoff move index buckets: index = (1-based move index - 1); last bucket is `N-1+`.
 const CUTOFF_BUCKETS: usize = 8;
 
+/// Where the color scale reads neutral: half the sorted quiets consumed, and nine
+/// cutoffs in ten landing on the first move.
+const QUIET_USE_NEUTRAL: f64 = 50.0;
+const FIRST_CUTOFF_NEUTRAL: f64 = 90.0;
+
 static CUTOFF_HIST: [AtomicU64; CUTOFF_BUCKETS] = [const { AtomicU64::new(0) }; CUTOFF_BUCKETS];
-static CUTOFF_KIND: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
+static CUTOFF_KIND: [AtomicU64; KIND_NAMES.len()] = [const { AtomicU64::new(0) }; KIND_NAMES.len()];
 static CUTOFF_NODES: AtomicU64 = AtomicU64::new(0);
 
-/// Record one quiet-stage node; `generated` quiets sorted, `consumed` yielded
-/// before the picker was dropped (a cutoff or natural exhaustion).
+/// Heuristic source that surfaced the cutoff move.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum CutoffKind {
+    Hash = 0,
+    Capture = 1,
+    Killer = 2,
+    Quiet = 3,
+}
+
+/// Records a quiet-stage search node: `generated` sorted vs. `consumed` yielded.
 #[inline]
 pub fn record_quiets(generated: u32, consumed: u32) {
     QUIET_HIST[(consumed as usize).min(QUIET_BUCKETS - 1)].fetch_add(1, Relaxed);
@@ -57,16 +66,7 @@ pub fn record_quiets(generated: u32, consumed: u32) {
     QUIET_NODES.fetch_add(1, Relaxed);
 }
 
-/// Which mechanism surfaced the move that caused a beta cutoff.
-#[derive(Clone, Copy)]
-pub enum CutoffKind {
-    Hash = 0,
-    Capture = 1,
-    Killer = 2,
-    Quiet = 3,
-}
-
-/// The cutoff fired on the `index`-th searched move (1-based), surfaced by `kind`.
+/// Records a beta-cutoff occurring on the `index`-th searched move (1-based).
 #[inline]
 pub fn record_cutoff(index: u32, kind: CutoffKind) {
     CUTOFF_HIST[(index.max(1) as usize - 1).min(CUTOFF_BUCKETS - 1)].fetch_add(1, Relaxed);
@@ -74,6 +74,7 @@ pub fn record_cutoff(index: u32, kind: CutoffKind) {
     CUTOFF_NODES.fetch_add(1, Relaxed);
 }
 
+/// Prints aggregated move picker statistics to stdout.
 pub fn report() {
     report_quiets();
     report_cutoffs();
@@ -87,11 +88,9 @@ fn report_quiets() {
 
     let generated = QUIET_GENERATED.load(Relaxed);
     let consumed = QUIET_CONSUMED.load(Relaxed);
-    let used_pct = 100.0 * consumed as f64 / generated as f64;
-    let used = colored(format!("{used_pct:.1}%"), (used_pct / 50.0 - 1.0).clamp(-1.0, 1.0));
+    let used = scored(pct(consumed, generated), QUIET_USE_NEUTRAL);
 
     header("MovePicker quiet stats");
-
     println!(
         "  sorting nodes {}   generated {}   consumed {}   ({used} used)",
         human(nodes),
@@ -99,8 +98,7 @@ fn report_quiets() {
         human(consumed)
     );
 
-    columns(["consumed", "nodes", "share", "cumul"]);
-    histogram(&QUIET_HIST, nodes, 0);
+    histogram(&QUIET_HIST, nodes, 0, "consumed");
 }
 
 fn report_cutoffs() {
@@ -109,60 +107,65 @@ fn report_cutoffs() {
         return;
     }
 
-    let first = 100.0 * CUTOFF_HIST[0].load(Relaxed) as f64 / nodes as f64;
-    let rate = colored(format!("{first:.1}%"), (first / 90.0 - 1.0).clamp(-1.0, 1.0));
+    let rate = scored(pct(CUTOFF_HIST[0].load(Relaxed), nodes), FIRST_CUTOFF_NEUTRAL);
 
     header("MovePicker cutoff ordering");
     println!("  fail-high nodes {}   first-move cutoff {rate}", human(nodes));
-    columns(["move", "nodes", "share", "cumul"]);
-    histogram(&CUTOFF_HIST, nodes, 1);
 
-    let (gold, reset) = header_color();
+    histogram(&CUTOFF_HIST, nodes, 1, "move");
+
+    let (gold, _, reset) = style();
     println!("  {gold}by mechanism{reset}");
 
-    for (i, name) in KIND_NAMES.iter().enumerate() {
-        let c = CUTOFF_KIND[i].load(Relaxed);
-        println!("  {name:>8}  {:>11}  {:>6.1}%", human(c), 100.0 * c as f64 / nodes as f64);
+    for (name, count) in KIND_NAMES.iter().zip(&CUTOFF_KIND) {
+        let count = count.load(Relaxed);
+        println!("  {name:>8}  {:>11}  {:>6.1}%", human(count), pct(count, nodes));
     }
 }
 
-fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize) {
+/// The bucket column carries `first`; the other three are the same table every time.
+fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize, first: &str) {
+    let (gold, bold, reset) = style();
+    println!("  {gold}{bold}{first:>8}  {:>11}  {:>7}  {:>7}{reset}", "nodes", "share", "cumul");
+
     let mut cumulative = 0u64;
     for (i, b) in buckets.iter().enumerate() {
-        let c = b.load(Relaxed);
-
-        cumulative += c;
+        let count = b.load(Relaxed);
+        cumulative += count;
 
         let n = base + i;
         let label = if i == buckets.len() - 1 { format!("{n}+") } else { n.to_string() };
 
-        println!(
-            "  {label:>8}  {:>11}  {:>6.1}%  {:>6.1}%",
-            human(c),
-            100.0 * c as f64 / nodes as f64,
-            100.0 * cumulative as f64 / nodes as f64
-        );
+        println!("  {label:>8}  {:>11}  {:>6.1}%  {:>6.1}%", human(count), pct(count, nodes), pct(cumulative, nodes));
     }
 }
 
 fn header(title: &str) {
-    let (gold, reset) = header_color();
-    println!("\n{gold}{BOLD}{title}{reset}");
+    let (gold, bold, reset) = style();
+    println!("\n{gold}{bold}{title}{reset}");
 }
 
-fn columns(labels: [&str; 4]) {
-    let (gold, reset) = header_color();
-    println!("  {gold}{BOLD}{:>8}  {:>11}  {:>7}  {:>7}{reset}", labels[0], labels[1], labels[2], labels[3]);
+#[inline]
+fn pct(part: u64, whole: u64) -> f64 {
+    100.0 * part as f64 / whole as f64
 }
 
-fn header_color() -> (String, &'static str) {
-    if io::stdout().is_terminal() { (color::ansi_fg(GOLD), RESET) } else { (String::new(), "") }
+/// Paints a percentage against the point where the scale reads neutral: deep red at
+/// zero, deep green at twice it.
+fn scored(pct: f64, neutral: f64) -> String {
+    colored(&format!("{pct:.1}%"), (pct / neutral - 1.0).clamp(-1.0, 1.0))
 }
 
-fn colored(text: String, advantage: f64) -> String {
+/// Gold, bold and reset, or three empty strings off a terminal. `BOLD` comes through
+/// here so a piped report cannot keep an escape its reset was stripped from.
+fn style() -> (String, &'static str, &'static str) {
+    if io::stdout().is_terminal() { (color::ansi_fg(GOLD), BOLD, RESET) } else { (String::new(), "", "") }
+}
+
+fn colored(text: &str, advantage: f64) -> String {
     if io::stdout().is_terminal() {
         format!("{}{text}{RESET}", color::ansi_fg(color::advantage(advantage)))
     } else {
-        text
+        text.to_string()
     }
 }
