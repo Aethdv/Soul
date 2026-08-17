@@ -364,8 +364,8 @@ mod tests {
         // Off canon by 60 on the queen's midgame table, so the fold has work to do
         // whatever the shipped file happens to hold.
         let mut values = eval_params::default_values(&params);
-        for i in table..table + TABLE_SQUARES {
-            values[i] += 60.0;
+        for v in &mut values[table..table + TABLE_SQUARES] {
+            *v += 60.0;
         }
 
         let mut folded = values.clone();
@@ -397,8 +397,8 @@ mod tests {
         let mut base = eval_params::default_values(&params);
         let mut drifted = base.clone();
         // Onto every queen square and off the queen's material: nothing to the eval.
-        for i in table..table + squares {
-            drifted[i] += 37.0;
+        for v in &mut drifted[table..table + squares] {
+            *v += 37.0;
         }
         drifted[l.material_offset + queen] -= 37.0;
 

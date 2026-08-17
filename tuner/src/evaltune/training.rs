@@ -348,7 +348,7 @@ mod tests {
 
     /// Deterministic stand-in for epoch noise, so the assertions below cannot flake.
     fn wobble(i: usize, amp: f64) -> f64 {
-        let x = (i as f64 * 12.9898).sin() * 43758.545_312;
+        let x = (i as f64 * 12.9898).sin() * 43_758.545_312;
         (x - x.floor()).mul_add(2.0, -1.0) * amp
     }
 
