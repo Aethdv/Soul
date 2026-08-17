@@ -777,7 +777,7 @@ impl<'cfg> Searcher<'cfg> {
             return self.iter_depth > 1;
         }
 
-        if self.cfg.display.go_pretty && self.nodes.is_multiple_of(NODE_CHECK_INTERVAL) {
+        if self.cfg.display.go_pretty {
             let now = self.tm.elapsed().as_millis();
             if now - self.last_print > PRINT_UPDATE_MS {
                 self.last_print = now;
@@ -956,7 +956,7 @@ impl Worker<'_> {
         self.stack[ply].pv.len = 0;
         let sp = &searcher.cfg.search_params;
 
-        if (searcher.nodes & (NODE_CHECK_INTERVAL - 1)) == 0 && searcher.check_signals() {
+        if searcher.nodes.is_multiple_of(NODE_CHECK_INTERVAL) && searcher.check_signals() {
             return Err(SearchAborted);
         }
 
@@ -1877,7 +1877,7 @@ impl Worker<'_> {
         self.stack[ply].pv.len = 0;
         let sp = &searcher.cfg.search_params;
 
-        if (searcher.nodes & (NODE_CHECK_INTERVAL - 1)) == 0 && searcher.check_signals() {
+        if searcher.nodes.is_multiple_of(NODE_CHECK_INTERVAL) && searcher.check_signals() {
             return Err(SearchAborted);
         }
 
