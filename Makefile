@@ -193,7 +193,7 @@ format: ## Auto-format with rustfmt
 	@cargo fmt
 
 clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
-	@RUSTFLAGS="-C target-cpu=native" cargo clippy --workspace --all-features --quiet -- -D warnings
+	@RUSTFLAGS="-C target-cpu=native" cargo clippy --workspace --all-features --all-targets --quiet -- -D warnings
 
 clean: ## Remove all build artifacts
 	@echo "Cleaning..."
