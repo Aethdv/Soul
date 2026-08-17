@@ -65,9 +65,8 @@ pub const NODE_CHECK_INTERVAL: u64 = 2048;
 /// Minimum node count before printing `currmove` UCI output.
 pub const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
 pub const PRINT_UPDATE_MS: u128 = 25;
-/// Quiets recorded per ply for the cutoff penalty. Only the ones searched before
-/// the cutoff are ever penalized, so this bounds a move loop's prefix rather than
-/// the position's legal quiet count.
+/// Matches MAX_MOVES, so the list never truncates. Only the prefix searched before
+/// a cutoff takes the malus, so less would serve.
 pub const MAX_TRACKED_QUIETS: usize = 256;
 /// Captures are far fewer per position than quiets. 64 covers all realistic
 /// legal capture counts with headroom.
@@ -985,8 +984,7 @@ impl Worker<'_> {
             return Ok(self.evaluate());
         }
 
-        // Zero the slot this node's children accumulate their fail-highs into.
-        // The slot LMR reads here, ply + 1, was zeroed by the parent the same way.
+        // The slot LMR reads at ply + 1 was zeroed here by the parent.
         self.stack[ply + 2].cutoff_count = 0;
 
         // ── Mate Distance Pruning
@@ -1081,9 +1079,6 @@ impl Worker<'_> {
         // deltas keyed by such features: pawn structure, minor and major piece
         // placement. They then nudge future evals of positions sharing those
         // keys toward the truth.
-        // raw_static_eval stays untouched so the update at the end of this
-        // frame learns from the unshifted baseline, not the already-corrected
-        // value we use for pruning.
         let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval, sp) };
 
         // The stack slot inherits through checks: a node in check republishes
@@ -1311,7 +1306,6 @@ impl Worker<'_> {
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
-            // Track searched quiets and captures to penalize them if a later move causes a cutoff.
             self.stack[ply].quiet_count = 0;
             self.stack[ply].capture_count = 0;
 
@@ -1547,8 +1541,6 @@ impl Worker<'_> {
                     // no single deep search permanently dominates the table's ±16384 attractor.
                     let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
 
-                    // Castling reaches neither branch: is_history_quiet excludes it and
-                    // it is no capture, so a castling cutoff trains nothing here.
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
 
@@ -1566,8 +1558,8 @@ impl Worker<'_> {
                         // ── Capture History Update
                         // Promotion-captures are deliberately excluded: they bypass
                         // the normal MVV-LVA + capture-history blend in the picker
-                        // (see add_promo_caps), so updating their entries here would
-                        // train a table that nothing reads.
+                        // (see add_promo_caps), so an entry written here is one no
+                        // lookup ever reaches.
                         //
                         // self.pos is the parent position: search_move has already
                         // unmade the move, so the captured piece is back on to
@@ -1577,39 +1569,24 @@ impl Worker<'_> {
                         self.history.update_capture(stm, attacker, mv.to(), victim, bonus);
                     }
 
-                    // ── Asymmetric Penalty (~25 Elo)
-                    // When a move causes a beta-cutoff, all moves searched before it
-                    // at this ply are "losers": they failed to refute the branch.
-                    // We drive their history scores down so they surface later in
-                    // future sibling nodes.
-                    //
-                    // Quiets: penalize all preceding quiets. If the cutoff was a
-                    // capture, quiet_count is 0 (captures precede quiets in the
-                    // picker), so the loop is a no-op.
-                    let penalty_limit =
-                        if appended_quiet { self.stack[ply].quiet_count.saturating_sub(1) } else { self.stack[ply].quiet_count };
-
-                    for i in 0..penalty_limit {
+                    // ── Quiet Malus (~25 Elo)
+                    // A bonus alone can only lift entries, so a move that cut once
+                    // and keeps failing never comes back down.
+                    let quiet_limit = self.stack[ply].quiet_count - appended_quiet as usize;
+                    for i in 0..quiet_limit {
                         let qm = self.stack[ply].quiet_moves[i];
                         let q_pt = self.pos.expect_piece_at(qm.from());
                         self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                     }
 
-                    // Captures: penalize all preceding captures that were searched
-                    // and failed to cut. Without this, capture history only drifts
-                    // positive; it rewards good captures and never pushes bad
-                    // ones down.
-                    let cap_penalty_limit = if appended_capture {
-                        self.stack[ply].capture_count.saturating_sub(1)
-                    } else {
-                        self.stack[ply].capture_count
-                    };
-
-                    for i in 0..cap_penalty_limit {
+                    // ── Capture Malus
+                    // MVV-LVA ranks by material alone, so the table is the only place
+                    // a rich capture that keeps failing here can be marked down.
+                    let capture_limit = self.stack[ply].capture_count - appended_capture as usize;
+                    for i in 0..capture_limit {
                         let cm = self.stack[ply].capture_moves[i];
                         let attacker = self.pos.expect_piece_at(cm.from());
                         let victim = if cm.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(cm.to()) };
-
                         self.history.update_capture(stm, attacker, cm.to(), victim, -bonus);
                     }
                     break;
@@ -1648,8 +1625,8 @@ impl Worker<'_> {
         }
 
         // ── Correction History Update
-        // Only learn from positions resolved by quiet moves: tactical
-        // resolutions (captures/promotions) reflect tactics, not evaluator bias.
+        // A capture or promotion settles the node on tactics, which say nothing
+        // about evaluator bias.
         // Skip when the bound direction contradicts the diff: a fail-high with
         // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
         // carries no useful structural signal.
