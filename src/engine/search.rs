@@ -983,21 +983,21 @@ impl Worker<'_> {
         // itself, and its score is the very cutoff the verification exists to test.
         let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { None };
         let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) =
-            if let Some((mv, score, depth_stored, bound, pv, eval)) = tt_probe {
+            if let Some(hit) = tt_probe {
                 // Guard against hash collisions: an illegal non-null move invalidates
                 // both the TT move and any cutoff. Null moves are valid, stored on fail-low.
-                let tt_move = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
-                let valid = tt_move.is_some() || mv.is_null();
+                let tt_move = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
+                let valid = tt_move.is_some() || hit.mv.is_null();
 
                 #[rustfmt::skip]
                 if valid
                     && !N::PV
-                    && depth_stored >= depth
-                    && tt::can_cutoff(bound, score, alpha, beta)
+                    && hit.depth >= depth
+                    && tt::can_cutoff(hit.bound, hit.score, alpha, beta)
                 {
-                    return Ok(score);
+                    return Ok(hit.score);
                 }
-                (tt_move, pv, Some(eval), score, bound, depth_stored)
+                (tt_move, hit.pv, Some(hit.eval), hit.score, hit.bound, hit.depth)
             } else {
                 (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
             };
@@ -1843,13 +1843,13 @@ impl Worker<'_> {
         //
         // Quiescence TT Move (~9 Elo)
         let (qs_tt_move, qs_tt_pv, qs_tt_eval) =
-            if let Some((mv, score, _depth, bound, pv, eval)) = searcher.tt.probe(self.pos.hash, ply) {
-                if !N::PV && tt::can_cutoff(bound, score, alpha, beta) {
-                    return Ok(score);
+            if let Some(hit) = searcher.tt.probe(self.pos.hash, ply) {
+                if !N::PV && tt::can_cutoff(hit.bound, hit.score, alpha, beta) {
+                    return Ok(hit.score);
                 }
 
-                let mv = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
-                (mv, pv, Some(eval))
+                let mv = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
+                (mv, hit.pv, Some(hit.eval))
             } else {
                 (None, false, None)
             };
