@@ -205,7 +205,10 @@ mod tests {
         let pos = Position::from_fen(fen);
         let mv = legal_move(&pos, uci);
         let pins = Pins::new(&pos);
-        assert!(see_ge(&pos, mv, expected, &pins), "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",);
+        assert!(
+            see_ge(&pos, mv, expected, &pins),
+            "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",
+        );
         assert!(
             !see_ge(&pos, mv, expected + 1, &pins),
             "SEE({uci}) ≥ {} should fail (claimed value: {expected})\n  fen: {fen}",

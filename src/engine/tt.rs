@@ -263,7 +263,8 @@ impl TranspositionTable {
         // first_touch does the actual zeroing before any reader reaches the data.
         if numa.should_distribute(threads) {
             let clusters = unsafe { HugePages::mapped(bytes) };
-            first_touch(&clusters, numa);
+            // SAFETY: the mapping is fresh and unpublished, so nothing can read it.
+            unsafe { first_touch(&clusters, numa) };
             clusters
         } else {
             unsafe { HugePages::zeroed(bytes) }
@@ -292,11 +293,17 @@ impl TranspositionTable {
     /// more than one node and more than one thread; a lone thread keeps the table
     /// local. On a multi-node box this is also its first fault, since `alloc` left
     /// the mapping untouched.
-    pub fn clear(&self, threads: usize) {
-        if self.numa.should_distribute(threads) {
-            first_touch(&self.clusters, &self.numa);
-        } else {
-            self.clusters.clear();
+    /// # Safety
+    /// No search may be running. The clear writes the region non-atomically, so a
+    /// probe landing in it is a data race however atomic the slots are.
+    pub unsafe fn clear(&self, threads: usize) {
+        // SAFETY: caller's contract, on both branches.
+        unsafe {
+            if self.numa.should_distribute(threads) {
+                first_touch(&self.clusters, &self.numa);
+            } else {
+                self.clusters.clear();
+            }
         }
         self.generation.store(0, Ordering::Relaxed);
     }
@@ -473,13 +480,15 @@ fn replacement_quality(packed: u16, current_age: u8) -> i32 {
 /// the slice bound to it. First-touch decides a page's home node, so it spreads
 /// the table across the memory controllers instead of leaving it all on one.
 ///
-/// Only ever runs with the engine idle (allocation, or `ucinewgame`), so building
-/// an exclusive `&mut` over the shared region is sound: no searcher is reading it,
-/// and the chunks the threads take are disjoint.
-fn first_touch(clusters: &HugePages<Cluster>, numa: &NumaTopology) {
+/// The chunks the threads take are disjoint, so each one zeroes only its own.
+///
+/// # Safety
+/// No search may be running: this builds an exclusive `&mut` over the shared
+/// region and writes it non-atomically.
+unsafe fn first_touch(clusters: &HugePages<Cluster>, numa: &NumaTopology) {
     let nodes = numa.num_nodes();
     let len = clusters.len();
-    // SAFETY: idle precondition (above); the region maps len clusters.
+    // SAFETY: caller's contract; the region maps len clusters.
     let region = unsafe { slice::from_raw_parts_mut(clusters.as_ptr() as *mut Cluster, len) };
     thread::scope(|scope| {
         for (node, chunk) in region.chunks_mut(len.div_ceil(nodes)).enumerate() {

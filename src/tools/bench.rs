@@ -77,7 +77,8 @@ pub fn run(depth: i32, hash_mb: usize) {
         let board = Position::from_fen(fen);
         let history = vec![board.hash];
 
-        tt.clear(1);
+        // SAFETY: bench runs each search inline on this thread, so none is in flight.
+        unsafe { tt.clear(1) };
 
         let t0 = Instant::now();
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());

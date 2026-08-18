@@ -982,14 +982,13 @@ impl Worker<'_> {
         // No probe during a singular verification: the entry here is the excluded move
         // itself, and its score is the very cutoff the verification exists to test.
         let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { None };
-        let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) =
-            if let Some(hit) = tt_probe {
-                // Guard against hash collisions: an illegal non-null move invalidates
-                // both the TT move and any cutoff. Null moves are valid, stored on fail-low.
-                let tt_move = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
-                let valid = tt_move.is_some() || hit.mv.is_null();
+        let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) = if let Some(hit) = tt_probe {
+            // Guard against hash collisions: an illegal non-null move invalidates
+            // both the TT move and any cutoff. Null moves are valid, stored on fail-low.
+            let tt_move = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
+            let valid = tt_move.is_some() || hit.mv.is_null();
 
-                #[rustfmt::skip]
+            #[rustfmt::skip]
                 if valid
                     && !N::PV
                     && hit.depth >= depth
@@ -997,10 +996,10 @@ impl Worker<'_> {
                 {
                     return Ok(hit.score);
                 }
-                (tt_move, hit.pv, Some(hit.eval), hit.score, hit.bound, hit.depth)
-            } else {
-                (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
-            };
+            (tt_move, hit.pv, Some(hit.eval), hit.score, hit.bound, hit.depth)
+        } else {
+            (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
+        };
 
         let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
@@ -1842,17 +1841,16 @@ impl Worker<'_> {
         // sequence for accurate PV reporting.
         //
         // Quiescence TT Move (~9 Elo)
-        let (qs_tt_move, qs_tt_pv, qs_tt_eval) =
-            if let Some(hit) = searcher.tt.probe(self.pos.hash, ply) {
-                if !N::PV && tt::can_cutoff(hit.bound, hit.score, alpha, beta) {
-                    return Ok(hit.score);
-                }
+        let (qs_tt_move, qs_tt_pv, qs_tt_eval) = if let Some(hit) = searcher.tt.probe(self.pos.hash, ply) {
+            if !N::PV && tt::can_cutoff(hit.bound, hit.score, alpha, beta) {
+                return Ok(hit.score);
+            }
 
-                let mv = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
-                (mv, hit.pv, Some(hit.eval))
-            } else {
-                (None, false, None)
-            };
+            let mv = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
+            (mv, hit.pv, Some(hit.eval))
+        } else {
+            (None, false, None)
+        };
 
         let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();

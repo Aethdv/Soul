@@ -202,7 +202,9 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         "new" => {
             state.stop_search();
             state.load_position(Position::from_fen(STARTPOS));
-            state.tt.clear(state.threads);
+            // SAFETY: stop_search joins the search thread, which returns only once
+            // pool.wait() has parked the helpers, so nothing can probe the table.
+            unsafe { state.tt.clear(state.threads) };
             state.mode = Mode::Normal;
             state.engine_side = Some(Color::Black);
             state.limits = Limits { protocol: Protocol::XBoard, ..Default::default() };

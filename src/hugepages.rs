@@ -83,7 +83,8 @@ impl<T> HugePages<T> {
     ///
     /// # Safety
     /// `T` must be valid when zero-initialized: the mapping comes back zeroed and
-    /// is reinterpreted as `T` without running any constructor.
+    /// is reinterpreted as `T` without running any constructor. Its alignment must
+    /// also fit within a page, which is all a mapping's base is guaranteed to be.
     pub unsafe fn zeroed(min_bytes: usize) -> Self {
         // SAFETY: caller's contract on T.
         let pages = unsafe { Self::mapped(min_bytes) };
@@ -105,10 +106,11 @@ impl<T> HugePages<T> {
     /// syscall, but then the next search re-faults every page it touches, on the
     /// clock; the cost of emptying belongs here, off it, with the pages kept hot.
     ///
-    /// The caller guarantees no searcher is concurrently probing (this runs on
-    /// `ucinewgame`, when the engine is idle).
-    pub fn clear(&self) {
-        // SAFETY: idle precondition: no searcher reads the region during the clear.
+    /// # Safety
+    /// Nothing may read the region while it is cleared. The write is not atomic,
+    /// so a probe racing it is a data race however atomic the element type is.
+    pub unsafe fn clear(&self) {
+        // SAFETY: caller's contract.
         unsafe { zero_region(self.ptr.cast::<u8>().as_ptr(), self.bytes) };
     }
 }
@@ -168,8 +170,8 @@ mod linux {
 
     /// The tier ladder: 1GB hugetlb, 2MB hugetlb, then a plain mapping hinted
     /// toward transparent huge pages. Each tier rounds the length up to its page
-    /// size: a `hugetlb` mapping is rejected outright unless the length is a
-    /// whole multiple, the bug that silently drops a careless caller to 4KB.
+    /// size, so the byte count kept for the free names the whole mapping and the
+    /// tail cannot outlive the `munmap`.
     pub fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
         // 1GB only past a gigabyte, or rounding up to the boundary is mostly waste.
         if min_bytes >= GB {
@@ -226,10 +228,7 @@ mod linux {
                 unmap(over, head);
             }
 
-            let tail = align - head;
-            if tail > 0 {
-                unmap(NonNull::new_unchecked(aligned.add(len)), tail);
-            }
+            unmap(NonNull::new_unchecked(aligned.add(len)), align - head);
             NonNull::new_unchecked(aligned)
         }
     }

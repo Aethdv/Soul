@@ -442,7 +442,9 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.stop_search();
             state.is_searching.store(false, Ordering::Relaxed);
             state.persistent_history.clear();
-            state.tt.clear(state.threads);
+            // SAFETY: stop_search spins until the worker clears is_searching, which it
+            // does only after pool.wait() parks every helper, so nothing can probe the table.
+            unsafe { state.tt.clear(state.threads) };
             state.load_position(Position::from_fen(STARTPOS));
         },
         "position" => cmd_position(state, &mut tokens),
