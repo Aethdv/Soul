@@ -1,4 +1,4 @@
-//! Non-blocking single-producer multi-consumer broadcast channel.
+//! Single-producer multi-consumer broadcast channel.
 //!
 //! `send(msg)` heap-allocates one message, wakes every receiver, and returns.
 //! `recv(handler)` blocks until a message arrives, runs the handler with a
