@@ -9,7 +9,7 @@
 //!     perf stat -e instructions,cycles soul measure run <variant> <path> <repeats>
 
 use core::{arch::x86_64::*, hint::black_box, marker::ConstParamTy};
-use std::fs;
+use std::{fs, hint};
 
 use crate::{
     core::{
@@ -24,7 +24,7 @@ use crate::{
         zobrist::ConstRng,
     },
     engine::{mobility::Mobility, movegen::gen_legal_moves, see::see_ge},
-    tools::byteboard,
+    tools::byteboard::{self, PieceId, Place, Wordboard},
     weave::Vi16x8,
 };
 
@@ -46,7 +46,7 @@ struct Ids {
     list: [u8; 32],
     lut: [PieceType; 32],
     masks: [u64; 12],
-    /// One past the highest slider id in each colour half, in groups of four.
+    /// One past the highest slider id in each color half, in groups of four.
     /// Seeding puts sliders first, so the gather tests two short prefixes
     /// instead of all thirty-two rows, and a promotion only pushes the mark of
     /// its own half out.
@@ -129,7 +129,7 @@ impl ByteStore {
         for id in 0..32 {
             let sq = st.ids.list[id];
             if sq != 0xFF {
-                st.bb.put(Square(sq), byteboard::place(color(id), st.ids.lut[id], (id & 15) as u8));
+                st.bb.put(Square(sq), Place::new(color(id), st.ids.lut[id], slot(id)));
             }
         }
         st.rebuild(pos);
@@ -140,7 +140,7 @@ impl ByteStore {
     /// it can serve as that pipeline's oracle.
     fn rebuild(&mut self, pos: &Position) {
         let occ = pos.occupancy();
-        self.bb.attack = [[0; 64]; 2];
+        let mut attacks = [Wordboard::EMPTY; 2];
 
         for id in 0..32 {
             let sq = self.ids.list[id];
@@ -149,9 +149,10 @@ impl ByteStore {
             }
 
             for s in attacks_of(self.ids.lut[id], Square(sq), color_of(id), occ) {
-                self.bb.attack[color_of(id)][usize::from(s)] |= 1u16 << (id & 15);
+                attacks[color_of(id)].insert(s, slot(id));
             }
         }
+        self.bb.set_attacks(attacks);
     }
 
     /// Victim first, then every origin, then every destination. Splitting the
@@ -167,34 +168,33 @@ impl ByteStore {
 
         if let Some((vid, victim_sq)) = plan.captured {
             if !replaced {
-                self.bb.remove(g, victim_sq, color(vid), (vid & 15) as u8);
+                self.bb.remove(g, victim_sq);
             }
             self.ids.mailbox[usize::from(victim_sq)] = 0;
             self.ids.list[vid] = 0xFF;
         }
 
         for m in 0..plan.n_movers {
-            let (id, from, _) = plan.movers[m];
-            self.bb.remove(g, from, color(id), (id & 15) as u8);
+            let (_, from, _) = plan.movers[m];
+            self.bb.remove(g, from);
         }
 
         // Stripped after the mover's toggle: that toggle still sees the victim
         // on the board and would hand its bits straight back.
         if let Some((vid, _)) = plan.captured.filter(|_| replaced) {
-            self.bb.clear(color(vid), (vid & 15) as u8);
+            self.bb.clear(color(vid), slot(vid));
         }
 
         self.ids.apply(mv, &plan);
 
         for m in 0..plan.n_movers {
             let (id, _, dest) = plan.movers[m];
-            let pt = self.ids.lut[id];
-            let p = byteboard::place(color(id), pt, (id & 15) as u8);
+            let p = Place::new(color(id), self.ids.lut[id], slot(id));
 
             if replaced {
-                self.bb.land(g, dest, p, color(id), pt);
+                self.bb.land(g, dest, p);
             } else {
-                self.bb.add(g, dest, p, color(id), pt);
+                self.bb.add(g, dest, p);
             }
         }
     }
@@ -203,6 +203,11 @@ impl ByteStore {
 #[inline(always)]
 fn color(id: usize) -> Color {
     if id < 16 { Color::White } else { Color::Black }
+}
+
+/// A global id's slot within its own side.
+fn slot(id: usize) -> PieceId {
+    PieceId::new((id & 15) as u8)
 }
 
 fn generate(seed: u64, ply_cap: usize) -> Stream {
@@ -998,7 +1003,7 @@ enum Gather {
     Column,
     /// The slider prefixes only, on runtime bounds.
     Prefix,
-    /// The two groups each colour's sliders are seeded into, on const bounds.
+    /// The two groups each color's sliders are seeded into, on const bounds.
     Fixed,
     /// A superpiece cast out from the changed squares.
     Probe,
@@ -1014,7 +1019,7 @@ enum View {
     LaggedDanger,
     /// One side's, read before it, which is what the search does.
     LaggedStmDanger,
-    /// Both colours' pins, read before it.
+    /// Both colors' pins, read before it.
     LaggedPins,
 }
 
@@ -1108,6 +1113,142 @@ fn variant_xorboard<const G: Gather, const VISION: bool, const XRAY: bool, const
     Outcome { variant: name, iterations, checksum }
 }
 
+/// The XorBoard under copy-make: copy the whole store per node instead of
+/// snapshotting the rows a move touches. The snapshot is proportional to the move,
+/// a handful of rows; the copy is proportional to the board, every row every time.
+fn variant_xorboard_copy(stream: &Stream, repeats: usize) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+    let mut undo = Undo::empty();
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, _, mut xb, _) = setup(&game.fen);
+            for &mv in &game.moves {
+                checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
+                pos.make_move(mv, &mut acc);
+
+                let parent = xb;
+                xb.make::<{ Gather::Column }, false, false, false>(Pre::ZERO, pos.occ, mv, &mut undo);
+                hint::black_box(&parent);
+
+                checksum ^= xb.rows[0] | xb.rows[31];
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: "xorboard_copy", iterations, checksum }
+}
+
+/// Rose is copy-make: `search.cpp` builds a child position per node, so the update
+/// lands in a fresh copy of the board and its two attack tables, and nothing is ever
+/// undone. This pays that copy per ply, against `xorboard_undo`'s snapshot and unmake.
+fn variant_byteboard_copy(stream: &Stream, repeats: usize) -> Outcome {
+    let g = byteboard::Geometry::new();
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, _, _, mut st) = setup(&game.fen);
+            for &mv in &game.moves {
+                checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
+                pos.make_move(mv, &mut acc);
+
+                // The parent has to survive the child's update, or the copy is not one;
+                // black_box is what stops it collapsing into the update itself. It also
+                // overstates: the delta here runs ~511 per ply where an isolated copy of
+                // this size costs ~90, so read the excess as barrier, not as copying.
+                let parent = st.bb;
+                st.make(&g, mv);
+                hint::black_box(&parent);
+
+                checksum ^= attack_bits(&st.bb, 0, 0) | attack_bits(&st.bb, 1, 63);
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: "byteboard_copy", iterations, checksum }
+}
+
+/// The questions search asks of an attack store, on the byteboard's side of the
+/// transpose: who hits one square and then who each of them is, which squares a
+/// color hits at all, and what one piece hits. The first is a single load here and
+/// a gather for the XorBoard; the last is the reverse. Same store work as
+/// `byteboard`, so the difference between the two runs is what the reads cost.
+///
+/// Board queries stay out. Rose's byteboard is the board, so `occupied` and
+/// `pieces_of` derive from it, while Soul reads bitboards `Position` maintains
+/// inside the shared baseline. Pricing those together would credit one side with
+/// work the baseline already subtracted.
+fn variant_byteboard_reads(stream: &Stream, repeats: usize) -> Outcome {
+    let g = byteboard::Geometry::new();
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, _, _, mut st) = setup(&game.fen);
+            for &mv in &game.moves {
+                checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
+                pos.make_move(mv, &mut acc);
+                st.make(&g, mv);
+
+                let (sq, slot) = probe_points(iterations);
+                let attacks = st.bb.attacks(pos.stm);
+
+                let attackers = attacks.read(sq);
+                checksum ^= u64::from(attackers.bits());
+                checksum ^= attackers.fold(0u64, |walked, id| walked | 1 << id.raw());
+                checksum ^= attacks.any();
+                checksum ^= attacks.with(slot.mask());
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: "byteboard_reads", iterations, checksum }
+}
+
+/// The same three questions on the XorBoard's side, where a piece's set is the
+/// single load and one square's attackers is the gather.
+fn variant_xorboard_reads(stream: &Stream, repeats: usize) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+    let mut undo = Undo::empty();
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, _, mut xb, _) = setup(&game.fen);
+            for &mv in &game.moves {
+                checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
+                let pre = Pre::ZERO;
+                pos.make_move(mv, &mut acc);
+                xb.make::<{ Gather::Column }, false, false, false>(pre, pos.occ, mv, &mut undo);
+
+                let (sq, slot) = probe_points(iterations);
+                let color = usize::from(pos.stm);
+
+                let mut attackers = wordboard_at(&xb, color, usize::from(sq));
+                checksum ^= u64::from(attackers);
+                while attackers != 0 {
+                    checksum ^= 1 << attackers.trailing_zeros();
+                    attackers &= attackers - 1;
+                }
+                checksum ^= xb.danger(color);
+                checksum ^= xb.rows[color * 16 + usize::from(slot.raw())];
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: "xorboard_reads", iterations, checksum }
+}
+
+/// The square and slot each ply interrogates. Walking them keeps a load from being
+/// hoisted out of the replay and asks both stores about the same place.
+fn probe_points(iterations: u64) -> (Square, PieceId) {
+    (Square((iterations % 64) as u8), PieceId::new((iterations % 16) as u8))
+}
+
 fn variant_byteboard(stream: &Stream, repeats: usize) -> Outcome {
     let g = byteboard::Geometry::new();
     let mut checksum = 0u64;
@@ -1120,7 +1261,7 @@ fn variant_byteboard(stream: &Stream, repeats: usize) -> Outcome {
                 checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
                 pos.make_move(mv, &mut acc);
                 st.make(&g, mv);
-                checksum ^= u64::from(st.bb.attack[0][0]) | u64::from(st.bb.attack[1][63]);
+                checksum ^= attack_bits(&st.bb, 0, 0) | attack_bits(&st.bb, 1, 63);
                 iterations += 1;
             }
         }
@@ -1133,6 +1274,10 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         "baseline" => variant_baseline(stream, repeats),
         "dest" => variant_dest(stream, repeats),
         "byteboard" => variant_byteboard(stream, repeats),
+        "byteboard_reads" => variant_byteboard_reads(stream, repeats),
+        "byteboard_copy" => variant_byteboard_copy(stream, repeats),
+        "xorboard_copy" => variant_xorboard_copy(stream, repeats),
+        "xorboard_reads" => variant_xorboard_reads(stream, repeats),
         "hosting" => variant_hosting(stream, repeats),
         "xorboard" => variant_xorboard::<{ Gather::Column }, false, false, { View::None }, false>(stream, repeats, "xorboard"),
         "xorboard_probe" => {
@@ -1364,14 +1509,10 @@ fn validate(stream: &Stream) -> Option<u64> {
 
                     for sq in 0..64 {
                         for c in 0..2 {
-                            let w = wordboard_at(&xb, c, sq);
-                            if bs.bb.attack[c][sq] != w {
-                                eprintln!(
-                                    "  sq {sq} c{c}: bb {:#06x} want {:#06x} place {:#04x}",
-                                    bs.bb.attack[c][sq],
-                                    w,
-                                    bs.bb.mailbox.bytes()[sq]
-                                );
+                            let want = wordboard_at(&xb, c, sq);
+                            let got = attack_bits(&bs.bb, c, sq) as u16;
+                            if got != want {
+                                eprintln!("  sq {sq} c{c}: bb {got:#06x} want {want:#06x}");
                             }
                         }
                     }
@@ -1395,10 +1536,16 @@ fn validate(stream: &Stream) -> Option<u64> {
 /// The byteboard's wordboards are the XorBoard's rows transposed, so one is the
 /// other's oracle and neither gets to grade its own homework.
 fn byteboard_agrees(bs: &ByteStore, xb: &XorBoard) -> bool {
-    (0..64).all(|sq| (0..2).all(|c| bs.bb.attack[c][sq] == wordboard_at(xb, c, sq)))
+    (0..64).all(|sq| (0..2).all(|c| attack_bits(&bs.bb, c, sq) as u16 == wordboard_at(xb, c, sq)))
 }
 
-/// One square's column of the transpose: which of a colour's slots reach it.
+/// One square's attack entry as raw bits, for comparison against the transpose.
+fn attack_bits(bb: &byteboard::ByteBoard, color: usize, sq: usize) -> u64 {
+    let mask = bb.attacks(if color == 0 { Color::White } else { Color::Black }).read(Square(sq as u8));
+    u64::from(mask.bits())
+}
+
+/// One square's column of the transpose: which of a color's slots reach it.
 #[inline]
 fn wordboard_at(xb: &XorBoard, color: usize, sq: usize) -> u16 {
     let mut set = 0u16;
