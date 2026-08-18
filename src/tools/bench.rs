@@ -1,7 +1,6 @@
 //! Node counting and NPS benchmarking utility.
 //!
-//! Runs the search engine at fixed depths across a standard suite of positions
-//! to measure raw search throughput and verify deterministic node counts.
+//! Runs the search at fixed depth across a suite of positions.
 
 use std::{
     io::{self, IsTerminal, Write},
@@ -26,17 +25,50 @@ use crate::{
 
 const FENS: &str = include_str!("../data/bench.fens");
 
-const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+const THROBBER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 const FPS: u64 = 30;
 
 const PURPLE: Rgb = (180, 140, 255);
 
-struct AnimationGuard {
+/// The tty progress line.
+struct Progress {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
-impl Drop for AnimationGuard {
+impl Progress {
+    fn spawn(start: Instant, total: usize, done: Arc<AtomicUsize>, nodes: Arc<AtomicU64>) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let drawing = Arc::clone(&running);
+
+        let handle = thread::spawn(move || {
+            let tick = Duration::from_nanos(1_000_000_000 / FPS);
+            let purple = color::ansi_fg(PURPLE);
+
+            let draw = |phase: usize| {
+                let solved = done.load(Relaxed);
+                let elapsed = start.elapsed().as_secs_f64().max(0.000_001);
+                let nps = nodes.load(Relaxed) as f64 / elapsed;
+                let glyph = THROBBER[phase % THROBBER.len()];
+
+                print!("\r\x1b[K  {purple}{glyph}{RESET}  {solved:>3}/{total}   {elapsed:>5.1}s   {nps:.0} nps");
+                let _ = io::stdout().flush();
+            };
+
+            let mut phase = 0usize;
+            while drawing.load(Relaxed) {
+                draw(phase);
+                phase += 1;
+                thread::sleep(tick);
+            }
+            draw(phase);
+        });
+
+        Self { running, handle: Some(handle) }
+    }
+}
+
+impl Drop for Progress {
     fn drop(&mut self) {
         self.running.store(false, Relaxed);
         if let Some(handle) = self.handle.take() {
@@ -50,25 +82,17 @@ pub fn run(depth: i32, hash_mb: usize) {
     let stop_signal = Arc::new(AtomicBool::new(false));
     let fens: Vec<&str> = FENS.lines().collect();
     let total = fens.len();
-
     let done = Arc::new(AtomicUsize::new(0));
     let nodes = Arc::new(AtomicU64::new(0));
-    let running = Arc::new(AtomicBool::new(true));
-
     let tty = io::stdout().is_terminal();
     if tty {
         println!("{}{BOLD}✦ Soul v{}{RESET}", color::ansi_fg(PURPLE), env!("CARGO_PKG_VERSION"));
     }
 
-    let animator = tty.then(|| AnimationGuard {
-        running: Arc::clone(&running),
-        handle: Some(spawn_spinner(start, total, Arc::clone(&done), Arc::clone(&nodes), Arc::clone(&running))),
-    });
-
+    let progress = tty.then(|| Progress::spawn(start, total, Arc::clone(&done), Arc::clone(&nodes)));
     let limits = Limits { depth, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
-    // Clear between positions, never reallocate: a fresh TT per FEN means a
-    // page-fault storm that, under many parallel bench processes, swamps the clock.
+    // Clear between positions, never reallocate.
     let tt = Arc::new(TranspositionTable::new(hash_mb, 1));
 
     let mut search_time = Duration::ZERO;
@@ -85,16 +109,15 @@ pub fn run(depth: i32, hash_mb: usize) {
 
         let mut history_table = History::new();
         let mut searcher = Searcher::new(&cfg, &board, &history, tt.clone());
-
         searcher.iterative_deepening(&mut history_table);
         search_time += t0.elapsed();
-
         nodes.fetch_add(searcher.nodes, Relaxed);
         done.fetch_add(1, Relaxed);
     }
 
-    if animator.is_some() {
-        drop(animator);
+    drop(progress);
+
+    if tty {
         print!("\r\x1b[K");
         let _ = io::stdout().flush();
     }
@@ -112,36 +135,3 @@ pub fn run(depth: i32, hash_mb: usize) {
     crate::engine::corrstats::report();
 }
 
-fn spawn_spinner(
-    start: Instant,
-    total: usize,
-    done: Arc<AtomicUsize>,
-    nodes: Arc<AtomicU64>,
-    running: Arc<AtomicBool>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let frame = Duration::from_nanos(1_000_000_000 / FPS);
-        let mut phase = 0usize;
-
-        let render_frame = |current_phase: usize| {
-            let solved = done.load(Relaxed);
-            let elapsed = start.elapsed().as_secs_f64().max(0.000_001);
-            let nps = nodes.load(Relaxed) as f64 / elapsed;
-
-            print!("\r\x1b[K{}", line(SPINNER[current_phase % SPINNER.len()], solved, total, nps, elapsed));
-            let _ = io::stdout().flush();
-        };
-
-        while running.load(Relaxed) {
-            render_frame(phase);
-            phase += 1;
-            thread::sleep(frame);
-        }
-        render_frame(phase);
-    })
-}
-
-fn line(spin: char, solved: usize, total: usize, nps: f64, elapsed: f64) -> String {
-    let purple = color::ansi_fg(PURPLE);
-    format!("  {purple}{spin}{RESET}  {solved:>3}/{total}   {elapsed:>5.1}s   {nps:.0} nps")
-}
