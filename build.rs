@@ -141,7 +141,20 @@ fn calc_atk_slider_slow(pt: PieceType, square: Square, occupancy: Bitboard) -> B
     attacks
 }
 
+fn rustc_version() -> String {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    std::process::Command::new(rustc)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|line| line.strip_prefix("rustc ").map(|v| v.split_whitespace().next().unwrap_or("unknown").to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 fn main() {
+    println!("cargo:rustc-env=SOUL_RUSTC={}", rustc_version());
+
     println!("cargo:rerun-if-changed=src/core/bitboard.rs");
     println!("cargo:rerun-if-changed=build.rs");
 
