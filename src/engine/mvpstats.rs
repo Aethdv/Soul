@@ -21,7 +21,7 @@ use std::{
 
 use crate::{
     color::{self, BOLD, GOLD, RESET},
-    core::util::human,
+    core::util::{human, pct},
 };
 
 /// Quiet consumption buckets: index = moves consumed; last bucket represents `N-1+`.
@@ -143,11 +143,6 @@ fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize, first: &str) {
 fn header(title: &str) {
     let (gold, bold, reset) = style();
     println!("\n{gold}{bold}{title}{reset}");
-}
-
-#[inline]
-fn pct(part: u64, whole: u64) -> f64 {
-    100.0 * part as f64 / whole as f64
 }
 
 /// Paints a percentage against the point where the scale reads neutral: deep red at

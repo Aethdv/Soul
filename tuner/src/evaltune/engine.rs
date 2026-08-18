@@ -12,7 +12,7 @@ pub use soul::{
     core::{
         board::Position,
         defs::{Color, PieceType, TOTAL_PHASE},
-        util::format_comma,
+        util::{format_comma, pct},
     },
     engine::{
         eval_params::{

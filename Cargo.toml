@@ -1,10 +1,10 @@
 [package]
 name = "soul"
-version = "0.6.11"
+version = "0.6.13"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
-description = "A modern alpha-beta chess engine, featuring Hand-Crafted Evaluation with SIMD acceleration."
+description = "A modern alpha-beta chess engine, featuring Hand-Crafted Evaluation with SIMD."
 repository = "https://github.com/Aethdv/Soul"
 keywords = [
     "chess",

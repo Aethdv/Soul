@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use super::{
     engine::{
         DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, QUIET_ENDING, SoulEntry, TOTAL_PHASE, collect_parameters, default_values,
-        eval_record, format_comma, scan_viri_games, sigmoid,
+        eval_record, format_comma, pct, scan_viri_games, sigmoid,
     },
     loader::{load_datasets, resolve_dataset_paths},
     palette::{ALARM, COUNT, DIM, LAB, RESET, VAL},
@@ -388,31 +388,31 @@ fn profile(sets: &[Set]) {
     let mut at_phase = Table::new("dataset", PIECES.iter().map(|p| (*p).to_string()).collect());
 
     for (set, counts) in sets.iter().zip(&stats) {
-        let n = set.entries.len() as f64;
-        let pct = |count: usize| format!("{:.2}%", 100.0 * count as f64 / n);
+        let n = set.entries.len() as u64;
+        let share = |count: usize| format!("{:.2}%", pct(count as u64, n));
 
         labels.push(&set.label, vec![
-            format_comma(set.entries.len() as u64),
-            pct(counts.results[2]),
-            pct(counts.results[1]),
-            pct(counts.results[0]),
-            format!("{:.2}%", 100.0 * (counts.results[2] as f64 + 0.5 * counts.results[1] as f64) / n),
-            pct(counts.contradictions),
+            format_comma(n),
+            share(counts.results[2]),
+            share(counts.results[1]),
+            share(counts.results[0]),
+            format!("{:.2}%", 100.0 * (counts.results[2] as f64 + 0.5 * counts.results[1] as f64) / n as f64),
+            share(counts.contradictions),
         ]);
 
         design.push(&set.label, vec![
-            format!("{:.2}", counts.phase_sum / n),
-            pct(counts.phase_low),
-            pct(counts.phase_high),
-            format!("{:.1}", counts.pieces as f64 / n),
-            pct(counts.scored),
+            format!("{:.2}", counts.phase_sum / n as f64),
+            share(counts.phase_low),
+            share(counts.phase_high),
+            format!("{:.1}", counts.pieces as f64 / n as f64),
+            share(counts.scored),
             match counts.scored {
                 0 => "-".to_string(),
                 scored => format!("{:.0}", counts.score_sum / scored as f64),
             },
         ]);
 
-        imbalance.push(&set.label, (0..5).map(|pt| pct(counts.unequal[pt])).collect());
+        imbalance.push(&set.label, (0..5).map(|pt| share(counts.unequal[pt])).collect());
         at_phase.push(
             &set.label,
             (0..5)
@@ -466,17 +466,17 @@ fn print_games(sets: &[Set]) {
     });
 
     for (set, scan) in &scans {
-        let n = scan.games as f64;
-        let pct = |count: usize| format!("{:.1}%", 100.0 * count as f64 / n);
+        let n = scan.games as u64;
+        let share = |count: usize| format!("{:.1}%", pct(count as u64, n));
         games.push(&set.label, vec![
-            format_comma(scan.games as u64),
-            format!("{:.1}", scan.plies as f64 / n),
-            format!("{:.1}", set.loaded as f64 / n),
-            format!("{:.1}", scan.pieces_left as f64 / n),
-            pct(scan.results[1]),
-            pct(scan.mate_endings),
-            pct(scan.decisive_endings),
-            pct(scan.quiet_endings),
+            format_comma(n),
+            format!("{:.1}", scan.plies as f64 / n as f64),
+            format!("{:.1}", set.loaded as f64 / n as f64),
+            format!("{:.1}", scan.pieces_left as f64 / n as f64),
+            share(scan.results[1]),
+            share(scan.mate_endings),
+            share(scan.decisive_endings),
+            share(scan.quiet_endings),
         ]);
     }
     println!("\n{LAB}Games, unfiltered: the replay's independent unit{RESET}");

@@ -13,7 +13,10 @@
 
 use std::ops::Range;
 
-use super::groups::{ParamGroup, param_group};
+use super::{
+    engine::pct,
+    groups::{ParamGroup, param_group},
+};
 
 pub struct Lion {
     interp: f64, // β₁ (interpolation weight)
@@ -242,7 +245,7 @@ impl GateCensus {
 
     #[must_use]
     pub fn percent(&self, count: u64) -> f64 {
-        100.0 * self.share(count)
+        pct(count, self.total)
     }
 
     /// The share of updates that stepped, which is Liang's φ. Theirs falls to about 0.55

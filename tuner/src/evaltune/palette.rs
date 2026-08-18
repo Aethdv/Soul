@@ -4,37 +4,29 @@
 //! trend on the live line, within-window rank on the sparkline, both off
 //! the shared advantage gradient.
 //!
-//! The fixed pens are escapes built from their channels at compile time, so a
-//! format string names one inline and nothing rebuilds the same three strings
-//! per report. [`fg`] stays for the colors that are computed.
+//! The fixed pens are compile-time escapes, so a format string names one inline and
+//! nothing rebuilds the same strings per report. [`fg`] stays for computed colors.
 
-use super::engine::Rgb;
+use super::engine::{Rgb, color};
 
-/// Truecolor foreground escape for the channels given.
-macro_rules! pens {
-    ($( $name:ident = $r:literal, $g:literal, $b:literal; $note:literal )*) => {
-        $(
-            #[doc = $note]
-            pub const $name: &str = concat!("\x1b[38;2;", $r, ";", $g, ";", $b, "m");
-        )*
-    };
-}
+/// What each pen means in a report. The hues live in `color`, so the engine and the
+/// tuner cannot drift apart.
+/// Field labels.
+pub const LAB: &str = color::TAUPE_PEN;
+/// Config and telemetry values.
+pub const VAL: &str = color::MINT_PEN;
+/// Dataset counts.
+pub const COUNT: &str = color::STEEL_PEN;
+/// Best-epoch marker.
+pub const BRAND: &str = color::GOLD_PEN;
+/// Incidental figures: train, ref, lr.
+pub const DIM: &str = color::ASH_PEN;
+/// Warnings and refusals.
+pub const ALARM: &str = color::ALARM_PEN;
+/// Parameters the run changed.
+pub const MOVED: &str = color::JADE_PEN;
 
-#[rustfmt::skip]
-pens! {
-    LAB   = 150, 140, 128; "field labels (muted taupe)"
-    VAL   = 122, 205, 196; "config and telemetry values (teal)"
-    COUNT = 176, 196, 222; "dataset counts (light steel blue)"
-    BRAND = 218, 165,  32; "best-epoch marker (goldenrod)"
-    DIM   = 118, 112, 104; "incidental: train, ref, lr (darker taupe)"
-    ALARM = 225,  89,  91; "warnings and refusals (signal red)"
-    MOVED = 100, 200, 120; "parameters the run changed (green)"
-}
-
-/// ANSI reset.
-pub const RESET: &str = "\x1b[0m";
-/// Erase to end of line (non-destructive).
-pub const CLEAR_LINE: &str = "\x1b[K";
+pub use color::{CLEAR_LINE, RESET};
 
 /// Truecolor foreground escape for a color decided at runtime.
 #[must_use]

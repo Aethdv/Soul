@@ -19,6 +19,7 @@ use crate::{
         board::{BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO},
         defs::{Color, MATE_BOUND, PieceType, Square},
         moves::Move,
+        util::pct,
     },
     engine::wdl::wdl_model,
     tools::dataset::quant,
@@ -253,7 +254,7 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
         }
     }
 
-    let share = if seen == 0 { 0.0 } else { 100.0 * entries.len() as f64 / seen as f64 };
+    let share = pct(entries.len() as u64, seen as u64);
     println!("  Replayed {seen} positions, kept {} ({share:.1}%) from {} games", entries.len(), entries_per_game.len());
     Ok((entries, weights, entries_per_game))
 }

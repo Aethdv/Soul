@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     color::{self, BOLD, GOLD, RESET},
-    core::util::human,
+    core::util::{human, pct, safe_div},
     engine::{
         history::{CORRECTION_LIMIT, CORRECTION_SCALE, CORRECTION_WEIGHT_SCALE},
         search_params::SearchParams,
@@ -125,12 +125,12 @@ pub fn report() {
 
 fn hit_pct(i: usize) -> f64 {
     let (reads, hits) = (STATS[i].reads.load(Relaxed), STATS[i].hits.load(Relaxed));
-    if reads > 0 { 100.0 * hits as f64 / reads as f64 } else { 0.0 }
+    pct(hits, reads)
 }
 
 fn mean_cp(i: usize) -> f64 {
     let (hits, abs_sum) = (STATS[i].hits.load(Relaxed), STATS[i].abs_sum.load(Relaxed));
-    if hits > 0 { abs_sum as f64 / hits as f64 / CORRECTION_SCALE as f64 } else { 0.0 }
+    safe_div(abs_sum as f64, hits as f64) / CORRECTION_SCALE as f64
 }
 
 fn eff_cp(i: usize, weight: i32) -> f64 {
@@ -139,7 +139,7 @@ fn eff_cp(i: usize, weight: i32) -> f64 {
 
 fn sat_pct(i: usize) -> f64 {
     let (hits, sat) = (STATS[i].hits.load(Relaxed), STATS[i].saturated.load(Relaxed));
-    if hits > 0 { 100.0 * sat as f64 / hits as f64 } else { 0.0 }
+    pct(sat, hits)
 }
 
 /// Blend weight each table contributes at, over [`CORRECTION_WEIGHT_SCALE`].

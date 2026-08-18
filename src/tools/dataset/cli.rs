@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     cli::Help,
+    color::{OK_PEN, RESET},
     core::defs::Color,
     engine::wdl::wdl_model,
     tools::dataset::{self, SoulEntry, flip_result},
@@ -264,7 +265,7 @@ fn encode(input: &str, output: &str) {
         println!("No entries found to save.");
     } else {
         match dataset::save_encoded(output, &entries) {
-            Ok(()) => println!("\x1b[92mSuccess!\x1b[0m Saved to {output}"),
+            Ok(()) => println!("{OK_PEN}Success!{RESET} Saved to {output}"),
             Err(e) => eprintln!("Error saving output: {e}"),
         }
     }

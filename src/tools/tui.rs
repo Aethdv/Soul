@@ -9,6 +9,7 @@ use crate::{
         board::Position,
         defs::{Color, MATE, PieceType, Protocol, Square, is_mate},
         moves::Move,
+        util::{format_duration, human},
     },
     engine::{
         movegen::gen_legal_moves,
@@ -18,23 +19,23 @@ use crate::{
     weave::Vi16x8,
 };
 
-const GOLD_BRIGHT: Rgb = (255, 215, 0); // branding
-const STEEL: Rgb = (176, 196, 222); // header info
-const SLATE: Rgb = (119, 136, 153); // header dim
-const TEAL: Rgb = (72, 209, 204); // nps accent
+const GOLD_BRIGHT: Rgb = color::AMBER; // branding
+const STEEL: Rgb = color::STEEL; // header info
+const SLATE: Rgb = color::SLATE; // header dim
+const TEAL: Rgb = color::TEAL; // nps accent
 
-const MATE_PRPL: Rgb = (151, 125, 191);
+const MATE_PRPL: Rgb = color::MAUVE;
 
 // Win green, draw the level blue of the advantage palette, loss red.
-const WDL_EMPTY: Rgb = (58, 62, 72);
-const WDL_FLOOR: Rgb = (112, 120, 134); // faintest fill a bar can show
-const WIN_C: Rgb = (100, 200, 120);
-const LOSE_C: Rgb = (224, 105, 100);
+const WDL_EMPTY: Rgb = color::TRACK;
+const WDL_FLOOR: Rgb = color::FLOOR;
+const WIN_C: Rgb = color::JADE;
+const LOSE_C: Rgb = color::CORAL;
 
 // One warm, one cool, so you can see whose move each one is.
-const PV_WHITE: Rgb = (246, 238, 218);
-const PV_BLACK: Rgb = (139, 154, 171);
-const DIM: Rgb = (130, 130, 130); // timestamps, move numbers
+const PV_WHITE: Rgb = color::IVORY;
+const PV_BLACK: Rgb = color::HAZE;
+const DIM: Rgb = color::GREY; // timestamps, move numbers
 
 const RULE_CELLS: usize = 48;
 const WDL_CELLS: usize = 50;
@@ -98,8 +99,8 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
         "  {bold}{}✦ Soul{reset}{dot}{}{}/{}{reset}{dot}{}{}{reset}{dot}{}{}{reset}{dot}{}{}{reset}{dot}{}TT {}%{reset}{eol}",
         tui_fg(GOLD_BRIGHT, ansi),
         tui_fg(STEEL, ansi), data.depth, data.sel_depth,
-        tui_fg(SLATE, ansi), fmt_time(t),
-        tui_fg(SLATE, ansi), fmt_nodes(data.nodes),
+        tui_fg(SLATE, ansi), format_duration(t),
+        tui_fg(SLATE, ansi), human(data.nodes),
         tui_fg(TEAL, ansi), fmt_nps(data.nps),
         tui_fg(SLATE, ansi), data.hashfull / 10,
     );
@@ -127,7 +128,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let start = data.history.len().saturating_sub(6);
 
     for (i, snap) in data.history[start..].iter().enumerate() {
-        let ts = fmt_time(snap.time_ms.try_into().unwrap_or(u64::MAX));
+        let ts = format_duration(snap.time_ms.try_into().unwrap_or(u64::MAX));
         let prev = (start + i).checked_sub(1).and_then(|p| data.history.get(p));
 
         let (arrow, arrow_hue) = match prev {
@@ -190,32 +191,6 @@ fn tui_fg(c: Rgb, enabled: bool) -> String {
 #[inline]
 fn ansi_code(code: &'static str, enabled: bool) -> &'static str {
     if enabled { code } else { "" }
-}
-
-fn fmt_nodes(n: u64) -> String {
-    match n {
-        0..1_000 => format!("{n}"),
-        1_000..1_000_000 => format!("{:.2}K", n as f64 / 1e3),
-        1_000_000..1_000_000_000 => format!("{:.2}M", n as f64 / 1e6),
-        _ => format!("{:.2}B", n as f64 / 1e9),
-    }
-}
-
-fn fmt_time(ms: u64) -> String {
-    match ms {
-        0..1_000 => format!("{ms}ms"),
-        1_000..60_000 => format!("{:.2}s", ms as f64 / 1e3),
-        60_000..3_600_000 => {
-            let m = ms / 60_000;
-            let s = (ms % 60_000) as f64 / 1e3;
-            format!("{m}m {s:.1}s")
-        },
-        _ => {
-            let h = ms / 3_600_000;
-            let m = (ms % 3_600_000) / 60_000;
-            format!("{h}h {m}m")
-        },
-    }
 }
 
 fn fmt_nps(nps: u64) -> String {
@@ -415,9 +390,9 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
             data.sel_depth,
             fmt_score_colored(data.score, 7, data.use_ansi),
             wdl_str,
-            fmt_nodes(data.nodes),
+            human(data.nodes),
             fmt_nps(data.nps),
-            fmt_time(t),
+            format_duration(t),
             data.hashfull,
         );
     } else {

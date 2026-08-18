@@ -298,6 +298,16 @@ pub enum GameOutcome {
 }
 
 impl GameOutcome {
+    /// Packed WDL byte from White's perspective, the encoding both binary formats store.
+    #[inline(always)]
+    pub const fn packed(self) -> u8 {
+        match self {
+            Self::WhiteWins => 2,
+            Self::BlackWins => 0,
+            Self::Draw => 1,
+        }
+    }
+
     /// WDL float from White's perspective: 1.0 / 0.0 / 0.5.
     #[inline(always)]
     pub const fn wdl(self) -> f32 {

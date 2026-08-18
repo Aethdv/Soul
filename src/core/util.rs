@@ -33,6 +33,20 @@ impl<T> DerefMut for Align64<T> {
     }
 }
 
+/// Division, 0.0 for an empty denominator instead of NaN or infinity.
+#[inline]
+#[must_use]
+pub fn safe_div(num: f64, den: f64) -> f64 {
+    if den > 0.0 { num / den } else { 0.0 }
+}
+
+/// `part` as a percentage of `whole`, 0.0 when nothing was counted.
+#[inline]
+#[must_use]
+pub fn pct(part: u64, whole: u64) -> f64 {
+    safe_div(part as f64, whole as f64) * 100.0
+}
+
 /// Formats a number with comma separators: 1234567 -> "1,234,567".
 pub fn format_comma(n: u64) -> String {
     let raw = n.to_string();
@@ -49,12 +63,32 @@ pub fn format_comma(n: u64) -> String {
     buf
 }
 
-/// Hooman counters: 1234 -> "1.2K", 1234567 -> "1.23M".
+/// Hooman counters: 1234 -> "1.23K", 1234567 -> "1.23M".
+///
+/// SI prefixes, so nodes read the way nps already does: G rather than B past a
+/// billion.
 pub fn human(n: u64) -> String {
     match n {
-        1_000_000.. => format!("{:.2}M", n as f64 / 1e6),
-        1_000.. => format!("{:.1}K", n as f64 / 1e3),
-        _ => n.to_string(),
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.2}K", n as f64 / 1e3),
+        1_000_000..1_000_000_000 => format!("{:.2}M", n as f64 / 1e6),
+        _ => format!("{:.2}G", n as f64 / 1e9),
+    }
+}
+
+/// A duration in the largest two units that fit, milliseconds below a second.
+///
+/// One shape for a search clock and a datagen ETA: the first needs `26ms`, the
+/// second needs `2h 5m 3s`.
+pub fn format_duration(ms: u64) -> String {
+    let (secs, mins) = (ms / 1_000 % 60, ms / 60_000 % 60);
+    let (hours, days) = (ms / 3_600_000 % 24, ms / 86_400_000);
+
+    match (days, hours, ms) {
+        (0, 0, ..1_000) => format!("{ms}ms"),
+        (0, 0, _) => format!("{mins}m {secs}s"),
+        (0, ..) => format!("{hours}h {mins}m {secs}s"),
+        _ => format!("{days}d {hours}h {mins}m"),
     }
 }
 

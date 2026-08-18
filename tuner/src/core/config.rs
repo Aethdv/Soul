@@ -6,6 +6,7 @@ use serde::{
     Deserialize,
     de::{self, MapAccess, Visitor},
 };
+use soul::color::{ALARM_PEN, RESET};
 
 use crate::core::schedule::{self, LrScheduler, WdlScheduler};
 
@@ -604,12 +605,12 @@ impl TunerConfig {
     /// if file verification fails or TOML parsing fails.
     pub fn from_file(path: &str) -> Result<Self, Box<dyn Error>> {
         let contents = fs::read_to_string(path).map_err(|e| {
-            eprintln!("\x1b[31m[!] Failed to read config file '{}': {}\x1b[0m", path, e);
+            eprintln!("{ALARM_PEN}[!] Failed to read config file '{}': {}{RESET}", path, e);
             e
         })?;
 
         let mut config: Self = toml::from_str(&contents).map_err(|e| {
-            eprintln!("\x1b[31m[!] Failed to parse TOML from '{}': {}\x1b[0m", path, e);
+            eprintln!("{ALARM_PEN}[!] Failed to parse TOML from '{}': {}{RESET}", path, e);
             e
         })?;
 

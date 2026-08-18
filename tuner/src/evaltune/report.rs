@@ -11,7 +11,7 @@ use std::{
 use rayon::prelude::*;
 
 use super::{
-    engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color},
+    engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color, pct},
     groups::GROUP_NAMES,
     lion::GateCensus,
     loader,
@@ -501,7 +501,7 @@ pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String 
     let _ = writeln!(out, "\n{LAB}Clip{RESET} {}(share of updates truncated at the bound){RESET}", palette::DIM);
 
     for p in pinned.iter().take(10) {
-        let share = 100.0 * clipped[p.idx] as f64 / updates.max(1) as f64;
+        let share = pct(clipped[p.idx], updates);
         let _ = writeln!(out, "  {:<width$}  {VAL}{share:5.1}%{RESET}", p.name);
     }
     out
@@ -560,7 +560,7 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
 
     let wmin = weights.iter().copied().fold(f64::INFINITY, f64::min);
     let wmax = weights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let clamp_pct = 100.0 * clamped as f64 / weights.len().max(1) as f64;
+    let clamp_pct = pct(clamped as u64, weights.len() as u64);
     println!("{LAB}Phase balance:{RESET} {VAL}{bars}{RESET} {LAB}(phase 0..{}){RESET}", hist.len() - 1);
     println!(
         "  {LAB}imbalance{RESET} {VAL}{imbalance:.0}×{RESET} {LAB}vs cap{RESET} {VAL}{cap:.0}×{RESET}  \
