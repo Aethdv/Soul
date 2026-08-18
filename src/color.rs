@@ -2,9 +2,7 @@
 //!
 //! Two interpolation paths, both perceptual so no ramp dips through gray at its
 //! midpoint; `advantage` sweeps authored OkLCH waypoints (hue-aware) for the
-//! win/loss gradient, and `mix` blends any two sRGB colors through OkLab. The
-//! engine's pretty-print and the search tuner both draw from here, so the
-//! colors can't drift apart.
+//! win/loss gradient, and `mix` blends any two sRGB colors through OkLab.
 
 pub type Rgb = (u8, u8, u8);
 
@@ -12,10 +10,9 @@ pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
 
 /// Dead-level neutral: the color of exactly zero advantage → `+0.00`.
-/// Engine eval and tuner Elo both paint their zero state with it.
 pub const LEVEL: Rgb = (120, 170, 220);
 
-/// Branding gold: table headers and field labels.
+/// Table headers and field labels.
 pub const GOLD: Rgb = (218, 165, 32);
 
 // Advantage-gradient waypoints as (L, C, H°). Authored in OkLCH, never flattened.
@@ -58,9 +55,9 @@ pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result
 
 /// Drop the escapes from colored text bound for a file or a pipe.
 ///
-/// Only what this module writes: `ESC [` params `m`, and `ESC [ K`. Anything
-/// else keeps its text, escape included, since scanning on for a terminator
-/// would swallow the prose up to the next one.
+/// Only what this module writes: `ESC [` params `m`, and `ESC [ K`. Anything else
+/// ends the scan and passes through with its escape and everything after it, since
+/// hunting on for a terminator would swallow the prose up to the next one.
 #[must_use]
 pub fn strip(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -72,8 +69,6 @@ pub fn strip(text: &str) -> String {
 
         let params = rest.strip_prefix("\x1b[").unwrap_or_default();
         let Some(end) = params.find(|c: char| !c.is_ascii_digit() && c != ';') else { break };
-        // Narrower than the CSI grammar on purpose: over-accepting eats prose,
-        // under-accepting leaves an escape in a log.
         if !matches!(params.as_bytes()[end], b'm' | b'K') {
             break;
         }
@@ -155,15 +150,12 @@ mod tests {
 
     #[test]
     fn strip_leaves_only_the_text() {
-        let colored = format!("{}Gauge:{} 0.739x", ansi_fg((218, 165, 32)), "\x1b[0m");
-
+        let colored = format!("{}Gauge:{RESET} 0.739x", ansi_fg(GOLD));
         assert_eq!(strip(&colored), "Gauge: 0.739x");
         assert_eq!(strip("nothing to drop"), "nothing to drop");
         assert_eq!(strip(""), "");
     }
 
-    /// An escape with no terminator would otherwise swallow the rest of the line,
-    /// or the words up to whatever letter the prose reaches first.
     #[test]
     fn strip_keeps_text_after_an_unterminated_escape() {
         assert_eq!(strip("before\x1b[38;2;1;2;3after"), "before\x1b[38;2;1;2;3after");
