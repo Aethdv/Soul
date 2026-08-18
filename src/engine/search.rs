@@ -52,7 +52,7 @@ use crate::{
         movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
         movepicker::MovePicker,
         search_params::*,
-        see::see_ge_with,
+        see::see_ge,
         tm::TimeManager,
         tt,
         tt::TranspositionTable,
@@ -306,13 +306,13 @@ impl SearchConfig {
 
     /// Composed LMR reduction in `LMR_SCALE` units.
     #[inline(always)]
-    pub fn lmr(&self, depth: i32, m: usize) -> i32 {
+    pub fn lmr(&self, depth: i32, move_count: usize) -> i32 {
         let sp = &self.search_params;
         let base = sp.lmr_base * LMR_SCALE / 100;
         let div = sp.lmr_divisor * LMR_SCALE / 100;
-        let d = self.lmr_table[depth as usize] as i32;
-        let m = self.lmr_table[m] as i32;
-        base + d * m / div
+        let log_depth = i32::from(self.lmr_table[depth as usize]);
+        let log_moves = i32::from(self.lmr_table[move_count]);
+        base + log_depth * log_moves / div
     }
 
     /// MVV-LVA lookup table from tunable parameters.
@@ -1047,9 +1047,9 @@ impl Worker<'_> {
                 .filter(|&e| e != tt::SCORE_NONE)
                 .is_none_or(|past| static_eval > past);
 
-        // ── TT-Adjusted Eval
+        // ── TT-Clamped Eval
         // A mate score is a distance, not a valuation, so it never stands in for one.
-        let tt_adjusted_eval = if is_mate(tt_score) { static_eval } else { tt::clamp_to_bound(tt_bound, tt_score, static_eval) };
+        let tt_clamped_eval = if is_mate(tt_score) { static_eval } else { tt::clamp_to_bound(tt_bound, tt_score, static_eval) };
 
         // ── Reverse Futility Pruning (~52 Elo)
         // Position is already so good that even after subtracting a generous
@@ -1063,14 +1063,14 @@ impl Worker<'_> {
             && !N::PV
             && excluded.is_null()
             && depth <= sp.rfp_depth
-            && !is_mate(tt_adjusted_eval)
+            && !is_mate(tt_clamped_eval)
         {
             let margin = sp.rfp_base_margin
                 + sp.rfp_margin * (depth - improving as i32)
                 + sp.rfp_quad_margin * depth * depth;
 
-            if tt_adjusted_eval - margin >= beta {
-                return Ok((tt_adjusted_eval + beta) / 2);
+            if tt_clamped_eval - margin >= beta {
+                return Ok((tt_clamped_eval + beta) / 2);
             }
         }
 
@@ -1098,10 +1098,10 @@ impl Worker<'_> {
             && excluded.is_null()
             && !self.stack[ply].is_null
             && !self.is_nmp_verif
-            && tt_adjusted_eval >= beta
+            && tt_clamped_eval >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
-            let eval_r = ((tt_adjusted_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
+            let eval_r = ((tt_clamped_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
             let r = sp.nmp_base_r + depth / sp.nmp_depth_divisor + eval_r;
             let null_depth = (depth - r - sp.nmp_ply_offset).max(0);
 
@@ -1168,7 +1168,7 @@ impl Worker<'_> {
 
                 // The capture must win enough material to plausibly reach the
                 // raised beta from here; a smaller swing can't clear it.
-                if !see_ge_with(&self.pos, mv, probcut_beta - static_eval, &pins) {
+                if !see_ge(&self.pos, mv, probcut_beta - static_eval, &pins) {
                     continue;
                 }
 
@@ -1366,7 +1366,7 @@ impl Worker<'_> {
                     let margin =
                         if mv.is_capture() { -sp.see_capture_margin * depth } else { -sp.see_quiet_margin * depth * depth };
 
-                    if !see_ge_with(&self.pos, mv, margin, &pins) {
+                    if !see_ge(&self.pos, mv, margin, &pins) {
                         continue;
                     }
                 }
@@ -1937,7 +1937,7 @@ impl Worker<'_> {
             // Skip captures whose destination-square trade loses material
             // for us. Disabled in check because evasions are forced and
             // the only legal reply is often a losing defensive capture.
-            if !in_check && !see_ge_with(&self.pos, mv, 0, &pins) {
+            if !in_check && !see_ge(&self.pos, mv, 0, &pins) {
                 continue;
             }
 
@@ -2000,8 +2000,8 @@ impl Worker<'_> {
     /// Checked before move generation, so a checkmate delivered on exactly the
     /// 100th half-move is scored as a draw, the standard compromise.
     #[inline]
-    fn is_draw(&self, ply: usize, history: &[u64]) -> bool {
-        self.pos.is_fifty_move_draw() || self.pos.is_draw_by_material() || (ply > 0 && self.is_repetition(self.pos.hash, history))
+    fn is_draw(&self, ply: usize, trail: &[u64]) -> bool {
+        self.pos.is_fifty_move_draw() || self.pos.is_draw_by_material() || (ply > 0 && self.is_repetition(self.pos.hash, trail))
     }
 
     /// Scans the history for a previous occurrence of the current hash.
@@ -2016,23 +2016,23 @@ impl Worker<'_> {
     /// `Position::is_threefold_repetition` which is optimized for
     /// adjudication contexts.
     #[inline]
-    fn is_repetition(&self, key: u64, history: &[u64]) -> bool {
-        if history.len() < 2 {
+    fn is_repetition(&self, key: u64, trail: &[u64]) -> bool {
+        if trail.len() < 2 {
             return false;
         }
 
         let window = self.pos.halfmove_clock as usize;
-        let start = history.len().saturating_sub(window + 1);
+        let start = trail.len().saturating_sub(window + 1);
 
         // search_move pushes the current hash before descending, so it sits at
         // len - 1 and saturating_sub(2) stops the scan one short of it.
-        let end = history.len().saturating_sub(2);
+        let end = trail.len().saturating_sub(2);
         if start > end {
             return false;
         }
 
         let needle = Vu64x4::splat(key);
-        let slice = &history[start..=end];
+        let slice = &trail[start..=end];
         let chunks = slice.rchunks_exact(4);
         let remainder = chunks.remainder();
 

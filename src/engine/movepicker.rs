@@ -33,7 +33,7 @@ use crate::{
     engine::{
         history::{ContContext, History},
         search::SearchConfig,
-        see::see_ge_with,
+        see::see_ge,
     },
 };
 
@@ -197,6 +197,10 @@ impl MovePicker {
     pub fn next(&mut self, board: &Position, rows: Rows<'_>, history: &History) -> Option<Move> {
         loop {
             match self.stage {
+                // ── TT Move Ordering (~56 Elo)
+                // The move a previous search stored is the best guess available here,
+                // and yielding it ahead of generation means a cutoff can land before a
+                // single move has been generated.
                 Stage::Hash => {
                     self.stage = Stage::GenCaptures;
                     if let Some(mv) = self.hash_move {
@@ -239,7 +243,7 @@ impl MovePicker {
                         let attacker_val = *debug_index!(self.mvvlva_v, attacker as usize);
 
                         // If victim >= attacker, SEE >= 0 is guaranteed; only material-losing captures need SEE.
-                        if victim_val < attacker_val && !see_ge_with(board, mv, -self.good_capture_margin, &self.pins) {
+                        if victim_val < attacker_val && !see_ge(board, mv, -self.good_capture_margin, &self.pins) {
                             // SAFETY: count + bad_count <= MAX_MOVES, so MAX_MOVES - 1 - bad_count >= count.
                             // The park slot never aliases active captures or subsequent quiets.
                             unsafe {

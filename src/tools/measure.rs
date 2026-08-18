@@ -23,7 +23,7 @@ use crate::{
         moves::Move,
         zobrist::ConstRng,
     },
-    engine::{mobility::Mobility, movegen::gen_legal_moves, see::see_ge_with},
+    engine::{mobility::Mobility, movegen::gen_legal_moves, see::see_ge},
     tools::byteboard,
     weave::Vi16x8,
 };
@@ -1187,7 +1187,7 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         }),
         "see" => play_stream(stream, repeats, |pos, _, mv, _| {
             let pins = crate::core::board::attacks::Pins::new(pos);
-            u64::from(see_ge_with(pos, mv, 0, &pins))
+            u64::from(see_ge(pos, mv, 0, &pins))
         }),
         "king_legal" => play_stream(stream, repeats, |pos, _, mv, _| {
             let opp = pos.stm.opposite();

@@ -4,17 +4,11 @@
 //! count: will the moving side net at least `threshold` material if both
 //! sides recapture optimally on `mv`'s destination?
 //!
-//! Used in qsearch to prune losing captures; available to main search for
-//! the good/bad-capture split, SEE pruning, and ProbCut.
+//! Used by qsearch to prune losing captures, by the picker for the
+//! good/bad-capture split, and by search for SEE pruning and ProbCut.
 //!
 //! One `balance` integer, perspective-flipped per recapture: no scratch
-//! array, no post-loop minimax pass. Move type is dispatched once at
-//! entry: captures, en passant and promotions each set their own opening
-//! balance and then share the exchange loop, and castling never reaches it.
-//! The king carries zero material. If it would capture while an opponent
-//! attacker remains, the chain stops short: illegal recapture, not a trade.
-//! A `flipped` bool tracks whose perspective the balance is written from;
-//! once flipped, break-even isn't good enough.
+//! array, no post-loop minimax pass.
 
 use crate::{
     core::{
@@ -53,27 +47,13 @@ const LVA_ORDER: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType
 /// Is the static exchange on `mv`'s destination square at least
 /// `threshold` centipawns for the side making `mv`?
 ///
-/// Scans the pins itself, for a one-off call. A loop of exchanges at one
-/// position should share a single [`Pins`] through [`see_ge_with`] instead.
+/// The pin scan belongs to the caller, so a loop of exchanges at one position
+/// pays for it once. En passant, promotions, castling and revealed slider
+/// x-rays are all modeled.
 #[must_use]
-pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
-    see_ge_with(pos, mv, threshold, &Pins::new(pos))
-}
-
-/// [`see_ge`] handed a pin scan to reuse, so a loop of exchanges at one
-/// position pays for it once.
-///
-/// Models en passant (the victim pawn lives on `to ^ 8`),
-/// promotion (the pawn transforms into the promoted piece for the rest
-/// of the trade, and the side earns the `promo − pawn` upgrade),
-/// castling (materially neutral; legality already guaranteed by
-/// movegen), and revealed slider x-rays through vacated squares.
-#[must_use]
-pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
-    // Castling is the special case the exchange loop would mishandle:
-    // the king and the rook both land on movegen-verified-safe squares,
-    // and no capture is involved. Material impact is zero, so any
-    // non-positive threshold trivially holds.
+pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
+    // Castling captures nothing, and its to square holds our own rook, so the
+    // exchange loop would price a trade that never happens.
     if mv.is_castling() {
         return threshold <= 0;
     }
@@ -98,11 +78,7 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
         (val(pos.piece_at(to)), pos.piece_at(from))
     };
 
-    // balance is the amount the side to move still needs to gain to
-    // beat the previous player's outcome. After the first assignment
-    // it represents our caller's deficit relative to threshold; after
-    // every loop iteration the sign flips via balance = val(lva) - balance,
-    // so the same variable tracks both sides.
+    // What the side to move still has to gain to beat the previous player's outcome.
     let mut balance = gain - threshold;
     if balance < 0 {
         // Even with the free gift, the move doesn't reach threshold.
@@ -137,23 +113,20 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
 
     loop {
         stm = stm.opposite();
-        let mine = attackers & pos.side_bb[stm];
-
-        if mine.is_empty() {
+        let stm_attackers = attackers & pos.side_bb[stm];
+        if stm_attackers.is_empty() {
             // The side to move has no attacker left, so the trade ends with
             // the previous mover keeping their net.
             return !flipped;
         }
 
         // Pick the least-valuable attacker.
-        let attacker_of = |pt: PieceType| (mine & pos.role_bb[pt]).into_iter().next().map(|sq| (pt, sq));
+        let attacker_of = |pt: PieceType| (stm_attackers & pos.role_bb[pt]).into_iter().next().map(|sq| (pt, sq));
         let Some((lva, lva_sq)) = LVA_ORDER.into_iter().find_map(attacker_of) else {
-            // Only the king is left to capture. If the opposing side
-            // still has any attacker on to, the king capture would
-            // move the king into check, illegal, so the chain stops
-            // here and the previous side's net stands.
-            let opp = attackers & pos.side_bb[stm.opposite()];
-            return if opp.is_not_empty() { !flipped } else { flipped };
+            // A king may not capture into check, so an opposing attacker still on
+            // the square ends the chain instead of continuing it.
+            let opp_attackers = attackers & pos.side_bb[stm.opposite()];
+            return if opp_attackers.is_not_empty() { !flipped } else { flipped };
         };
 
         occ ^= lva_sq.bitboard();
@@ -178,8 +151,9 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
         }
         attackers &= occ & !excluded;
 
-        // Negamax flip: the next player's running deficit is this
-        // attacker's value minus the previous player's deficit.
+        // Negamax flip: the next player's running deficit is this attacker's value
+        // minus the previous player's. Ties go to the caller, so once the perspective
+        // has flipped, break-even no longer clears the threshold.
         balance = val(lva) - balance;
         if balance < i32::from(flipped) {
             return flipped;
@@ -211,8 +185,6 @@ mod tests {
     const R: i32 = SEE_VALUE[PieceType::Rook.as_usize()];
     const Q: i32 = SEE_VALUE[PieceType::Queen.as_usize()];
 
-    /// Every other assertion here is written in these units, so a shifted table
-    /// rescales the whole suite and all of them still pass.
     #[test]
     fn the_exchange_scale_holds_still() {
         assert_eq!(SEE_VALUE[..6], [92, 373, 372, 568, 1160, 0]);
@@ -228,14 +200,14 @@ mod tests {
         panic!("move {uci} not legal in {}", pos.as_fen());
     }
 
-    /// Pin SEE to an exact value: ge holds at `expected`, fails at `expected + 1`.
     #[track_caller]
     fn assert_see(fen: &str, uci: &str, expected: i32) {
         let pos = Position::from_fen(fen);
         let mv = legal_move(&pos, uci);
-        assert!(see_ge(&pos, mv, expected), "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",);
+        let pins = Pins::new(&pos);
+        assert!(see_ge(&pos, mv, expected, &pins), "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",);
         assert!(
-            !see_ge(&pos, mv, expected + 1),
+            !see_ge(&pos, mv, expected + 1, &pins),
             "SEE({uci}) ≥ {} should fail (claimed value: {expected})\n  fen: {fen}",
             expected + 1,
         );
