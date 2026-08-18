@@ -52,7 +52,6 @@ impl NumaTopology {
         let nodes = read_numa_nodes(&allowed).unwrap_or_else(|| vec![allowed.clone()]);
         // ♪ numa numa iei ♪
         let domains = read_l3_domains(&allowed).unwrap_or_else(|| nodes.clone());
-
         Self { nodes, domains }
     }
 
@@ -122,7 +121,8 @@ fn fill(occupied: usize, domain: &[Cpu]) -> f64 {
 
 /// The CPUs the process may run on: its affinity mask if the kernel will tell us,
 /// else every online CPU. Respecting the mask keeps an instance pinned by `taskset`
-/// from binding onto CPUs it was fenced off from, which matters under concurrency.
+/// from binding onto CPUs it was fenced off from, which is how several instances
+/// share a box without fighting for the same cores.
 fn allowed_cpus() -> Vec<Cpu> {
     if let Some(mask) = sys::process_affinity() {
         return mask;
@@ -166,8 +166,8 @@ fn read_l3_domains(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
             continue;
         }
 
-        let shared = read_l3_siblings(cpu)?;
-        let group: Vec<Cpu> = parse_cpu_list(&shared).into_iter().filter(|c| allowed.contains(c)).collect();
+        let siblings = read_l3_siblings(cpu)?;
+        let group: Vec<Cpu> = parse_cpu_list(&siblings).into_iter().filter(|c| allowed.contains(c)).collect();
 
         for &c in &group {
             grouped[c] = true;
