@@ -1,4 +1,4 @@
-//! Openings minted on demand, a fresh pool per run rather than one fixed list.
+//! Openings drawn on demand, a fresh pool per run rather than one fixed list.
 //!
 //! `genfens N seed S book <path|None> <extra>` prints N lines of
 //! `info string genfens <fen>` and exits. The `book` supplies the lines to play

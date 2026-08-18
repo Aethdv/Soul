@@ -470,7 +470,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "bench" => tools::bench::run(parse_val(&mut tokens), 16),
-        "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
+        "divide" => tools::perft::run(&state.board, parse_default(&mut tokens, 5), true),
         "speedtest" => tools::speedtest::run(0),
         "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
@@ -651,13 +651,23 @@ where
     T: FromStr + Default,
     I: Iterator<Item = &'a str>,
 {
+    parse_default(tokens, T::default())
+}
+
+/// The next token, or `fallback` when it is missing or unparsable. Peeks first, so
+/// a token that isn't a value for this key stays for whoever it does belong to.
+fn parse_default<'a, T, I>(tokens: &mut Peekable<I>, fallback: T) -> T
+where
+    T: FromStr,
+    I: Iterator<Item = &'a str>,
+{
     if let Some(token) = tokens.peek()
         && let Ok(val) = token.parse()
     {
         tokens.next();
         return val;
     }
-    T::default()
+    fallback
 }
 
 fn parse_bool(value: &str) -> bool {
