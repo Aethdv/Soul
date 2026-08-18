@@ -786,8 +786,6 @@ impl<'cfg> Searcher<'cfg> {
             time_ms: ms,
             hashfull: self.tt.hashfull(),
             show_wdl: self.cfg.display.show_wdl,
-            material: self.root_pos.material_count(),
-            stm: self.root_pos.stm.as_usize(),
             history,
             board: &self.root_pos,
             use_ansi: self.cfg.display.use_ansi,
