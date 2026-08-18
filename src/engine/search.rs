@@ -555,10 +555,6 @@ impl<'cfg> Searcher<'cfg> {
             let mut beta = if depth >= sp.asp_depth { (self.prev_score + delta).min(INF) } else { INF };
             let mut aborted = false;
 
-            // The root list is already sorted onto this move; the seed is for the
-            // children, where it names the next PV move when the TT has lost it.
-            let pv_move = self.prev_pv.get(0);
-
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
@@ -569,7 +565,7 @@ impl<'cfg> Searcher<'cfg> {
                 // The node's own best score, not root_moves[0]: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
-                let Ok(score) = worker.negamax::<RootNode>(self, depth, alpha, beta, 0, pv_move) else {
+                let Ok(score) = worker.negamax::<RootNode>(self, depth, alpha, beta, 0, None) else {
                     aborted = true;
                     break;
                 };
@@ -606,16 +602,8 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
-            if self.may_stop() {
-                break;
-            }
-
             // Best move floats to the front, feeding the next iteration's ordering.
             self.root_moves.sort_by_key(|m| Reverse(m.score));
-
-            if self.may_stop() {
-                break;
-            }
 
             let new_score = self.root_moves[0].score;
 
@@ -765,7 +753,8 @@ impl<'cfg> Searcher<'cfg> {
         {
             self.cfg.stop.store(true, Ordering::Relaxed);
             // The flag is stored either way, so the pool stops on time; this thread
-            // carries its first iteration to the end, where may_stop picks it up.
+            // carries its first iteration to the end, so bestmove names a move the
+            // search looked at rather than movegen's first.
             return self.iter_depth > 1;
         }
 
@@ -777,18 +766,6 @@ impl<'cfg> Searcher<'cfg> {
             }
         }
         false
-    }
-
-    /// A stop is only allowed to end the loop once an iteration has published a
-    /// line. Leaving before that hands `bestmove` whatever movegen listed first.
-    #[inline]
-    fn may_stop(&self) -> bool {
-        self.is_stopped() && self.prev_pv.len > 0
-    }
-
-    #[inline]
-    fn is_stopped(&self) -> bool {
-        self.cfg.stop.load(Ordering::Relaxed)
     }
 
     /// Sums per-thread node counters. Each thread publishes its local count
