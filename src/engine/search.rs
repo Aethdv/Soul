@@ -82,8 +82,8 @@ const LMR_SCALE: i32 = 1024;
 /// (zero-window scouts that just need a yes/no answer).
 ///
 /// By encoding these as types rather than runtime flags, the compiler
-/// monomorphizes negamax into three tight variants with dead branches
-/// eliminated entirely.
+/// monomorphizes negamax into three variants, each with the other two
+/// contexts' branches compiled out.
 pub trait NodeType {
     const PV: bool;
     const ROOT: bool;
@@ -113,13 +113,6 @@ impl NodeType for NonPvNode {
     const PV: bool = false;
     const ROOT: bool = false;
     type Next = NonPvNode;
-}
-
-struct MoveResult {
-    move_count: usize,
-    best_eval: i32,
-    alpha: i32,
-    best_move: Move,
 }
 
 pub struct Searcher<'cfg> {
@@ -519,8 +512,8 @@ impl<'cfg> Searcher<'cfg> {
             // each additional ply typically costs about twice the previous one,
             // so if we can't afford that estimate we stop before starting it.
             //
-            // Helpers skip time management: their job is to fill the TT, not
-            // decide when to stop. Main calls the shots.
+            // Helpers skip time management as their job is to fill the TT,
+            // not decide when to stop. Main calls the shots.
             if self.cfg.thread_id == 0
                 && depth > 1
                 && ((clocked
@@ -709,6 +702,16 @@ impl<'cfg> Searcher<'cfg> {
         self.prev_pv = Line::new();
     }
 
+    #[inline]
+    pub fn best_move(&self) -> Option<Move> {
+        self.root_moves.first().map(|rm| rm.mv)
+    }
+
+    #[inline]
+    pub fn best_score(&self) -> Option<i32> {
+        self.root_moves.first().map(|rm| rm.score)
+    }
+
     /// Rebuild the repetition trail from game history, trimmed to the 50-move
     /// horizon; positions older than the last capture or pawn push can never
     /// repeat. The root hash is always appended last so root repetitions
@@ -727,16 +730,6 @@ impl<'cfg> Searcher<'cfg> {
     fn build_tm(cfg: &SearchConfig, pos: &Position, history: &[u64]) -> TimeManager {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params)
-    }
-
-    #[inline]
-    pub fn best_move(&self) -> Option<Move> {
-        self.root_moves.first().map(|rm| rm.mv)
-    }
-
-    #[inline]
-    pub fn best_score(&self) -> Option<i32> {
-        self.root_moves.first().map(|rm| rm.score)
     }
 
     /// Periodic signal check: stop flag, hard time limit, node limit.
@@ -869,6 +862,13 @@ impl<'cfg> Searcher<'cfg> {
     }
 }
 
+struct MoveResult {
+    move_count: usize,
+    best_eval: i32,
+    alpha: i32,
+    best_move: Move,
+}
+
 /// A heap `[T; N]` built through a `Vec`, so the array never lands on the stack.
 fn boxed_array<T: Clone, const N: usize>(value: T) -> Box<[T; N]> {
     vec![value; N].into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
@@ -956,15 +956,12 @@ impl Worker<'_> {
         self.stack[ply + 2].cutoff_count = 0;
 
         // ── Mate Distance Pruning
-        // Scores are bounded; no line from here can find mate faster than
-        // MATE - (ply + 1) plies, and we can't be mated before -MATE + ply.
-        // Tighten the search window to those limits. If the tightened
-        // window collapses (a >= b), every achievable score in this
-        // subtree already satisfies the bound; return a, the tightest
-        // value provable without searching a single move.
+        // Clamp [alpha, beta] to the theoretical score limits for this ply:
+        // the worst achievable score is mated_in(ply), and the best is mate_in(ply + 1).
+        // If the window collapses (a >= b), every score this subtree can reach already
+        // satisfies the bound, so return a without searching a move.
         //
-        // Skipped at the root so iterative_deepening always has a scored
-        // move list to sort; the cutoff path bypasses root_moves updates.
+        // Skipped at the root, where a cutoff would return before root_moves is scored.
         let (alpha, beta) = if N::ROOT {
             (alpha, beta)
         } else {
@@ -980,23 +977,16 @@ impl Worker<'_> {
         let excluded = self.stack[ply].excluded;
 
         // ── TT Probe (~128 Elo)
-        // Have we seen this position before?
+        // Have we seen this position before? Move orders transpose, so often enough we
+        // have, and an entry stored deep enough settles the window without a search.
         //
-        // If a previous search already explored it to sufficient depth,
-        // we can reuse its result and skip the entire subtree.
-        // Earlier iterations populate the table for later ones.
-        //
-        // During verification the entry here is the excluded move itself, and its
-        // score would hand back the very cutoff we are trying to search without.
-        // Don't probe.
+        // No probe during a singular verification: the entry here is the excluded move
+        // itself, and its score is the very cutoff the verification exists to test.
         let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { None };
         let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) =
             if let Some((mv, score, depth_stored, bound, pv, eval)) = tt_probe {
-                // TT entries can carry moves from an unrelated position after
-                // a hash collision. A move that fails pseudo-legality here is
-                // proof of that, so tt_move stays None and the entry is untrusted
-                // for a cutoff too: valid is false unless the move is null,
-                // which fail-low nodes store legitimately.
+                // Guard against hash collisions: an illegal non-null move invalidates
+                // both the TT move and any cutoff. Null moves are valid, stored on fail-low.
                 let tt_move = if !mv.is_null() && is_pseudo_legal(&self.pos, mv) { Some(mv) } else { None };
                 let valid = tt_move.is_some() || mv.is_null();
 
@@ -1049,17 +1039,16 @@ impl Worker<'_> {
         // keys toward the truth.
         let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval, sp) };
 
-        // The stack slot inherits through checks: a node in check republishes
-        // its grandparent's eval, so a descendant's two-ply hop always lands on
-        // the last real eval however long the check sequence ran. The local
-        // stays NONE; in-frame logic still needs "no eval here" to mean that.
+        // A node in check has no eval of its own to publish, so it republishes its
+        // grandparent's and a descendant's two-ply hop still lands on the last eval
+        // there was, however long the check sequence ran. The local stays NONE: in-frame
+        // logic needs "no eval here" to mean exactly that.
         self.stack[ply].static_eval = if in_check && ply >= 2 { self.stack[ply - 2].static_eval } else { static_eval };
 
         // ── Improving Flag
         // Has our position strengthened since our last turn?
-        // Inheritance above makes one hop reach the last eval;
-        // a reference still missing means the root edge, which counts
-        // as improving.
+        // Inheritance above makes one hop reach the last eval; no eval two
+        // plies back means the root edge, which counts as improving.
         let improving = !in_check
             && (ply >= 2)
                 .then(|| self.stack[ply - 2].static_eval)
@@ -1141,12 +1130,11 @@ impl Worker<'_> {
                 let null_score = if is_win(score) { beta } else { score };
 
                 // ── Verification Search
-                // At or below nmp_verif_min_depth, trust the cutoff outright.
-                // Cheap nodes are almost never zugzwangs. Above the threshold,
-                // re-search the same position without a null move at reduced depth.
-                // If that also fails high, the cutoff is real; if it fails low we
-                // were about to prune a zugzwang or a tactic the null search
-                // couldn't see, so fall through to the regular move loop.
+                // At or below nmp_verif_min_depth the cutoff is taken on trust, where verifying
+                // would cost more than the rare zugzwang it catches. Above it, re-search
+                // the position at null_depth with NMP suppressed: a second fail-high
+                // confirms the cutoff, and a fail-low means passing hid a zugzwang or a
+                // tactic, so the move loop runs after all.
                 if depth <= sp.nmp_verif_min_depth {
                     return Ok(null_score);
                 }
@@ -1226,10 +1214,9 @@ impl Worker<'_> {
         }
 
         // ── Internal Iterative Reduction (~14 Elo)
-        // No TT move means we're searching blind: our first guesses are just
-        // that, guesses. Reduce by one ply to acknowledge the uncertainty
-        // and avoid investing full depth into an unguided search.
-        // The next iteration will have a TT move and do it properly.
+        // No TT move means we are searching blind, and blind ordering does not
+        // deserve full depth. The entry this search stores hands the next iteration
+        // the move it was missing.
         let depth = if depth >= sp.iir_depth && tt_move.is_none() { depth - sp.iir_reduction } else { depth };
 
         // ──────── Move loop ────────
@@ -1372,22 +1359,17 @@ impl Worker<'_> {
                 }
 
                 // ── SEE Pruning (~20 Elo)
-                // Skip moves whose destination-square exchange clearly
-                // loses material.
+                // Skip moves whose destination-square exchange clearly loses material.
                 //
-                // Captures scale linearly: SEE is an accurate verdict on
-                // a capture (the value is realized right there at the
-                // destination square) so the tolerance grows modestly
-                // with depth; we just give deeper searches some slack
-                // in case the tree refutes an apparent loss.
+                // Captures scale linearly: SEE is an accurate verdict on a capture, since
+                // the material swings on that square and nowhere else, so the tolerance
+                // only has to loosen gently with depth.
                 //
-                // Quiets scale quadratically: for a quiet move, SEE is a
-                // crude proxy; the move's real value usually lives
-                // elsewhere in the tree (threats, structure, follow-ups
-                // several plies out). Deeper searches will find it
-                // themselves, so we loosen aggressively with depth and
-                // only prune "this is obviously moving into a trap" cases
-                // at shallow depth.
+                // Quiets scale quadratically: there SEE is a crude proxy, because a quiet
+                // move's value usually lives elsewhere in the tree (threats, structure,
+                // follow-ups several plies out). Deeper searches find that for themselves,
+                // so the margin loosens fast and only the shallow "moving into a trap"
+                // cases get cut.
                 if !in_check && !N::PV && res.move_count >= 1 {
                     let margin =
                         if mv.is_capture() { -sp.see_capture_margin * depth } else { -sp.see_quiet_margin * depth * depth };
@@ -1411,8 +1393,8 @@ impl Worker<'_> {
                         r -= sp.killer_lmr_bonus;
                     }
 
-                    // A quiet that newly attacks a bigger piece is tactically live,
-                    // like a check; reduce it less so the threat gets a real search.
+                    // A quiet that newly attacks a bigger piece is forcing the way a check is:
+                    // answer it or lose the material.
                     r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * sp.threat_lmr_bonus;
                     // Fail-highs are piling up at this depth; the late quiets here are
                     // unlikely to be the move, so reduce them harder.
@@ -1427,12 +1409,11 @@ impl Worker<'_> {
                 let mut extension = 0i32;
 
                 // ── Singular Extensions (~7 Elo)
-                // The TT move already came back strong from a deep search.
-                // The sharper question is whether it stands alone: re-search every other
-                // move in a window pinned just under its score, and if they all fall
-                // short, nothing here rivals it. A position resting on a single move
-                // is a knife-edge, exactly where a fixed horizon misreads the line,
-                // so the singular move earns one more ply.
+                // The TT move already came back strong from a deep search, and the question
+                // here is whether it stands alone. Re-search every other move in a window
+                // pinned just under its score; if they all fall short, nothing rivals it.
+                // A position held up by a single move is sharp, and depth is worth most
+                // where the score turns on one line, so that move gets the extra ply.
                 if !N::ROOT
                     && !N::PV
                     && excluded.is_null()
@@ -1463,12 +1444,11 @@ impl Worker<'_> {
                         extension = 1;
                     } else if sing_score >= beta {
                         // ── Multicut (~15 Elo)
-                        // The TT bound already reads the TT move as a fail-high,
-                        // and with it excluded the verification still cleared beta:
-                        // a second move beats it too, so this is a cut node, not a
-                        // singular one. Return the bound. A mate is the exception,
-                        // returning plain beta: with the best move excluded, the verification
-                        // can't be trusted on the distance.
+                        // The TT bound already reads the TT move as a fail-high, and with it
+                        // excluded the verification cleared beta anyway: a second move beats it
+                        // too, so this is a cut node, not a singular one, and the bound stands.
+                        // Mate scores return plain beta instead, since a verification missing the
+                        // best move cannot be trusted on the distance.
                         return Ok(if is_mate(sing_score) { beta } else { sing_score });
                     }
                 }
@@ -1524,14 +1504,13 @@ impl Worker<'_> {
                         }
                     } else if mv.is_capture() && !mv.is_promotion() {
                         // ── Capture History Update
-                        // Promotion-captures are deliberately excluded: they bypass
-                        // the normal MVV-LVA + capture-history blend in the picker
-                        // (see add_promo_caps), so an entry written here is one no
-                        // lookup ever reaches.
+                        // Promotion-captures are excluded: the picker scores them outside the
+                        // MVV-LVA and capture-history blend (see add_promo_caps), so nothing
+                        // would ever read the entry.
                         //
-                        // self.pos is the parent position: search_move has already
-                        // unmade the move, so the captured piece is back on to
-                        // (or it's en passant, where the victim is a pawn by definition).
+                        // self.pos is the parent position here, since search_move already unmade
+                        // the move: the victim sits back on the destination square, or it is en
+                        // passant and a pawn by definition.
                         let attacker = self.pos.expect_piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(mv.to()) };
                         self.history.update_capture(stm, attacker, mv.to(), victim, bonus);
@@ -1722,8 +1701,8 @@ impl Worker<'_> {
 
         // ── Gives-Check LMR Adjustment (~4 Elo)
         // A move that delivers check is forcing: the opponent must respond.
-        // Don't reduce it as aggressively; give it a bit more
-        // depth so the resulting tactics are properly resolved.
+        // Reduce it less; a reduction here drops the horizon inside
+        // the forced sequence, which is the worst place to stop.
         if self.xb_checkers().is_not_empty() {
             reduction = (reduction - sp.check_lmr_bonus).max(0);
         }
@@ -1920,7 +1899,7 @@ impl Worker<'_> {
 
             // ── Delta Pruning (~20 Elo)
             // Stand-pat already failed to beat alpha.
-            // Even if we capture the most valuable piece on the board, can we reach alpha?
+            // Even if we capture the opponent's most valuable piece, can we reach alpha?
             // If not, no capture in this position can raise us high enough, so bail early.
             //
             // best_capturable is just the highest MVV-LVA value among opponent pieces
@@ -1958,9 +1937,9 @@ impl Worker<'_> {
             // ── Recapture-only Deep QS (~1 Elo)
             // Past qs_recapture_ply, captures only matter if they continue
             // the forcing exchange on the square the opponent just moved to.
-            // Speculative off-square captures are what explodes in mutual-
-            // attack soup (e.g. 30-bishop pathologicals). Tactics are
-            // preserved because real combinations are recapture chains.
+            // Speculative off-square captures are what explode in mutual-
+            // attack soup (e.g. 30-bishop pathologicals). Tactics survive
+            // the cut because combinations this deep are recapture chains.
             if recapture_only
                 && let Some(prev) = prev_to
                 && mv.to() != prev
@@ -2035,16 +2014,16 @@ impl Worker<'_> {
     /// Checked before move generation, so a checkmate delivered on exactly the
     /// 100th half-move is scored as a draw, the standard compromise.
     #[inline]
-    pub fn is_draw(&self, ply: usize, history: &[u64]) -> bool {
+    fn is_draw(&self, ply: usize, history: &[u64]) -> bool {
         self.pos.is_fifty_move_draw() || self.pos.is_draw_by_material() || (ply > 0 && self.is_repetition(self.pos.hash, history))
     }
 
     /// Scans the history for a previous occurrence of the current hash.
     ///
     /// Any second occurrence is treated as a draw.
-    /// While technically 3-fold is the rule,
-    /// engines score the second to avoid searching infinite
-    /// cycles and to prevent the GUI from flagging PVs that repeat.
+    /// While technically 3-fold is the rule, engines score the second
+    /// to avoid searching infinite cycles and to prevent the match runners
+    /// from flagging PVs that repeat.
     ///
     /// This uses a raw scan without side-to-move skipping because
     /// Zobrist already includes the side-to-move key. Contrast with
@@ -2059,11 +2038,9 @@ impl Worker<'_> {
         let window = self.pos.halfmove_clock as usize;
         let start = history.len().saturating_sub(window + 1);
 
-        // We exclude the current position using saturating_sub(2).
-        // This works because the caller (search_move) has already pushed the current
-        // hash into the zobrist trail before descending, placing it at len - 1.
+        // search_move pushes the current hash before descending, so it sits at
+        // len - 1 and saturating_sub(2) stops the scan one short of it.
         let end = history.len().saturating_sub(2);
-
         if start > end {
             return false;
         }
@@ -2083,7 +2060,6 @@ impl Worker<'_> {
         // by Vec layout and rchunks_exact(4).
         for chunk in chunks {
             let vec = unsafe { Vu64x4::load(chunk.as_ptr()) };
-
             if vec.cmp_eq(needle).any() {
                 return true;
             }
