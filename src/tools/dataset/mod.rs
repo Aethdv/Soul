@@ -15,9 +15,7 @@ pub mod tape;
 pub mod viri_format;
 
 pub use gradient::{FeatureRecord, RecordEval, accumulate_record_grad, eval_record, eval_record_full};
-pub use io::{
-    EpdEntry, MAGIC_V6, append_encoded, count_encoded, load_encoded, load_epd_fens, parse_epd_entry, parse_epd_str, save_encoded,
-};
+pub use io::{EpdEntry, load_epd_fens, parse_epd_entry, parse_epd_str};
 pub use viri_format::{GameScan, ReplayFilter, parse_viri_file, scan_viri_games, write_game};
 
 /// Packed 32-byte training record storing board state, evaluation, and outcome.

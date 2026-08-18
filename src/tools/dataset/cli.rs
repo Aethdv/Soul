@@ -1,14 +1,9 @@
 //! Dataset CLI tool for inspecting, analyzing, and encoding training data.
 
-use std::{
-    fs::File,
-    io::{self, BufRead, BufReader, BufWriter, Write},
-    path::Path,
-};
+use std::io::{self, BufWriter, Write};
 
 use crate::{
     cli::Help,
-    color::{OK_PEN, RESET},
     core::defs::Color,
     engine::wdl::wdl_model,
     tools::dataset::{self, SoulEntry, flip_result},
@@ -45,9 +40,6 @@ pub fn run(args: &[&str]) {
         ["info", path, ..] => info(path),
         ["info"] => eprintln!("Usage: soul dataset info <path>"),
 
-        ["encode", input, output, ..] => encode(input, output),
-        ["encode", ..] => eprintln!("Usage: soul dataset encode <input.epd> <output.soul>"),
-
         ["deltas", path, ..] => {
             for p in path.split(',').map(str::trim) {
                 dump_scores(p);
@@ -62,13 +54,9 @@ pub fn run(args: &[&str]) {
     }
 }
 
-/// Dispatches loading based on file extension (.viri/.vf vs .soul).
+/// Replays a viriformat file into the entries every command here reads.
 fn load_any_dataset(path: &str) -> io::Result<Vec<SoulEntry>> {
-    if path.ends_with(".viri") || path.ends_with(".vf") {
-        dataset::parse_viri_file(path, &dataset::ReplayFilter::UNRESTRICTED).map(|(entries, ..)| entries)
-    } else {
-        dataset::load_encoded(path)
-    }
+    dataset::parse_viri_file(path, &dataset::ReplayFilter::UNRESTRICTED).map(|(entries, ..)| entries)
 }
 
 fn help() {
@@ -81,14 +69,12 @@ fn help() {
     h.header("Commands:");
     h.subcommand_default("inspect", "<path> [count]", "Show first N entries as readable FENs", "10");
     h.subcommand("info", "<path>", "Show dataset statistics");
-    h.subcommand("encode", "<input> <output>", "Convert EPD/TXT/FEN file to .soul binary format");
     h.subcommand("deltas", "<path>", "Dump (delta, result, static, search) CSV for analysis");
     h.separator();
 
     h.header("Examples:");
-    h.example("soul dataset inspect data.soul.zst 20");
-    h.example("soul dataset info data.soul.zst");
-    h.example("soul dataset encode books.epd books.soul.zst");
+    h.example("soul dataset inspect data.vf 20");
+    h.example("soul dataset info data.vf");
 }
 
 /// Dumps the first `count` positions as FEN strings alongside their search and outcome labels.
@@ -185,88 +171,4 @@ fn dump_scores(path: &str) {
         let _ = writeln!(out, "{:.1},{}", f64::from(entry.result) / 2.0, entry.score);
     }
     println!("Saved -> {out_path}");
-}
-
-/// Encodes text EPD/FEN records into `.soul` binary format with zstd compression support.
-fn encode(input: &str, output: &str) {
-    println!("Encoding {input} -> {output}...");
-    let file = match File::open(input) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error opening input file: {e}");
-            return;
-        },
-    };
-
-    let file_len = file.metadata().map_or(0, |m| m.len());
-    let is_zst = Path::new(input).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zst"));
-
-    let mut reader: Box<dyn BufRead> = if is_zst {
-        match zstd::Decoder::new(file) {
-            Ok(d) => Box::new(BufReader::new(d)),
-            Err(e) => {
-                eprintln!("Error creating zstd decoder: {e}");
-                return;
-            },
-        }
-    } else {
-        Box::new(BufReader::new(file))
-    };
-
-    // Heuristic preallocation: assume ~90 bytes per plaintext line; ~4x compression for zstd streams.
-    let est_bytes = if is_zst { file_len.saturating_mul(4) } else { file_len };
-    let est_entries = (est_bytes / 90).max(256) as usize;
-
-    let mut entries = Vec::with_capacity(est_entries);
-    let mut line_buf = Vec::with_capacity(128);
-    let mut parsed = 0usize;
-    let mut failed = 0usize;
-    let mut line_idx = 0usize;
-
-    loop {
-        line_buf.clear();
-        match reader.read_until(b'\n', &mut line_buf) {
-            Ok(0) => break,
-            Err(_) => {
-                line_idx += 1;
-                continue;
-            },
-            Ok(_) => {},
-        }
-
-        // Strip trailing LF and CRLF line terminators.
-        while line_buf.last().is_some_and(|&b| b == b'\n' || b == b'\r') {
-            line_buf.pop();
-        }
-
-        // Strip UTF-8 BOM if present.
-        let raw_slice = line_buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&line_buf);
-        let Ok(line) = std::str::from_utf8(raw_slice) else {
-            line_idx += 1;
-            failed += 1;
-            continue;
-        };
-
-        if let Some(entry) = dataset::parse_epd_entry(line) {
-            entries.push(entry);
-            parsed += 1;
-        } else {
-            if failed < 5 {
-                eprintln!("Warning: failed to parse line {}: '{line}'", line_idx + 1);
-            }
-            failed += 1;
-        }
-        line_idx += 1;
-    }
-
-    println!("Parsed {parsed} entries. Failed lines: {failed}");
-
-    if entries.is_empty() {
-        println!("No entries found to save.");
-    } else {
-        match dataset::save_encoded(output, &entries) {
-            Ok(()) => println!("{OK_PEN}Success!{RESET} Saved to {output}"),
-            Err(e) => eprintln!("Error saving output: {e}"),
-        }
-    }
 }

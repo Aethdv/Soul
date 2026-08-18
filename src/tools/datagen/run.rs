@@ -2,7 +2,7 @@
 //!
 //! Spawns N persistent worker threads, each playing complete games
 //! from book openings, filtering positions by search verification
-//! and quiet-move heuristics, then flushing results to disk in .soul.zst format.
+//! and adjudication, then flushing whole games to disk in viriformat.
 //!
 //! The hot path lives in `WorkerState::play_game()`; this module is just
 //! the conductor: load books, dispatch work, flush to disk, print stats.

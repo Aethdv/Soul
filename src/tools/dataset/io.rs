@@ -1,105 +1,18 @@
-//! Serialization for zstd-compressed dataset frames and EPD text formats.
+//! EPD text parsing.
 //!
-//! EPD lines are parsed in two contexts:
+//! EPD lines are read in two contexts:
 //! - Position and result/eval labels extracted into [`SoulEntry`] training records.
 //! - Raw or normalized FEN strings extracted for opening books.
 
 use std::{
     fs,
-    io::{self, BufRead, Read, Write},
-    mem,
+    io::{self, BufRead},
 };
-
-use zerocopy::IntoBytes;
 
 use crate::{
     core::board::Position,
     tools::dataset::{SoulEntry, flip_score, flip_wdl},
 };
-
-pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
-
-/// Loads all [`SoulEntry`] records from a zstd-compressed dataset file.
-///
-/// Layout per frame:
-/// ```text
-/// ┌──────────┬──────────────┬────────────────────────────┐
-/// │ 8B magic │ 8B LE count  │ count · sizeof(SoulEntry)  │
-/// └──────────┴──────────────┴────────────────────────────┘
-/// ```
-///
-/// Supports concatenated compressed frames produced by [`append_encoded`].
-/// Decompresses directly into the target vector to avoid intermediate allocations.
-pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
-    let file = fs::File::open(path)?;
-    let mut decoder = zstd::Decoder::new(file)?;
-    let mut entries = Vec::new();
-
-    loop {
-        let mut magic = [0u8; 8];
-        if decoder.read_exact(&mut magic).is_err() {
-            break;
-        }
-
-        if magic == *MAGIC_V6 {
-            let mut count_bytes = [0u8; 8];
-            decoder.read_exact(&mut count_bytes)?;
-
-            let count = u64::from_le_bytes(count_bytes) as usize;
-            let base = entries.len();
-
-            entries.resize(base + count, SoulEntry::default());
-            decoder.read_exact(entries[base..].as_mut_bytes())?;
-
-            check_results(&entries[base..], base)?;
-        } else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic in frame"));
-        }
-    }
-    Ok(entries)
-}
-
-/// Counts total records in a dataset by reading frame headers and skipping payloads.
-pub fn count_encoded(path: &str) -> io::Result<usize> {
-    let file = fs::File::open(path)?;
-    let mut decoder = zstd::Decoder::new(file)?;
-    let mut total = 0usize;
-
-    loop {
-        let mut magic = [0u8; 8];
-        if decoder.read_exact(&mut magic).is_err() {
-            break;
-        }
-
-        if magic != *MAGIC_V6 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic in frame"));
-        }
-
-        let mut count_bytes = [0u8; 8];
-        decoder.read_exact(&mut count_bytes)?;
-
-        let count = u64::from_le_bytes(count_bytes) as usize;
-        let payload_bytes = (count * mem::size_of::<SoulEntry>()) as u64;
-        let skipped = io::copy(&mut Read::by_ref(&mut decoder).take(payload_bytes), &mut io::sink())?;
-
-        if skipped != payload_bytes {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame ended before its declared payload"));
-        }
-        total += count;
-    }
-    Ok(total)
-}
-
-/// Writes entries into a new (or truncated) zstd-compressed dataset file.
-pub fn save_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
-    write_frame(fs::File::create(path)?, entries)
-}
-
-/// Appends entries as an independent compressed frame to a dataset file.
-pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
-    let file = fs::OpenOptions::new().create(true).append(true).open(path)?;
-    write_frame(file, entries)
-}
 
 /// Intermediate parsed representation of an EPD line with White-relative labels.
 pub struct EpdEntry {
@@ -191,29 +104,9 @@ pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
 }
 
 /// Validates that outcome codes stay within the legal range (`0..=2`) to prevent underflow in perspective flips.
-fn check_results(entries: &[SoulEntry], base_idx: usize) -> io::Result<()> {
-    match entries.iter().position(|e| e.result > 2) {
-        Some(offset) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("entry {} has invalid result code {}", base_idx + offset, entries[offset].result),
-        )),
-        None => Ok(()),
-    }
-}
-
-fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
-    let mut enc = zstd::Encoder::new(writer, 3)?;
-    enc.write_all(MAGIC_V6)?;
-    enc.write_all(&(entries.len() as u64).to_le_bytes())?;
-    enc.write_all(entries.as_bytes())?;
-    enc.finish()?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{SoulEntry, append_encoded, count_encoded, load_encoded, parse_epd_entry, parse_epd_str, save_encoded};
-    use crate::core::board::{Position, STARTPOS};
+    use super::{SoulEntry, parse_epd_entry, parse_epd_str};
 
     #[test]
     fn black_to_move_epd_negates_eval() {
@@ -230,46 +123,5 @@ mod tests {
         let entry = parse_epd_entry("4k3/8/8/8/8/8/8/4K3 w - - 0 1;d").expect("Classic EPD draw");
         assert_eq!(entry.score, SoulEntry::NO_SCORE);
         assert_eq!(entry.result, 1);
-    }
-
-    fn temp_path(tag: &str) -> String {
-        std::env::temp_dir()
-            .join(format!("soul_{tag}_{}.soul.zst", std::process::id()))
-            .display()
-            .to_string()
-    }
-
-    #[test]
-    fn invalid_result_byte_aborts_load() {
-        let good_path = temp_path("io_good");
-        let bad_path = temp_path("io_bad");
-        let board = Position::from_fen(STARTPOS);
-        let mut entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
-
-        save_encoded(&good_path, &entries).expect("Writing valid frame");
-        assert_eq!(load_encoded(&good_path).expect("Reading valid frame").len(), 4);
-        entries[2].result = 3;
-        save_encoded(&bad_path, &entries).expect("Writing corrupted frame");
-
-        let Err(err) = load_encoded(&bad_path) else {
-            panic!("Expected Err on corrupted result code");
-        };
-
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("entry 2"));
-        let _ = std::fs::remove_file(&good_path);
-        let _ = std::fs::remove_file(&bad_path);
-    }
-
-    #[test]
-    fn count_encoded_matches_loaded_entry_count() {
-        let path = temp_path("io_count");
-        let board = Position::from_fen(STARTPOS);
-        let entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
-        save_encoded(&path, &entries).expect("Writing first frame");
-        append_encoded(&path, &entries[..3]).expect("Appending second frame");
-        assert_eq!(count_encoded(&path).expect("Counting records"), 7);
-        assert_eq!(load_encoded(&path).expect("Loading records").len(), 7);
-        let _ = std::fs::remove_file(&path);
     }
 }
