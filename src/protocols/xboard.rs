@@ -426,9 +426,9 @@ fn cmd_nps<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>
     }
 }
 
-/// `time` is the engine's own clock, in centiseconds. Which colour that is comes
+/// `time` is the engine's own clock, in centiseconds. Which color that is comes
 /// from `engine_side`, since the side to move only agrees with it on the engine's
-/// turn, and falls back to the side to move before a colour has been assigned.
+/// turn, and falls back to the side to move before a color has been assigned.
 fn cmd_time<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
     if let Some(arg) = args.next()
         && let Ok(cs) = arg.parse::<u64>()
@@ -443,7 +443,7 @@ fn cmd_time<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str
     }
 }
 
-/// `otim` is the opponent's clock, so it lands on the colour `cmd_time` doesn't.
+/// `otim` is the opponent's clock, so it lands on the color `cmd_time` doesn't.
 fn cmd_otim<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
     if let Some(arg) = args.next()
         && let Ok(cs) = arg.parse::<u64>()
