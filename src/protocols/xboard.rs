@@ -1,6 +1,9 @@
 //! XBoard / CECP protocol implementation.
 //!
-//! Handles legacy I/O communication for compatibility with XBoard/WinBoard GUIs.
+//! One `XBoardState` and a mode: Normal searches on the engine's turn, Force only
+//! verifies the moves it is fed, Analyze searches until told to stop. Each search
+//! runs on a thread spawned here, so the command loop keeps reading stdin, and
+//! anything calling `stop_search` joins that thread before it proceeds.
 
 use std::{
     io::{self, StdinLock, Write},
@@ -156,8 +159,8 @@ impl XBoardState {
         let history = self.history.clone();
         let overhead = self.overhead;
         let show_wdl = self.show_wdl;
-        let history_arc = Arc::clone(&self.persistent_history);
-        let mut persistent_history = history_arc.lock().clone();
+        let shared_history = Arc::clone(&self.persistent_history);
+        let mut history_table = shared_history.lock().clone();
 
         let tt = self.tt.clone();
         let threads = self.threads;
@@ -177,13 +180,13 @@ impl XBoardState {
 
             tt.bind_search_thread(0, cfg.threads);
             let mut ctx = Searcher::new(&cfg, &board, &history, tt);
-            ctx.iterative_deepening(&mut persistent_history);
+            ctx.iterative_deepening(&mut history_table);
 
             cfg.stop.store(true, Ordering::Relaxed);
             pool.wait();
             cfg.stop.store(false, Ordering::Relaxed);
 
-            *history_arc.lock() = persistent_history;
+            *shared_history.lock() = history_table;
         }));
     }
 }
@@ -423,14 +426,16 @@ fn cmd_nps<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>
     }
 }
 
+/// `time` is the engine's own clock, in centiseconds. Which colour that is comes
+/// from `engine_side`, since the side to move only agrees with it on the engine's
+/// turn, and falls back to the side to move before a colour has been assigned.
 fn cmd_time<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
-    // Engine's time in centiseconds (1/100 sec)
     if let Some(arg) = args.next()
         && let Ok(cs) = arg.parse::<u64>()
     {
         let ms = cs * 10;
 
-        if state.board.stm == Color::White {
+        if state.engine_side.unwrap_or(state.board.stm) == Color::White {
             state.limits.wtime = ms;
         } else {
             state.limits.btime = ms;
@@ -438,13 +443,14 @@ fn cmd_time<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str
     }
 }
 
+/// `otim` is the opponent's clock, so it lands on the colour `cmd_time` doesn't.
 fn cmd_otim<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
     if let Some(arg) = args.next()
         && let Ok(cs) = arg.parse::<u64>()
     {
         let ms = cs * 10;
 
-        if state.board.stm == Color::White {
+        if state.engine_side.unwrap_or(state.board.stm) == Color::White {
             state.limits.btime = ms;
         } else {
             state.limits.wtime = ms;
