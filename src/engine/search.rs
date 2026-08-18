@@ -558,7 +558,7 @@ impl<'cfg> Searcher<'cfg> {
                 // The node's own best score, not root_moves[0]: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
-                let Ok(score) = worker.negamax::<RootNode>(self, depth, alpha, beta, 0, None) else {
+                let Ok(score) = worker.negamax::<RootNode>(self, depth, alpha, beta, 0) else {
                     aborted = true;
                     break;
                 };
@@ -925,7 +925,6 @@ impl Worker<'_> {
         alpha: i32,
         beta: i32,
         ply: usize,
-        pv_move: Option<Move>,
     ) -> Result<i32, SearchAborted> {
         self.stack[ply].pv.len = 0;
         let sp = &searcher.cfg.search_params;
@@ -1002,13 +1001,6 @@ impl Worker<'_> {
             } else {
                 (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
             };
-
-        // ── TT Move Ordering (~56 Elo)
-        // Even when the TT score didn't produce a cutoff, the move it stored
-        // is still our best guess at what's good here. Searching it first makes
-        // beta cutoffs happen earlier, which lets alpha-beta prune far more of the tree.
-        let pv_move = pv_move.filter(|&mv| is_pseudo_legal(&self.pos, mv));
-        let hash_move = tt_move.or(pv_move);
 
         let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
@@ -1119,7 +1111,7 @@ impl Worker<'_> {
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
 
-            let score = self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1, None);
+            let score = self.negamax::<NonPvNode>(searcher, null_depth, -beta, -beta + 1, ply + 1);
 
             searcher.zobrist_trail.pop();
             self.pos.unmake_null_move(&undo);
@@ -1140,7 +1132,7 @@ impl Worker<'_> {
                 }
 
                 self.is_nmp_verif = true;
-                let verif = self.negamax::<NonPvNode>(searcher, null_depth, beta - 1, beta, ply, None);
+                let verif = self.negamax::<NonPvNode>(searcher, null_depth, beta - 1, beta, ply);
                 self.is_nmp_verif = false;
                 if verif? >= beta {
                     return Ok(null_score);
@@ -1190,7 +1182,7 @@ impl Worker<'_> {
                 let qscore = self.qsearch::<NonPvNode>(searcher, -probcut_beta, -probcut_beta + 1, ply + 1, Some(mv.to()), 0);
                 let value = match qscore {
                     Ok(v) if -v >= probcut_beta => self
-                        .negamax::<NonPvNode>(searcher, probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1, None)
+                        .negamax::<NonPvNode>(searcher, probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1)
                         .map(|x| -x),
 
                     Ok(v) => Ok(-v),
@@ -1243,7 +1235,7 @@ impl Worker<'_> {
                 // Aspiration re-searches accumulate into the same slot;
                 // all that work belongs to this move.
                 let nodes_before = searcher.nodes;
-                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), Some(mv) == pv_move, reduction, 0)?;
+                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, Some(i), reduction, 0)?;
                 searcher.root_moves[i].nodes += searcher.nodes - nodes_before;
 
                 if res.alpha >= beta {
@@ -1270,7 +1262,7 @@ impl Worker<'_> {
             // picker incorporate recent positional context into quiet ordering.
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
-            let mut picker = MovePicker::new(hash_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+            let mut picker = MovePicker::new(tt_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
 
             self.xb_enter(ply);
 
@@ -1432,7 +1424,7 @@ impl Worker<'_> {
                     let saved = self.stack[ply];
 
                     self.stack[ply].excluded = mv;
-                    let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply, None);
+                    let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply);
                     self.stack[ply].excluded = Move::null();
                     self.stack[ply].quiet_moves = saved.quiet_moves;
                     self.stack[ply].quiet_count = saved.quiet_count;
@@ -1457,7 +1449,7 @@ impl Worker<'_> {
                 self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
                 self.stack[ply].moved_to = mv.to();
 
-                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, Some(mv) == pv_move, reduction, extension)?;
+                self.search_move::<N>(searcher, mv, depth, &mut res, beta, ply, None, reduction, extension)?;
 
                 if likely(res.alpha >= beta) {
                     self.stack[ply].cutoff_count += 1;
@@ -1466,7 +1458,7 @@ impl Worker<'_> {
                     {
                         use crate::engine::mvpstats::{CutoffKind, record_cutoff};
 
-                        let kind = if Some(mv) == hash_move {
+                        let kind = if Some(mv) == tt_move {
                             CutoffKind::Hash
                         } else if mv.is_capture() {
                             CutoffKind::Capture
@@ -1688,7 +1680,6 @@ impl Worker<'_> {
         beta: i32,
         ply: usize,
         root_idx: Option<usize>,
-        is_pv_move: bool,
         mut reduction: i32,
         extension: i32,
     ) -> Result<(), SearchAborted> {
@@ -1714,7 +1705,7 @@ impl Worker<'_> {
             searcher.print_currmove(depth, mv, res.move_count);
         }
 
-        let eval = self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, is_pv_move, reduction, extension, mv);
+        let eval = self.pvs::<N>(searcher, depth, res.alpha, beta, ply, res.move_count == 1, reduction, extension, mv);
 
         searcher.zobrist_trail.pop();
         self.pos.unmake_move(mv, &undo);
@@ -1761,34 +1752,29 @@ impl Worker<'_> {
         beta: i32,
         ply: usize,
         is_first: bool,
-        is_pv_move: bool,
         reduction: i32,
         extension: i32,
         mv: Move,
     ) -> Result<i32, SearchAborted> {
         let sp = &searcher.cfg.search_params;
 
-        // Retrieve the expected PV move for the next ply. If we are on the PV line
-        // and we just played the PV move, we expect the child to also have a PV move.
-        let next_pv = if (N::ROOT || N::PV) && is_pv_move { searcher.prev_pv.get(ply + 1) } else { None };
-
         // Only the singular move arrives with an extension; the rest pass 0.
         let search_depth = depth - 1 + extension;
 
         if is_first {
             // No bound yet; search wide open.
-            return Ok(-self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?);
+            return Ok(-self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1)?);
         }
 
         // ── LMR Scout
         // Late quiet moves get a shallower scout. If the reduced search
         // still beats alpha, the move earned a full-depth re-search.
         let reduced_depth = search_depth - reduction;
-        let mut score = -self.negamax::<NonPvNode>(searcher, reduced_depth, -alpha - 1, -alpha, ply + 1, None)?;
+        let mut score = -self.negamax::<NonPvNode>(searcher, reduced_depth, -alpha - 1, -alpha, ply + 1)?;
 
         // Re-search at full depth if the reduced scout found something.
         if score > alpha && reduction > 0 {
-            score = -self.negamax::<NonPvNode>(searcher, search_depth, -alpha - 1, -alpha, ply + 1, None)?;
+            score = -self.negamax::<NonPvNode>(searcher, search_depth, -alpha - 1, -alpha, ply + 1)?;
 
             // ── Post-LMR Continuation History (~8 Elo)
             // The reduced scout beat alpha; the full-depth re-search settles it.
@@ -1810,7 +1796,7 @@ impl Worker<'_> {
 
         if score > alpha && score < beta {
             // Genuine improvement; search with full window on the PV.
-            score = -self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1, next_pv)?;
+            score = -self.negamax::<N::Next>(searcher, search_depth, -beta, -alpha, ply + 1)?;
         }
         Ok(score)
     }
