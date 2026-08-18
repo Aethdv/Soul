@@ -270,8 +270,8 @@ mod sys {
             mask[cpu / 64] |= 1u64 << (cpu % 64);
         }
 
-        // SAFETY: sched_setaffinity(0, bytes, ptr) reads `bytes` of mask for the
-        // calling thread (pid 0); `bytes` is `words * 8`, exactly the buffer.
+        // SAFETY: sched_setaffinity(0, bytes, ptr) reads bytes of mask for the
+        // calling thread (pid 0); bytes is words * 8, exactly the buffer.
         let ret = unsafe { syscall3(SYS_SCHED_SETAFFINITY, 0, words * 8, mask.as_ptr() as usize) };
         if ret != 0 {
             return false;

@@ -160,9 +160,9 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     let sum = |slots: &[PieceSlot]| {
         slots.iter().fold((0.0, 0.0), |(mg, eg), slot| {
             let (mg_idx, eg_idx) = slot.indices();
-            // SAFETY: a slot comes from `PieceSlot::new`, which takes a piece type ≤ 5 with a
-            // mirrored square ≤ 31, or from `Default`, which is slot zero. Either way
-            // `mg_index() ≤ 5·64+31 = 351` and `eg_idx = mg_idx+32 ≤ 383`, both inside the
+            // SAFETY: a slot comes from PieceSlot::new, which takes a piece type ≤ 5 with a
+            // mirrored square ≤ 31, or from Default, which is slot zero. Either way
+            // mg_index() ≤ 5·64+31 = 351 and eg_idx = mg_idx+32 ≤ 383, both inside the
             // 384-entry PSQT block.
             unsafe { (mg + *values.get_unchecked(mg_idx), eg + *values.get_unchecked(eg_idx)) }
         })

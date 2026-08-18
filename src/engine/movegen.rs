@@ -90,8 +90,8 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
 
     let piece = board.piece_at(from);
 
-    // `to` names the rook's home square, so a collision with the CASTLE flag and a junk
-    // `to` makes apply_castling lift a non-rook and drop a phantom rook, corruption that
+    // to names the rook's home square, so a collision with the CASTLE flag and a junk
+    // to makes apply_castling lift a non-rook and drop a phantom rook, corruption that
     // unmake compounds instead of repairing.
     //
     // Only the mover's own two slots count. Scanning all four reaches a stale enemy slot,

@@ -220,8 +220,8 @@ pub fn run_commands(lines: &[String]) {
             break;
         }
 
-        // `go` hands the search to another thread and returns, so a `quit` on the
-        // next line would stop it before it reported. `cmd_go` raises the flag
+        // go hands the search to another thread and returns, so a quit on the
+        // next line would stop it before it reported. cmd_go raises the flag
         // before it sends, so this cannot miss the start of a search.
         while state.is_searching.load(Ordering::Relaxed) {
             thread::yield_now();

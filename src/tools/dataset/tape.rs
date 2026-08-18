@@ -177,8 +177,8 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let d = outer * stm_sign;
 
     // Combiner owns every upstream derivative. PSQT / material scatter
-    // (out-of-band, accumulator-level) pulls `mg_eg`; term scatter reads
-    // the rest via `scatter_all_terms`.
+    // (out-of-band, accumulator-level) pulls mg_eg; term scatter reads
+    // the rest via scatter_all_terms.
     let upstreams = LinearCombiner::backward(&buckets, phase, &combiner, d, param_grads);
 
     // ── PSQT + material (accumulator-level, not a LinearTerm)
