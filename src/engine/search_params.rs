@@ -101,9 +101,17 @@ macro_rules! search_params {
             $( pub $field: i32, )*
         }
 
+        impl $name {
+            /// The hand-picked defaults, usable in const context so a table built
+            /// from these values can still be a `const`.
+            pub const fn new() -> Self {
+                Self { $( $field: $def, )* }
+            }
+        }
+
         impl Default for $name {
             fn default() -> Self {
-                Self { $( $field: $def, )* }
+                Self::new()
             }
         }
 
@@ -141,7 +149,6 @@ search_params! {
         NT(lazy_eval_margin,  160,  140, 300),
         NT(lazy_eval_divisor,  32,    1,  64),
 
-        //         default   min  max  step
         NT(vol_pawn,     5),
         NT(vol_knight,  10),
         NT(vol_bishop,   9),
@@ -149,14 +156,12 @@ search_params! {
         NT(vol_queen,   13),
         NT(vol_king,     0),
 
-        //              default   min  max  step
         NT(mtg_opening,      80),
         NT(mtg_endgame,      40),
         NT(tm_iter_scale,   200),
         NT(tm_single_root,    5),
 
         //  TM budget, values ·100 (tm_sd_ramp ·1000)
-        //                 default   min  max  step
         NT(tm_hard_mult,       500),
         NT(tm_hard_clock_cap,   95),
         NT(tm_sd_base,          50),
@@ -168,7 +173,6 @@ search_params! {
         NT(score_drop_depth,     5),
         T (score_swing_scale,  100, 10),
 
-        //             default   min  max  step
         NT(bm_stab_depth,    5),
         NT(bm_stab_base,   270),
         NT(bm_stab_scale,  220),
@@ -188,6 +192,13 @@ search_params! {
         NT(mvvlva_a_rook,      50,  40,  100),
         NT(mvvlva_a_queen,     90,  70,  150),
         NT(mvvlva_a_king,       0),
+
+
+        T (see_value_pawn,     92),
+        T (see_value_knight,  373),
+        T (see_value_bishop,  372),
+        T (see_value_rook,    568),
+        T (see_value_queen,  1160),
 
         //                 default  min   max  step
         T (good_capture_margin, 200,  0,  300),
@@ -255,7 +266,6 @@ search_params! {
         T (fhc_lmr_malus,     512,   0),
         NT(lmr_retained,        1),
 
-        //                default   min  max  step
         NT(capt_hist_divisor,  32),
         NT(hist_bonus_mult,     4),
         NT(hist_bonus_cap,   1600),

@@ -9,35 +9,40 @@
 //!
 //! One `balance` integer, perspective-flipped per recapture: no scratch
 //! array, no post-loop minimax pass. Move type is dispatched once at
-//! entry; captures, en passant, promotions, and castling each set their
-//! own initial balance before sharing the exchange loop. The king carries
-//! zero material. If it would capture while an opponent attacker remains,
-//! the chain stops short: illegal recapture, not a trade. A `us` bool
-//! tracks who owns the trade; when flipped, break-even isn't good enough.
+//! entry: captures, en passant and promotions each set their own opening
+//! balance and then share the exchange loop, and castling never reaches it.
+//! The king carries zero material. If it would capture while an opponent
+//! attacker remains, the chain stops short: illegal recapture, not a trade.
+//! A `flipped` bool tracks whose perspective the balance is written from;
+//! once flipped, break-even isn't good enough.
 
-use crate::core::{
-    board::{
-        Position,
-        attacks::{Pins, all_attackers_to},
-        bitboard::{atk_bishop, atk_rook, line_bb},
+use crate::{
+    core::{
+        board::{
+            Position,
+            attacks::{Pins, all_attackers_to},
+            bitboard::{atk_bishop, atk_rook, line_bb},
+        },
+        defs::{Bitboard, Color, PieceType, Square},
+        moves::Move,
     },
-    defs::{Bitboard, Color, PieceType, Square},
-    moves::Move,
+    engine::search_params::SearchParams,
 };
 
 /// SEE's own scale, deliberately not the eval's `MG_MATERIAL`. Shifting a constant
-/// from `material[pt]` into every `PSQT[pt][sq]` leaves the eval bit-identical, so
+/// from `material[pt]` into every `PSQT[pt][sq]` leaves the eval unchanged, so
 /// the tuner can move material anywhere at no cost to its loss; the thresholds
 /// callers pass are in these units and need them to hold still.
 ///
 /// The king keeps its zero: a chain that reaches it has already ended.
 const SEE_VALUE: [i32; 8] = {
+    let sp = SearchParams::new();
     let mut v = [0i32; 8];
-    v[PieceType::Pawn.as_usize()] = 92;
-    v[PieceType::Knight.as_usize()] = 373;
-    v[PieceType::Bishop.as_usize()] = 372;
-    v[PieceType::Rook.as_usize()] = 568;
-    v[PieceType::Queen.as_usize()] = 1160;
+    v[PieceType::Pawn.as_usize()] = sp.see_value_pawn;
+    v[PieceType::Knight.as_usize()] = sp.see_value_knight;
+    v[PieceType::Bishop.as_usize()] = sp.see_value_bishop;
+    v[PieceType::Rook.as_usize()] = sp.see_value_rook;
+    v[PieceType::Queen.as_usize()] = sp.see_value_queen;
     v
 };
 
@@ -58,7 +63,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32) -> bool {
 /// [`see_ge`] handed a pin scan to reuse, so a loop of exchanges at one
 /// position pays for it once.
 ///
-/// Correctly models en passant (the victim pawn lives on `to ^ 8`),
+/// Models en passant (the victim pawn lives on `to ^ 8`),
 /// promotion (the pawn transforms into the promoted piece for the rest
 /// of the trade, and the side earns the `promo − pawn` upgrade),
 /// castling (materially neutral; legality already guaranteed by
@@ -106,12 +111,12 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
 
     balance = val(attacker) - balance;
     if balance <= 0 {
-        // Even after an optimal recapture, the move still meets
-        // threshold, no deeper search needed.
+        // Even if the attacker is lost for nothing, the move still clears
+        // threshold, so no deeper search is needed.
         return true;
     }
 
-    // Rebuild occupancy with our attacker removed from from
+    // Rebuild occupancy with our attacker lifted off its square
     // (and for en passant also the victim pawn on to ^ 8),
     // then recompute the full attacker set from scratch, picking
     // up any slider that was previously blocked by our attacker.
@@ -128,28 +133,27 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
 
     let caller = pos.color_at(from);
     let mut stm = caller;
-    let mut us = false;
+    let mut flipped = false;
 
     loop {
         stm = stm.opposite();
         let mine = attackers & pos.side_bb[stm];
 
         if mine.is_empty() {
-            // The side to move has no attacker left, so the trade ends
-            // with the previous mover keeping their net. That side is
-            // the caller if us has been flipped an even number of
-            // times, i.e. if us == false.
-            return !us;
+            // The side to move has no attacker left, so the trade ends with
+            // the previous mover keeping their net.
+            return !flipped;
         }
 
         // Pick the least-valuable attacker.
-        let Some((lva, lva_sq)) = LVA_ORDER.into_iter().find_map(|pt| lsb_of(mine & pos.role_bb[pt]).map(|sq| (pt, sq))) else {
+        let attacker_of = |pt: PieceType| (mine & pos.role_bb[pt]).into_iter().next().map(|sq| (pt, sq));
+        let Some((lva, lva_sq)) = LVA_ORDER.into_iter().find_map(attacker_of) else {
             // Only the king is left to capture. If the opposing side
             // still has any attacker on to, the king capture would
             // move the king into check, illegal, so the chain stops
             // here and the previous side's net stands.
             let opp = attackers & pos.side_bb[stm.opposite()];
-            return if opp.is_not_empty() { !us } else { us };
+            return if opp.is_not_empty() { !flipped } else { flipped };
         };
 
         occ ^= lva_sq.bitboard();
@@ -177,23 +181,16 @@ pub fn see_ge_with(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> boo
         // Negamax flip: the next player's running deficit is this
         // attacker's value minus the previous player's deficit.
         balance = val(lva) - balance;
-        if balance < i32::from(us) {
-            return us;
+        if balance < i32::from(flipped) {
+            return flipped;
         }
-        us = !us;
+        flipped = !flipped;
     }
 }
 
 #[inline(always)]
 fn val(pt: PieceType) -> i32 {
     SEE_VALUE[pt.as_usize()]
-}
-
-/// LSB of a bitboard, or `None` if empty. Separates the emptiness test
-/// from the LSB extraction so the `if let` chain in `see_ge_with` stays tight.
-#[inline(always)]
-fn lsb_of(bb: Bitboard) -> Option<Square> {
-    if bb.is_empty() { None } else { Some(bb.lsb()) }
 }
 
 /// Pinned attackers that can't legally recapture on `to`: a pinned piece moves
@@ -206,29 +203,13 @@ fn pin_excluded(pins: &Pins, to: Square) -> Bitboard {
 
 #[cfg(test)]
 mod tests {
-    //! Static test suite for SEE.
-    //!
-    //! Each case asserts a boundary: SEE-ge passes for `expected` and
-    //! fails for `expected + 1`. Together they pin down the exact SEE
-    //! value, so any algorithmic regression (wrong piece value, missed
-    //! x-ray, mishandled EP square, broken negamax flip) collapses one
-    //! of these cases with a one-line failure.
-
     use super::*;
     use crate::{core::board::Position, engine::movegen::gen_legal_moves};
 
-    macro_rules! pc {
-        ($($n:ident = $p:expr;)*) => {
-            $(const fn $n() -> i32 { SEE_VALUE[$p as usize] })*
-        };
-    }
-
-    pc! {
-        p = PieceType::Pawn;
-        n = PieceType::Knight;
-        r = PieceType::Rook;
-        q = PieceType::Queen;
-    }
+    const P: i32 = SEE_VALUE[PieceType::Pawn.as_usize()];
+    const N: i32 = SEE_VALUE[PieceType::Knight.as_usize()];
+    const R: i32 = SEE_VALUE[PieceType::Rook.as_usize()];
+    const Q: i32 = SEE_VALUE[PieceType::Queen.as_usize()];
 
     /// Every other assertion here is written in these units, so a shifted table
     /// rescales the whole suite and all of them still pass.
@@ -262,80 +243,70 @@ mod tests {
 
     #[test]
     fn rook_takes_undefended_pawn() {
-        // RxP, no recapture → +P
-        assert_see("7k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", p());
+        assert_see("7k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P);
     }
 
     #[test]
     fn rook_takes_pawn_defended_by_rook() {
-        // RxP, RxR → +P − R
-        assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", p() - r());
+        assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P - R);
     }
 
     #[test]
     fn pawn_takes_knight_undefended() {
-        // PxN → +N
-        assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", n());
+        assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N);
     }
 
     #[test]
     fn pawn_takes_knight_defended_by_pawn() {
-        // PxN, PxP → +N − P
-        assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", n() - p());
+        assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N - P);
     }
 
     #[test]
     fn queen_takes_pawn_defended_by_pawn() {
-        // QxP, PxQ → +P − Q (catastrophic)
-        assert_see("7k/8/8/8/2p5/3p4/4Q3/7K w - - 0 1", "e2d3", p() - q());
+        // catastrophic, don't do it
+        assert_see("7k/8/8/8/2p5/3p4/4Q3/7K w - - 0 1", "e2d3", P - Q);
     }
 
     #[test]
     fn knight_takes_knight_defended_by_knight() {
-        // NxN, NxN → break-even
         assert_see("7k/4n3/8/3n4/8/2N5/8/7K w - - 0 1", "c3d5", 0);
     }
 
     #[test]
     fn rook_battery_xray_chain() {
         // (W) Re2xPe5, (B) Re7xRe5, (W) Re1xRe5 via x-ray, (B) Re8xRe5 via x-ray.
-        // Sequence: +P − R + R − R = P − R
-        assert_see("4r3/4r2k/8/4p3/8/8/4R3/4R2K w - - 0 1", "e2e5", p() - r());
+        assert_see("4r3/4r2k/8/4p3/8/8/4R3/4R2K w - - 0 1", "e2e5", P - R);
     }
 
     #[test]
     fn en_passant_undefended() {
-        // EP capture, no recapture → +P
-        assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", p());
+        assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", P);
     }
 
     #[test]
     fn en_passant_defended_by_knight() {
-        // EP capture, knight recaptures on c6 → break-even
         assert_see("1n2k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", 0);
     }
 
     #[test]
     fn quiet_queen_promotion_undefended() {
-        // Pawn becomes queen on an empty square: +Q − P
-        assert_see("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", q() - p());
+        assert_see("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", Q - P);
     }
 
     #[test]
     fn quiet_queen_promotion_defended_by_knight() {
-        // Promote (+Q − P), opponent captures the new queen (− Q) → − P
-        assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -p());
+        assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -P);
     }
 
     #[test]
     fn capture_promotion_undefended() {
-        // PxN with promotion: +N + (Q − P)
-        assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", n() + q() - p());
+        // PxN
+        assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", N + Q - P);
     }
 
     #[test]
     fn pinned_defender_cannot_recapture() {
-        // Nc4 guards e5 but is pinned to Ka6 by Be2, so RxP has no recapture
-        assert_see("8/8/k7/4p2R/2n5/8/4B3/6K1 w - - 0 1", "h5e5", p());
+        // RxP has no recapture
+        assert_see("8/8/k7/4p2R/2n5/8/4B3/6K1 w - - 0 1", "h5e5", P);
     }
 }
