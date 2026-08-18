@@ -1,8 +1,8 @@
-//! Serialization for Soul's own zstd-compressed frames, and the EPD text
-//! parsers beside them.
+//! Serialization for zstd-compressed dataset frames and EPD text formats.
 //!
-//! EPD arrives for two different jobs: a line carrying a game result becomes a
-//! training entry; lines read for their FEN alone stock an opening book.
+//! EPD lines are parsed in two contexts:
+//! - Position and result/eval labels extracted into [`SoulEntry`] training records.
+//! - Raw or normalized FEN strings extracted for opening books.
 
 use std::{
     fs,
@@ -14,25 +14,22 @@ use zerocopy::IntoBytes;
 
 use crate::{
     core::board::Position,
-    tools::dataset::{SoulEntry, flip_wdl},
+    tools::dataset::{SoulEntry, flip_score, flip_wdl},
 };
 
 pub const MAGIC_V6: &[u8; 8] = b"SOULENC6";
 
-/// Loads every [`SoulEntry`] from a zstd-compressed dataset.
+/// Loads all [`SoulEntry`] records from a zstd-compressed dataset file.
 ///
-/// The binary layout for each frame is:
-///
+/// Layout per frame:
 /// ```text
-///   ┌──────────┬──────────────┬────────────────────────────┐
-///   │ 8B magic │ 8B LE count  │ count · sizeof(SoulEntry)  │
-///   └──────────┴──────────────┴────────────────────────────┘
+/// ┌──────────┬──────────────┬────────────────────────────┐
+/// │ 8B magic │ 8B LE count  │ count · sizeof(SoulEntry)  │
+/// └──────────┴──────────────┴────────────────────────────┘
 /// ```
 ///
-/// Files may contain multiple concatenated compressed frames (an append-only
-/// consequence of repeated `append_encoded` calls). Each frame is decompressed
-/// independently and collected into a single output `Vec`, growing in-place
-/// rather than bouncing through an intermediate buffer.
+/// Supports concatenated compressed frames produced by [`append_encoded`].
+/// Decompresses directly into the target vector to avoid intermediate allocations.
 pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
     let file = fs::File::open(path)?;
     let mut decoder = zstd::Decoder::new(file)?;
@@ -45,10 +42,10 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
         }
 
         if magic == *MAGIC_V6 {
-            let mut buf = [0u8; 8];
-            decoder.read_exact(&mut buf)?;
+            let mut count_bytes = [0u8; 8];
+            decoder.read_exact(&mut count_bytes)?;
 
-            let count = u64::from_le_bytes(buf) as usize;
+            let count = u64::from_le_bytes(count_bytes) as usize;
             let base = entries.len();
 
             entries.resize(base + count, SoulEntry::default());
@@ -56,20 +53,16 @@ pub fn load_encoded(path: &str) -> io::Result<Vec<SoulEntry>> {
 
             check_results(&entries[base..], base)?;
         } else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic in frame"));
         }
     }
     Ok(entries)
 }
 
-/// Positions in a dataset, without decoding any of them.
-///
-/// The same frame walk as [`load_encoded`], reading each count and skipping its payload, so an
-/// append-only file reports everything it holds rather than what its first frame holds.
+/// Counts total records in a dataset by reading frame headers and skipping payloads.
 pub fn count_encoded(path: &str) -> io::Result<usize> {
     let file = fs::File::open(path)?;
     let mut decoder = zstd::Decoder::new(file)?;
-
     let mut total = 0usize;
 
     loop {
@@ -79,69 +72,73 @@ pub fn count_encoded(path: &str) -> io::Result<usize> {
         }
 
         if magic != *MAGIC_V6 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic in frame"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic in frame"));
         }
 
-        let mut buf = [0u8; 8];
-        decoder.read_exact(&mut buf)?;
+        let mut count_bytes = [0u8; 8];
+        decoder.read_exact(&mut count_bytes)?;
 
-        let count = u64::from_le_bytes(buf) as usize;
-        let payload = (count * mem::size_of::<SoulEntry>()) as u64;
-        let skipped = io::copy(&mut Read::by_ref(&mut decoder).take(payload), &mut io::sink())?;
+        let count = u64::from_le_bytes(count_bytes) as usize;
+        let payload_bytes = (count * mem::size_of::<SoulEntry>()) as u64;
+        let skipped = io::copy(&mut Read::by_ref(&mut decoder).take(payload_bytes), &mut io::sink())?;
 
-        if skipped != payload {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame ends before its count"));
+        if skipped != payload_bytes {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame ended before its declared payload"));
         }
         total += count;
     }
     Ok(total)
 }
 
-/// Creates (or overwrites) a compressed dataset file.
+/// Writes entries into a new (or truncated) zstd-compressed dataset file.
 pub fn save_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
     write_frame(fs::File::create(path)?, entries)
 }
 
-/// Appends an independent compressed frame to a dataset file,
-/// creating it if necessary.
+/// Appends entries as an independent compressed frame to a dataset file.
 pub fn append_encoded(path: &str, entries: &[SoulEntry]) -> io::Result<()> {
     let file = fs::OpenOptions::new().create(true).append(true).open(path)?;
     write_frame(file, entries)
 }
 
-/// Parses a single EPD line into a `(Position, result)` pair.
+/// Intermediate parsed representation of an EPD line with White-relative labels.
+pub struct EpdEntry {
+    pub board: Position,
+    /// White-relative outcome: `1.0 = White win, 0.5 = draw, 0.0 = Black win`.
+    pub result: f64,
+    /// White-relative centipawn evaluation, if present.
+    pub eval: Option<i32>,
+}
+
+/// Parses an EPD line supporting pipe-delimited or classic result notation.
 ///
-/// Two notation families are recognized:
+/// Supported formats:
+/// - Pipe format: `fen | score | wdl` (where `wdl` is a float in `[0.0, 1.0]`).
+/// - Classic EPD: standard FEN followed by outcome tokens (`1-0`, `0-1`, `1/2-1/2`,
+///   numeric floats `1.0`/`0.5`/`0.0`, or opcode shorthands `;w`, `;b`, `;d`).
 ///
-///   - Pipe-delimited; `fen | eval | wdl`. The third field is the
-///     WDL outcome as a float (1.0 = white wins, 0.0 = black wins).
-///   - Classic EPD; a FEN followed by a result token: `1-0`, `0-1`,
-///     `1/2-1/2`, numeric suffixes (`1.0`/`0.5`/`0.0`), or the terse
-///     `;w`/`;b`/`;d` convention some tools emit.
-///
-/// The returned `f64` is always from White's perspective.
-pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
+/// Returned evaluations and outcomes are always White-relative.
+pub fn parse_epd_str(line: &str) -> Option<EpdEntry> {
     let line = line.trim();
     if line.is_empty() {
         return None;
     }
 
-    // Pipe-delimited: "fen | score | wdl"
+    // Pipe format: "fen | score | wdl"
     if line.contains('|') {
         let mut fields = line.split('|').map(str::trim);
-        let fen = fields.next().unwrap(); // split always yields ≥ 1 element
-        let _eval = fields.next(); // guaranteed present by the guard
+        // split always yields at least one element, whatever the line holds.
+        let fen = fields.next().unwrap();
+        let eval = fields.next().and_then(|e| e.parse::<i32>().ok());
 
         if let Some(wdl) = fields.next() {
             let result = wdl.parse::<f64>().ok()?;
             if let Ok(board) = Position::try_from_fen(fen) {
-                return Some((board, result));
+                return Some(EpdEntry { board, result, eval });
             }
         }
-        // Fewer than three fields, or bad FEN → fall through to classic heuristics.
     }
 
-    // Result detection
     const RESULT_SUFFIXES: &[(&str, f64)] = &[
         ("1-0", 1.0),
         ("0-1", 0.0),
@@ -162,22 +159,20 @@ pub fn parse_epd_str(line: &str) -> Option<(Position, f64)> {
         .find_map(|&(suffix, val)| line.strip_suffix(suffix).map(|s| (val, s.to_string())))
         .unwrap_or((0.5, line.to_string()));
 
-    // Strip trailing EPD opcodes (everything past the first ';').
+    // Strip trailing EPD operations
     let fen = fen_raw.split(';').next().unwrap_or(&fen_raw).trim();
-    Position::try_from_fen(fen).ok().map(|board| (board, result))
+    Position::try_from_fen(fen).ok().map(|board| EpdEntry { board, result, eval: None })
 }
 
-/// Converts an EPD line directly into a [`SoulEntry`].
-///
-/// Flips the WDL result to the side-to-move perspective: the convention
-/// the training pipeline expects.
+/// Parses an EPD line into a [`SoulEntry`], converting scores and outcomes to side-to-move perspective.
 pub fn parse_epd_entry(line: &str) -> Option<SoulEntry> {
-    let (board, wdl) = parse_epd_str(line)?;
-    Some(SoulEntry::from_board(&board, flip_wdl(wdl, board.stm), None))
+    let EpdEntry { board, result, eval } = parse_epd_str(line)?;
+    let stm = board.stm;
+    Some(SoulEntry::from_board(&board, flip_wdl(result, stm), eval.map(|e| flip_score(e, stm))))
 }
 
-/// Loads opening positions from an EPD file, falling back to raw FEN parsing.
-/// Both formats are common in the chess datagen ecosystem.
+/// Extracts normalized FEN strings from an EPD or raw FEN file.
+/// Unparseable lines and comments are ignored.
 pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
     let file = fs::File::open(path)?;
     let reader = io::BufReader::new(file);
@@ -186,26 +181,21 @@ pub fn load_epd_fens(path: &str) -> io::Result<Vec<String>> {
     for line in reader.lines() {
         let line = line?;
 
-        if let Some((board, _)) = parse_epd_str(&line) {
-            // EPD parsed successfully: re-export as FEN to normalize formatting.
+        if let Some(EpdEntry { board, .. }) = parse_epd_str(&line) {
             fens.push(board.as_fen());
         } else if Position::try_from_fen(&line).is_ok() {
-            // Fallback: raw FEN line (no EPD operations field).
             fens.push(line);
         }
-        // Lines that fail both parses are silently skipped,
-        // they're comments, blank lines, or corrupted entries.
     }
     Ok(fens)
 }
 
-/// The result byte is whatever the file says. Past 2 it underflows [`flip_result`]
-/// and reads as a win in the stats tally, so it stops at the read.
-fn check_results(entries: &[SoulEntry], base: usize) -> io::Result<()> {
+/// Validates that outcome codes stay within the legal range (`0..=2`) to prevent underflow in perspective flips.
+fn check_results(entries: &[SoulEntry], base_idx: usize) -> io::Result<()> {
     match entries.iter().position(|e| e.result > 2) {
-        Some(i) => Err(io::Error::new(
+        Some(offset) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("entry {} carries result {}, outside 0..=2", base + i, entries[i].result),
+            format!("entry {} has invalid result code {}", base_idx + offset, entries[offset].result),
         )),
         None => Ok(()),
     }
@@ -222,56 +212,64 @@ fn write_frame(writer: impl Write, entries: &[SoulEntry]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SoulEntry, append_encoded, count_encoded, load_encoded, save_encoded};
+    use super::{SoulEntry, append_encoded, count_encoded, load_encoded, parse_epd_entry, parse_epd_str, save_encoded};
     use crate::core::board::{Position, STARTPOS};
 
-    fn temp(name: &str) -> String {
+    #[test]
+    fn black_to_move_epd_negates_eval() {
+        let white = "4k3/8/8/8/8/8/8/4K3 w - - 0 1 | 476 | 1.0";
+        let black = "4k3/8/8/8/8/8/8/4K3 b - - 0 1 | 476 | 1.0";
+        assert_eq!(parse_epd_str(white).expect("White to move").eval, Some(476));
+        assert_eq!(parse_epd_str(black).expect("Black to move").eval, Some(476));
+        assert_eq!(parse_epd_entry(white).expect("White entry").score, 476);
+        assert_eq!(parse_epd_entry(black).expect("Black entry").score, -476);
+    }
+
+    #[test]
+    fn epd_without_eval_sets_no_score_sentinel() {
+        let entry = parse_epd_entry("4k3/8/8/8/8/8/8/4K3 w - - 0 1;d").expect("Classic EPD draw");
+        assert_eq!(entry.score, SoulEntry::NO_SCORE);
+        assert_eq!(entry.result, 1);
+    }
+
+    fn temp_path(tag: &str) -> String {
         std::env::temp_dir()
-            .join(format!("soul_{name}_{}.soul.zst", std::process::id()))
+            .join(format!("soul_{tag}_{}.soul.zst", std::process::id()))
             .display()
             .to_string()
     }
 
-    /// A dataset is bytes off a disk, and every consumer reads the result byte as
-    /// one of three values.
     #[test]
-    fn a_result_byte_past_two_fails_the_load() {
-        let good = temp("io_good");
-        let bad = temp("io_bad");
-
+    fn invalid_result_byte_aborts_load() {
+        let good_path = temp_path("io_good");
+        let bad_path = temp_path("io_bad");
         let board = Position::from_fen(STARTPOS);
         let mut entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
 
-        save_encoded(&good, &entries).expect("writing a good frame");
-        assert_eq!(load_encoded(&good).expect("reading it back").len(), 4);
-
+        save_encoded(&good_path, &entries).expect("Writing valid frame");
+        assert_eq!(load_encoded(&good_path).expect("Reading valid frame").len(), 4);
         entries[2].result = 3;
-        save_encoded(&bad, &entries).expect("writing the tampered frame");
+        save_encoded(&bad_path, &entries).expect("Writing corrupted frame");
 
-        // expect_err would need SoulEntry: Debug to format the Ok side.
-        let Err(err) = load_encoded(&bad) else {
-            panic!("a result past 2 must fail the load");
+        let Err(err) = load_encoded(&bad_path) else {
+            panic!("Expected Err on corrupted result code");
         };
 
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("entry 2"), "the error must name the entry: {err}");
-
-        let _ = std::fs::remove_file(&good);
-        let _ = std::fs::remove_file(&bad);
+        assert!(err.to_string().contains("entry 2"));
+        let _ = std::fs::remove_file(&good_path);
+        let _ = std::fs::remove_file(&bad_path);
     }
 
     #[test]
-    fn counting_frames_matches_loading_them() {
-        let path = temp("io_count");
+    fn count_encoded_matches_loaded_entry_count() {
+        let path = temp_path("io_count");
         let board = Position::from_fen(STARTPOS);
         let entries = vec![SoulEntry::from_board(&board, 1.0, Some(30)); 4];
-
-        save_encoded(&path, &entries).expect("writing the first frame");
-        append_encoded(&path, &entries[..3]).expect("appending a second");
-
-        assert_eq!(count_encoded(&path).expect("counting the frames"), 7);
-        assert_eq!(load_encoded(&path).expect("loading the frames").len(), 7);
-
+        save_encoded(&path, &entries).expect("Writing first frame");
+        append_encoded(&path, &entries[..3]).expect("Appending second frame");
+        assert_eq!(count_encoded(&path).expect("Counting records"), 7);
+        assert_eq!(load_encoded(&path).expect("Loading records").len(), 7);
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -13,7 +13,7 @@ use super::{
     scale::golden_search_k,
 };
 use crate::evaltune::{
-    loader::{self, Entry, ReplayFilter, SoulEntry},
+    loader::{self, EpdEntry, ReplayFilter, SoulEntry},
     training::{self, TunableData},
 };
 
@@ -23,7 +23,7 @@ pub fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
     println!("Loading dataset...");
 
     let mut soul_entries: Vec<SoulEntry> = Vec::new();
-    let mut epd_entries: Vec<Entry> = Vec::new();
+    let mut epd_entries: Vec<EpdEntry> = Vec::new();
 
     for path in dataset_paths {
         if path.ends_with(".soul") || path.ends_with(".soul.zst") {

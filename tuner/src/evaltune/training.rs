@@ -15,6 +15,7 @@ pub const TREND_FAST: usize = 10;
 const TREND_SLOW: usize = 40;
 pub const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
 const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
+
 /// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
 ///
 /// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
@@ -308,7 +309,7 @@ impl TunableData for loader::SoulEntry {
     }
 }
 
-impl TunableData for loader::Entry {
+impl TunableData for loader::EpdEntry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 {
         eval_f64(&self.board, values)

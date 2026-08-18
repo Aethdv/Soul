@@ -18,31 +18,22 @@ use rayon::prelude::*;
 use zerocopy::IntoBytes;
 
 pub use super::engine::{
-    FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl, load_encoded,
-    parse_epd_str, parse_viri_file, save_encoded,
+    EpdEntry, FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_score, flip_wdl,
+    load_encoded, parse_epd_str, parse_viri_file, save_encoded,
 };
-use super::{
-    engine::Position as Board,
-    palette::{self, RESET},
-};
+use super::palette::{self, RESET};
 use crate::core::fnv::Fnv1a;
 
-/// A raw EPD position with its game result (1.0 = white, 0.0 = black, 0.5 = draw).
-pub struct Entry {
-    pub board: Board,
-    pub result: f64,
-}
-
 /// Load raw EPD positions, decompressing zstd on the fly.
-pub fn load_epd(path: &str) -> io::Result<Vec<Entry>> {
+pub fn load_epd(path: &str) -> io::Result<Vec<EpdEntry>> {
     let file = File::open(path)?;
     let reader = open_reader(file, Path::new(path))?;
     let mut entries = Vec::new();
 
     for line in reader.lines() {
         let line = line?;
-        if let Some((board, result)) = parse_epd_str(&line) {
-            entries.push(Entry { board, result });
+        if let Some(entry) = parse_epd_str(&line) {
+            entries.push(entry);
         }
     }
     Ok(entries)
@@ -64,12 +55,13 @@ pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
 
     for line in reader.lines() {
         let line = line?;
-        let Some((board, result)) = parse_epd_str(&line) else {
+        let Some(EpdEntry { board, result, eval }) = parse_epd_str(&line) else {
             continue;
         };
 
-        // Result is white-relative in EPD, STM-relative from here on.
-        encoded.push(SoulEntry::from_board(&board, flip_wdl(result, board.stm), None));
+        // Both labels are white-relative in EPD, STM-relative from here on.
+        let stm = board.stm;
+        encoded.push(SoulEntry::from_board(&board, flip_wdl(result, stm), eval.map(|e| flip_score(e, stm))));
 
         if last_print.elapsed().as_millis() > 500 {
             print!("\r\x1b[K  Processed {} positions...", encoded.len());
@@ -140,7 +132,12 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
             match load_epd(path) {
                 Ok(epd_entries) => {
                     for e in &epd_entries {
-                        all_entries.push(SoulEntry::from_board(&e.board, flip_wdl(e.result, e.board.stm), None));
+                        let stm = e.board.stm;
+                        all_entries.push(SoulEntry::from_board(
+                            &e.board,
+                            flip_wdl(e.result, stm),
+                            e.eval.map(|v| flip_score(v, stm)),
+                        ));
                     }
                 },
                 Err(e) => bail_dataset(path, &e),

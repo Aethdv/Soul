@@ -1,9 +1,7 @@
-//! Forward-mode AD evaluation using dual numbers.
+//! Forward-mode automatic differentiation (AD) using dual numbers.
 //!
-//! Instead of building a tape and running `backward()`, we carry `DUAL_N`
-//! partial derivatives alongside each value. PSQT gradients are recovered
-//! by multiplying the 8 accumulator-lane gradients by each piece's ±1
-//! contribution.
+//! Tracks partial derivatives alongside evaluation values using dual numbers.
+//! Serves as an exact ground-truth oracle for verifying analytic linear gradient routines.
 
 use crate::{
     core::{
@@ -53,7 +51,7 @@ macro_rules! impl_scatter {
         paste::paste! {
             impl DualEvalResult {
                 pub fn scatter_dynamic(&self, outer_deriv: f64, param_grads: &mut [f64]) {
-                    let mut slot = 2; // MG=0, EG=1
+                    let mut slot = 2; // Slots 0 and 1 are reserved for MG and EG accumulator lanes
                     $(
                         scatter::[<scatter_ $ty:lower>](
                             &self.grad,
@@ -71,28 +69,23 @@ macro_rules! impl_scatter {
 
 crate::define_tunables!(impl_scatter);
 
-/// Consumed by `scatter_dynamic` once the outer loss derivative is known.
+/// Output derivatives from a forward-mode dual number evaluation pass.
 pub struct DualEvalResult {
-    /// One slot per dual-tracked input (`DUAL_SLOTS`), zero-padded to `DUAL_N`.
+    /// Partial derivatives per tracked parameter, zero-padded to `DUAL_N`.
     pub grad: [f32; DUAL_N],
 }
 
-/// Eval + gradient scatter via forward-mode AD.
+/// Evaluates a position and accumulates parameter gradients using forward-mode AD.
 ///
-/// Correctness oracle over `eval_linear_grad`: comparing loss and gradients
-/// across the same inputs verifies the hand-derived formulas.
-///
-/// Returns the squared error for loss tracking.
+/// Serves as the ground-truth oracle for `eval_linear_grad`. Returns squared error loss.
 #[inline]
 pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    // PSQT + material in plain f64 (no dual, just lane sums and piece counts)
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
     let mut phase_dual = DualNode::zero();
-
     for (pt, count) in piece_counts.iter().enumerate().take(6) {
         let phase_idx = LAYOUT.phase_offset + pt;
         if phase_idx < values.len() {
@@ -115,20 +108,16 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     let params = EvalParams::<DualNode>::load_tunable(values);
     let features = SharedFeatures::compute(board);
 
-    // Forward pass
     let result = evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
     let score = result.val;
 
-    // Sigmoid + loss derivative
     let sig = sigmoid(score, k);
     let err = sig - target;
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
 
-    // Non-PSQT gradients
-    let dummy = DualEvalResult { grad: result.grad };
-    dummy.scatter_dynamic(outer_deriv, param_grads);
+    let eval_result = DualEvalResult { grad: result.grad };
+    eval_result.scatter_dynamic(outer_deriv, param_grads);
 
-    // Re-iterate piece bitboards for PSQT gradients
     let d_mg = outer_deriv * f64::from(result.grad[0]);
     let d_eg = outer_deriv * f64::from(result.grad[1]);
 
@@ -136,25 +125,21 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     err * err
 }
 
-/// Because every parameter is linear (`param · feature`), the gradient w.r.t.
-/// each one is just its feature coefficient on the board. Computing these
-/// directly is cheaper than the dual path:
+/// Evaluates a position and accumulates parameter gradients using analytic linear derivatives.
 ///
-/// - Linear: one f64 write per slot.
-/// - Dual: `DUAL_N` f32 ops per arithmetic op, where `DUAL_N = (DUAL_SLOTS + 7) & !7`
-///   and `DUAL_SLOTS = 2 + ∑slot_width(tunables)`.
+/// Every parameter enters the eval as `param · feature`, so its gradient is that feature's
+/// coefficient and can be written straight out: one f64 per slot, against `DUAL_N` f32 ops
+/// per arithmetic op on the dual path. The dual path stays as the oracle for this one.
 ///
-/// Returns the squared error for loss tracking.
+/// Returns squared error loss.
 #[inline]
 pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
-    // ── PSQT + Material accumulator
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    // ∂J/∂PhaseWeight is deliberately omitted: phase weights must stay at their
-    // engineered values for the MG/EG interpolation to be meaningful.
+    // Phase weights are kept fixed; game phase definition must not drift during tuning.
     let phase = compute_phase_f64(&piece_counts, values);
 
     let params = EvalParams::<f64>::load_tunable(values);
@@ -168,63 +153,50 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let stm_sign: f64 = if board.stm == Color::White { 1.0 } else { -1.0 };
     let score = white_score * stm_sign;
 
-    // ── Sigmoid + loss derivative
-    // `d` folds the STM sign into the outer derivative once,
-    // so every downstream scatter can stay STM-agnostic.
     let sig = sigmoid(score, k);
     let err = sig - target;
-    let outer = 2.0 * err * sig * (1.0 - sig) * k;
-    let d = outer * stm_sign;
+    let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
+    let stm_outer_deriv = outer_deriv * stm_sign;
 
-    // Combiner owns every upstream derivative. PSQT / material scatter
-    // (out-of-band, accumulator-level) pulls mg_eg; term scatter reads
-    // the rest via scatter_all_terms.
-    let upstreams = LinearCombiner::backward(&buckets, phase, &combiner, d, param_grads);
+    let upstreams = LinearCombiner::backward(&buckets, phase, &combiner, stm_outer_deriv, param_grads);
 
-    // ── PSQT + material (accumulator-level, not a LinearTerm)
-    // One board sweep writes both gradients for every active piece.
     let d_mg = upstreams.mg_eg.d_mg;
     let d_eg = upstreams.mg_eg.d_eg;
 
     scatter_psqt(board, d_mg, d_eg, param_grads);
-    // Adding a new term = one line in `register_terms!`
     scatter_all_terms(&features, &upstreams, param_grads);
     err * err
 }
 
-/// Substitutes f64 for i32 in the engine eval path.
+/// Evaluates a board using 64-bit floating point weights.
 #[inline(always)]
 pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
     eval_f64_with_acc(board, values).0
 }
 
-/// Returns the eval score and the lane-sum accumulator + piece counts,
-/// so `eval_linear_grad` can reuse them instead of re-iterating the board.
+/// Evaluates a board and returns the final score along with accumulator lane sums and piece counts.
 pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
-    let mut trace_acc = <f64 as EvalMath>::Vec8::zero();
+    let mut accum = <f64 as EvalMath>::Vec8::zero();
     let mut piece_counts = [0.0f64; 6];
 
-    accumulate_lane_vals(board, values, &mut trace_acc.0, &mut piece_counts);
+    accumulate_lane_vals(board, values, &mut accum.0, &mut piece_counts);
 
     let phase = compute_phase_f64(&piece_counts, values);
-    // Same generator the DualNode path uses: no per-term hand literal to drift.
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
 
-    (evaluate_generic::<f64>(board, &trace_acc, phase, &params, Some(&features)), trace_acc.0, piece_counts)
+    (evaluate_generic::<f64>(board, &accum, phase, &params, Some(&features)), accum.0, piece_counts)
 }
 
-/// PSQT and material gradients for one board: the half of the scatter that lives in the
-/// accumulator rather than in any registered term.
+/// Scatters material and PSQT parameter gradients across all active pieces on the board.
 ///
-/// Both gradient paths end here, and that is the point. The dual pass exists to cross-check
-/// the linear one, so a copy of this loop in each would let one bug sit in both and be agreed
-/// with. `d_mg` and `d_eg` arrive carrying the loss derivative and the STM sign.
+/// Both gradient paths end here. A copy of this loop in each would let one bug sit in
+/// both, and the oracle would agree with itself.
 #[inline(always)]
 fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
     debug_assert!(
         param_grads.len() >= LAYOUT.mobility_open_offset,
-        "param_grads too small: {} < {} (material+PSQT footprint)",
+        "param_grads buffer too small: {} < {} (material + PSQT layout requirement)",
         param_grads.len(),
         LAYOUT.mobility_open_offset,
     );
@@ -265,17 +237,18 @@ fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
     }
 }
 
+/// Accumulates material and PSQT contributions into middlegame (lane 0) and endgame (lane 1) totals.
 #[inline(always)]
 fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
     debug_assert!(
         values.len() >= LAYOUT.mobility_open_offset,
-        "values too short: {} < {} (needs PSQT + material footprint)",
+        "values buffer too short: {} < {} (needs PSQT + material footprint)",
         values.len(),
         LAYOUT.mobility_open_offset
     );
 
-    // Only lanes [0] (MG) and [1] (EG) carry signal. Lanes 2–7 mirror the
-    // SIMD accumulator layout, but the f64 evaluator path never reads them.
+    // Lanes 2-7 exist to mirror the SIMD accumulator's layout; the f64 path never
+    // reads them, so only MG and EG get written here.
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
         piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
@@ -324,32 +297,31 @@ mod tests {
         tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
     };
 
-    // Each must round-trip cleanly through `SoulEntry`.
     const FENS: &[&str] = &[
-        // White-to-move
+        // White-to-move positions
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-        // Black-to-move
+        // Black-to-move positions
         "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
         "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
         // Bishop pair imbalance
         "r1bqkbnr/1pp2ppp/p1p5/4p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5",
         // Rook open-file imbalance
         "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
-        // Passed pawns: mid-board and near-promotion
+        // Passed pawn
         "8/2k5/8/3K4/2P5/8/8/8 w - - 0 1",
         "8/4P3/6k1/4K3/8/8/8/8 w - - 0 1",
         // Passer far from the enemy king
         "8/8/P7/8/2K5/8/8/7k w - - 0 1",
-        // Doubled pawns
+        // Doubled pawn
         "4k3/pp4pp/8/8/8/2P5/2P2PPP/4K3 w - - 0 1",
-        // Isolated pawns
+        // Isolated pawn
         "4k3/p1p1p1p1/7p/8/3P4/8/PP4PP/4K3 w - - 0 1",
         // Phalanx
         "4k3/p5p1/2p3pp/8/3PP3/8/P5PP/4K3 w - - 0 1",
-        // Defended pawns
+        // Defended pawn
         "4k3/2p3pp/1p3p2/8/2P2P2/1P4P1/7P/4K3 w - - 0 1",
         // Backward pawn
         "8/3p2k1/2p5/4p3/2P1P3/3P4/K7/8 w - - 0 1",
@@ -362,12 +334,10 @@ mod tests {
     const TARGET: f64 = 0.5;
     const K: f64 = 0.005;
 
-    // Names the owning block for drift-localized oracle failures.
     fn term_for(slot: usize) -> &'static str {
         BLOCKS.iter().rev().find(|b| slot >= b.offset).map_or("out of range", |b| b.name)
     }
 
-    // Compares eval vs gradients across both paths, identifies drift by term name.
     fn assert_oracle_matches(context: &str, values: &[f64]) {
         for fen in FENS {
             let pos = Position::from_fen(fen);
@@ -393,10 +363,6 @@ mod tests {
         }
     }
 
-    /// The phase block keeps its shipped weights whatever else a test vector holds.
-    /// Junk or zeros there make `phase_raw` negative on any real position, and a
-    /// phase clamped to 0 zeroes `d_mg` and tapers the king-safety block away, so
-    /// half of every gradient gets compared as 0 against 0.
     fn with_phase(mut values: Vec<f64>) -> Vec<f64> {
         for (pt, &w) in PHASE.iter().enumerate() {
             values[LAYOUT.phase_offset + pt] = f64::from(w);
@@ -406,25 +372,20 @@ mod tests {
 
     fn full_values() -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.total];
-
         for (n, v) in values.iter_mut().enumerate() {
             *v = (n % 17) as f64 - 8.0;
         }
         with_phase(values)
     }
 
-    // Isolates one LinearTerm: nonzero values in `range`, the phase block, zero elsewhere.
     fn values_in_range(range: Range<usize>) -> Vec<f64> {
         let mut values = vec![0.0f64; LAYOUT.total];
-
         for i in range {
             values[i] = (i % 17) as f64 - 8.0;
         }
         with_phase(values)
     }
 
-    /// Pressure on each king, everything else zeroed, so the two tests below read
-    /// the curve alone.
     fn danger_buckets(danger_us: f64, danger_them: f64) -> Accumulators<f64> {
         Accumulators::<f64> {
             mg_eg: 0.0,
@@ -439,17 +400,12 @@ mod tests {
         }
     }
 
-    /// Fixed rather than read from `KING_DANGER`: the derivatives have to hold at
-    /// any curvature, and a shipped zero leaves the slope test verifying no curve.
     const TEST_CURVE: f64 = 32.0;
 
     fn curvature(c: f64) -> CombinerParams<f64> {
         CombinerParams { king_danger: c }
     }
 
-    /// No fen in the set has a king pressured enough to check this: `weak` peaks
-    /// at 2, which moves the gradient by a few percent of a value already under
-    /// the comparison tolerance. So difference the slope directly.
     #[test]
     fn test_king_danger_slope_oracle() {
         let phase = f64::from(TOTAL_PHASE);
@@ -465,18 +421,13 @@ mod tests {
             let (hi, lo) = (danger_buckets(p + h, 0.0), danger_buckets((p - h).max(0.0), 0.0));
             let rise = LinearCombiner::forward(&hi, phase, &shipped) - LinearCombiner::forward(&lo, phase, &shipped);
             let measured = rise / (hi.danger_us - lo.danger_us);
-            assert!((analytic - measured).abs() < 0.05, "danger slope at {p}: analytic {analytic}, finite difference {measured}",);
+            assert!((analytic - measured).abs() < 0.05, "danger slope at {p}: analytic {analytic}, finite difference {measured}");
         }
     }
 
-    /// The curvature is the combiner's own weight, so no term's `scatter` touches
-    /// it and `register_terms!` cannot miss it. Differenced against the forward for
-    /// the same reason as the slope: the fen set has no besieged king in it.
     #[test]
     fn test_king_danger_curvature_oracle() {
         let phase = f64::from(TOTAL_PHASE);
-        // The curve is linear in its curvature, so the gradient at any point equals
-        // the secant over any interval. Wide, so the trunc inside it averages out.
         let span = 64.0;
 
         for (us, them) in [(0.0, 0.0), (150.0, 0.0), (0.0, 300.0), (465.0, 150.0)] {
@@ -496,19 +447,8 @@ mod tests {
         }
     }
 
-    /// Truncation sites one evaluation passes through, each losing under a unit:
-    /// the PSQT lanes, the two mobility tapers, `(w_atk·weak)/10` per side, the
-    /// bonus and safety tapers, and the curvature per side when it is live.
     const ROUND_SITES: f64 = 9.0;
 
-    /// The property the tuner's gauge trades on: scale the weights and K absorbs it.
-    ///
-    /// Asserted only where the eval has some size to it, since the truncation sites
-    /// round a near-zero score to noise. A site's cost does not grow with the scale,
-    /// but `f·eval(θ)` carries `f` times whatever the base evaluation lost, so the
-    /// tolerance has to. A curvature scaled with the rest instead costs several
-    /// times that, and only a nonzero one can be scaled wrongly, so the sweep
-    /// carries some.
     #[test]
     fn test_score_is_homogeneous_in_its_weights_oracle() {
         let base = default_values(&collect_parameters());
@@ -537,17 +477,13 @@ mod tests {
                     asserted += 1;
 
                     let bound = ROUND_SITES * (1.0 + f);
-                    assert!((got - want).abs() <= bound, "curve {curve}, ×{f} on '{fen}': {got} against {want}");
+                    assert!((got - want).abs() <= bound, "curve {curve}, scale {f} on '{fen}': got {got}, want {want}");
                 }
             }
         }
-        assert!(asserted >= 12, "no position carried enough eval to test: {asserted}");
+        assert!(asserted >= 12, "insufficient positions with large enough eval to test: {asserted}");
     }
 
-    /// The engine plays the `i32` monomorphization and the tuner fits the `f64`
-    /// one, which is only sound if they are the same function. They diverge
-    /// wherever one truncates and the other does not, and nothing else here
-    /// compares across the two.
     #[test]
     fn test_i32_matches_f64_oracle() {
         let values = default_values(&collect_parameters());
@@ -559,13 +495,9 @@ mod tests {
         }
     }
 
-    /// Every other test here runs at junk magnitudes, one to two orders of
-    /// magnitude under the shipped weights. Harmless for a linear term, and no
-    /// basis at all for anything whose shape depends on scale.
     #[test]
     fn test_shipped_values_oracle() {
         let values = default_values(&collect_parameters());
-
         assert_oracle_matches("shipped defaults", &values);
     }
 
@@ -589,8 +521,6 @@ mod tests {
         assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + LAYOUT.xray_len));
     }
 
-    /// Every roster term alone, so a scatter drift names the term that caused it
-    /// instead of the pipeline.
     macro_rules! bonus_term_oracles {
         ( [] $( $block:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
             #[test]
@@ -599,7 +529,6 @@ mod tests {
             }
         };
 
-        // A scalar bonus owns one MG slot and the EG slot after it.
         (@one scalar $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident) => {
             paste::paste! {
                 assert_oracle_matches(
@@ -621,8 +550,6 @@ mod tests {
 
     crate::bonus_terms!(bonus_term_oracles);
 
-    /// `accumulate_record_grad` shares math with the board-based gradient paths.
-    /// A drift here corrupts every `run_encoded` session.
     #[test]
     fn test_encoded_path_oracle() {
         let values = full_values();
@@ -632,8 +559,6 @@ mod tests {
             let pos = Position::from_fen(fen);
             let entry = SoulEntry::from_board(&pos, TARGET, Some(20));
 
-            // Position → SoulEntry → to_fen → Position.
-            // If this fails, to_fen() is corrupting the board.
             let rt_pos = Position::from_fen(&entry.to_fen());
             let orig_score = eval_f64(&pos, &values);
             let rt_score = eval_f64(&rt_pos, &values);
@@ -676,9 +601,6 @@ mod tests {
         }
     }
 
-    /// A term reaches the cached eval through `from_entry`'s packing, and nothing
-    /// checks that: a field left unpacked stays zero, the score never moves, and
-    /// the drift asserts above stay quiet because both paths agree on it.
     #[test]
     fn test_encoded_block_coverage_oracle() {
         let base = default_values(&collect_parameters());
@@ -694,13 +616,14 @@ mod tests {
             }
 
             let moved = records.iter().any(|r| (eval_record(r, &base) - eval_record(r, &bumped)).abs() > 1e-9);
-            assert!(moved, "block `{}` never moves the cached eval: unpacked in from_entry, or no FEN reaches it", block.name);
+            assert!(
+                moved,
+                "block `{}` never changes the cached evaluation: unpacked in from_entry or uncovered by test FENs",
+                block.name
+            );
         }
     }
 
-    /// Runs at the shipped defaults, not `full_values`: those junk parameters put
-    /// the phase on a boundary where every truncation is a no-op, so every test
-    /// built on them agrees with the board path wherever it rounds.
     #[test]
     fn test_encoded_matches_board_at_defaults_oracle() {
         let values = default_values(&collect_parameters());
@@ -713,11 +636,6 @@ mod tests {
         }
     }
 
-    /// Workload for `make flops`, which runs it once per mode and differences a
-    /// FLOP counter across the runs.
-    ///
-    /// The bench positions rather than `FENS`: op count scales with the pieces on
-    /// the board, and `FENS` leans on sparse endgames chosen to isolate terms.
     #[test]
     #[ignore]
     fn measure_gradient_ops() {
@@ -734,8 +652,6 @@ mod tests {
 
         let mut grads = vec![0.0f64; values.len()];
 
-        // Generic rather than `dyn`, so each mode gets its own loop instead of an
-        // indirect call per position.
         fn drive(iters: usize, n: usize, mut body: impl FnMut(usize) -> f64) -> f64 {
             let mut sink = 0.0;
             for _ in 0..iters {
@@ -748,25 +664,19 @@ mod tests {
 
         let n = boards.len();
 
-        // Once, out here: matching the mode inside the loop times a string compare
-        // alongside the work.
         let sink = match mode.as_str() {
             "grad" => {
                 drive(iters, n, |i| eval_linear_grad(black_box(&boards[i]), black_box(&values), TARGET, K, black_box(&mut grads)))
             },
-            // The cached twin, what an epoch runs.
             "record" => drive(iters, n, |i| eval_record(black_box(&records[i]), black_box(&values))),
             "recordgrad" => drive(iters, n, |i| {
                 let record = black_box(&records[i]);
                 let eval = eval_record_full(record, black_box(&values));
-
                 accumulate_record_grad(record, &eval, 1.0, black_box(&mut grads));
                 eval.score
             }),
-            // The loss `grad` also pays, so `grad` minus this is the scatter.
             "loss" => drive(iters, n, |i| {
                 let err = sigmoid(black_box(eval_f64(black_box(&boards[i]), black_box(&values))), K) - TARGET;
-
                 err * err
             }),
             _ => drive(iters, n, |i| eval_f64(black_box(&boards[i]), black_box(&values))),

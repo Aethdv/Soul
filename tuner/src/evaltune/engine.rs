@@ -21,8 +21,8 @@ pub use soul::{
         wdl::sigmoid,
     },
     tools::dataset::{
-        FeatureRecord, GameScan, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_wdl,
-        load_encoded, parse_epd_str, parse_viri_file, save_encoded, scan_viri_games,
+        EpdEntry, FeatureRecord, GameScan, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full,
+        flip_score, flip_wdl, load_encoded, parse_epd_str, parse_viri_file, save_encoded, scan_viri_games,
         tape::eval_f64,
         viri_format::{DECISIVE_ENDING, QUIET_ENDING},
     },
@@ -30,12 +30,10 @@ pub use soul::{
 
 #[cfg(test)]
 mod tests {
-    /// Anything naming `soul::` outside this file has gone around the door.
     #[test]
     fn nothing_else_reaches_past_this_file() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/evaltune");
         let mut offenders = Vec::new();
-
         for entry in std::fs::read_dir(dir).expect("the module's own directory") {
             let path = entry.expect("a readable entry").path();
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();

@@ -393,6 +393,18 @@ impl Position {
         self.castling_rights & mask != 0 && self.is_castle_legal(self.occ, ksq, rsq, data, check_sqs, empty, color.opposite())
     }
 
+    /// Rights mask and `castling_rooks` slot for a rook, from its file against its
+    /// king's. The king starts between its rooks in Chess960 too, so the file decides.
+    #[inline]
+    pub const fn castling_side(rook: Square, king: Square, color: Color) -> (u8, usize) {
+        match (matches!(color, Color::White), rook.file() > king.file()) {
+            (true, true) => (WHITE_OO, ROOK_W_KS),
+            (true, false) => (WHITE_OOO, ROOK_W_QS),
+            (false, true) => (BLACK_OO, ROOK_B_KS),
+            (false, false) => (BLACK_OOO, ROOK_B_QS),
+        }
+    }
+
     /// Emits `color`'s castling moves, at most one per wing.
     ///
     /// The right gates the slot read, or a stale slot aliases the other side's and
