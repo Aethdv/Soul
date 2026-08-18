@@ -44,7 +44,7 @@ pub trait TermSource<Term> {
     fn extract(&self) -> Self::Input;
 }
 
-/// Forward `apply` and backward `scatter`.
+/// One eval term: how it scores a position, and how its parameters take gradient.
 /// `Input` connects the term to its [`TermSource`]; [`register_terms!`]
 /// derives it so callers never spell the type.
 pub trait LinearTerm {
@@ -57,7 +57,8 @@ pub trait LinearTerm {
     /// The same buckets from extracted features, for sources with no board.
     /// Reads the flat vector at the layout offsets [`Self::scatter`] writes.
     fn apply_input(input: Self::Input, values: &[f64], phase: f64, acc: &mut Accumulators<f64>);
-    /// Write parameter gradients from extracted features.
+    /// Add this term's parameter gradients at its layout offsets. Every term
+    /// scatters into the same vector, so assigning would wipe the others.
     fn scatter(input: Self::Input, upstream: Self::Upstream, grads: &mut [f64]);
 }
 
@@ -68,6 +69,7 @@ macro_rules! register_terms {
     (
         $( $term:path => $upstream:ident ),* $(,)?
     ) => {
+        /// Every registered term's forward pass, in declaration order.
         #[inline(always)]
         pub fn apply_all_terms<T: $crate::engine::autograd::EvalMath<Scalar = T>>(
             features: &$crate::engine::eval::SharedFeatures,
@@ -98,7 +100,8 @@ macro_rules! register_terms {
             )*
         }
 
-        /// Input type inferred from each term's [`LinearTerm::Input`].
+        /// Every registered term's backward pass, with the input type inferred
+        /// from each term's [`LinearTerm::Input`].
         #[inline(always)]
         pub fn scatter_all_terms<S>(
             source: &S,
