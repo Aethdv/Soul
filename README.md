@@ -59,17 +59,6 @@ make evaltune
 ./eval --dataset data/data.soul.zst --epochs <N>
 ```
 
-### Search Tuning
-
-Tune search parameters with a separable, active CMA-ES with learning-rate adaptation:
-
-```bash
-make searchtune
-./search --openings book.epd --epochs <N> --tc "40+0.4"
-```
-
-*(Results auto-save to `searchtune_checkpoint.json` and can be resumed with `--resume`.)*
-
 ## 🎮 Configuration (UCI / XBoard Options)
 
 Soul exposes the following options via both protocols:
