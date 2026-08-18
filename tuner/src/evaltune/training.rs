@@ -53,18 +53,18 @@ pub trait TunableData: Sync + Send {
 /// The derivative is the target's own response to a K move, `instance_blend ·
 /// σ_e(1 − σ_e) · score`, zero when the target is the bare game result.
 /// The K gradient needs it once the loss is a function of a blended target.
-pub fn wdl_target(entry: &loader::SoulEntry, k: f64, wdl_blend: f64) -> (f64, f64) {
+pub fn wdl_target(record: &FeatureRecord, k: f64, wdl_blend: f64) -> (f64, f64) {
     const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
-    if entry.score == loader::SoulEntry::NO_SCORE {
-        return (f64::from(entry.result) / 2.0, 0.0);
+    if record.score == loader::SoulEntry::NO_SCORE {
+        return (f64::from(record.result) / 2.0, 0.0);
     }
 
-    let score = f64::from(entry.score);
+    let score = f64::from(record.score);
     let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / CONFIDENCE_THRESHOLD).min(1.0) };
     let expected = sigmoid(score, k);
     // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
-    let target = (1.0 - instance_blend).mul_add(f64::from(entry.result) / 2.0, instance_blend * expected);
+    let target = (1.0 - instance_blend).mul_add(f64::from(record.result) / 2.0, instance_blend * expected);
     let dt_dk = instance_blend * expected * (1.0 - expected) * score;
     (target, dt_dk)
 }

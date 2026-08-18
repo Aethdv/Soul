@@ -38,11 +38,11 @@ pub fn curvature_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
         .fold(
             || (Curvature::zeros(n), vec![0.0; n], Vec::with_capacity(64)),
             |(mut acc, mut scratch, mut nonzeros), i| {
-                let (entry, record) = (&ctx.train[i], &ctx.records[i]);
-                if ctx.passes_vol_filter(entry, record.static_eval) {
+                let record = &ctx.train[i];
+                if ctx.passes_vol_filter(record) {
                     let eval = loader::eval_record_full(record, &values);
                     let p = sigmoid(eval.score, k);
-                    let (target, _) = wdl_target(entry, k, blend);
+                    let (target, _) = wdl_target(record, k, blend);
                     let w = if ctx.phase_weights.is_empty() { 1.0 } else { ctx.phase_weights[i] };
 
                     accumulate_record_grad(record, &eval, 1.0, &mut scratch);

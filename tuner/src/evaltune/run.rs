@@ -68,9 +68,8 @@ pub enum Task {
 }
 
 pub struct TrainerContext<'a> {
-    pub train: &'a [loader::SoulEntry],
-    pub val: &'a [loader::SoulEntry],
-    pub records: &'a [FeatureRecord],
+    pub train: &'a [FeatureRecord],
+    pub val: &'a [FeatureRecord],
     pub train_count: usize,
     pub phase_weights: &'a [f64],
     loss_fn: LossFn,
@@ -84,21 +83,21 @@ impl TrainerContext<'_> {
         self.loss_fn
     }
 
-    pub fn passes_vol_filter(&self, entry: &loader::SoulEntry, static_eval: i16) -> bool {
-        if self.vol_threshold == 0 || entry.score == loader::SoulEntry::NO_SCORE {
+    pub fn passes_vol_filter(&self, record: &FeatureRecord) -> bool {
+        if self.vol_threshold == 0 || record.score == loader::SoulEntry::NO_SCORE {
             return true;
         }
         // Piece count scales the threshold, so complex positions get the wider net.
         // The floor is the guard: a negative threshold makes `|static - score| <= t`
         // impossible and silently drops every position.
         let t = if self.vol_adaptive {
-            let occ = entry.occupancy.count_ones() as i16;
+            let occ = i16::from(record.piece_count);
             self.vol_threshold.saturating_add((occ - 10).saturating_mul(2))
         } else {
             self.vol_threshold
         }
         .max(0);
-        (i32::from(static_eval) - i32::from(entry.score)).abs() <= t as i32
+        (i32::from(record.static_eval) - i32::from(record.score)).abs() <= t as i32
     }
 
     pub fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
@@ -109,12 +108,11 @@ impl TrainerContext<'_> {
                 |(mut g, mut k_g, mut loss, mut count), chunk| {
                     for &i in chunk {
                         let i = i as usize;
-                        let entry = &self.train[i];
-                        let record = &self.records[i];
-                        if !self.passes_vol_filter(entry, record.static_eval) {
+                        let record = &self.train[i];
+                        if !self.passes_vol_filter(record) {
                             continue;
                         }
-                        let (target, dt_dk) = wdl_target(entry, k, blend);
+                        let (target, dt_dk) = wdl_target(record, k, blend);
                         let eval = loader::eval_record_full(record, values);
                         let sig = sigmoid(eval.score, k);
                         let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
@@ -160,22 +158,21 @@ impl TrainerContext<'_> {
         self.val_eval(values, [(k, blend)])[0]
     }
 
-    /// One weighted pass over `entries`, whose records start at `offset` in the packed array.
+    /// One weighted pass over `records`, whose phase weights start at `offset`.
     fn split_eval<const N: usize>(
         &self,
-        entries: &[loader::SoulEntry],
+        records: &[FeatureRecord],
         offset: usize,
         values: &[f64],
         probes: [(f64, f64); N],
     ) -> [f64; N] {
-        let (wsum, weight) = entries
+        let (wsum, weight) = records
             .par_iter()
             .enumerate()
             .fold(
                 || ([0.0_f64; N], 0.0_f64),
-                |(mut wsum, mut weight), (idx, entry)| {
-                    let record = &self.records[offset + idx];
-                    if !self.passes_vol_filter(entry, record.static_eval) {
+                |(mut wsum, mut weight), (idx, record)| {
+                    if !self.passes_vol_filter(record) {
                         return (wsum, weight);
                     }
 
@@ -183,7 +180,7 @@ impl TrainerContext<'_> {
                     let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[offset + idx] };
                     for (sum, &(k, blend)) in wsum.iter_mut().zip(&probes) {
                         let sig = sigmoid(score, k);
-                        let (target, _) = wdl_target(entry, k, blend);
+                        let (target, _) = wdl_target(record, k, blend);
                         *sum += w * self.loss_fn.loss(sig, target);
                     }
                     weight += w;
@@ -451,6 +448,7 @@ fn train_entries(
     // shuffle needs a seed of its own: under the training seed, each run holds out a different
     // tenth and no two validation losses compare.
     let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &groups, split_seed);
+    let total = entries.len();
     // One-time cost: training reads FeatureRecords straight through.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
@@ -480,8 +478,7 @@ fn train_entries(
             entries.len(),
         );
     }
-    let train_count = entries.len() - val_count;
-    let (train, val) = entries.split_at(train_count);
+    let train_count = total - val_count;
     // A file with a handful of long games cannot spare a tenth of itself without spending most of
     // its independent samples, so the split keeps them and says so: `L_val` is then an estimate
     // over that many games, and `best_val` selection is choosing on it.
@@ -492,10 +489,16 @@ fn train_entries(
         );
     }
 
-    print_dataset_stats(train, val, entries.len(), |e: &loader::SoulEntry| {
+    // Stats need the side to move, which the record does not carry. The epoch needs
+    // only score and result, and the record has both.
+    let (entry_train, entry_val) = entries.split_at(train_count);
+    print_dataset_stats(entry_train, entry_val, total, |e: &loader::SoulEntry| {
         let stm = if (e.stm_and_ep & 0x80) == 0 { Color::White } else { Color::Black };
         flip_wdl(f64::from(e.result) / 2.0, stm)
     });
+    drop(entries);
+
+    let (train, val) = records.split_at(train_count);
 
     // Weight loss too, not just gradient, or selection fights training.
     let phase_weights = if config.phase_balance {
@@ -508,7 +511,6 @@ fn train_entries(
     let ctx = TrainerContext {
         train,
         val,
-        records: &records,
         train_count,
         phase_weights: &phase_weights,
         loss_fn: config.loss,
@@ -616,9 +618,8 @@ fn train_loop(
     let initial_values = values.clone();
     // Train split only, strided to span it: nothing is fitted to the probe, but the
     // val column keeps its own positions.
-    let train = &ctx.records[..ctx.train_count];
-    let stride = (train.len() / GAUGE_PROBE).max(1);
-    let probe: Vec<&FeatureRecord> = train.iter().step_by(stride).take(GAUGE_PROBE).collect();
+    let stride = (ctx.train.len() / GAUGE_PROBE).max(1);
+    let probe: Vec<&FeatureRecord> = ctx.train.iter().step_by(stride).take(GAUGE_PROBE).collect();
     let mut gauge = Gauge::new(probe, &default_values);
     let hold_scale = gauge.holds(&values);
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
@@ -1300,7 +1301,6 @@ mod tests {
         let make_ctx = |adaptive: bool| TrainerContext {
             train: &[],
             val: &[],
-            records: &[],
             train_count: 0,
             phase_weights: &[],
             loss_fn: LossFn::CrossEntropy,
@@ -1308,15 +1308,16 @@ mod tests {
             vol_adaptive: adaptive,
         };
 
-        let entry = |occ: u32| loader::SoulEntry { occupancy: (1u64 << occ) - 1, ..loader::SoulEntry::default() };
+        // Score defaults to zero, so static_eval is the whole disagreement.
+        let rec = |pieces: u8, static_eval: i16| FeatureRecord { piece_count: pieces, static_eval, ..Default::default() };
         let ctx = make_ctx(true);
-        assert!(ctx.passes_vol_filter(&entry(32), 80), "occ 32: t = 84 accepts an 80 cp disagreement");
-        assert!(!ctx.passes_vol_filter(&entry(32), 100), "occ 32: t = 84 rejects a 100 cp disagreement");
-        assert!(ctx.passes_vol_filter(&entry(8), 30), "occ 8: t = 36 accepts a 30 cp disagreement");
-        assert!(!ctx.passes_vol_filter(&entry(8), 50), "occ 8: t = 36 rejects a 50 cp disagreement");
+        assert!(ctx.passes_vol_filter(&rec(32, 80)), "occ 32: t = 84 accepts an 80 cp disagreement");
+        assert!(!ctx.passes_vol_filter(&rec(32, 100)), "occ 32: t = 84 rejects a 100 cp disagreement");
+        assert!(ctx.passes_vol_filter(&rec(8, 30)), "occ 8: t = 36 accepts a 30 cp disagreement");
+        assert!(!ctx.passes_vol_filter(&rec(8, 50)), "occ 8: t = 36 rejects a 50 cp disagreement");
         let ctx = make_ctx(false);
-        assert!(ctx.passes_vol_filter(&entry(32), 40), "fixed: the threshold ignores occupancy");
-        assert!(!ctx.passes_vol_filter(&entry(32), 41), "fixed: the threshold ignores occupancy");
+        assert!(ctx.passes_vol_filter(&rec(32, 40)), "fixed: the threshold ignores occupancy");
+        assert!(!ctx.passes_vol_filter(&rec(32, 41)), "fixed: the threshold ignores occupancy");
     }
 
     /// The old formula subtracted the piece count, so a dense position pushed the
@@ -1327,7 +1328,6 @@ mod tests {
         let ctx = TrainerContext {
             train: &[],
             val: &[],
-            records: &[],
             train_count: 0,
             phase_weights: &[],
             loss_fn: LossFn::CrossEntropy,
@@ -1335,17 +1335,17 @@ mod tests {
             vol_adaptive: true,
         };
 
-        let entry = |occ: u32| loader::SoulEntry { occupancy: (1u64 << occ) - 1, ..loader::SoulEntry::default() };
+        let rec = |pieces: u8, static_eval: i16| FeatureRecord { piece_count: pieces, static_eval, ..Default::default() };
         // occ 6: (6 − 10) · 2 = −8, floored to 0. A perfect match still passes and
         // any disagreement fails, which is the tight endgame the doc describes.
-        assert!(ctx.passes_vol_filter(&entry(6), 0), "a floored threshold passes a perfect match");
-        assert!(!ctx.passes_vol_filter(&entry(6), 1), "a floored threshold rejects any disagreement");
+        assert!(ctx.passes_vol_filter(&rec(6, 0)), "a floored threshold passes a perfect match");
+        assert!(!ctx.passes_vol_filter(&rec(6, 1)), "a floored threshold rejects any disagreement");
         // occ 31 with t0 40 was −2 before the flip, dropping even a perfect match;
         // the flipped arithmetic leaves 82 and the floor guarantees no revisit.
         let ctx = TrainerContext { vol_threshold: 40, ..ctx };
-        assert!(ctx.passes_vol_filter(&entry(31), 0), "a dense position passes a perfect match");
-        assert!(ctx.passes_vol_filter(&entry(31), 80), "occ 31: t = 82 accepts an 80 cp disagreement");
-        assert!(!ctx.passes_vol_filter(&entry(31), 100), "occ 31: t = 82 rejects a 100 cp disagreement");
+        assert!(ctx.passes_vol_filter(&rec(31, 0)), "a dense position passes a perfect match");
+        assert!(ctx.passes_vol_filter(&rec(31, 80)), "occ 31: t = 82 accepts an 80 cp disagreement");
+        assert!(!ctx.passes_vol_filter(&rec(31, 100)), "occ 31: t = 82 rejects a 100 cp disagreement");
     }
 
     /// A huge threshold plus the occupancy margin used to overflow the i16 add,
@@ -1356,7 +1356,6 @@ mod tests {
         let ctx = TrainerContext {
             train: &[],
             val: &[],
-            records: &[],
             train_count: 0,
             phase_weights: &[],
             loss_fn: LossFn::CrossEntropy,
@@ -1364,13 +1363,17 @@ mod tests {
             vol_adaptive: true,
         };
 
-        let entry =
-            |occ: u32, score: i16| loader::SoulEntry { occupancy: (1u64 << occ) - 1, score, ..loader::SoulEntry::default() };
+        let rec = |pieces: u8, score: i16, static_eval: i16| FeatureRecord {
+            piece_count: pieces,
+            score,
+            static_eval,
+            ..Default::default()
+        };
 
         // occ 2 once added 16 to i16::MAX and occ 32 adds 44; both saturate now.
-        assert!(ctx.passes_vol_filter(&entry(2, 0), 30_000), "a sparse position saturates the add");
-        assert!(ctx.passes_vol_filter(&entry(32, 0), 30_000), "a dense position saturates the add");
-        assert!(!ctx.passes_vol_filter(&entry(32, -1), 32_767), "32768 is past the saturated 32767");
+        assert!(ctx.passes_vol_filter(&rec(2, 0, 30_000)), "a sparse position saturates the add");
+        assert!(ctx.passes_vol_filter(&rec(32, 0, 30_000)), "a dense position saturates the add");
+        assert!(!ctx.passes_vol_filter(&rec(32, -1, 32_767)), "32768 is past the saturated 32767");
     }
 
     /// The batch K-gradient is the derivative of the batch loss in K, WDL target
@@ -1390,9 +1393,8 @@ mod tests {
         );
         let record = FeatureRecord::from_entry(&entry);
         let ctx = TrainerContext {
-            train: std::slice::from_ref(&entry),
+            train: std::slice::from_ref(&record),
             val: &[],
-            records: std::slice::from_ref(&record),
             train_count: 1,
             phase_weights: &[],
             loss_fn: LossFn::CrossEntropy,
@@ -1404,7 +1406,7 @@ mod tests {
         let blend = 0.3;
         let (_, k_g, ..) = ctx.batch_grad(&[0], &values, k, blend);
         let loss_at = |kk: f64| {
-            let (target, _) = wdl_target(&entry, kk, blend);
+            let (target, _) = wdl_target(&record, kk, blend);
             let eval = loader::eval_record_full(&record, &values);
             ctx.loss_fn.loss(sigmoid(eval.score, kk), target)
         };

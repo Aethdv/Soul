@@ -24,7 +24,7 @@ use crate::{
     weave::Vf64x4,
 };
 
-/// All tuner-side features for one position, packed into a 100-byte record
+/// All tuner-side features for one position, packed into a 104-byte record
 /// (two to three cache lines) so the hot loop reads one record instead of
 /// streaming a dozen arrays. Computed once at startup ([`FeatureRecord::from_entry`]);
 /// only `values` changes across epochs. The PSQT gather index is pre-resolved
@@ -56,6 +56,10 @@ pub struct FeatureRecord {
     pub open_raw: i32,
     /// For volatility filtering at training time.
     pub static_eval: i16,
+    /// Search eval label, STM-relative, [`SoulEntry::NO_SCORE`] where nothing searched.
+    pub score: i16,
+    /// Game outcome label, STM-relative: 0 = loss, 1 = draw, 2 = win.
+    pub result: u8,
     pub xray_ortho: i8,
     pub bishop_pair_diff: i8,
     pub rook_open_diff: i8,
@@ -69,7 +73,7 @@ pub struct FeatureRecord {
     pub us_count: u8,
 }
 
-const _: () = assert!(size_of::<FeatureRecord>() == 100);
+const _: () = assert!(size_of::<FeatureRecord>() == 104);
 
 impl FeatureRecord {
     /// The gather, split into the slots that add and the slots that subtract.
@@ -117,6 +121,8 @@ impl FeatureRecord {
             // The tables carry material and negate Black's entries, so this is an
             // imbalance rather than a sum, and no legal position takes it to the i16 edge.
             static_eval: evaluate_fast(&pos, &acc, phase) as i16,
+            score: entry.score,
+            result: entry.result,
             ..Default::default()
         };
 

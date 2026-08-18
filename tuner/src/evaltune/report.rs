@@ -329,12 +329,10 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
     let (counts, predicted, realized) = ctx
         .val
         .par_iter()
-        .enumerate()
         .fold(
             || ([0u64; BANDS * CELLS], [0.0_f64; BANDS * CELLS], [0.0_f64; BANDS * CELLS]),
-            |(mut counts, mut predicted, mut realized), (idx, entry)| {
-                let record = &ctx.records[ctx.train_count + idx];
-                if !ctx.passes_vol_filter(entry, record.static_eval) {
+            |(mut counts, mut predicted, mut realized), record| {
+                if !ctx.passes_vol_filter(record) {
                     return (counts, predicted, realized);
                 }
                 // Full material divides into the top band rather than owning one of its own.
@@ -344,7 +342,7 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 
                 counts[cell] += 1;
                 predicted[cell] += sigmoid(eval, k);
-                realized[cell] += f64::from(entry.result) / 2.0;
+                realized[cell] += f64::from(record.result) / 2.0;
                 (counts, predicted, realized)
             },
         )
