@@ -50,7 +50,6 @@ impl Progress {
                 let elapsed = start.elapsed().as_secs_f64().max(0.000_001);
                 let nps = nodes.load(Relaxed) as f64 / elapsed;
                 let glyph = THROBBER[phase % THROBBER.len()];
-
                 print!("\r\x1b[K  {purple}{glyph}{RESET}  {solved:>3}/{total}   {elapsed:>5.1}s   {nps:.0} nps");
                 let _ = io::stdout().flush();
             };
@@ -134,4 +133,3 @@ pub fn run(depth: i32, hash_mb: usize) {
     #[cfg(feature = "corrstats")]
     crate::engine::corrstats::report();
 }
-

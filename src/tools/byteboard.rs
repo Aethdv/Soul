@@ -176,8 +176,7 @@ impl ByteBoard {
 
     #[inline(always)]
     pub fn clear(&mut self, color: Color, id: u8) {
-        // SAFETY: AVX2 per the weave/mod.rs gate; four 32-byte accesses of a
-        // 128-byte wordboard.
+        // SAFETY: AVX2 per the gate.
         unsafe {
             let m = _mm256_set1_epi16((!(1u16 << id)).cast_signed());
             let p = self.attack[usize::from(color)].as_mut_ptr();
@@ -193,7 +192,7 @@ impl ByteBoard {
     fn apply(&mut self, board: V64) {
         let (white, black) = board.to_wordboards();
 
-        // SAFETY: as `clear`.
+        // SAFETY: AVX2 per the gate.
         unsafe {
             for (c, src) in [white, black].into_iter().enumerate() {
                 let p = self.attack[c].as_mut_ptr();
@@ -235,20 +234,17 @@ impl V64 {
     #[inline(always)]
     pub fn bytes(self) -> [u8; 64] {
         let mut out = [0u8; 64];
-
         // SAFETY: AVX2 per the gate; two 32-byte writes of a 64-byte array.
         unsafe {
             _mm256_storeu_si256(out.as_mut_ptr().cast(), self.0);
             _mm256_storeu_si256(out.as_mut_ptr().add(32).cast(), self.1);
         }
-
         out
     }
 
     #[inline(always)]
     pub fn permute(self, idx: &[u8; 64]) -> Self {
-        // SAFETY: AVX2 per the gate, AVX-512 under its own cfg; the index reads
-        // cover 64 bytes of a 64-byte array.
+        // SAFETY: AVX2 per the gate, AVX-512 under its own cfg.
         unsafe {
             #[cfg(all(target_feature = "avx512vbmi", target_feature = "avx512bw"))]
             {
@@ -291,8 +287,7 @@ impl V64 {
 
     #[inline(always)]
     pub fn nonzero(self) -> u64 {
-        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
-        // register-only.
+        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg.
         unsafe {
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
@@ -311,8 +306,7 @@ impl V64 {
 
     #[inline(always)]
     pub fn sliders(self, g: &Geometry) -> u64 {
-        // SAFETY: AVX2 per the gate; the lane-kind reads cover 64 bytes of a
-        // 64-byte array.
+        // SAFETY: AVX2 per the gate.
         unsafe {
             let s = _mm256_set1_epi8(SLIDER.cast_signed());
             let z = _mm256_setzero_si256();
@@ -331,8 +325,7 @@ impl V64 {
 
     #[inline(always)]
     pub fn keep(self, mask: u64) -> Self {
-        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
-        // register-only.
+        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg.
         unsafe {
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
@@ -348,7 +341,7 @@ impl V64 {
 
     #[inline(always)]
     pub fn lane_spread(self) -> Self {
-        // SAFETY: AVX2 per the gate; register-only.
+        // SAFETY: AVX2 per the gate.
         unsafe {
             let pick = _mm256_setr_epi8(
                 -128, 0, 0, 0, 0, 0, 0, 0, -128, 8, 8, 8, 8, 8, 8, 8, -128, 0, 0, 0, 0, 0, 0, 0, -128, 8, 8, 8, 8, 8, 8, 8,
@@ -361,8 +354,7 @@ impl V64 {
 
     #[inline(always)]
     pub fn write(self, mask: u64, b: u8) -> Self {
-        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg;
-        // register-only.
+        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg.
         unsafe {
             let v = _mm256_set1_epi8(b.cast_signed());
 
@@ -392,7 +384,7 @@ impl V64 {
 
     #[inline(always)]
     pub fn to_wordboards(self) -> ([__m256i; 4], [__m256i; 4]) {
-        // SAFETY: AVX2 per the gate; register-only.
+        // SAFETY: AVX2 per the gate.
         unsafe {
             let lut_lo = _mm256_setr_epi8(
                 1, 2, 4, 8, 16, 32, 64, -128, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 8, 16, 32, 64, -128, 0, 0, 0, 0, 0, 0, 0, 0,
