@@ -199,11 +199,11 @@ else
 	fi
 endif
 
-evaltune:
+evaltune: ## Build the eval tuner
 	@echo "Building evaltune..."
 	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release -p evaltuner --bin evaltune --quiet
-	@cp target/release/evaltune eval$(EXE_EXT)
+		cargo build --release -p evaltuner --bin evaltune --quiet --target $(RUST_HOST)
+	@cp target/$(RUST_HOST)/release/evaltune eval$(EXE_EXT)
 	@echo "Done: ./eval$(EXE_EXT)"
 
 test: ## Run test suite
