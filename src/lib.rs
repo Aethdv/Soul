@@ -16,7 +16,6 @@
 #![feature(const_convert)]
 #![feature(const_ops)]
 #![feature(likely_unlikely)]
-#![feature(thread_local)]
 // Allowed because we inherently pass large parameter structs
 #![allow(clippy::too_many_arguments)]
 // Allowed because domain acronyms
