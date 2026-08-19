@@ -6,8 +6,7 @@
 
 use std::ops::Range;
 
-use super::engine::LAYOUT;
-use crate::core::config::EvalTuneConfig;
+use crate::{config::EvalTuneConfig, engine::LAYOUT};
 
 /// Hard clamp for mobility parameters to prevent drift from unbounded features.
 pub const MOB_CLAMP: f64 = 100.0;

@@ -1,28 +1,28 @@
-//! EPD loading ([`Entry`], [`load_epd`]), viriformat, [`encode_epd`], and
-//! [`load_datasets`] which dispatches by extension.
+//! EPD and viriformat loading, and [`load_datasets`] which dispatches by extension.
 //!
 //! Re-exports the tuner's datasource types ([`SoulEntry`], [`FeatureRecord`],
-//! [`eval_record`]) through [`super::engine`].
+//! [`eval_record`]) through [`crate::engine`].
 
 use std::{
     fmt, fs,
     fs::File,
     io,
-    io::{BufRead, BufReader, Write},
-    iter, mem, path,
+    io::{BufRead, BufReader},
+    iter, path,
     path::Path,
-    time::Instant,
 };
 
 use rayon::prelude::*;
 use zerocopy::IntoBytes;
 
-pub use super::engine::{
+pub use crate::engine::{
     EpdEntry, FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_score, flip_wdl,
-    load_encoded, parse_epd_str, parse_viri_file, save_encoded,
+    parse_epd_str, parse_viri_file,
 };
-use super::palette::{self, RESET};
-use crate::core::fnv::Fnv1a;
+use crate::{
+    fnv::Fnv1a,
+    palette::{self, RESET},
+};
 
 /// Load raw EPD positions, decompressing zstd on the fly.
 pub fn load_epd(path: &str) -> io::Result<Vec<EpdEntry>> {
@@ -39,57 +39,13 @@ pub fn load_epd(path: &str) -> io::Result<Vec<EpdEntry>> {
     Ok(entries)
 }
 
-/// Encode EPD positions into a zstd-compressed Soul dataset.
-///
-/// Accepts both plain text and zstd-compressed EPD input.
-///
-/// # Errors
-/// Returns an error if the input file cannot be read or the output cannot be written.
-pub fn encode_epd(input: &str, output: &str) -> io::Result<()> {
-    let file = File::open(input)?;
-    let reader = open_reader(file, Path::new(input))?;
-    let mut encoded = Vec::new();
-    let mut last_print = Instant::now();
-
-    println!("Parsing EPD positions...");
-
-    for line in reader.lines() {
-        let line = line?;
-        let Some(EpdEntry { board, result, eval }) = parse_epd_str(&line) else {
-            continue;
-        };
-
-        // Both labels are white-relative in EPD, STM-relative from here on.
-        let stm = board.stm;
-        encoded.push(SoulEntry::from_board(&board, flip_wdl(result, stm), eval.map(|e| flip_score(e, stm))));
-
-        if last_print.elapsed().as_millis() > 500 {
-            print!("\r\x1b[K  Processed {} positions...", encoded.len());
-            let _ = io::stdout().flush();
-            last_print = Instant::now();
-        }
-    }
-    println!();
-
-    let path = if output.ends_with(".zst") { output.to_string() } else { format!("{output}.zst") };
-    println!("Writing encoded file: {path}");
-    save_encoded(&path, &encoded)?;
-
-    let orig_size = encoded.len() * mem::size_of::<SoulEntry>();
-    let comp_size = fs::metadata(&path)?.len();
-    let ratio = orig_size as f64 / comp_size as f64;
-    println!("Done! {} entries ({orig_size} bytes → {comp_size} bytes, {ratio:.1}x compression)", encoded.len());
-    println!("Entry size: {} bytes", mem::size_of::<SoulEntry>());
-    Ok(())
-}
-
 /// Load all dataset files by format, dispatching on extension.
 ///
-/// `.soul` / `.soul.zst` → [`load_encoded`]; `.viri` / `.vf` → [`parse_viri_file`];
-/// anything else → [`load_epd`] + [`SoulEntry::from_board`].
+/// `.viri` / `.vf` → [`parse_viri_file`]; anything else → [`load_epd`] plus
+/// [`SoulEntry::from_board`].
 ///
-/// `filter` reaches the viriformat path alone; the other two store positions
-/// without the ply or the played move its gates read.
+/// `filter` reaches the viriformat path alone; an EPD line stores a position without
+/// the ply or the played move its gates read.
 ///
 /// The second return is one weight per position, empty unless a viriformat file
 /// brought weighting gates. Files that bring none contribute ones, so the weights
@@ -107,13 +63,7 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
         let before = all_entries.len();
         let mut grouped = 0usize;
 
-        if path.ends_with(".soul") || path.ends_with(".soul.zst") {
-            println!("Loading encoded dataset: {path}");
-            match load_encoded(path) {
-                Ok(mut file_entries) => all_entries.append(&mut file_entries),
-                Err(e) => bail_dataset(path, &e),
-            }
-        } else if path.ends_with(".viri") || path.ends_with(".vf") {
+        if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
             match parse_viri_file(path, filter) {
                 Ok((mut viri_entries, weights, games)) => {
@@ -188,7 +138,7 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let name = path.to_string_lossy();
-                if name.ends_with(".soul.zst") || name.ends_with(".soul") {
+                if name.ends_with(".vf") || name.ends_with(".viri") {
                     paths.push(name.to_string());
                 }
             }

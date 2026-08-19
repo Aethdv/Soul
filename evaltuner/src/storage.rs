@@ -12,8 +12,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{engine::Tunable, training::Progress};
-use crate::core::{error::CheckpointError, fnv::Fnv1a};
+use crate::{engine::Tunable, error::CheckpointError, fnv::Fnv1a, training::Progress};
 
 pub const CHECKPOINT_VERSION: u32 = 5;
 

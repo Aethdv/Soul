@@ -20,7 +20,7 @@ rust-version = "1.97.0"
 include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [workspace]
-members = ["tuner"]
+members = ["evaltuner"]
 
 [lib]
 name = "soul"

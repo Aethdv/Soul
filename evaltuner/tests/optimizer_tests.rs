@@ -1,4 +1,4 @@
-use tuner::evaltune::lion::Lion;
+use evaltuner::lion::Lion;
 
 #[test]
 fn test_lion_quadratic_convergence() {

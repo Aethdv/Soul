@@ -7,7 +7,7 @@
 //! The fixed pens are compile-time escapes, so a format string names one inline and
 //! nothing rebuilds the same strings per report. [`fg`] stays for computed colors.
 
-use super::engine::{Rgb, color};
+use crate::engine::{Rgb, color};
 
 /// What each pen means in a report. The hues live in `color`, so the engine and the
 /// tuner cannot drift apart.
@@ -31,5 +31,5 @@ pub use color::{CLEAR_LINE, RESET};
 /// Truecolor foreground escape for a color decided at runtime.
 #[must_use]
 pub fn fg(c: Rgb) -> String {
-    super::engine::ansi_fg(c)
+    crate::engine::ansi_fg(c)
 }

@@ -7,7 +7,7 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use super::engine::eval_params;
+use crate::engine::eval_params;
 
 const PIECES: [&str; 6] = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
 const PHASES: [&str; 2] = ["MG", "EG"];

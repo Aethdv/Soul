@@ -6,9 +6,11 @@ use serde::{
     Deserialize,
     de::{self, MapAccess, Visitor},
 };
-use soul::color::{ALARM_PEN, RESET};
 
-use crate::core::schedule::{self, LrScheduler, WdlScheduler};
+use crate::{
+    engine::color::{ALARM_PEN, RESET},
+    schedule::{self, LrScheduler, WdlScheduler},
+};
 
 pub const DEFAULT_WDL_END: f64 = 0.3;
 pub const DEFAULT_K_LR_MULT: f64 = 0.001;
@@ -859,7 +861,7 @@ mod tests {
 
     #[test]
     fn the_shipped_config_parses() {
-        TunerConfig::from_file("tuner_config.toml").expect("tuner_config.toml must parse");
+        TunerConfig::from_file("evaltune.toml").expect("evaltune.toml must parse");
     }
 
     #[test]
@@ -867,7 +869,7 @@ mod tests {
         // The key must go in the root table. Adding a section instead redeclares
         // a table, which TOML refuses on its own, and this passes with the
         // attribute gone.
-        let doc = format!("log_levle = \"info\"\n{}", std::fs::read_to_string("tuner_config.toml").unwrap());
+        let doc = format!("log_levle = \"info\"\n{}", std::fs::read_to_string("evaltune.toml").unwrap());
         let error = toml::from_str::<TunerConfig>(&doc).expect_err("an unknown key must fail the load");
 
         assert!(error.to_string().contains("log_levle"), "the error must name the offending key: {error}");

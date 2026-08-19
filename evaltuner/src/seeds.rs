@@ -19,7 +19,7 @@ use std::{
 
 use serde::Deserialize;
 
-use super::{
+use crate::{
     engine::eval_params,
     palette::{LAB, RESET, VAL},
     report::fmt_loss,

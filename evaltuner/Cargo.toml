@@ -1,5 +1,5 @@
 [package]
-name = "tuner"
+name = "evaltuner"
 version = "0.2.8"
 edition = "2024"
 rust-version = "1.97.1"
@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "evaltune"
-path = "src/bin/evaltune.rs"
+path = "src/main.rs"
 
 [dependencies]
 soul = { path = "../" }

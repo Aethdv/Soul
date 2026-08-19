@@ -19,7 +19,7 @@
 //! another already explains. A seed sweep sees those flat directions from the outside, as
 //! parameters that disagree at equal loss; this sees them from the inside and can name them.
 
-use super::{
+use crate::{
     engine::Tunable,
     palette::{DIM, LAB, RESET, VAL},
 };

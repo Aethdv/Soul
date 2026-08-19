@@ -1,17 +1,14 @@
 use std::process;
 
 use clap::{Parser, Subcommand};
-use soul::cli::Help;
-use tuner::{
-    core::config::{Init, KMode, LossFn, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
-    evaltune,
-    evaltune::{
-        ablation,
-        assay::Assay,
-        correlation, loader,
-        run::{Task, replay_filter},
-        seeds,
-    },
+use evaltuner::{
+    ablation,
+    assay::{self, Assay},
+    config::{Init, KMode, LossFn, LrScheduleConfig, TunerConfig, WdlScheduleConfig},
+    correlation,
+    engine::Help,
+    run::{self, Task, replay_filter},
+    seeds,
 };
 
 #[derive(Parser)]
@@ -26,7 +23,7 @@ struct Args {
     command: Option<Commands>,
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     dataset: Option<Vec<String>>,
-    #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+    #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
     config: String,
     #[arg(short, long)]
     epochs: Option<usize>,
@@ -68,16 +65,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(name = "encode")]
-    Encode {
-        input: String,
-        output: String,
-    },
     #[command(name = "ablation")]
     Ablation {
         #[arg(short, long, value_delimiter = ',', num_args = 1..)]
         data: Vec<String>,
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
     },
     #[command(name = "correlation")]
@@ -86,7 +78,7 @@ enum Commands {
     SeedSpread {
         #[arg(long, default_value_t = 8)]
         count: usize,
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         #[arg(short, long, default_value_t = 100)]
         epochs: usize,
@@ -96,25 +88,25 @@ enum Commands {
     },
     #[command(name = "gather-cost")]
     GatherCost {
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         dataset: String,
     },
     #[command(name = "curvature")]
     Curvature {
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         dataset: String,
     },
     #[command(name = "val-cost")]
     ValCost {
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         dataset: String,
     },
     #[command(name = "score")]
     Score {
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         #[arg(long)]
         sample: Option<usize>,
@@ -129,7 +121,7 @@ enum Commands {
     },
     #[command(name = "material")]
     Material {
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         #[arg(long)]
         sample: Option<usize>,
@@ -140,7 +132,7 @@ enum Commands {
     },
     #[command(name = "profile")]
     Profile {
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         #[arg(long)]
         sample: Option<usize>,
@@ -157,7 +149,7 @@ enum Commands {
         max: f64,
         #[arg(long, default_value_t = 6)]
         count: usize,
-        #[arg(short, long, default_value = "tuner/tuner_config.toml")]
+        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
         config: String,
         #[arg(short, long)]
         epochs: Option<usize>,
@@ -180,12 +172,6 @@ fn main() {
 
     match args.command {
         Some(Commands::Help) => print_help(),
-        Some(Commands::Encode { input, output }) => {
-            if let Err(e) = loader::encode_epd(&input, &output) {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
-        },
         Some(Commands::Ablation { data, config: config_path }) => {
             ablation::run_ablation(&data, &replay_filter(&load_config(&config_path).evaltune));
         },
@@ -236,7 +222,7 @@ fn main() {
 /// One row per dataset, so an assay runs beside the trainer rather than through it: the split, the
 /// sample weights and the merge into one pool all describe a training run.
 fn assay(config_path: &str, datasets: &[String], report: Assay, sample: Option<usize>) {
-    evaltune::assay::run(&report, datasets, &load_config(config_path).evaltune, sample);
+    assay::run(&report, datasets, &load_config(config_path).evaltune, sample);
 }
 
 /// A config that will not read is fatal, as the replay filter it names already is: a fallback to
@@ -263,7 +249,7 @@ fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
 
 /// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
 fn probe(config_path: &str, dataset: &str, task: Task) {
-    evaltune::run(Some(dataset), &load_config(config_path).evaltune, None, task);
+    run::run(Some(dataset), &load_config(config_path).evaltune, None, task);
 }
 
 fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
@@ -478,7 +464,7 @@ fn run_evaltune(args: Args) -> bool {
     }
 
     let dataset_str = args.dataset.map(|v| v.join(","));
-    evaltune::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref(), Task::Train).trained()
+    run::run(dataset_str.as_deref(), &tuner_config.evaltune, args.resume.as_deref(), Task::Train).trained()
 }
 
 fn print_help() {
@@ -488,7 +474,6 @@ fn print_help() {
     h.separator();
 
     h.header("Commands");
-    h.command_args("encode", "<in> <out>", "Pre-encode EPD → .soul.zst");
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
@@ -499,7 +484,7 @@ fn print_help() {
     h.separator();
 
     h.header("Options");
-    h.option("-d, --dataset", "<path,...>", "Paths to .epd or .soul.zst files");
+    h.option("-d, --dataset", "<path,...>", "Paths to .epd, .txt or .vf files");
     h.option_default("-e, --epochs", "<N>", "Number of training epochs", "4000");
     h.option_default("-b, --blend", "<ratio>", "Target: 0 = game result, 1 = search score", "0.3");
     h.option("-r, --resume", "<path>", "Resume from a JSON checkpoint");

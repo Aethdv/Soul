@@ -10,17 +10,15 @@ use std::{
 
 use rayon::prelude::*;
 
-use super::{
+use crate::{
+    config::{EvalTuneConfig, KMode},
     engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color, pct},
     groups::GROUP_NAMES,
     lion::GateCensus,
     loader,
+    palette::{self, BRAND, COUNT, DIM, LAB, MOVED, RESET, VAL},
     run::{TrainerContext, artifact},
     training::{phase_of, phase_weights, sigmoid},
-};
-use crate::{
-    core::config::{EvalTuneConfig, KMode},
-    evaltune::palette::{self, BRAND, COUNT, DIM, LAB, MOVED, RESET, VAL},
 };
 
 /// Eighth-blocks, shortest to tallest; every sparkline here indexes a height level into this.
@@ -618,7 +616,7 @@ mod tests {
             .trim_end_matches("// -------------------------------------")
             .trim_end();
 
-        let source = include_str!("../../../src/engine/eval_params.rs");
+        let source = include_str!("../../src/engine/eval_params.rs");
         let start = source.find("define_psqt_params! {").expect("no psqt block in eval_params.rs");
         let last = source.find("define_weight_params! {").expect("no weight block in eval_params.rs");
         let end = last + source[last..].find("\n}").expect("the weight block never closes") + 2;

@@ -8,6 +8,7 @@
 //! writer, not because the eval needs them.
 
 pub use soul::{
+    cli::Help,
     color::{self, Rgb, ansi_fg},
     core::{
         board::Position,
@@ -22,7 +23,7 @@ pub use soul::{
     },
     tools::dataset::{
         EpdEntry, FeatureRecord, GameScan, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full,
-        flip_score, flip_wdl, load_encoded, parse_epd_str, parse_viri_file, save_encoded, scan_viri_games,
+        flip_score, flip_wdl, parse_epd_str, parse_viri_file, scan_viri_games,
         tape::eval_f64,
         viri_format::{DECISIVE_ENDING, QUIET_ENDING},
     },
@@ -32,7 +33,7 @@ pub use soul::{
 mod tests {
     #[test]
     fn nothing_else_reaches_past_this_file() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/evaltune");
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
         let mut offenders = Vec::new();
         for entry in std::fs::read_dir(dir).expect("the module's own directory") {
             let path = entry.expect("a readable entry").path();

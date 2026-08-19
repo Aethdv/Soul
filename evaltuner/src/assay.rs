@@ -15,7 +15,8 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use super::{
+use crate::{
+    config::{EvalTuneConfig, LossFn},
     engine::{
         DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, QUIET_ENDING, SoulEntry, TOTAL_PHASE, collect_parameters, default_values,
         eval_record, format_comma, pct, scan_viri_games, sigmoid,
@@ -27,7 +28,6 @@ use super::{
     storage::load_checkpoint,
     training::{phase_of, phase_weights},
 };
-use crate::core::config::{EvalTuneConfig, LossFn};
 
 /// A constant 0.5 prediction, in nats.
 const COIN_FLIP: f64 = std::f64::consts::LN_2;

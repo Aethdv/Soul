@@ -19,22 +19,20 @@ use std::{
 use palette::{BRAND, CLEAR_LINE, DIM, LAB, RESET, VAL};
 use rayon::prelude::*;
 
-use super::{
+use crate::{
+    config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
     engine::{Color, FeatureRecord, LAYOUT, Tunable, color, eval_params},
     groups::{GROUP_NAMES, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
     lion::{GateCensus, Lion, build_beta2_mask},
     loader::{self, ReplayFilter, dataset_fingerprint, flip_wdl, resolve_dataset_paths},
+    logger::JsonLogger,
     palette,
     probes::{curvature_report, gather_cost, val_cost},
     report::*,
     scale::{GAUGE_PROBE, Gauge, KController, canonicalize},
+    shuffle::Shuffler,
     storage::*,
     training::*,
-};
-use crate::core::{
-    config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
-    logger::JsonLogger,
-    shuffle::Shuffler,
 };
 
 /// Fixes which tenth of a dataset is held out, so two runs over one dataset are scored on the
@@ -1249,7 +1247,7 @@ mod tests {
 
     #[test]
     fn decimation_thins_the_epoch_and_not_the_dataset() {
-        let mut config = crate::core::config::TunerConfig::default().evaltune;
+        let mut config = crate::config::TunerConfig::default().evaltune;
         let ninety = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
         let off = ReplayFilter { random_fen_skipping: false, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
         assert!((epoch_keep_fraction(&config, &ninety, true) - 0.1).abs() < 1e-12);

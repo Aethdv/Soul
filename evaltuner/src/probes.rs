@@ -7,16 +7,17 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
-use super::{
+use crate::{
+    config::EvalTuneConfig,
     curvature::Curvature,
     engine::{accumulate_record_grad, eval_params},
     loader,
     palette::{DIM, LAB, RESET, VAL},
     run::TrainerContext,
     scale::KController,
+    shuffle::Shuffler,
     training::{sigmoid, wdl_target},
 };
-use crate::core::{config::EvalTuneConfig, shuffle::Shuffler};
 
 /// Curvature of the loss at the shipped parameters, over the training split.
 ///

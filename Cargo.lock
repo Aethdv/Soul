@@ -157,6 +157,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "evaltuner"
+version = "0.2.8"
+dependencies = [
+ "clap",
+ "ctrlc",
+ "fastrand",
+ "parking_lot",
+ "paste",
+ "rayon",
+ "serde",
+ "serde_json",
+ "soul",
+ "thiserror",
+ "toml",
+ "zerocopy",
+ "zstd",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -515,25 +534,6 @@ name = "toml_writer"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
-
-[[package]]
-name = "tuner"
-version = "0.2.8"
-dependencies = [
- "clap",
- "ctrlc",
- "fastrand",
- "parking_lot",
- "paste",
- "rayon",
- "serde",
- "serde_json",
- "soul",
- "thiserror",
- "toml",
- "zerocopy",
- "zstd",
-]
 
 [[package]]
 name = "unicode-ident"

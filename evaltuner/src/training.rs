@@ -5,9 +5,12 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-pub use super::engine::sigmoid;
-use super::engine::{FeatureRecord, LAYOUT, TOTAL_PHASE, eval_f64, eval_params, flip_wdl};
-use crate::evaltune::{loader, report::report_phase_balance};
+pub use crate::engine::sigmoid;
+use crate::{
+    engine::{FeatureRecord, LAYOUT, TOTAL_PHASE, eval_f64, eval_params, flip_wdl},
+    loader,
+    report::report_phase_balance,
+};
 
 // EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
 // since a trend read before that span has filled is reading its own seed.

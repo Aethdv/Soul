@@ -4,13 +4,13 @@
 //! on the scale the search reads, and the fold collapses the one direction between
 //! material and PSQT that no evaluation can see.
 
-use super::{
+use crate::{
+    config::{EvalTuneConfig, KMode},
     engine::{FeatureRecord, LAYOUT, PIECE_TABLES, PieceType, TABLE_SQUARES, Tunable, eval_record},
     lion::Lion,
     run::TrainerContext,
     storage::CheckpointData,
 };
-use crate::core::config::{EvalTuneConfig, KMode};
 
 /// Positions the [`Gauge`] reads the eval's scale from, every batch.
 pub const GAUGE_PROBE: usize = 1024;
@@ -330,7 +330,7 @@ mod tests {
         },
         *,
     };
-    use crate::core::config::Init;
+    use crate::config::Init;
 
     /// Stands in for a run's thousand-position probe: the lopsided positions carry
     /// the magnitude, the quiet ones stop it measuring a scale no game reaches.

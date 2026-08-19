@@ -8,12 +8,10 @@ use std::{mem, ops::Range};
 
 use rayon::prelude::*;
 
-use super::{
+use crate::{
     engine::{BLOCKS, Group as BlockGroup, eval_params},
-    scale::golden_search_k,
-};
-use crate::evaltune::{
     loader::{self, EpdEntry, ReplayFilter, SoulEntry},
+    scale::golden_search_k,
     training::{self, TunableData},
 };
 
@@ -26,12 +24,7 @@ pub fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
     let mut epd_entries: Vec<EpdEntry> = Vec::new();
 
     for path in dataset_paths {
-        if path.ends_with(".soul") || path.ends_with(".soul.zst") {
-            match loader::load_encoded(path) {
-                Ok(batch) => soul_entries.extend(batch),
-                Err(e) => eprintln!("Skipping {path}: {e}"),
-            }
-        } else if path.ends_with(".vf") || path.ends_with(".viri") {
+        if path.ends_with(".vf") || path.ends_with(".viri") {
             match loader::parse_viri_file(path, filter) {
                 Ok((batch, ..)) => soul_entries.extend(batch),
                 Err(e) => eprintln!("Skipping {path}: {e}"),
