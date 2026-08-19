@@ -6,6 +6,10 @@ ET_DATA   ?= data/big3.txt
 ET_EPOCHS ?= 100
 
 HAS_PGO := $(shell command -v cargo-pgo 2> /dev/null)
+WIN_TARGET := x86_64-pc-windows-gnu
+HAS_ZIG := $(shell command -v cargo-zigbuild 2> /dev/null)
+HAS_WIN_STD := $(shell rustup target list --installed 2>/dev/null | grep -x $(WIN_TARGET))
+COMMA := ,
 RUST_HOST := $(shell rustc -vV | sed -n 's/host: //p')
 
 # OpenBench passes CC=cargo (for C/C++ engines). Override it so cc-rs
@@ -30,8 +34,9 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune test oracle flops seeformat format clippy profile etprofile \
-        avx2 avx2-bmi2 avx512 corrstats movepicker storecost
+        evaltune test oracle flops seefmt fmt clippy profile etprofile \
+        avx2 avx2-bmi2 avx512 corrstats movepicker storecost \
+        windows win-avx2 win-avx2-bmi2 win-avx512
 
 all: openbench
 
@@ -40,6 +45,19 @@ debug: ## Build for development
 	@RUSTFLAGS="-C target-cpu=native" cargo build
 	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
 	@echo "Done: ./$(DEBUG_EXE)"
+
+ifeq ($(and $(HAS_ZIG),$(HAS_WIN_STD)),)
+define win_build
+	@printf '\033[33mSkipping $(EXE_NAME)-$(2).exe: needs cargo-zigbuild and rustup target add $(WIN_TARGET)\033[0m\n'
+endef
+else
+define win_build
+	@echo "Building $(EXE_NAME)-v$(VERSION)-$(2).exe..."
+	@RUSTFLAGS="$(1)" cargo zigbuild --release --quiet --target $(WIN_TARGET)
+	@cp target/$(WIN_TARGET)/release/$(EXE_NAME).exe $(EXE_NAME)-v$(VERSION)-$(2).exe
+	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-$(2).exe"
+endef
+endif
 
 release: avx2 avx2-bmi2 avx512 ## Build all release binaries at once
 
@@ -56,6 +74,17 @@ avx2-bmi2: ## Build AVX2 + BMI2 (Intel 2013+ / Zen-3+)
 		cargo build --release --quiet --target $(RUST_HOST)
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx2-bmi2$(EXE_EXT)
 	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx2-bmi2$(EXE_EXT)"
+
+windows: win-avx2 win-avx2-bmi2 win-avx512 ## Cross-build every Windows release
+
+win-avx2: ## Windows AVX2 + FMA
+	$(call win_build,-C target-cpu=x86-64-v2 -C target-feature=+avx2$(COMMA)+fma,avx2)
+
+win-avx2-bmi2: ## Windows AVX2 + BMI2
+	$(call win_build,-C target-cpu=x86-64-v3,avx2-bmi2)
+
+win-avx512: ## Windows AVX-512
+	$(call win_build,-C target-cpu=x86-64-v4,avx512)
 
 avx512: ## Build AVX-512 (Intel Rocket Lake/Server / Zen-4+)
 	@echo "Building $(EXE_NAME)-v$(VERSION)-avx512..."
@@ -205,6 +234,7 @@ clean: ## Remove all build artifacts
 
 check-pgo:
 	@command -v cargo-pgo >/dev/null 2>&1 || (echo "\x1b[33mWarning: cargo-pgo is not installed. To run PGO builds, please install it via: cargo install cargo-pgo\x1b[0m" && exit 1)
+
 
 help:
 	@printf '\033[1;38;2;180;140;255mSoul Chess Engine\033[0m\n\n'
