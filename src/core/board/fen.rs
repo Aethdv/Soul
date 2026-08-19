@@ -157,9 +157,7 @@ impl Display for Fen<'_> {
 ///
 /// FRC switches to Shredder-FEN castling notation once a rook sits off its standard
 /// file: `KQkq` cannot say which rook it means, and the FEN stops round-tripping.
-pub fn as_fen(pos: &Position) -> String {
-    Fen(pos).to_string()
-}
+pub fn as_fen(pos: &Position) -> String { Fen(pos).to_string() }
 
 /// Prints a board diagram with evaluation and position metadata.
 pub fn pretty_print(pos: &Position) {

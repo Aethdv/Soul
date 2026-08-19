@@ -89,9 +89,7 @@ pub fn ansi_fg(c: Rgb) -> String {
 }
 
 /// Write an ANSI truecolor foreground escape for `c` into `w`.
-pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result {
-    write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
-}
+pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result { write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2) }
 
 /// Drop the escapes from colored text bound for a file or a pipe.
 ///

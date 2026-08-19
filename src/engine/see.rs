@@ -163,9 +163,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
 }
 
 #[inline(always)]
-fn val(pt: PieceType) -> i32 {
-    SEE_VALUE[pt.as_usize()]
-}
+fn val(pt: PieceType) -> i32 { SEE_VALUE[pt.as_usize()] }
 
 /// Pinned attackers that can't legally recapture on `to`: a pinned piece moves
 /// only along its pin ray, so it reaches `to` only when `to` lies on that ray.
@@ -217,24 +215,16 @@ mod tests {
     }
 
     #[test]
-    fn rook_takes_undefended_pawn() {
-        assert_see("7k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P);
-    }
+    fn rook_takes_undefended_pawn() { assert_see("7k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P); }
 
     #[test]
-    fn rook_takes_pawn_defended_by_rook() {
-        assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P - R);
-    }
+    fn rook_takes_pawn_defended_by_rook() { assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P - R); }
 
     #[test]
-    fn pawn_takes_knight_undefended() {
-        assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N);
-    }
+    fn pawn_takes_knight_undefended() { assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N); }
 
     #[test]
-    fn pawn_takes_knight_defended_by_pawn() {
-        assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N - P);
-    }
+    fn pawn_takes_knight_defended_by_pawn() { assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N - P); }
 
     #[test]
     fn queen_takes_pawn_defended_by_pawn() {
@@ -243,9 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn knight_takes_knight_defended_by_knight() {
-        assert_see("7k/4n3/8/3n4/8/2N5/8/7K w - - 0 1", "c3d5", 0);
-    }
+    fn knight_takes_knight_defended_by_knight() { assert_see("7k/4n3/8/3n4/8/2N5/8/7K w - - 0 1", "c3d5", 0); }
 
     #[test]
     fn rook_battery_xray_chain() {
@@ -254,24 +242,16 @@ mod tests {
     }
 
     #[test]
-    fn en_passant_undefended() {
-        assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", P);
-    }
+    fn en_passant_undefended() { assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", P); }
 
     #[test]
-    fn en_passant_defended_by_knight() {
-        assert_see("1n2k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", 0);
-    }
+    fn en_passant_defended_by_knight() { assert_see("1n2k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", 0); }
 
     #[test]
-    fn quiet_queen_promotion_undefended() {
-        assert_see("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", Q - P);
-    }
+    fn quiet_queen_promotion_undefended() { assert_see("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", Q - P); }
 
     #[test]
-    fn quiet_queen_promotion_defended_by_knight() {
-        assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -P);
-    }
+    fn quiet_queen_promotion_defended_by_knight() { assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -P); }
 
     #[test]
     fn capture_promotion_undefended() {

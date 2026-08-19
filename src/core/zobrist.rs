@@ -28,9 +28,7 @@ pub struct ConstRng {
 }
 
 impl ConstRng {
-    pub const fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
+    pub const fn new(seed: u64) -> Self { Self { state: seed } }
 
     /// Marsaglia's xorshift.
     #[inline]
@@ -81,9 +79,7 @@ pub fn key_castling(rights: u8) -> u64 {
 
 /// Hash feature toggled when it is Black's turn to move.
 #[inline(always)]
-pub fn key_side() -> u64 {
-    KEYS.side
-}
+pub fn key_side() -> u64 { KEYS.side }
 
 #[inline]
 const fn init_keys() -> ZobristKeys {

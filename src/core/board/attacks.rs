@@ -141,13 +141,9 @@ impl Pins {
 
     /// Pieces of `color` pinned to their own king.
     #[inline]
-    pub fn blockers(&self, color: Color) -> Bitboard {
-        self.pinned[color]
-    }
+    pub fn blockers(&self, color: Color) -> Bitboard { self.pinned[color] }
 
     /// `color`'s king square.
     #[inline]
-    pub fn king(&self, color: Color) -> Square {
-        self.king_sq[color]
-    }
+    pub fn king(&self, color: Color) -> Square { self.king_sq[color] }
 }

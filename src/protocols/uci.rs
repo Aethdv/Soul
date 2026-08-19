@@ -670,9 +670,7 @@ where
     fallback
 }
 
-fn parse_bool(value: &str) -> bool {
-    matches!(value.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1")
-}
+fn parse_bool(value: &str) -> bool { matches!(value.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1") }
 
 fn cmd_isatty<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {

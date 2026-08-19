@@ -149,29 +149,19 @@ struct Payload {
 /// The cluster index is drawn from the high bits, so the low bits
 /// are what's left to tell entries in the same bucket apart.
 #[inline(always)]
-const fn verification_key(hash: u64) -> u16 {
-    hash as u16
-}
+const fn verification_key(hash: u64) -> u16 { hash as u16 }
 
 const fn pack(depth: u8, bound: u8, pv: u8, age: u8) -> u16 {
     depth as u16 | ((bound as u16 & 0x3) << 8) | ((pv as u16 & 0x1) << 10) | ((age as u16 & 0x1F) << 11)
 }
 
-const fn packed_depth(packed: u16) -> u8 {
-    (packed & 0xFF) as u8
-}
+const fn packed_depth(packed: u16) -> u8 { (packed & 0xFF) as u8 }
 
-const fn packed_bound(packed: u16) -> u8 {
-    ((packed >> 8) & 0x3) as u8
-}
+const fn packed_bound(packed: u16) -> u8 { ((packed >> 8) & 0x3) as u8 }
 
-const fn packed_pv(packed: u16) -> u8 {
-    ((packed >> 10) & 0x1) as u8
-}
+const fn packed_pv(packed: u16) -> u8 { ((packed >> 10) & 0x1) as u8 }
 
-const fn packed_age(packed: u16) -> u8 {
-    ((packed >> 11) & 0x1F) as u8
-}
+const fn packed_age(packed: u16) -> u8 { ((packed >> 11) & 0x1F) as u8 }
 
 impl TtEntry {
     /// The cheap scan read: the key, and the packed word replacement weighs.
@@ -179,14 +169,10 @@ impl TtEntry {
     /// gates payload behind `probe_read`'s Acquire; the store path re-reads a slot it
     /// is about to overwrite, where a stale word costs a preserved move and no more.
     #[inline(always)]
-    fn meta(&self) -> (u16, u16) {
-        (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed))
-    }
+    fn meta(&self) -> (u16, u16) { (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed)) }
 
     #[inline(always)]
-    fn is_occupied(&self) -> bool {
-        packed_bound(self.packed.load(Ordering::Relaxed)) != BOUND_NONE
-    }
+    fn is_occupied(&self) -> bool { packed_bound(self.packed.load(Ordering::Relaxed)) != BOUND_NONE }
 
     /// The probe's per-slot read. One Acquire load of `key` gates it; the rest is
     /// pulled only on a match, so a miss costs a single atomic load. The Acquire
@@ -233,20 +219,14 @@ impl TranspositionTable {
         Self { clusters, numa, generation: AtomicU8::new(0) }
     }
 
-    pub fn resize(&mut self, size_mb: usize, threads: usize) {
-        self.clusters = Self::alloc(size_mb, &self.numa, threads);
-    }
+    pub fn resize(&mut self, size_mb: usize, threads: usize) { self.clusters = Self::alloc(size_mb, &self.numa, threads); }
 
     /// Whether this box spreads the TT across nodes at all, so a thread-count
     /// change can re-place it. False on a single-node box, where it never does.
-    pub fn distributes(&self) -> bool {
-        self.numa.num_nodes() > 1
-    }
+    pub fn distributes(&self) -> bool { self.numa.num_nodes() > 1 }
 
     /// The page size backing the table, for the startup `info string`.
-    pub fn page_kind(&self) -> PageKind {
-        self.clusters.kind()
-    }
+    pub fn page_kind(&self) -> PageKind { self.clusters.kind() }
 
     /// The cluster count follows from the page-rounded byte size, so a 1GB-page
     /// table holds a few more slots than a 4KB one of the same request.
@@ -310,9 +290,7 @@ impl TranspositionTable {
 
     /// Advance the generation counter, once per new position. Entries from earlier
     /// generations don't vanish; they just age, growing easier to evict.
-    pub fn new_search(&self) {
-        self.generation.fetch_add(1, Ordering::Relaxed);
-    }
+    pub fn new_search(&self) { self.generation.fetch_add(1, Ordering::Relaxed); }
 
     /// Pin the calling search thread to its NUMA-assigned L3 domain, when binding
     /// is worthwhile. Keeps the thread's compute on its cores and the per-thread

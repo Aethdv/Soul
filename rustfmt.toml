@@ -18,7 +18,7 @@ control_brace_style = "AlwaysSameLine"
 enum_discrim_align_threshold = 0
 
 fn_call_width = 110
-#fn_single_line = true
+fn_single_line = true
 fn_params_layout = "Tall"
 force_explicit_abi = true
 format_macro_bodies = true

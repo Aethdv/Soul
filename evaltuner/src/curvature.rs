@@ -61,9 +61,7 @@ pub struct Spectrum {
 
 impl Curvature {
     #[must_use]
-    pub fn zeros(n: usize) -> Self {
-        Self { n, h: vec![0.0; n * n] }
-    }
+    pub fn zeros(n: usize) -> Self { Self { n, h: vec![0.0; n * n] } }
 
     /// Adds `weight · a aᵀ` for one position, given `a`'s nonzeros in ascending index order.
     ///

@@ -116,9 +116,7 @@ impl Vi16x8 {
     }
 
     #[inline(always)]
-    pub fn clamp_relu(self, ceil: Self) -> Self {
-        self.max(Self::zero()).min(ceil)
-    }
+    pub fn clamp_relu(self, ceil: Self) -> Self { self.max(Self::zero()).min(ceil) }
 
     #[inline(always)]
     pub fn srai<const N: i32>(self) -> Self {
@@ -137,9 +135,7 @@ impl Vi16x8 {
 
 impl From<[i16; 8]> for Vi16x8 {
     #[inline(always)]
-    fn from(arr: [i16; 8]) -> Self {
-        Self::new(arr)
-    }
+    fn from(arr: [i16; 8]) -> Self { Self::new(arr) }
 }
 
 impl Add for Vi16x8 {
@@ -162,16 +158,12 @@ impl Sub for Vi16x8 {
 
 impl AddAssign for Vi16x8 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
+    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
 }
 
 impl SubAssign for Vi16x8 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) {
-        *self = *self - rhs;
-    }
+    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
 }
 
 impl BitAnd for Vi16x8 {
@@ -228,9 +220,7 @@ impl Vi32x4 {
     }
 
     #[inline(always)]
-    pub fn from_array(arr: [i32; 4]) -> Self {
-        Self::new(arr)
-    }
+    pub fn from_array(arr: [i32; 4]) -> Self { Self::new(arr) }
 
     /// Horizontal sum: unpack-add then shuffle-add, dodging the slower `_mm_hadd_epi32`.
     #[inline]
@@ -284,9 +274,7 @@ impl Vi32x4 {
 
 impl From<[i32; 4]> for Vi32x4 {
     #[inline(always)]
-    fn from(arr: [i32; 4]) -> Self {
-        Self::new(arr)
-    }
+    fn from(arr: [i32; 4]) -> Self { Self::new(arr) }
 }
 
 impl Add for Vi32x4 {
@@ -318,9 +306,7 @@ impl Mul for Vi32x4 {
 
 impl MulAssign for Vi32x4 {
     #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
+    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
 }
 
 impl Shr<i32> for Vi32x4 {
@@ -344,100 +330,74 @@ pub struct Vf32x4(pub __m128);
 
 impl Vf32x4 {
     #[inline(always)]
-    pub fn zero() -> Self {
-        Self(unsafe { _mm_setzero_ps() })
-    }
+    pub fn zero() -> Self { Self(unsafe { _mm_setzero_ps() }) }
 
     #[inline(always)]
-    pub fn splat(v: f32) -> Self {
-        Self(unsafe { _mm_set1_ps(v) })
-    }
+    pub fn splat(v: f32) -> Self { Self(unsafe { _mm_set1_ps(v) }) }
 
     /// Load 4 contiguous f32s directly from memory.
     ///
     /// # Safety
     /// `ptr` must be valid for reading 16 bytes (128 bits).
     #[inline(always)]
-    pub unsafe fn loadu(ptr: *const f32) -> Self {
-        Self(unsafe { _mm_loadu_ps(ptr) })
-    }
+    pub unsafe fn loadu(ptr: *const f32) -> Self { Self(unsafe { _mm_loadu_ps(ptr) }) }
 
     /// Store 4 contiguous f32s directly to memory.
     ///
     /// # Safety
     /// `ptr` must be valid for writing 16 bytes (128 bits).
     #[inline(always)]
-    pub unsafe fn storeu(self, ptr: *mut f32) {
-        unsafe { _mm_storeu_ps(ptr, self.0) };
-    }
+    pub unsafe fn storeu(self, ptr: *mut f32) { unsafe { _mm_storeu_ps(ptr, self.0) }; }
 }
 
 impl Add for Vf32x4 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_add_ps(self.0, rhs.0) })
-    }
+    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm_add_ps(self.0, rhs.0) }) }
 }
 
 impl AddAssign for Vf32x4 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
+    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
 }
 
 impl Sub for Vf32x4 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_sub_ps(self.0, rhs.0) })
-    }
+    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm_sub_ps(self.0, rhs.0) }) }
 }
 
 impl SubAssign for Vf32x4 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) {
-        *self = *self - rhs;
-    }
+    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
 }
 
 impl Mul for Vf32x4 {
     type Output = Self;
     #[inline(always)]
-    fn mul(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_mul_ps(self.0, rhs.0) })
-    }
+    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm_mul_ps(self.0, rhs.0) }) }
 }
 
 impl MulAssign for Vf32x4 {
     #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
+    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
 }
 
 impl Div for Vf32x4 {
     type Output = Self;
     #[inline(always)]
-    fn div(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_div_ps(self.0, rhs.0) })
-    }
+    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm_div_ps(self.0, rhs.0) }) }
 }
 
 impl DivAssign for Vf32x4 {
     #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) {
-        *self = *self / rhs;
-    }
+    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
 }
 
 impl Neg for Vf32x4 {
     type Output = Self;
     #[inline(always)]
-    fn neg(self) -> Self {
-        Self(unsafe { _mm_sub_ps(_mm_setzero_ps(), self.0) })
-    }
+    fn neg(self) -> Self { Self(unsafe { _mm_sub_ps(_mm_setzero_ps(), self.0) }) }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -446,98 +406,72 @@ pub struct Vf64x2(pub __m128d);
 
 impl Vf64x2 {
     #[inline(always)]
-    pub fn zero() -> Self {
-        Self(unsafe { _mm_setzero_pd() })
-    }
+    pub fn zero() -> Self { Self(unsafe { _mm_setzero_pd() }) }
 
     #[inline(always)]
-    pub fn splat(v: f64) -> Self {
-        Self(unsafe { _mm_set1_pd(v) })
-    }
+    pub fn splat(v: f64) -> Self { Self(unsafe { _mm_set1_pd(v) }) }
 
     /// Load 2 contiguous f64s directly from memory.
     ///
     /// # Safety
     /// `ptr` must be valid for reading 16 bytes (128 bits).
     #[inline(always)]
-    pub unsafe fn loadu(ptr: *const f64) -> Self {
-        Self(unsafe { _mm_loadu_pd(ptr) })
-    }
+    pub unsafe fn loadu(ptr: *const f64) -> Self { Self(unsafe { _mm_loadu_pd(ptr) }) }
 
     /// Store 2 contiguous f64s directly to memory.
     ///
     /// # Safety
     /// `ptr` must be valid for writing 16 bytes (128 bits).
     #[inline(always)]
-    pub unsafe fn storeu(self, ptr: *mut f64) {
-        unsafe { _mm_storeu_pd(ptr, self.0) };
-    }
+    pub unsafe fn storeu(self, ptr: *mut f64) { unsafe { _mm_storeu_pd(ptr, self.0) }; }
 }
 
 impl Add for Vf64x2 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_add_pd(self.0, rhs.0) })
-    }
+    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm_add_pd(self.0, rhs.0) }) }
 }
 
 impl AddAssign for Vf64x2 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
+    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
 }
 
 impl Sub for Vf64x2 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_sub_pd(self.0, rhs.0) })
-    }
+    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm_sub_pd(self.0, rhs.0) }) }
 }
 
 impl SubAssign for Vf64x2 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) {
-        *self = *self - rhs;
-    }
+    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
 }
 
 impl Mul for Vf64x2 {
     type Output = Self;
     #[inline(always)]
-    fn mul(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_mul_pd(self.0, rhs.0) })
-    }
+    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm_mul_pd(self.0, rhs.0) }) }
 }
 
 impl MulAssign for Vf64x2 {
     #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
+    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
 }
 
 impl Div for Vf64x2 {
     type Output = Self;
     #[inline(always)]
-    fn div(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_div_pd(self.0, rhs.0) })
-    }
+    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm_div_pd(self.0, rhs.0) }) }
 }
 
 impl DivAssign for Vf64x2 {
     #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) {
-        *self = *self / rhs;
-    }
+    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
 }
 
 impl Neg for Vf64x2 {
     type Output = Self;
     #[inline(always)]
-    fn neg(self) -> Self {
-        Self(unsafe { _mm_sub_pd(_mm_setzero_pd(), self.0) })
-    }
+    fn neg(self) -> Self { Self(unsafe { _mm_sub_pd(_mm_setzero_pd(), self.0) }) }
 }

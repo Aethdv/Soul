@@ -39,14 +39,10 @@ pub struct DualNode {
 
 impl DualNode {
     #[inline(always)]
-    pub fn floor(self) -> Self {
-        Self { val: self.val.floor(), grad: self.grad, active: self.active }
-    }
+    pub fn floor(self) -> Self { Self { val: self.val.floor(), grad: self.grad, active: self.active } }
 
     #[inline(always)]
-    pub fn constant(val: f64) -> Self {
-        Self { grad: [0.0; DUAL_N], val, active: false }
-    }
+    pub fn constant(val: f64) -> Self { Self { grad: [0.0; DUAL_N], val, active: false } }
 
     /// Seed a dual variable; `grad[idx] = 1.0`, active bit set.
     #[inline(always)]
@@ -57,15 +53,11 @@ impl DualNode {
     }
 
     #[inline(always)]
-    pub fn zero() -> Self {
-        Self { grad: [0.0; DUAL_N], val: 0.0, active: false }
-    }
+    pub fn zero() -> Self { Self { grad: [0.0; DUAL_N], val: 0.0, active: false } }
 }
 
 impl fmt::Debug for DualNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dual({:.4}, active={})", self.val, self.active)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "Dual({:.4}, active={})", self.val, self.active) }
 }
 
 /// Map `f` lane-wise across two gradient vectors into `out`, in `DUAL_N / 8`
@@ -283,49 +275,31 @@ impl EvalMath for DualNode {
     }
 
     #[inline(always)]
-    fn zero() -> Self {
-        DualNode::zero()
-    }
+    fn zero() -> Self { DualNode::zero() }
 
     #[inline(always)]
-    fn new(val: f64) -> Self {
-        DualNode::constant(val)
-    }
+    fn new(val: f64) -> Self { DualNode::constant(val) }
 
     #[inline(always)]
-    fn from_i32(val: i32) -> Self {
-        DualNode::constant(f64::from(val))
-    }
+    fn from_i32(val: i32) -> Self { DualNode::constant(f64::from(val)) }
 
     #[inline(always)]
-    fn max(self, other: Self) -> Self {
-        if self.val >= other.val { self } else { other }
-    }
+    fn max(self, other: Self) -> Self { if self.val >= other.val { self } else { other } }
 
     #[inline(always)]
-    fn min(self, other: Self) -> Self {
-        if self.val <= other.val { self } else { other }
-    }
+    fn min(self, other: Self) -> Self { if self.val <= other.val { self } else { other } }
 
     #[inline(always)]
-    fn abs(self) -> Self {
-        if self.val < 0.0 { -self } else { self }
-    }
+    fn abs(self) -> Self { if self.val < 0.0 { -self } else { self } }
 
     #[inline(always)]
-    fn to_i32(self) -> i32 {
-        self.val as i32
-    }
+    fn to_i32(self) -> i32 { self.val as i32 }
 
     #[inline(always)]
-    fn to_f64(self) -> f64 {
-        self.val
-    }
+    fn to_f64(self) -> f64 { self.val }
 
     #[inline(always)]
-    fn trunc(self) -> Self {
-        Self { val: self.val.trunc(), grad: self.grad, active: self.active }
-    }
+    fn trunc(self) -> Self { Self { val: self.val.trunc(), grad: self.grad, active: self.active } }
 
     #[inline(always)]
     fn math_clamp(self, min: Self, max: Self) -> Self {
@@ -392,9 +366,7 @@ impl EnvVec4 for DualVec4 {
     type Vec8 = DualVec8;
 
     #[inline(always)]
-    fn zero() -> Self {
-        DualVec4([DualNode::zero(); 4])
-    }
+    fn zero() -> Self { DualVec4([DualNode::zero(); 4]) }
 
     #[inline(always)]
     fn splat(val: i32) -> Self {
@@ -403,14 +375,10 @@ impl EnvVec4 for DualVec4 {
     }
 
     #[inline(always)]
-    fn from_lanes(a: DualNode, b: DualNode, c: DualNode, d: DualNode) -> Self {
-        DualVec4([a, b, c, d])
-    }
+    fn from_lanes(a: DualNode, b: DualNode, c: DualNode, d: DualNode) -> Self { DualVec4([a, b, c, d]) }
 
     #[inline(always)]
-    fn extract<const N: i32>(self) -> DualNode {
-        self.0[N as usize]
-    }
+    fn extract<const N: i32>(self) -> DualNode { self.0[N as usize] }
 
     #[inline(always)]
     fn srai<const N: i32>(self) -> Self {
@@ -450,9 +418,7 @@ impl EnvVec8 for DualVec8 {
     type Vec4 = DualVec4;
 
     #[inline(always)]
-    fn zero() -> Self {
-        DualVec8([DualNode::zero(); 8])
-    }
+    fn zero() -> Self { DualVec8([DualNode::zero(); 8]) }
 
     #[inline(always)]
     fn splat(val: i16) -> Self {
@@ -471,12 +437,8 @@ impl EnvVec8 for DualVec8 {
     }
 
     #[inline(always)]
-    fn load_i32_4(self) -> DualVec4 {
-        DualVec4([self.0[0], self.0[1], self.0[2], self.0[3]])
-    }
+    fn load_i32_4(self) -> DualVec4 { DualVec4([self.0[0], self.0[1], self.0[2], self.0[3]]) }
 
     #[inline(always)]
-    fn extract<const N: i32>(self) -> DualNode {
-        self.0[N as usize]
-    }
+    fn extract<const N: i32>(self) -> DualNode { self.0[N as usize] }
 }

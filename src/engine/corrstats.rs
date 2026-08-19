@@ -87,9 +87,7 @@ pub fn record_read(table: Table, value: i32) {
 
 /// Records a training update to `table`.
 #[inline]
-pub fn record_update(table: Table) {
-    STATS[table as usize].updates.fetch_add(1, Relaxed);
-}
+pub fn record_update(table: Table) { STATS[table as usize].updates.fetch_add(1, Relaxed); }
 
 /// The per-table summary, printed once after a workload such as bench.
 pub fn report() {
@@ -133,9 +131,7 @@ fn mean_cp(i: usize) -> f64 {
     safe_div(abs_sum as f64, hits as f64) / CORRECTION_SCALE as f64
 }
 
-fn eff_cp(i: usize, weight: i32) -> f64 {
-    mean_cp(i) * weight as f64 / f64::from(CORRECTION_WEIGHT_SCALE)
-}
+fn eff_cp(i: usize, weight: i32) -> f64 { mean_cp(i) * weight as f64 / f64::from(CORRECTION_WEIGHT_SCALE) }
 
 fn sat_pct(i: usize) -> f64 {
     let (hits, sat) = (STATS[i].hits.load(Relaxed), STATS[i].saturated.load(Relaxed));

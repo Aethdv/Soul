@@ -300,9 +300,7 @@ impl SearchConfig {
     }
 
     /// `threads` zeroed node counters, one slot per thread.
-    pub fn node_slots(threads: usize) -> Arc<[AtomicU64]> {
-        (0..threads).map(|_| AtomicU64::new(0)).collect()
-    }
+    pub fn node_slots(threads: usize) -> Arc<[AtomicU64]> { (0..threads).map(|_| AtomicU64::new(0)).collect() }
 
     /// Composed LMR reduction in `LMR_SCALE` units.
     #[inline(always)]
@@ -357,9 +355,7 @@ impl SearchConfig {
 }
 
 impl Line {
-    pub const fn new() -> Self {
-        Self { moves: [Move::null(); MAX_PLY], len: 0 }
-    }
+    pub const fn new() -> Self { Self { moves: [Move::null(); MAX_PLY], len: 0 } }
 
     /// Prepend `mv` to `tail`, forming a complete PV line.
     pub fn compose(&mut self, mv: Move, tail: &Line) {
@@ -371,22 +367,16 @@ impl Line {
 
     /// Retrieve a move from the PV line if the index is within bounds.
     #[inline(always)]
-    pub fn get(&self, idx: usize) -> Option<Move> {
-        if idx < self.len { Some(self.moves[idx]) } else { None }
-    }
+    pub fn get(&self, idx: usize) -> Option<Move> { if idx < self.len { Some(self.moves[idx]) } else { None } }
 }
 
 impl Default for Line {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl RootMove {
     #[inline]
-    pub fn new(mv: Move) -> Self {
-        Self { mv, score: -INF, pv: Box::new(Line::new()), nodes: 0 }
-    }
+    pub fn new(mv: Move) -> Self { Self { mv, score: -INF, pv: Box::new(Line::new()), nodes: 0 } }
 }
 
 impl Default for Stack {
@@ -703,14 +693,10 @@ impl<'cfg> Searcher<'cfg> {
     }
 
     #[inline]
-    pub fn best_move(&self) -> Option<Move> {
-        self.root_moves.first().map(|rm| rm.mv)
-    }
+    pub fn best_move(&self) -> Option<Move> { self.root_moves.first().map(|rm| rm.mv) }
 
     #[inline]
-    pub fn best_score(&self) -> Option<i32> {
-        self.root_moves.first().map(|rm| rm.score)
-    }
+    pub fn best_score(&self) -> Option<i32> { self.root_moves.first().map(|rm| rm.score) }
 
     /// Rebuild the repetition trail from game history, trimmed to the 50-move
     /// horizon; positions older than the last capture or pawn push can never
@@ -765,9 +751,7 @@ impl<'cfg> Searcher<'cfg> {
     /// into its own slot every 2048 nodes, so the aggregate may trail by
     /// up to `NODE_CHECK_INTERVAL · threads`, invisible at display intervals.
     #[inline(always)]
-    fn node_count(&self) -> u64 {
-        self.cfg.node_slots.iter().map(|s| s.load(Ordering::Relaxed)).sum()
-    }
+    fn node_count(&self) -> u64 { self.cfg.node_slots.iter().map(|s| s.load(Ordering::Relaxed)).sum() }
 
     /// Assemble the display snapshot shared by depth-complete and realtime reporting.
     #[cold]
@@ -1595,15 +1579,11 @@ impl Worker<'_> {
 
     #[cfg(not(feature = "nostore"))]
     #[inline(always)]
-    fn xb_store(&self) -> Option<&XorBoard> {
-        Some(&self.xorboard)
-    }
+    fn xb_store(&self) -> Option<&XorBoard> { Some(&self.xorboard) }
 
     #[cfg(feature = "nostore")]
     #[inline(always)]
-    fn xb_store(&self) -> Option<&XorBoard> {
-        None
-    }
+    fn xb_store(&self) -> Option<&XorBoard> { None }
 
     /// Brings the rows up to date for a move the board has already made.
     #[inline(always)]
@@ -1641,15 +1621,11 @@ impl Worker<'_> {
 
     #[cfg(not(feature = "nostore"))]
     #[inline(always)]
-    fn xb_rows(&self) -> &XorBoard {
-        &self.xorboard
-    }
+    fn xb_rows(&self) -> &XorBoard { &self.xorboard }
 
     #[cfg(feature = "nostore")]
     #[inline(always)]
-    fn xb_rows(&self) -> core::marker::PhantomData<&()> {
-        core::marker::PhantomData
-    }
+    fn xb_rows(&self) -> core::marker::PhantomData<&()> { core::marker::PhantomData }
 
     #[inline(always)]
     fn xb_threats(&self, color: Color) -> Bitboard {

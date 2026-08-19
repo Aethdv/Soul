@@ -691,7 +691,5 @@ mod tests {
             && a.fullmove_number == b.fullmove_number
     }
 
-    fn context(pos: &Position, mv: Move) -> String {
-        format!("after {} from {}", mv.to_uci(pos.is_frc), pos.as_fen())
-    }
+    fn context(pos: &Position, mv: Move) -> String { format!("after {} from {}", mv.to_uci(pos.is_frc), pos.as_fen()) }
 }

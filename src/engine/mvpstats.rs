@@ -147,9 +147,7 @@ fn header(title: &str) {
 
 /// Paints a percentage against the point where the scale reads neutral: deep red at
 /// zero, deep green at twice it.
-fn scored(pct: f64, neutral: f64) -> String {
-    colored(&format!("{pct:.1}%"), (pct / neutral - 1.0).clamp(-1.0, 1.0))
-}
+fn scored(pct: f64, neutral: f64) -> String { colored(&format!("{pct:.1}%"), (pct / neutral - 1.0).clamp(-1.0, 1.0)) }
 
 /// Gold, bold and reset, or three empty strings off a terminal. `BOLD` comes through
 /// here so a piped report cannot keep an escape its reset was stripped from.

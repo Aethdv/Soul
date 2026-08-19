@@ -90,9 +90,7 @@ impl Color {
     }
 
     #[inline(always)]
-    pub const fn as_usize(self) -> usize {
-        self as usize
-    }
+    pub const fn as_usize(self) -> usize { self as usize }
 
     /// The direction pawns march: North for White, South for Black.
     #[inline(always)]
@@ -103,21 +101,15 @@ impl Color {
 
     /// First rank from this side's perspective.
     #[inline(always)]
-    pub const fn back_rank(self) -> u8 {
-        (self as u8) * 7
-    }
+    pub const fn back_rank(self) -> u8 { (self as u8) * 7 }
 
     /// Where this side's pawns stand in the starting position.
     #[inline(always)]
-    pub const fn pawn_start_rank(self) -> u8 {
-        1 + (self as u8) * 5
-    }
+    pub const fn pawn_start_rank(self) -> u8 { 1 + (self as u8) * 5 }
 
     /// The rank where pawns promote.
     #[inline(always)]
-    pub const fn promotion_rank(self) -> u8 {
-        7 - (self as u8) * 7
-    }
+    pub const fn promotion_rank(self) -> u8 { 7 - (self as u8) * 7 }
 }
 
 const impl From<u8> for Color {
@@ -130,18 +122,14 @@ const impl From<u8> for Color {
 
 const impl From<Color> for usize {
     #[inline(always)]
-    fn from(val: Color) -> Self {
-        val as usize
-    }
+    fn from(val: Color) -> Self { val as usize }
 }
 
 const impl Not for Color {
     type Output = Self;
 
     #[inline(always)]
-    fn not(self) -> Self::Output {
-        self.opposite()
-    }
+    fn not(self) -> Self::Output { self.opposite() }
 }
 
 /// Ordered Pawn..King by ascending material value for compact table lookups.
@@ -175,25 +163,17 @@ impl PieceType {
     pub const ALL: [Self; 6] = [Self::Pawn, Self::Knight, Self::Bishop, Self::Rook, Self::Queen, Self::King];
 
     #[inline(always)]
-    pub const fn is_none(self) -> bool {
-        matches!(self, Self::None)
-    }
+    pub const fn is_none(self) -> bool { matches!(self, Self::None) }
 
     #[inline(always)]
-    pub const fn is_some(self) -> bool {
-        !self.is_none()
-    }
+    pub const fn is_some(self) -> bool { !self.is_none() }
 
     #[inline(always)]
-    pub const fn as_usize(self) -> usize {
-        self as usize
-    }
+    pub const fn as_usize(self) -> usize { self as usize }
 
     /// Construct from a raw index, masked to the three bits a variant occupies.
     #[inline(always)]
-    pub const fn new(idx: u8) -> Self {
-        Self::from(idx & 7)
-    }
+    pub const fn new(idx: u8) -> Self { Self::from(idx & 7) }
 
     /// FEN / SAN character: uppercase for White, lowercase for Black.
     #[inline(always)]
@@ -237,9 +217,7 @@ const impl From<u8> for PieceType {
 
 const impl From<PieceType> for usize {
     #[inline(always)]
-    fn from(val: PieceType) -> Self {
-        val as usize
-    }
+    fn from(val: PieceType) -> Self { val as usize }
 }
 
 /// The eight compass directions, numbered clockwise from North.
@@ -269,9 +247,7 @@ impl Direction {
     /// North→South, NorthEast→SouthWest, etc.
     #[must_use]
     #[inline(always)]
-    pub const fn relative(self, color: Color) -> Self {
-        Direction::from(self as u8 ^ ((color as u8) << 2))
-    }
+    pub const fn relative(self, color: Color) -> Self { Direction::from(self as u8 ^ ((color as u8) << 2)) }
 
     /// Square-index delta for a single step in this direction.
     #[inline(always)]
@@ -353,39 +329,27 @@ impl GameOutcome {
 /// the first one examined. Breaking that tie lets the search reach draw routes where
 /// the opponent still has a chance to stray.
 #[inline]
-pub fn draw_score(nodes: u64) -> i32 {
-    (nodes & 0x7) as i32 - 3
-}
+pub fn draw_score(nodes: u64) -> i32 { (nodes & 0x7) as i32 - 3 }
 
 /// A forced mate the side to move delivers.
 #[inline]
-pub fn is_win(score: i32) -> bool {
-    score > MATE_BOUND
-}
+pub fn is_win(score: i32) -> bool { score > MATE_BOUND }
 
 /// A forced mate delivered against the side to move.
 #[inline]
-pub fn is_loss(score: i32) -> bool {
-    score < -MATE_BOUND
-}
+pub fn is_loss(score: i32) -> bool { score < -MATE_BOUND }
 
 /// Whether `score` is a forced mate rather than a normal evaluation.
 #[inline]
-pub fn is_mate(score: i32) -> bool {
-    is_win(score) || is_loss(score)
-}
+pub fn is_mate(score: i32) -> bool { is_win(score) || is_loss(score) }
 
 /// Score for delivering mate in `ply` plies from the root.
 #[inline]
-pub fn mate_in(ply: usize) -> i32 {
-    MATE - ply as i32
-}
+pub fn mate_in(ply: usize) -> i32 { MATE - ply as i32 }
 
 /// Score for being mated in `ply` plies from the root.
 #[inline]
-pub fn mated_in(ply: usize) -> i32 {
-    -MATE + ply as i32
-}
+pub fn mated_in(ply: usize) -> i32 { -MATE + ply as i32 }
 
 /// Fold the current ply into a mate score before storing it.
 ///

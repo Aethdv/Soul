@@ -48,9 +48,7 @@ pub struct GlobalStats {
 }
 
 impl Default for GlobalStats {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl GlobalStats {

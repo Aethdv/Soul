@@ -189,9 +189,7 @@ pub struct StateInfo {
 }
 
 impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Fen(self))
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", Fen(self)) }
 }
 
 impl Position {
@@ -220,14 +218,10 @@ impl Position {
 
     /// Parse a FEN string, panicking on invalid input.
     /// Use `try_from_fen` for user-supplied FENs where graceful error handling is needed.
-    pub fn from_fen(fen: &str) -> Self {
-        Self::try_from_fen(fen).unwrap_or_else(|e| panic!("Invalid FEN: {e}"))
-    }
+    pub fn from_fen(fen: &str) -> Self { Self::try_from_fen(fen).unwrap_or_else(|e| panic!("Invalid FEN: {e}")) }
 
     /// Parse a FEN string. Returns an error for malformed input.
-    pub fn try_from_fen(fen: &str) -> Result<Self, FenError> {
-        Self::try_from_tokens(&mut fen.split_whitespace().peekable())
-    }
+    pub fn try_from_fen(fen: &str) -> Result<Self, FenError> { Self::try_from_tokens(&mut fen.split_whitespace().peekable()) }
 
     /// Parse from pre-split FEN tokens
     /// (useful for UCI `position` commands where the token stream is already available).
@@ -238,15 +232,11 @@ impl Position {
 
     /// Apply `mv` to the position. Returns the undo packet needed by `unmake_move`.
     #[inline]
-    pub fn make_move(&mut self, mv: Move, acc: &mut Vi16x8) -> StateInfo {
-        make::make_move(self, mv, acc)
-    }
+    pub fn make_move(&mut self, mv: Move, acc: &mut Vi16x8) -> StateInfo { make::make_move(self, mv, acc) }
 
     /// Restore the position to its state before `mv` was played.
     #[inline]
-    pub fn unmake_move(&mut self, mv: Move, info: &StateInfo) {
-        make::unmake_move(self, mv, info);
-    }
+    pub fn unmake_move(&mut self, mv: Move, info: &StateInfo) { make::unmake_move(self, mv, info); }
 
     /// Pass the turn without moving.
     /// Returns the undo packet.
@@ -342,9 +332,7 @@ impl Position {
         false
     }
 
-    pub fn is_fifty_move_draw(&self) -> bool {
-        self.halfmove_clock >= 100
-    }
+    pub fn is_fifty_move_draw(&self) -> bool { self.halfmove_clock >= 100 }
 
     /// Detects draw by insufficient mating material.
     ///
@@ -497,19 +485,13 @@ impl Position {
     }
 
     /// Serialize the current position back to a FEN string.
-    pub fn as_fen(&self) -> String {
-        fen::as_fen(self)
-    }
+    pub fn as_fen(&self) -> String { fen::as_fen(self) }
 
     /// Print a board diagram to stdout.
-    pub fn pretty_print(&self) {
-        fen::pretty_print(self)
-    }
+    pub fn pretty_print(&self) { fen::pretty_print(self) }
 
     #[inline(always)]
-    pub fn piece_at(&self, sq: Square) -> PieceType {
-        self.pieces[sq.0 as usize]
-    }
+    pub fn piece_at(&self, sq: Square) -> PieceType { self.pieces[sq.0 as usize] }
 
     /// Returns the piece at `sq`, asserting that the square is occupied.
     /// Bypasses debug bounds checking for the hottest inner loops only.
@@ -530,15 +512,11 @@ impl Position {
 
     /// Bitboard of all pieces of type `pt` belonging to `color`.
     #[inline(always)]
-    pub fn pieces(&self, pt: PieceType, color: Color) -> Bitboard {
-        self.role_bb[pt as usize] & self.side_bb[color as usize]
-    }
+    pub fn pieces(&self, pt: PieceType, color: Color) -> Bitboard { self.role_bb[pt as usize] & self.side_bb[color as usize] }
 
     /// All occupied squares.
     #[inline(always)]
-    pub fn occupancy(&self) -> Bitboard {
-        self.occ
-    }
+    pub fn occupancy(&self) -> Bitboard { self.occ }
 
     /// Rough material total (both sides) using standard piece values:
     /// P=1, N=3, B=3, R=5, Q=9.
@@ -573,15 +551,11 @@ impl Position {
 
     /// Bitboard of all enemy pieces currently giving check to the side to move.
     #[inline(always)]
-    pub fn checkers(&self) -> Bitboard {
-        attacks::checkers(self)
-    }
+    pub fn checkers(&self) -> Bitboard { attacks::checkers(self) }
 
     /// All pieces of `attacker`'s color that attack `sq`.
     #[inline(always)]
-    pub fn get_attackers_on(&self, sq: Square, attacker: Color) -> Bitboard {
-        attacks::attackers_of(self, sq, attacker)
-    }
+    pub fn get_attackers_on(&self, sq: Square, attacker: Color) -> Bitboard { attacks::attackers_of(self, sq, attacker) }
 
     /// Bulk pawn attack mask: all squares attacked by any pawn of `color`.
     ///
@@ -652,38 +626,26 @@ impl Position {
 
     /// Can any pawn of `color` legally capture en passant on `ep_sq`?
     #[inline]
-    pub fn can_capture_ep(&self, ep_sq: Square, color: Color) -> bool {
-        attacks::can_capture_ep(self, ep_sq, color)
-    }
+    pub fn can_capture_ep(&self, ep_sq: Square, color: Color) -> bool { attacks::can_capture_ep(self, ep_sq, color) }
 
     /// Friendly pieces of the given color pinned to their king.
     #[inline]
-    pub fn pinned_pieces(&self, color: Color) -> Bitboard {
-        attacks::pinned_pieces(self, color)
-    }
+    pub fn pinned_pieces(&self, color: Color) -> Bitboard { attacks::pinned_pieces(self, color) }
 
     /// Friendly pieces of the side to move pinned to the king.
     #[inline]
-    pub fn king_blockers(&self) -> Bitboard {
-        attacks::pinned_pieces(self, self.stm)
-    }
+    pub fn king_blockers(&self) -> Bitboard { attacks::pinned_pieces(self, self.stm) }
 
     #[inline(always)]
-    pub fn set_piece_type(&mut self, sq: Square, pt: PieceType) {
-        self.pieces[sq.0 as usize] = pt;
-    }
+    pub fn set_piece_type(&mut self, sq: Square, pt: PieceType) { self.pieces[sq.0 as usize] = pt; }
 
     /// Place a piece on `sq`, updating bitboards, mailbox, and Zobrist hash.
     #[inline(always)]
-    pub fn add_piece(&mut self, sq: Square, pt: PieceType, color: Color) {
-        make::update_piece::<true>(self, sq, pt, color);
-    }
+    pub fn add_piece(&mut self, sq: Square, pt: PieceType, color: Color) { make::update_piece::<true>(self, sq, pt, color); }
 
     /// Remove a piece from `sq`, updating bitboards, mailbox, and Zobrist hash.
     #[inline(always)]
-    pub fn remove_piece(&mut self, sq: Square, pt: PieceType, color: Color) {
-        make::update_piece::<false>(self, sq, pt, color);
-    }
+    pub fn remove_piece(&mut self, sq: Square, pt: PieceType, color: Color) { make::update_piece::<false>(self, sq, pt, color); }
 
     /// Full Zobrist re-computation from scratch, for initialization and
     /// debug verification against the incrementally maintained `self.hash`.
@@ -709,9 +671,7 @@ impl Position {
 
     /// Zobrist hash of all pawns (both colors). Recomputed from scratch, for
     /// initialization and debug verification against the incremental [`Self::pawn_key`].
-    pub fn calc_pawn_hash(&self) -> u64 {
-        self.calc_subset_hash(self.role_bb[PieceType::Pawn])
-    }
+    pub fn calc_pawn_hash(&self) -> u64 { self.calc_subset_hash(self.role_bb[PieceType::Pawn]) }
 
     /// Zobrist hash of all minor pieces (knights + bishops, both colors).
     pub fn calc_minor_hash(&self) -> u64 {
@@ -719,9 +679,7 @@ impl Position {
     }
 
     /// Zobrist hash of all major pieces (rooks + queens, both colors).
-    pub fn calc_major_hash(&self) -> u64 {
-        self.calc_subset_hash(self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen])
-    }
+    pub fn calc_major_hash(&self) -> u64 { self.calc_subset_hash(self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) }
 
     /// XOR-folds each piece's Zobrist key over a subset of the board,
     /// the key schema the correction-history tables index on.
@@ -735,7 +693,5 @@ impl Position {
 }
 
 impl Default for Position {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }

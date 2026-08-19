@@ -96,9 +96,7 @@ impl<T> HugePages<T> {
     }
 
     /// The page size the OS actually gave us.
-    pub fn kind(&self) -> PageKind {
-        self.kind
-    }
+    pub fn kind(&self) -> PageKind { self.kind }
 
     /// Reset to an empty table, leaving the pages resident.
     ///

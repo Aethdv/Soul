@@ -1,15 +1,15 @@
-//! What a dataset says, read off its labels before anything trains on them.
+//! Dataset diagnostic assays prior to evaluation tuning.
 //!
-//! Three reports. `profile` counts what the positions and the games offer a weight
-//! to sit on. `material` fits ten coefficients to the labels alone, outside the tuner: a set whose
-//! midgame queen sits at twice its endgame rook will not produce a shippable evaluation, and ten
-//! weights say so in one pass instead of four thousand epochs. `score` puts parameter vectors
-//! against datasets at each pair's own K, which is the only honest way to rank two runs that
-//! trained on different data, since a validation loss describes its own split and nothing else.
+//! Three reports:
+//! - `profile`: Summarizes outcome distributions, phase progression, piece imbalances,
+//!   and game termination characteristics.
+//! - `material`: Fits ten tapered material coefficients (5 MG, 5 EG) directly to game
+//!   outcomes via Newton-Raphson logistic regression. Pinned to a midgame pawn of 100, it exposes
+//!   skewed material priors in a single pass without running thousands of tuning epochs.
+//! - `score`: Evaluates parameter vectors across datasets, optimizing the sigmoid scale K
+//!   independently per (vector, dataset) pair to isolate predictive quality from global scale.
 //!
-//! Every report takes several datasets and prints a row each, since these numbers mean little
-//! alone. None of them splits, weights or shuffles: an assay describes a file, and a holdout would
-//! describe a tenth of one.
+//! Assays evaluate datasets in natural order without synthetic resampling or holdout splits.
 
 use std::path::Path;
 
@@ -29,42 +29,42 @@ use crate::{
     training::{phase_of, phase_weights},
 };
 
-/// A constant 0.5 prediction, in nats.
+/// Binary cross-entropy loss for a uniform `p = 0.5` prediction (`ln(2)` nats).
 const COIN_FLIP: f64 = std::f64::consts::LN_2;
 
 /// The bracket the yardstick searches for K, wider than a training run's.
 ///
 /// A cold-start vector is logged before the gauge normalizes it and can sit a factor of four off
-/// the centipawn scale, so a bracket cut to what a shipped-scale eval needs would clamp such a
-/// candidate at the edge and report a loss that is about its units rather than its opinions.
+/// the centipawn scale. Cutting the bracket to what a shipped-scale eval needs would clamp such a
+/// candidate at the edge and report a loss about its units rather than its opinions.
 const SCORE_K: (f64, f64) = (1e-5, 0.2);
-/// The sigmoid scale the material fit holds fixed.
+
+/// Fixed sigmoid scaling factor `K` for isolated material logistic fitting.
 ///
-/// Weights and K trade off exactly, so fixing one identifies the other, and the printed table is
-/// normalized past both.
+/// Prevents collinearity between feature weights and `K`, ensuring parameter
+/// identifiability prior to normalizing relative to `P_mg = 100`.
 const FIT_K: f64 = 0.0025;
 const FIT_STEPS: usize = 24;
 const FIT_TOL: f64 = 1e-10;
 
 /// The five piece types a material table has an opinion about; the king is fixed at zero.
 const PIECES: [&str; 5] = ["pawn", "knight", "bishop", "rook", "queen"];
-/// The same five where a column header has room for one letter.
+/// Single-letter piece symbols.
 const SYMBOLS: [&str; 5] = ["P", "N", "B", "R", "Q"];
 
-/// Which question the datasets are being asked.
+/// Diagnostic report to execute.
 pub enum Assay {
-    /// Loss of each parameter vector on each set.
+    /// Cross-entropy or MSE loss of parameter checkpoints across datasets.
     Score { params: Vec<String>, loss: LossFn, shipped: String },
-    /// Tapered material-only logistic fit, one row per set against the shipped table.
+    /// Standalone logistic fit of tapered material weights against game outcomes.
     Material { shipped: String },
-    /// Label, design and game-shape counts.
+    /// Distributional summary of labels, phase, material imbalances, and game endings.
     Profile,
 }
 
-/// Load each argument as its own set, then report.
+/// Runs the selected assay over the provided dataset paths.
 ///
-/// One argument is one row, so a comma-joined argument loads as one set: the spelling that trains
-/// on several files assays them as the mixture they would train as.
+/// Comma-joined path arguments are loaded and assayed as a single unified mixture.
 pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample: Option<usize>) {
     let filter = replay_filter(config);
     let mut sets = Vec::new();
@@ -103,17 +103,17 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
     }
 }
 
-/// One dataset argument, loaded and featurized.
+/// In-memory dataset and its extracted evaluation features.
 struct Set {
     label: String,
     paths: Vec<String>,
     entries: Vec<SoulEntry>,
     records: Vec<FeatureRecord>,
-    /// Positions the file yielded, which `entries` stops holding once a sample is taken.
+    /// Total entries parsed from disk prior to subsampling.
     loaded: usize,
 }
 
-/// Everything one pass over the positions counts.
+/// Aggregated statistics accumulated over a dataset.
 #[derive(Default)]
 struct Counts {
     results: [usize; 3],
@@ -128,19 +128,19 @@ struct Counts {
     unequal_phase: [f64; 5],
 }
 
-/// Right-aligned columns under their headers, one row per dataset or candidate.
+/// Plaintext terminal table with right-aligned numeric columns.
 struct Table {
     corner: String,
     columns: Vec<String>,
     rows: Vec<Row>,
-    /// Column the gap widens before, for a table read in two halves.
+    /// Column index before which an extra visual separator is inserted.
     split: Option<usize>,
 }
 
 struct Row {
     label: String,
     cells: Vec<String>,
-    /// Context rather than a result: the reference the other rows are read against.
+    /// Reference row rendered with dimmed styling.
     reference: bool,
 }
 
@@ -152,8 +152,7 @@ impl Counts {
             self.scored += 1;
             self.score_sum += f64::from(entry.score.abs());
 
-            // Both are STM-relative, so a winner the search scored below zero is a position whose
-            // label and whose eval disagree about who stands better.
+            // Side-to-move relative: tracks positions where search score sign opposes the final outcome.
             let winner = i32::from(entry.result) - 1;
             if winner != 0 && i32::from(entry.score) * winner < 0 {
                 self.contradictions += 1;
@@ -207,6 +206,7 @@ impl Table {
     fn push(&mut self, label: &str, cells: Vec<String>) {
         self.rows.push(Row { label: label.to_string(), cells, reference: false });
     }
+
     fn push_dim(&mut self, label: &str, cells: Vec<String>) {
         self.rows.push(Row { label: label.to_string(), cells, reference: true });
     }
@@ -258,16 +258,16 @@ impl Table {
     }
 
     fn gap_before(&self, column: usize) -> String {
-        " ".repeat(if self.split == Some(column) { Self::GAP * 2 } else { Self::GAP })
+        let gap = if self.split == Some(column) { Self::GAP * 2 } else { Self::GAP };
+        " ".repeat(gap)
     }
 }
 
-/// Parameter vectors against datasets, each cell at the K that suits that pair best.
+/// Evaluates cross-entropy or MSE of parameter vectors, refitting K per dataset.
 ///
-/// Refitting K per cell is what makes the numbers comparable: a cold-start run lands on whatever
-/// scale its gauge left it at, and a vector three times too large is not three times worse at
-/// predicting outcomes. The target is the game result alone; blending the search score in would
-/// score a candidate against the generating engine's opinion.
+/// Optimizing K per cell decouples relative ordering accuracy from arbitrary centipawn
+/// scale differences across checkpoints. Evaluated solely against game outcomes to avoid
+/// scoring candidates against search engine evaluation artifacts.
 fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
     let tunables = collect_parameters();
     let defaults = default_values(&tunables);
@@ -282,9 +282,6 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
         }
     }
 
-    // One dataset is the yardstick case, where K and the headroom under a coin flip are the two
-    // figures worth having. Several are a ranking, and K varies per cell rather than per row, so
-    // there is no column for it to sit in.
     let single = sets.len() == 1;
     let mut columns: Vec<String> = sets.iter().map(|set| set.label.clone()).collect();
     if single {
@@ -320,11 +317,10 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
     println!("  A constant 0.5 scores ln 2 = 0.693147; under 0.05 of headroom, a set has no outcome signal.{RESET}");
 }
 
-/// Ten coefficients over piece counts, fitted outside the tuner.
+/// Fits 10 tapered material coefficients (5 middlegame, 5 endgame) directly to game results.
 ///
-/// Material is nearly separable from the rest of the evaluation, so this recovers a set's opinion
-/// of a piece without the other parameters trading against it. Normalizing the midgame pawn to
-/// 100 is what makes two sets comparable when their sigmoids landed on different slopes.
+/// Isolates base piece values from positional terms. Normalizes weights relative
+/// to `P_mg = 100` for baseline comparisons.
 fn material(sets: &[Set], shipped: &str) {
     let columns: Vec<String> = SYMBOLS
         .iter()
@@ -378,7 +374,7 @@ fn material(sets: &[Set], shipped: &str) {
     println!("{DIM}  L_fit is each set's loss on its own positions and does not compare across sets.{RESET}");
 }
 
-/// Counts: what the labels say, what the positions offer, and how the games ended.
+/// Summarizes label distribution, phase characteristics, and piece imbalance frequencies.
 fn profile(sets: &[Set]) {
     let stats: Vec<Counts> = sets.iter().map(count).collect();
 
@@ -428,8 +424,6 @@ fn profile(sets: &[Set]) {
     labels.print();
     println!("\n{LAB}Positions{RESET}");
     design.print();
-    // A coefficient is fitted on the positions where its piece count differs, so a set with no
-    // queen imbalances has nothing to say about a queen however many positions it holds.
     println!("\n{LAB}Imbalance: the share of positions where the count differs{RESET}");
     imbalance.print();
     println!("\n{LAB}And the mean phase where it does{RESET}");
@@ -437,7 +431,7 @@ fn profile(sets: &[Set]) {
     print_games(sets);
 }
 
-/// The game table, for whichever sets came from a replay.
+/// Summarizes game-level metadata from replay archives (`.vf`, `.viri`).
 fn print_games(sets: &[Set]) {
     let scans: Vec<(&Set, GameScan)> = sets
         .iter()
@@ -485,12 +479,12 @@ fn print_games(sets: &[Set]) {
     println!("  something other than its score.{RESET}");
 }
 
-/// The K that suits this vector on this set, and the loss there.
+/// Finds the optimal scale K and minimal loss for a parameter vector on a dataset.
 ///
-/// The eval is the whole cost of the pass and does not depend on K, so it is paid once and the
-/// golden search walks over cached scores.
+/// Raw evaluations are computed once in parallel; golden-section search then optimizes K
+/// over cached predictions.
 fn best_loss(set: &Set, values: &[f64], loss: LossFn) -> (f64, f64) {
-    let scored: Vec<(f64, f64)> = set
+    let eval_targets: Vec<(f64, f64)> = set
         .records
         .par_iter()
         .zip(&set.entries)
@@ -498,23 +492,22 @@ fn best_loss(set: &Set, values: &[f64], loss: LossFn) -> (f64, f64) {
         .collect();
 
     let loss_at = |k: f64| {
-        let sum: f64 = scored.par_iter().map(|&(s, y)| loss.loss(sigmoid(s, k), y)).sum();
-        sum / scored.len() as f64
+        let sum: f64 = eval_targets.par_iter().map(|&(s, y)| loss.loss(sigmoid(s, k), y)).sum();
+        sum / eval_targets.len() as f64
     };
 
     let (k_min, k_max) = SCORE_K;
     let k = golden_search_k(k_min, k_max, 1e-6 * (k_max - k_min), loss_at);
     if k <= k_min * 1.01 || k >= k_max * 0.99 {
-        eprintln!(
-            "{ALARM}[!] K stopped at the edge of its bracket on {}: this loss is not the candidate's best.{RESET}",
-            set.label
-        );
+        eprintln!("{ALARM}[!] K converged to boundary [{k_min}, {k_max}] on {}: loss may not be optimal.{RESET}", set.label);
     }
     (k, loss_at(k))
 }
 
-/// `(design, target)` per position: the five count differentials tapered into a midgame half and
-/// an endgame half, against the STM-relative outcome.
+/// Constructs design matrix rows and target outcomes for tapered material regression.
+///
+/// Feature layout: `[d_0·phi, ..., d_4·phi, d_0·(1-phi), ..., d_4·(1-phi)]`,
+/// where `d_i` is the piece differential and `phi` in `[0.0, 1.0]` is game phase.
 fn material_rows(set: &Set) -> Vec<([f64; 10], f64)> {
     let phase_w = phase_weights();
     set.records
@@ -533,12 +526,10 @@ fn material_rows(set: &Set) -> Vec<([f64; 10], f64)> {
         .collect()
 }
 
-/// Newton on the log-likelihood: ten weights, the exact Hessian, and step halving for the
-/// iterations where the quadratic model overshoots. Returns the weights, the loss and the steps.
+/// Fits 10 material weights via Newton-Raphson optimization with backtracking line search.
 ///
-/// Cross-entropy is not a setting here the way it is for the yardstick. The derivatives below are
-/// the canonical-link forms, exact for this loss and wrong for any other, so a fit under a smoothed
-/// or focal objective wants its own derivation rather than a different constant.
+/// Employs exact analytic gradients and Hessians under the canonical logit link.
+/// Returns `(weights, cross_entropy_loss, iterations)`.
 fn newton_fit(rows: &[([f64; 10], f64)]) -> ([f64; 10], f64, usize) {
     let mut w = [0.0f64; 10];
     let mut loss = fit_loss(rows, &w);
@@ -550,7 +541,7 @@ fn newton_fit(rows: &[([f64; 10], f64)]) -> ([f64; 10], f64, usize) {
             return (w, loss, step);
         };
 
-        // Full step first; a logistic fit on nearly separable columns is where it overshoots.
+        // Backtracking line search prevents quadratic overshoot near separable boundaries.
         let mut scale = 1.0;
         let mut moved = false;
 
@@ -566,15 +557,15 @@ fn newton_fit(rows: &[([f64; 10], f64)]) -> ([f64; 10], f64, usize) {
             scale *= 0.5;
         }
 
-        let norm: f64 = delta.iter().map(|d| d * d).sum::<f64>().sqrt() * scale;
-        if !moved || norm < FIT_TOL {
+        let step_norm: f64 = delta.iter().map(|d| d * d).sum::<f64>().sqrt() * scale;
+        if !moved || step_norm < FIT_TOL {
             return (w, loss, step);
         }
     }
     (w, loss, FIT_STEPS)
 }
 
-/// Gradient and Hessian of the mean log-loss at `w`.
+/// Computes the empirical gradient and Hessian of the cross-entropy loss at `w`.
 fn fit_derivatives(rows: &[([f64; 10], f64)], w: &[f64; 10]) -> ([f64; 10], [f64; 100]) {
     let (gradient, hessian) = rows
         .par_iter()
@@ -622,8 +613,7 @@ fn fit_derivatives(rows: &[([f64; 10], f64)], w: &[f64; 10]) -> ([f64; 10], [f64
         }
     }
 
-    // A set that never varies one piece count leaves that row empty, which is a singular matrix
-    // rather than a bad answer. The ridge keeps the solve alive and pins the coefficient near zero.
+    // Ridge regularization (1e-12) guarantees invertibility when specific piece imbalances are unobserved.
     for i in 0..10 {
         hessian[i * 10 + i] += 1e-12;
     }
@@ -639,11 +629,10 @@ fn fit_loss(rows: &[([f64; 10], f64)], w: &[f64; 10]) -> f64 {
     sum / rows.len() as f64
 }
 
-fn dot(x: &[f64; 10], w: &[f64; 10]) -> f64 {
-    (0..10).map(|i| x[i] * w[i]).sum()
-}
+#[inline(always)]
+fn dot(x: &[f64; 10], w: &[f64; 10]) -> f64 { (0..10).map(|i| x[i] * w[i]).sum() }
 
-/// Gaussian elimination with partial pivoting, row-major and ten wide.
+/// Solves a 10x10 linear system `Ax = b` via Gaussian elimination with partial pivoting.
 fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
     for col in 0..10 {
         let pivot = (col..10).max_by(|&i, &j| a[i * 10 + col].abs().total_cmp(&a[j * 10 + col].abs()))?;
@@ -690,11 +679,10 @@ fn count(set: &Set) -> Counts {
         .reduce(Counts::default, Counts::merged)
 }
 
-/// Every nth position, for the sets whose features do not fit in memory whole.
+/// Subsamples entries by selecting every k-th position.
 ///
-/// A stride rather than a draw: it is reproducible without carrying a seed, and it spreads the
-/// sample evenly over a file whose halves differ measurably in how predictable they are. Games sit
-/// contiguously, so it also lands on many games rather than on a few of them entire.
+/// Uniform striding preserves the natural opening-to-endgame progression across games
+/// without requiring PRNG state.
 fn strided(entries: Vec<SoulEntry>, cap: usize) -> Vec<SoulEntry> {
     if cap == 0 || entries.len() <= cap {
         return entries;
@@ -711,9 +699,7 @@ fn strided(entries: Vec<SoulEntry>, cap: usize) -> Vec<SoulEntry> {
     sampled
 }
 
-/// A row's name: the file without its format suffixes, and how many more files came with it.
-///
-/// A name may carry dots of its own, so the suffixes come off one at a time.
+/// Generates a display label by stripping compound file extensions from the base dataset path.
 fn label_for(paths: &[String]) -> String {
     const SUFFIXES: [&str; 7] = [".zst", ".soul", ".vf", ".viri", ".epd", ".txt", ".json"];
 
@@ -732,19 +718,16 @@ fn label_for(paths: &[String]) -> String {
     }
 }
 
-fn strings(items: &[&str]) -> Vec<String> {
-    items.iter().map(|s| (*s).to_string()).collect()
-}
+fn strings(items: &[&str]) -> Vec<String> { items.iter().map(|s| (*s).to_string()).collect() }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A dataset generated from known piece values, so the fit has a right answer to find.
+    /// Generates a synthetic dataset from ground-truth piece values.
     ///
-    /// Targets are the model's own probabilities rather than sampled outcomes: the log-loss
-    /// minimizer of soft targets is exactly the vector that produced them, so any gap the fit
-    /// leaves is the solver's and not the sample's.
+    /// Evaluates exact sigmoid probabilities as targets so zero training error corresponds
+    /// strictly to the planted weights.
     fn planted(weights: &[f64; 10]) -> Vec<([f64; 10], f64)> {
         let mut rows = Vec::new();
         for phase in 0..=24 {
@@ -771,8 +754,6 @@ mod tests {
         }
     }
 
-    /// The piece a dataset never varies is the one whose column is empty, and an empty column is
-    /// a singular matrix. It has to come back as no opinion rather than as a crash or a wild value.
     #[test]
     fn a_piece_that_never_varies_gets_no_opinion() {
         let mut rows = planted(&[100.0, 370.0, 382.0, 471.0, 752.0, 162.0, 513.0, 550.0, 970.0, 1897.0]);

@@ -115,15 +115,11 @@ pub fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &s
 /// Where a trial's artifacts land. Every run writes its checkpoint and its reports under fixed
 /// names, so trials sharing the parent's directory would leave `--resume` pointing at the last
 /// of them, carrying whatever the sweep was varying.
-fn trial_dir() -> PathBuf {
-    env::temp_dir().join(format!("evaltune_trial_{}", process::id()))
-}
+fn trial_dir() -> PathBuf { env::temp_dir().join(format!("evaltune_trial_{}", process::id())) }
 
 /// What the last run in `log_path` reached, for a caller spawning one trial at a time.
 #[must_use]
-pub fn last_best_val(log_path: &str) -> Option<f64> {
-    finals(log_path).last().and_then(|r| r.best_val_loss)
-}
+pub fn last_best_val(log_path: &str) -> Option<f64> { finals(log_path).last().and_then(|r| r.best_val_loss) }
 
 /// Every `final` record in an append-only log, in the order they were written.
 fn finals(log_path: &str) -> Vec<Final> {

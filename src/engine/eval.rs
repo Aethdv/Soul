@@ -295,9 +295,7 @@ fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features
 
 /// Extracts the game phase, clamped to `0..=TOTAL_PHASE`, from its accumulator lane.
 #[inline(always)]
-pub fn extract_phase(acc: &Vi16x8) -> i32 {
-    i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE)
-}
+pub fn extract_phase(acc: &Vi16x8) -> i32 { i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE) }
 
 /// Cached pawn structure features keyed on `pawn_key`.
 /// Retains passer bitboards to compute `enemy_king_dist` without re-running passed-span scans.
@@ -406,9 +404,7 @@ impl PawnFeatures {
 }
 
 impl Default for PawnCache {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl PawnCache {
@@ -438,9 +434,7 @@ impl PawnCache {
 
 impl SharedFeatures {
     #[inline]
-    pub fn compute(board: &Position) -> Self {
-        Self::with_pawn(board, &PawnFeatures::compute(board), None)
-    }
+    pub fn compute(board: &Position) -> Self { Self::with_pawn(board, &PawnFeatures::compute(board), None) }
 
     /// Piece features fresh, pawn features from `pawn`. `enemy_king_dist` is the one
     /// pawn-derived bucket rebuilt here, because it moves with the enemy king rather than
@@ -560,9 +554,7 @@ impl term::TermSource<XrayTerm> for SharedFeatures {
     type Input = f64;
 
     #[inline(always)]
-    fn extract(&self) -> f64 {
-        self.xray_ortho as f64
-    }
+    fn extract(&self) -> f64 { self.xray_ortho as f64 }
 }
 
 /// Generates `LinearTerm` and `TermSource` implementations for tapered positional bonus terms.

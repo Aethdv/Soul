@@ -68,21 +68,15 @@ macro_rules! magic_index {
 
 /// A pawn's two capture squares.
 #[inline(always)]
-pub fn atk_pawn(sq: Square, color: Color) -> Bitboard {
-    PAWN_ATTACKS[color][sq]
-}
+pub fn atk_pawn(sq: Square, color: Color) -> Bitboard { PAWN_ATTACKS[color][sq] }
 
 /// The span a pawn must have clear of enemy pawns to count as passed.
 #[inline(always)]
-pub fn passed_span(sq: Square, color: Color) -> Bitboard {
-    PASSED_PAWN_MASKS[color][sq]
-}
+pub fn passed_span(sq: Square, color: Color) -> Bitboard { PASSED_PAWN_MASKS[color][sq] }
 
 /// A knight's eight destinations.
 #[inline(always)]
-pub fn atk_knight(square: Square) -> Bitboard {
-    KNIGHT_ATTACKS[square]
-}
+pub fn atk_knight(square: Square) -> Bitboard { KNIGHT_ATTACKS[square] }
 
 /// Diagonal attacks, stopped by `occupancy`.
 #[inline(always)]
@@ -100,23 +94,17 @@ pub fn atk_rook(square: Square, occupancy: Bitboard) -> Bitboard {
 
 /// A king's eight neighbours.
 #[inline(always)]
-pub fn atk_king(square: Square) -> Bitboard {
-    KING_ATTACKS[square]
-}
+pub fn atk_king(square: Square) -> Bitboard { KING_ATTACKS[square] }
 
 /// The whole line through both squares, rank, file or diagonal.
 /// Empty when they do not share one.
 #[inline(always)]
-pub fn line_bb(sq1: Square, sq2: Square) -> Bitboard {
-    Bitboard(LINES[sq1][sq2])
-}
+pub fn line_bb(sq1: Square, sq2: Square) -> Bitboard { Bitboard(LINES[sq1][sq2]) }
 
 /// The squares strictly between the two, endpoints excluded.
 /// Empty when they do not share a line.
 #[inline(always)]
-pub fn between_bb(sq1: Square, sq2: Square) -> Bitboard {
-    Bitboard(BETWEEN[sq1][sq2])
-}
+pub fn between_bb(sq1: Square, sq2: Square) -> Bitboard { Bitboard(BETWEEN[sq1][sq2]) }
 
 /// Precomputes pawn capture targets for both colors.
 ///

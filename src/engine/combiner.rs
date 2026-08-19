@@ -65,16 +65,12 @@ pub struct CombinerParams<T: EvalMath> {
 
 impl<T: EvalMath<Scalar = T>> CombinerParams<T> {
     #[inline(always)]
-    pub fn from_eval(params: &EvalParams<T>) -> Self {
-        Self { king_danger: params.w_king_danger }
-    }
+    pub fn from_eval(params: &EvalParams<T>) -> Self { Self { king_danger: params.w_king_danger } }
 }
 
 impl CombinerParams<f64> {
     #[inline(always)]
-    pub fn from_values(values: &[f64]) -> Self {
-        Self { king_danger: values[LAYOUT.king_danger_offset] }
-    }
+    pub fn from_values(values: &[f64]) -> Self { Self { king_danger: values[LAYOUT.king_danger_offset] } }
 }
 
 /// The one non-linearity in the eval: `p + trunc(p²·c / DANGER_SCALE)`, so pressure

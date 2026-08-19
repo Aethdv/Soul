@@ -49,22 +49,14 @@ impl Place {
         Self((color as u8) << 7 | code << PTYPE_SHIFT | id.0)
     }
 
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
+    pub fn is_empty(self) -> bool { self.0 == 0 }
 
-    pub fn color(self) -> Color {
-        if self.0 & Self::BLACK == 0 { Color::White } else { Color::Black }
-    }
+    pub fn color(self) -> Color { if self.0 & Self::BLACK == 0 { Color::White } else { Color::Black } }
 
     /// The piece code, which is also the row `Geometry::reach` is indexed by.
-    fn code(self) -> usize {
-        usize::from(self.0 & Self::PTYPE) >> PTYPE_SHIFT
-    }
+    fn code(self) -> usize { usize::from(self.0 & Self::PTYPE) >> PTYPE_SHIFT }
 
-    pub fn id(self) -> PieceId {
-        PieceId(self.0 & 0xF)
-    }
+    pub fn id(self) -> PieceId { PieceId(self.0 & 0xF) }
 }
 
 /// A piece's slot within its side, 0 to 15. Two pieces of one color never share
@@ -79,13 +71,9 @@ impl PieceId {
     }
 
     /// The slot index, for a caller indexing a store laid out the other way.
-    pub fn raw(self) -> u8 {
-        self.0
-    }
+    pub fn raw(self) -> u8 { self.0 }
 
-    pub fn mask(self) -> PieceMask {
-        PieceMask(1 << self.0)
-    }
+    pub fn mask(self) -> PieceMask { PieceMask(1 << self.0) }
 }
 
 /// The slots of one color that reach a square, one bit each.
@@ -95,26 +83,16 @@ pub struct PieceMask(u16);
 impl PieceMask {
     pub const EMPTY: Self = Self(0);
 
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
+    pub fn is_empty(self) -> bool { self.0 == 0 }
 
-    pub fn count(self) -> u32 {
-        self.0.count_ones()
-    }
+    pub fn count(self) -> u32 { self.0.count_ones() }
 
     /// The raw bits, for a caller comparing against another representation.
-    pub fn bits(self) -> u16 {
-        self.0
-    }
+    pub fn bits(self) -> u16 { self.0 }
 
-    pub fn contains(self, id: PieceId) -> bool {
-        self.0 & id.mask().0 != 0
-    }
+    pub fn contains(self, id: PieceId) -> bool { self.0 & id.mask().0 != 0 }
 
-    pub fn insert(&mut self, id: PieceId) {
-        self.0 |= id.mask().0;
-    }
+    pub fn insert(&mut self, id: PieceId) { self.0 |= id.mask().0; }
 }
 
 impl Iterator for PieceMask {
@@ -138,23 +116,15 @@ impl Wordboard {
     pub const EMPTY: Self = Self([0; 64]);
 
     /// Record that `id` reaches `sq`, for a table built from scratch.
-    pub fn insert(&mut self, sq: Square, id: PieceId) {
-        self.0[usize::from(sq)] |= id.mask().0;
-    }
+    pub fn insert(&mut self, sq: Square, id: PieceId) { self.0[usize::from(sq)] |= id.mask().0; }
 
-    pub fn read(&self, sq: Square) -> PieceMask {
-        PieceMask(self.0[usize::from(sq)])
-    }
+    pub fn read(&self, sq: Square) -> PieceMask { PieceMask(self.0[usize::from(sq)]) }
 
     /// The squares this color attacks at all.
-    pub fn any(&self) -> u64 {
-        self.probe(u16::MAX)
-    }
+    pub fn any(&self) -> u64 { self.probe(u16::MAX) }
 
     /// The squares any slot in `mask` attacks.
-    pub fn with(&self, mask: PieceMask) -> u64 {
-        self.probe(mask.0)
-    }
+    pub fn with(&self, mask: PieceMask) -> u64 { self.probe(mask.0) }
 
     /// Squares whose entry shares a bit with `mask`, as a bitboard. Sixty-four
     /// words are four vectors; each pair packs down to bytes so one movemask
@@ -190,9 +160,7 @@ pub struct Geometry {
 }
 
 impl Default for Geometry {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Geometry {
@@ -267,26 +235,16 @@ pub struct ByteBoard {
 }
 
 impl ByteBoard {
-    pub fn empty() -> Self {
-        Self { mailbox: V64::zero(), attack: [Wordboard([0; 64]); 2] }
-    }
+    pub fn empty() -> Self { Self { mailbox: V64::zero(), attack: [Wordboard([0; 64]); 2] } }
 
-    pub fn at(&self, sq: Square) -> Place {
-        Place(self.mailbox.bytes()[usize::from(sq)])
-    }
+    pub fn at(&self, sq: Square) -> Place { Place(self.mailbox.bytes()[usize::from(sq)]) }
 
-    pub fn attacks(&self, color: Color) -> &Wordboard {
-        &self.attack[usize::from(color)]
-    }
+    pub fn attacks(&self, color: Color) -> &Wordboard { &self.attack[usize::from(color)] }
 
     /// Install a table computed from scratch, which is how the rig seeds its oracle.
-    pub fn set_attacks(&mut self, attacks: [Wordboard; 2]) {
-        self.attack = attacks;
-    }
+    pub fn set_attacks(&mut self, attacks: [Wordboard; 2]) { self.attack = attacks; }
 
-    pub fn occupied(&self) -> u64 {
-        self.mailbox.nonzero()
-    }
+    pub fn occupied(&self) -> u64 { self.mailbox.nonzero() }
 
     pub fn pieces(&self, color: Color) -> u64 {
         let black = self.mailbox.signs();
@@ -294,15 +252,11 @@ impl ByteBoard {
     }
 
     /// Squares holding a `pt` of `color`, the color and type nibble compared as one.
-    pub fn pieces_of(&self, color: Color, pt: PieceType) -> u64 {
-        self.mailbox.match_high(Place::new(color, pt, PieceId(0)).0)
-    }
+    pub fn pieces_of(&self, color: Color, pt: PieceType) -> u64 { self.mailbox.match_high(Place::new(color, pt, PieceId(0)).0) }
 
     /// Drop a place onto a square, leaving the attack table alone.
     #[inline(always)]
-    pub fn put(&mut self, sq: Square, p: Place) {
-        self.mailbox = self.mailbox.write(1u64 << usize::from(sq), p.0);
-    }
+    pub fn put(&mut self, sq: Square, p: Place) { self.mailbox = self.mailbox.write(1u64 << usize::from(sq), p.0); }
 
     /// Lift the piece on `sq`: reopen the lines it blocked, drop its own attacks,
     /// then bare the square.
@@ -572,9 +526,7 @@ impl V64 {
     }
 
     #[inline(always)]
-    pub fn rotate(self) -> Self {
-        Self(self.1, self.0)
-    }
+    pub fn rotate(self) -> Self { Self(self.1, self.0) }
 
     #[inline(always)]
     pub fn to_wordboards(self) -> ([__m256i; 4], [__m256i; 4]) {

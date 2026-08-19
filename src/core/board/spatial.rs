@@ -158,41 +158,25 @@ impl SpatialTensor {
         Self { ortho_direct, ortho_xray, diag_direct, diag_xray }
     }
     #[inline]
-    pub fn w_ortho_direct(&self) -> u64 {
-        self.ortho_direct.extract::<0>()
-    }
+    pub fn w_ortho_direct(&self) -> u64 { self.ortho_direct.extract::<0>() }
     #[inline]
-    pub fn b_ortho_direct(&self) -> u64 {
-        self.ortho_direct.extract::<1>()
-    }
+    pub fn b_ortho_direct(&self) -> u64 { self.ortho_direct.extract::<1>() }
 
     #[inline]
-    pub fn w_diag_direct(&self) -> u64 {
-        self.diag_direct.extract::<0>()
-    }
+    pub fn w_diag_direct(&self) -> u64 { self.diag_direct.extract::<0>() }
     #[inline]
-    pub fn b_diag_direct(&self) -> u64 {
-        self.diag_direct.extract::<1>()
-    }
+    pub fn b_diag_direct(&self) -> u64 { self.diag_direct.extract::<1>() }
 
     /// Squares white controls ONLY via shadow (battery/X-ray),
     /// strictly through exactly 1 own piece blocker.
     #[inline]
-    pub fn w_ortho_xray(&self) -> u64 {
-        self.ortho_xray.extract::<0>()
-    }
+    pub fn w_ortho_xray(&self) -> u64 { self.ortho_xray.extract::<0>() }
     #[inline]
-    pub fn b_ortho_xray(&self) -> u64 {
-        self.ortho_xray.extract::<1>()
-    }
+    pub fn b_ortho_xray(&self) -> u64 { self.ortho_xray.extract::<1>() }
     #[inline]
-    pub fn w_diag_xray(&self) -> u64 {
-        self.diag_xray.extract::<0>()
-    }
+    pub fn w_diag_xray(&self) -> u64 { self.diag_xray.extract::<0>() }
     #[inline]
-    pub fn b_diag_xray(&self) -> u64 {
-        self.diag_xray.extract::<1>()
-    }
+    pub fn b_diag_xray(&self) -> u64 { self.diag_xray.extract::<1>() }
 }
 
 #[cfg(test)]

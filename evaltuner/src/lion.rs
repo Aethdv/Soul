@@ -66,20 +66,14 @@ impl Lion {
     }
 
     #[must_use]
-    pub fn momentum(&self) -> &[f64] {
-        &self.momentum
-    }
+    pub fn momentum(&self) -> &[f64] { &self.momentum }
 
     #[must_use]
-    pub fn clipped(&self) -> &[u64] {
-        &self.clipped
-    }
+    pub fn clipped(&self) -> &[u64] { &self.clipped }
 
     /// The L1 distance the sign steps travelled since the last call, and zero it.
     /// Weight decay is excluded: it moves θ under every gate alike.
-    pub fn take_step_l1(&mut self) -> f64 {
-        std::mem::take(&mut self.step_l1)
-    }
+    pub fn take_step_l1(&mut self) -> f64 { std::mem::take(&mut self.step_l1) }
 
     pub fn restore_momentum(&mut self, momentum: &[f64]) {
         debug_assert_eq!(self.momentum.len(), momentum.len());
@@ -98,9 +92,7 @@ impl Lion {
     }
 
     #[inline]
-    pub const fn set_lr(&mut self, lr: f64) {
-        self.lr = lr;
-    }
+    pub const fn set_lr(&mut self, lr: f64) { self.lr = lr; }
 
     /// Tallies what [`Lion::update`] is about to decide, over the same momentum and gradients.
     ///
@@ -239,14 +231,10 @@ impl GateCensus {
 
     /// Fraction of a count against the parameter-updates counted, zero on an empty census.
     #[must_use]
-    pub fn share(&self, count: u64) -> f64 {
-        if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 }
-    }
+    pub fn share(&self, count: u64) -> f64 { if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 } }
 
     #[must_use]
-    pub fn percent(&self, count: u64) -> f64 {
-        pct(count, self.total)
-    }
+    pub fn percent(&self, count: u64) -> f64 { pct(count, self.total) }
 
     /// The share of updates that stepped, which is Liang's φ. Theirs falls to about 0.55
     /// on a 100M-parameter model at batch 4096; ours sits near 1.0.
@@ -256,9 +244,7 @@ impl GateCensus {
     /// and φ under this gate reports how often momentum was large enough to be judged.
     /// Under the epsilon-free `c·g` form it reports disagreement itself.
     #[must_use]
-    pub fn active_share(&self) -> f64 {
-        self.share(self.total.saturating_sub(self.skipped + self.dead))
-    }
+    pub fn active_share(&self) -> f64 { self.share(self.total.saturating_sub(self.skipped + self.dead)) }
 }
 
 /// Per-group momentum decay mask.

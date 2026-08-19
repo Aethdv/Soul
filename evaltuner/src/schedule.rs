@@ -32,20 +32,14 @@ pub struct Constant {
 
 impl Constant {
     #[must_use]
-    pub const fn new(value: f64) -> Self {
-        Self { value }
-    }
+    pub const fn new(value: f64) -> Self { Self { value } }
 }
 
 impl LrScheduler for Constant {
     #[inline]
-    fn rate(&self, _epoch: usize, _total: usize) -> f64 {
-        self.value
-    }
+    fn rate(&self, _epoch: usize, _total: usize) -> f64 { self.value }
 
-    fn describe(&self) -> String {
-        format!("Constant ({})", self.value)
-    }
+    fn describe(&self) -> String { format!("Constant ({})", self.value) }
 }
 
 /// Linear interpolation from start to end over training.
@@ -57,9 +51,7 @@ pub struct Linear {
 
 impl Linear {
     #[must_use]
-    pub const fn new(start: f64, end: f64) -> Self {
-        Self { start, end }
-    }
+    pub const fn new(start: f64, end: f64) -> Self { Self { start, end } }
 }
 
 impl LrScheduler for Linear {
@@ -69,9 +61,7 @@ impl LrScheduler for Linear {
         self.start + t * (self.end - self.start)
     }
 
-    fn describe(&self) -> String {
-        format!("Linear ({} → {})", self.start, self.end)
-    }
+    fn describe(&self) -> String { format!("Linear ({} → {})", self.start, self.end) }
 }
 
 /// Exponential decay: LR = start · gamma^epoch.
@@ -83,20 +73,14 @@ pub struct Exponential {
 
 impl Exponential {
     #[must_use]
-    pub const fn new(start: f64, gamma: f64) -> Self {
-        Self { start, gamma }
-    }
+    pub const fn new(start: f64, gamma: f64) -> Self { Self { start, gamma } }
 }
 
 impl LrScheduler for Exponential {
     #[inline]
-    fn rate(&self, epoch: usize, _total: usize) -> f64 {
-        self.start * self.gamma.powi((epoch - 1) as i32)
-    }
+    fn rate(&self, epoch: usize, _total: usize) -> f64 { self.start * self.gamma.powi((epoch - 1) as i32) }
 
-    fn describe(&self) -> String {
-        format!("Exponential ({} × {}^n)", self.start, self.gamma)
-    }
+    fn describe(&self) -> String { format!("Exponential ({} × {}^n)", self.start, self.gamma) }
 }
 
 /// Multiplicative step decay: LR = start · gamma^(epoch / step).
@@ -109,9 +93,7 @@ pub struct StepDecay {
 
 impl StepDecay {
     #[must_use]
-    pub const fn new(start: f64, gamma: f64, step_epochs: usize) -> Self {
-        Self { start, gamma, step_epochs }
-    }
+    pub const fn new(start: f64, gamma: f64, step_epochs: usize) -> Self { Self { start, gamma, step_epochs } }
 }
 
 impl LrScheduler for StepDecay {
@@ -121,9 +103,7 @@ impl LrScheduler for StepDecay {
         self.start * self.gamma.powi(steps as i32)
     }
 
-    fn describe(&self) -> String {
-        format!("StepDecay ({} × {}^(n/{}))", self.start, self.gamma, self.step_epochs)
-    }
+    fn describe(&self) -> String { format!("StepDecay ({} × {}^(n/{}))", self.start, self.gamma, self.step_epochs) }
 }
 
 /// Cosine annealing with configurable cycle count (SGDR when cycles > 1).
@@ -137,9 +117,7 @@ pub struct CosineAnnealing {
 
 impl CosineAnnealing {
     #[must_use]
-    pub const fn new(base: f64, min: f64) -> Self {
-        Self { base, min, warmup_ratio: 0.0, cycles: 1 }
-    }
+    pub const fn new(base: f64, min: f64) -> Self { Self { base, min, warmup_ratio: 0.0, cycles: 1 } }
 
     #[must_use]
     pub const fn warmup_ratio(mut self, ratio: f64) -> Self {
@@ -236,9 +214,7 @@ pub struct StableDecay {
 
 impl StableDecay {
     #[must_use]
-    pub const fn new(base: f64, min: f64, stable: f64) -> Self {
-        Self { base, min, stable_ratio: stable }
-    }
+    pub const fn new(base: f64, min: f64, stable: f64) -> Self { Self { base, min, stable_ratio: stable } }
 }
 
 impl LrScheduler for StableDecay {
@@ -276,9 +252,7 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
         if epoch <= self.warmup_epochs { inner_lr * (epoch as f64 / self.warmup_epochs as f64) } else { inner_lr }
     }
 
-    fn describe(&self) -> String {
-        format!("Warmup ({} epochs, {})", self.warmup_epochs, self.inner.describe())
-    }
+    fn describe(&self) -> String { format!("Warmup ({} epochs, {})", self.warmup_epochs, self.inner.describe()) }
 }
 
 /// Sequence two schedulers: use `first` until `switch_epoch`, then `second`.
@@ -322,19 +296,13 @@ pub struct ConstantWdl {
 
 impl ConstantWdl {
     #[must_use]
-    pub const fn new(value: f64) -> Self {
-        Self { value }
-    }
+    pub const fn new(value: f64) -> Self { Self { value } }
 }
 
 impl WdlScheduler for ConstantWdl {
     #[inline]
-    fn blend(&self, _epoch: usize, _total: usize) -> f64 {
-        self.value
-    }
-    fn describe(&self) -> String {
-        format!("ConstantWDL ({})", self.value)
-    }
+    fn blend(&self, _epoch: usize, _total: usize) -> f64 { self.value }
+    fn describe(&self) -> String { format!("ConstantWDL ({})", self.value) }
 }
 
 /// Linear WDL blend from start to end.
@@ -346,9 +314,7 @@ pub struct LinearWdl {
 
 impl LinearWdl {
     #[must_use]
-    pub const fn new(start: f64, end: f64) -> Self {
-        Self { start, end }
-    }
+    pub const fn new(start: f64, end: f64) -> Self { Self { start, end } }
 }
 
 impl WdlScheduler for LinearWdl {
@@ -358,9 +324,7 @@ impl WdlScheduler for LinearWdl {
         self.start + t * (self.end - self.start)
     }
 
-    fn describe(&self) -> String {
-        format!("LinearWDL ({} → {})", self.start, self.end)
-    }
+    fn describe(&self) -> String { format!("LinearWDL ({} → {})", self.start, self.end) }
 }
 
 /// Cosine WDL blend from start to end.
@@ -372,9 +336,7 @@ pub struct CosineWdl {
 
 impl CosineWdl {
     #[must_use]
-    pub const fn new(start: f64, end: f64) -> Self {
-        Self { start, end }
-    }
+    pub const fn new(start: f64, end: f64) -> Self { Self { start, end } }
 }
 
 impl WdlScheduler for CosineWdl {
@@ -384,9 +346,7 @@ impl WdlScheduler for CosineWdl {
         self.end + 0.5 * (self.start - self.end) * (1.0 + (PI * t).cos())
     }
 
-    fn describe(&self) -> String {
-        format!("CosineWDL ({} → {})", self.start, self.end)
-    }
+    fn describe(&self) -> String { format!("CosineWDL ({} → {})", self.start, self.end) }
 }
 
 /// WDL blend that stays stable for a portion of training, then cosine decays to an end value.
@@ -399,9 +359,7 @@ pub struct StableDecayWdl {
 
 impl StableDecayWdl {
     #[must_use]
-    pub const fn new(start: f64, end: f64, stable_ratio: f64) -> Self {
-        Self { start, end, stable_ratio }
-    }
+    pub const fn new(start: f64, end: f64, stable_ratio: f64) -> Self { Self { start, end, stable_ratio } }
 }
 
 impl WdlScheduler for StableDecayWdl {

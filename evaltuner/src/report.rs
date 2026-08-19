@@ -566,9 +566,7 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
     );
 }
 
-fn present_blocks(group: Group) -> Vec<&'static Block> {
-    BLOCKS.iter().filter(|b| b.group == group).collect()
-}
+fn present_blocks(group: Group) -> Vec<&'static Block> { BLOCKS.iter().filter(|b| b.group == group).collect() }
 
 fn annotation(block: &str) -> String {
     match ANNOTATIONS.iter().find(|(name, _)| *name == block) {

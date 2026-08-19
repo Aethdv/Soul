@@ -143,9 +143,7 @@ impl SafetyMetrics {
     /// the tuner (0.1 cp increments) while staying integer in eval. DualNode
     /// passes gradient through `.trunc()` unmodified (straight-through).
     #[inline]
-    pub fn pressure<T: EvalMath<Scalar = T>>(&self, w_atk: T) -> T {
-        ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc()
-    }
+    pub fn pressure<T: EvalMath<Scalar = T>>(&self, w_atk: T) -> T { ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc() }
 
     #[inline(always)]
     fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
@@ -352,9 +350,7 @@ impl TermSource<KingSafetyTerm> for SharedFeatures {
     type Input = KingSafetyInput;
 
     #[inline(always)]
-    fn extract(&self) -> KingSafetyInput {
-        KingSafetyInput { us: self.data.safety_us, them: self.data.safety_them }
-    }
+    fn extract(&self) -> KingSafetyInput { KingSafetyInput { us: self.data.safety_us, them: self.data.safety_them } }
 }
 
 /// Pre-computed attack maps for both sides. Built once per evaluation and

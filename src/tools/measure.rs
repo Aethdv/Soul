@@ -91,9 +91,7 @@ struct XorBoard {
 /// `vision` is a conservative hint, so a stale-wide value is correct and only
 /// costs a gather that finds nothing. It stays out of the comparison.
 impl PartialEq for XorBoard {
-    fn eq(&self, other: &Self) -> bool {
-        self.rows == other.rows && self.xray == other.xray && self.ids == other.ids
-    }
+    fn eq(&self, other: &Self) -> bool { self.rows == other.rows && self.xray == other.xray && self.ids == other.ids }
 }
 
 #[derive(Clone, Copy)]
@@ -201,14 +199,10 @@ impl ByteStore {
 }
 
 #[inline(always)]
-fn color(id: usize) -> Color {
-    if id < 16 { Color::White } else { Color::Black }
-}
+fn color(id: usize) -> Color { if id < 16 { Color::White } else { Color::Black } }
 
 /// A global id's slot within its own side.
-fn slot(id: usize) -> PieceId {
-    PieceId::new((id & 15) as u8)
-}
+fn slot(id: usize) -> PieceId { PieceId::new((id & 15) as u8) }
 
 fn generate(seed: u64, ply_cap: usize) -> Stream {
     let mut rng = ConstRng::new(seed);
@@ -459,25 +453,17 @@ impl Ids {
     }
 
     #[inline(always)]
-    fn sliders(&self) -> u64 {
-        self.class(PieceType::Bishop) | self.class(PieceType::Rook) | self.class(PieceType::Queen)
-    }
+    fn sliders(&self) -> u64 { self.class(PieceType::Bishop) | self.class(PieceType::Rook) | self.class(PieceType::Queen) }
 
     #[inline(always)]
-    fn class(&self, pt: PieceType) -> u64 {
-        self.masks[pt as usize * 2] | self.masks[pt as usize * 2 + 1]
-    }
+    fn class(&self, pt: PieceType) -> u64 { self.masks[pt as usize * 2] | self.masks[pt as usize * 2 + 1] }
 }
 
 #[inline(always)]
-fn color_of(id: usize) -> usize {
-    id >> 4
-}
+fn color_of(id: usize) -> usize { id >> 4 }
 
 #[inline(always)]
-fn is_slider(pt: PieceType) -> bool {
-    matches!(pt, PieceType::Bishop | PieceType::Rook | PieceType::Queen)
-}
+fn is_slider(pt: PieceType) -> bool { matches!(pt, PieceType::Bishop | PieceType::Rook | PieceType::Queen) }
 
 #[inline(always)]
 fn attacks_of(pt: PieceType, sq: Square, color: usize, occ: Bitboard) -> Bitboard {
@@ -855,9 +841,7 @@ impl XorBoard {
 }
 
 impl Undo {
-    fn empty() -> Self {
-        Self { n: 0, ids: [0; 24], rows: [0; 24], xray: [0; 24], vision: 0, slider_groups: [0; 2] }
-    }
+    fn empty() -> Self { Self { n: 0, ids: [0; 24], rows: [0; 24], xray: [0; 24], vision: 0, slider_groups: [0; 2] } }
 
     #[inline(always)]
     fn push(&mut self, id: usize, row: u64, xray: u64) {
@@ -1023,9 +1007,7 @@ enum View {
     LaggedPins,
 }
 
-fn variant_baseline(stream: &Stream, repeats: usize) -> Outcome {
-    play_stream(stream, repeats, |_, _, _, _| 0)
-}
+fn variant_baseline(stream: &Stream, repeats: usize) -> Outcome { play_stream(stream, repeats, |_, _, _, _| 0) }
 
 fn variant_dest(stream: &Stream, repeats: usize) -> Outcome {
     let mut checksum = 0u64;
@@ -1245,9 +1227,7 @@ fn variant_xorboard_reads(stream: &Stream, repeats: usize) -> Outcome {
 
 /// The square and slot each ply interrogates. Walking them keeps a load from being
 /// hoisted out of the replay and asks both stores about the same place.
-fn probe_points(iterations: u64) -> (Square, PieceId) {
-    (Square((iterations % 64) as u8), PieceId::new((iterations % 16) as u8))
-}
+fn probe_points(iterations: u64) -> (Square, PieceId) { (Square((iterations % 64) as u8), PieceId::new((iterations % 16) as u8)) }
 
 fn variant_byteboard(stream: &Stream, repeats: usize) -> Outcome {
     let g = byteboard::Geometry::new();

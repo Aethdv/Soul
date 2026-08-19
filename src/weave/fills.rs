@@ -56,44 +56,28 @@ kogge_fill!(fill_southwest, shr, 9, 18, 36, FILE_H);
 
 impl Vu64x4 {
     #[inline(always)]
-    pub fn shift_north(self) -> Self {
-        self.shl::<8>()
-    }
+    pub fn shift_north(self) -> Self { self.shl::<8>() }
 
     #[inline(always)]
-    pub fn shift_south(self) -> Self {
-        self.shr::<8>()
-    }
+    pub fn shift_south(self) -> Self { self.shr::<8>() }
 
     #[inline(always)]
-    pub fn shift_east(self) -> Self {
-        Vu64x4::splat(FILE_H).andnot(self).shl::<1>()
-    }
+    pub fn shift_east(self) -> Self { Vu64x4::splat(FILE_H).andnot(self).shl::<1>() }
 
     #[inline(always)]
-    pub fn shift_west(self) -> Self {
-        Vu64x4::splat(FILE_A).andnot(self).shr::<1>()
-    }
+    pub fn shift_west(self) -> Self { Vu64x4::splat(FILE_A).andnot(self).shr::<1>() }
 
     #[inline(always)]
-    pub fn shift_ne(self) -> Self {
-        Vu64x4::splat(FILE_H).andnot(self).shl::<9>()
-    }
+    pub fn shift_ne(self) -> Self { Vu64x4::splat(FILE_H).andnot(self).shl::<9>() }
 
     #[inline(always)]
-    pub fn shift_nw(self) -> Self {
-        Vu64x4::splat(FILE_A).andnot(self).shl::<7>()
-    }
+    pub fn shift_nw(self) -> Self { Vu64x4::splat(FILE_A).andnot(self).shl::<7>() }
 
     #[inline(always)]
-    pub fn shift_se(self) -> Self {
-        Vu64x4::splat(FILE_H).andnot(self).shr::<7>()
-    }
+    pub fn shift_se(self) -> Self { Vu64x4::splat(FILE_H).andnot(self).shr::<7>() }
 
     #[inline(always)]
-    pub fn shift_sw(self) -> Self {
-        Vu64x4::splat(FILE_A).andnot(self).shr::<9>()
-    }
+    pub fn shift_sw(self) -> Self { Vu64x4::splat(FILE_A).andnot(self).shr::<9>() }
 }
 
 /// Compute sliding attacks from a fill by shifting one step and removing the generators.

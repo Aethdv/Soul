@@ -13,39 +13,29 @@ pub struct Align64<T>(pub T);
 
 impl<T> Align64<T> {
     #[inline]
-    pub const fn new(val: T) -> Self {
-        Self(val)
-    }
+    pub const fn new(val: T) -> Self { Self(val) }
 }
 
 impl<T> Deref for Align64<T> {
     type Target = T;
     #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+    fn deref(&self) -> &Self::Target { &self.0 }
 }
 
 impl<T> DerefMut for Align64<T> {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
 /// Division, 0.0 for an empty denominator instead of NaN or infinity.
 #[inline]
 #[must_use]
-pub fn safe_div(num: f64, den: f64) -> f64 {
-    if den > 0.0 { num / den } else { 0.0 }
-}
+pub fn safe_div(num: f64, den: f64) -> f64 { if den > 0.0 { num / den } else { 0.0 } }
 
 /// `part` as a percentage of `whole`, 0.0 when nothing was counted.
 #[inline]
 #[must_use]
-pub fn pct(part: u64, whole: u64) -> f64 {
-    safe_div(part as f64, whole as f64) * 100.0
-}
+pub fn pct(part: u64, whole: u64) -> f64 { safe_div(part as f64, whole as f64) * 100.0 }
 
 /// Formats a number with comma separators: 1234567 -> "1,234,567".
 pub fn format_comma(n: u64) -> String {

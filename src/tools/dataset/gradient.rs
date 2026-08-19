@@ -126,9 +126,7 @@ pub struct RecordEval {
 }
 
 #[inline]
-pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 {
-    eval_record_full(record, values).score
-}
+pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 { eval_record_full(record, values).score }
 
 /// Evaluates a packed record using the provided weight vector.
 ///
@@ -413,9 +411,7 @@ impl TermSource<XrayTerm> for FeatureRecord {
     type Input = f64;
 
     #[inline(always)]
-    fn extract(&self) -> f64 {
-        f64::from(self.xray_ortho)
-    }
+    fn extract(&self) -> f64 { f64::from(self.xray_ortho) }
 }
 
 #[cfg(test)]

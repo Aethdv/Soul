@@ -59,30 +59,22 @@ impl Bitboard {
     /// Returns `true` if no bits are set.
     #[inline(always)]
     #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
+    pub const fn is_empty(self) -> bool { self.0 == 0 }
 
     /// Returns `true` if at least one bit is set.
     #[inline(always)]
     #[must_use]
-    pub const fn is_not_empty(self) -> bool {
-        self.0 != 0
-    }
+    pub const fn is_not_empty(self) -> bool { self.0 != 0 }
 
     /// Returns `true` if more than one bit is set.
     #[inline(always)]
     #[must_use]
-    pub const fn more_than_one(self) -> bool {
-        self.0 & self.0.wrapping_sub(1) != 0
-    }
+    pub const fn more_than_one(self) -> bool { self.0 & self.0.wrapping_sub(1) != 0 }
 
     /// Returns the number of set bits (population count).
     #[inline(always)]
     #[must_use]
-    pub const fn popcount(self) -> u32 {
-        self.0.count_ones()
-    }
+    pub const fn popcount(self) -> u32 { self.0.count_ones() }
 
     /// Returns the least significant set bit as a [`Square`].
     ///
@@ -98,21 +90,15 @@ impl Bitboard {
     /// Returns `true` if the bit for `sq` is set.
     #[inline(always)]
     #[must_use]
-    pub const fn check_bit(self, sq: Square) -> bool {
-        self.0 & (1u64 << sq.0) != 0
-    }
+    pub const fn check_bit(self, sq: Square) -> bool { self.0 & (1u64 << sq.0) != 0 }
 
     /// Sets the bit for `sq`.
     #[inline(always)]
-    pub fn set_bit(&mut self, sq: Square) {
-        self.0 |= 1u64 << sq.0;
-    }
+    pub fn set_bit(&mut self, sq: Square) { self.0 |= 1u64 << sq.0; }
 
     /// Clears the bit for `sq`.
     #[inline(always)]
-    pub fn clear_bit(&mut self, sq: Square) {
-        self.0 &= !(1u64 << sq.0);
-    }
+    pub fn clear_bit(&mut self, sq: Square) { self.0 &= !(1u64 << sq.0); }
 
     /// Removes and returns the least significant set bit as a [`Square`],
     /// or `None` if the bitboard is empty.
@@ -126,9 +112,7 @@ impl Bitboard {
 
     #[inline(always)]
     #[must_use]
-    pub const fn iter(self) -> BitboardIter {
-        BitboardIter(self)
-    }
+    pub const fn iter(self) -> BitboardIter { BitboardIter(self) }
 
     /// Smears every set bit across its entire file. Shifts are multiples of 8,
     /// which never cross a file boundary, so no file mask is needed.
@@ -208,16 +192,12 @@ impl Square {
     /// Returns the file index (0 = A-file, 7 = H-file).
     #[inline(always)]
     #[must_use]
-    pub const fn file(self) -> u8 {
-        self.0 & 7
-    }
+    pub const fn file(self) -> u8 { self.0 & 7 }
 
     /// Returns the rank index (0 = 1st rank, 7 = 8th rank).
     #[inline(always)]
     #[must_use]
-    pub const fn rank(self) -> u8 {
-        self.0 >> 3
-    }
+    pub const fn rank(self) -> u8 { self.0 >> 3 }
 
     /// The number of king moves between the two squares.
     #[inline(always)]
@@ -231,9 +211,7 @@ impl Square {
     /// Returns a [`Bitboard`] with exactly this square's bit set.
     #[inline(always)]
     #[must_use]
-    pub const fn bitboard(self) -> Bitboard {
-        Bitboard(1u64 << self.0)
-    }
+    pub const fn bitboard(self) -> Bitboard { Bitboard(1u64 << self.0) }
 
     /// Returns a new square offset by `off` indices.
     ///
@@ -250,124 +228,90 @@ impl Square {
     /// Returns this index as `usize`.
     #[inline(always)]
     #[must_use]
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
-    }
+    pub const fn as_usize(self) -> usize { self.0 as usize }
 
     /// Mirrors vertically (rank → 7 − rank). E.g. e1 → e8.
     #[inline(always)]
     #[must_use]
-    pub const fn flip_rank(self) -> Self {
-        Self(self.0 ^ 56)
-    }
+    pub const fn flip_rank(self) -> Self { Self(self.0 ^ 56) }
 
     /// Mirrors horizontally (file → 7 − file). E.g. a4 → h4.
     #[inline(always)]
     #[must_use]
-    pub const fn flip_file(self) -> Self {
-        Self(self.0 ^ 7)
-    }
+    pub const fn flip_file(self) -> Self { Self(self.0 ^ 7) }
 
     /// Returns the algebraic notation as an owned string (e.g. `"e4"`).
     #[must_use]
-    pub fn to_algebraic(self) -> String {
-        self.to_string()
-    }
+    pub fn to_algebraic(self) -> String { self.to_string() }
 }
 
 const impl From<u8> for Square {
     #[inline(always)]
-    fn from(val: u8) -> Self {
-        Self(val)
-    }
+    fn from(val: u8) -> Self { Self(val) }
 }
 
 const impl From<Square> for u8 {
     #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0
-    }
+    fn from(sq: Square) -> Self { sq.0 }
 }
 
 const impl From<Square> for u16 {
     #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0 as u16
-    }
+    fn from(sq: Square) -> Self { sq.0 as u16 }
 }
 
 const impl From<Square> for u64 {
     #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0 as u64
-    }
+    fn from(sq: Square) -> Self { sq.0 as u64 }
 }
 
 const impl From<Square> for usize {
     #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.0 as usize
-    }
+    fn from(sq: Square) -> Self { sq.0 as usize }
 }
 
 const impl Shl<Square> for u64 {
     type Output = u64;
     #[inline(always)]
-    fn shl(self, rhs: Square) -> u64 {
-        self << rhs.0
-    }
+    fn shl(self, rhs: Square) -> u64 { self << rhs.0 }
 }
 
 const impl Shr<Square> for u64 {
     type Output = u64;
     #[inline(always)]
-    fn shr(self, rhs: Square) -> u64 {
-        self >> rhs.0
-    }
+    fn shr(self, rhs: Square) -> u64 { self >> rhs.0 }
 }
 
 impl PartialEq<u8> for Square {
     #[inline(always)]
-    fn eq(&self, other: &u8) -> bool {
-        self.0 == *other
-    }
+    fn eq(&self, other: &u8) -> bool { self.0 == *other }
 }
 
 impl PartialEq<Square> for u8 {
     #[inline(always)]
-    fn eq(&self, other: &Square) -> bool {
-        *self == other.0
-    }
+    fn eq(&self, other: &Square) -> bool { *self == other.0 }
 }
 
 impl PartialOrd<u8> for Square {
     #[inline(always)]
-    fn partial_cmp(&self, other: &u8) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(other)
-    }
+    fn partial_cmp(&self, other: &u8) -> Option<std::cmp::Ordering> { self.0.partial_cmp(other) }
 }
 
 impl PartialOrd<Square> for u8 {
     #[inline(always)]
-    fn partial_cmp(&self, other: &Square) -> Option<std::cmp::Ordering> {
-        self.partial_cmp(&other.0)
-    }
+    fn partial_cmp(&self, other: &Square) -> Option<std::cmp::Ordering> { self.partial_cmp(&other.0) }
 }
 
 const impl BitXor<u8> for Square {
     type Output = Self;
     #[inline(always)]
-    fn bitxor(self, rhs: u8) -> Self {
-        Self(self.0 ^ rhs)
-    }
+    fn bitxor(self, rhs: u8) -> Self { Self(self.0 ^ rhs) }
 }
 
 const impl BitXor for Square {
     type Output = Self;
     #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self {
-        Self(self.0 ^ rhs.0)
-    }
+    fn bitxor(self, rhs: Self) -> Self { Self(self.0 ^ rhs.0) }
 }
 
 impl fmt::Display for Square {
@@ -417,9 +361,7 @@ impl Iterator for BitboardIter {
     type Item = Square;
 
     #[inline(always)]
-    fn next(&mut self) -> Option<Square> {
-        if self.0.is_empty() { None } else { Some(self.0.pop_lsb()) }
-    }
+    fn next(&mut self) -> Option<Square> { if self.0.is_empty() { None } else { Some(self.0.pop_lsb()) } }
 
     #[inline(always)]
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -436,31 +378,23 @@ impl IntoIterator for Bitboard {
     type IntoIter = BitboardIter;
 
     #[inline(always)]
-    fn into_iter(self) -> BitboardIter {
-        self.iter()
-    }
+    fn into_iter(self) -> BitboardIter { self.iter() }
 }
 
 const impl From<u64> for Bitboard {
     #[inline(always)]
-    fn from(val: u64) -> Self {
-        Self(val)
-    }
+    fn from(val: u64) -> Self { Self(val) }
 }
 
 const impl From<Bitboard> for u64 {
     #[inline(always)]
-    fn from(bb: Bitboard) -> Self {
-        bb.0
-    }
+    fn from(bb: Bitboard) -> Self { bb.0 }
 }
 
 const impl From<Square> for Bitboard {
     /// Converts a square into a bitboard with exactly that bit set.
     #[inline(always)]
-    fn from(sq: Square) -> Self {
-        sq.bitboard()
-    }
+    fn from(sq: Square) -> Self { sq.bitboard() }
 }
 
 macro_rules! impl_bb_op {
@@ -469,31 +403,23 @@ macro_rules! impl_bb_op {
             type Output = Self;
 
             #[inline(always)]
-            fn $func(self, rhs: Self) -> Self {
-                Self(self.0.$func(rhs.0))
-            }
+            fn $func(self, rhs: Self) -> Self { Self(self.0.$func(rhs.0)) }
         }
 
         const impl $trait<u64> for Bitboard {
             type Output = Self;
             #[inline(always)]
-            fn $func(self, rhs: u64) -> Self {
-                Self(self.0.$func(rhs))
-            }
+            fn $func(self, rhs: u64) -> Self { Self(self.0.$func(rhs)) }
         }
 
         impl $assign_trait for Bitboard {
             #[inline(always)]
-            fn $assign_func(&mut self, rhs: Self) {
-                self.0.$assign_func(rhs.0);
-            }
+            fn $assign_func(&mut self, rhs: Self) { self.0.$assign_func(rhs.0); }
         }
 
         impl $assign_trait<u64> for Bitboard {
             #[inline(always)]
-            fn $assign_func(&mut self, rhs: u64) {
-                self.0.$assign_func(rhs);
-            }
+            fn $assign_func(&mut self, rhs: u64) { self.0.$assign_func(rhs); }
         }
     };
 }
@@ -507,51 +433,39 @@ const impl Not for Bitboard {
     type Output = Self;
 
     #[inline(always)]
-    fn not(self) -> Self {
-        Self(!self.0)
-    }
+    fn not(self) -> Self { Self(!self.0) }
 }
 
 const impl Shl<u8> for Bitboard {
     type Output = Self;
 
     #[inline(always)]
-    fn shl(self, rhs: u8) -> Self {
-        Self(self.0 << rhs)
-    }
+    fn shl(self, rhs: u8) -> Self { Self(self.0 << rhs) }
 }
 
 const impl Shr<u8> for Bitboard {
     type Output = Self;
 
     #[inline(always)]
-    fn shr(self, rhs: u8) -> Self {
-        Self(self.0 >> rhs)
-    }
+    fn shr(self, rhs: u8) -> Self { Self(self.0 >> rhs) }
 }
 
 const impl Shl<Square> for Bitboard {
     type Output = Self;
 
     #[inline(always)]
-    fn shl(self, rhs: Square) -> Self {
-        Self(self.0 << rhs.0)
-    }
+    fn shl(self, rhs: Square) -> Self { Self(self.0 << rhs.0) }
 }
 
 const impl Shr<Square> for Bitboard {
     type Output = Self;
 
     #[inline(always)]
-    fn shr(self, rhs: Square) -> Self {
-        Self(self.0 >> rhs.0)
-    }
+    fn shr(self, rhs: Square) -> Self { Self(self.0 >> rhs.0) }
 }
 
 impl fmt::Debug for Bitboard {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Bitboard({:#018x})", self.0)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "Bitboard({:#018x})", self.0) }
 }
 
 impl fmt::Display for Bitboard {

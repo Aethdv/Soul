@@ -149,9 +149,7 @@ impl ReplayFilter {
         weight
     }
 
-    pub fn weights_positions(&self) -> bool {
-        self.wdl_filtered || self.material_count_filtered
-    }
+    pub fn weights_positions(&self) -> bool { self.wdl_filtered || self.material_count_filtered }
 
     /// Returns `true` if the eval contradicts the outcome beyond `max_eval_incorrectness`.
     ///
@@ -582,9 +580,7 @@ mod tests {
         !filter.should_filter(&pos, mv, eval, wdl, ply)
     }
 
-    fn quiet_move(fen: &str) -> Move {
-        pick(fen, |m| !m.is_tactical() && !m.is_castling()).1
-    }
+    fn quiet_move(fen: &str) -> Move { pick(fen, |m| !m.is_tactical() && !m.is_castling()).1 }
 
     #[test]
     fn unrestricted_keeps_everything() {
@@ -865,9 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn a_game_that_opens_in_check_round_trips() {
-        assert_round_trips("in_check", IN_CHECK_BLACK, &["e8f7"], WDL_LOSS);
-    }
+    fn a_game_that_opens_in_check_round_trips() { assert_round_trips("in_check", IN_CHECK_BLACK, &["e8f7"], WDL_LOSS); }
 
     #[test]
     fn the_written_header_matches_the_wire_the_decoder_reads() {

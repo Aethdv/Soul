@@ -46,9 +46,7 @@ fn pack(remaining: u32, generation: bool) -> u32 {
     remaining | (generation as u32) << 31
 }
 
-fn unpack(v: u32) -> (u32, bool) {
-    (v & (u32::MAX >> 1), (v >> 31) != 0)
-}
+fn unpack(v: u32) -> (u32, bool) { (v & (u32::MAX >> 1), (v >> 31) != 0) }
 
 pub fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
     let shared = Arc::new(Shared {

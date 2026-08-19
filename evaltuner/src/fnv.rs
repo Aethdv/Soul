@@ -3,9 +3,7 @@ pub struct Fnv1a(u64);
 
 impl Default for Fnv1a {
     #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Fnv1a {
@@ -13,14 +11,10 @@ impl Fnv1a {
     const PRIME: u64 = 0x0000_0100_0000_01B3;
 
     #[inline]
-    pub const fn new() -> Self {
-        Self(Self::OFFSET)
-    }
+    pub const fn new() -> Self { Self(Self::OFFSET) }
 
     #[inline]
-    pub const fn digest(self) -> u64 {
-        self.0
-    }
+    pub const fn digest(self) -> u64 { self.0 }
 
     #[inline]
     pub fn write_bytes(&mut self, bytes: &[u8]) {

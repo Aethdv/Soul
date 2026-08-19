@@ -56,27 +56,19 @@ impl NumaTopology {
     }
 
     /// Number of memory domains. The TT clear spreads its slices across this many.
-    pub fn num_nodes(&self) -> usize {
-        self.nodes.len()
-    }
+    pub fn num_nodes(&self) -> usize { self.nodes.len() }
 
     /// Number of cache domains. Threads distribute across this many.
-    pub fn num_domains(&self) -> usize {
-        self.domains.len()
-    }
+    pub fn num_domains(&self) -> usize { self.domains.len() }
 
     /// Whether binding earns its keep: more than one domain to spread over, and
     /// more than one thread to spread.
-    pub fn should_bind(&self, threads: usize) -> bool {
-        self.domains.len() > 1 && threads > 1
-    }
+    pub fn should_bind(&self, threads: usize) -> bool { self.domains.len() > 1 && threads > 1 }
 
     /// Whether spreading the TT across nodes pays: more than one memory domain to
     /// spread over, and more than one thread to share the bandwidth. A lone thread
     /// wants its table local, not striped across remote controllers.
-    pub fn should_distribute(&self, threads: usize) -> bool {
-        self.nodes.len() > 1 && threads > 1
-    }
+    pub fn should_distribute(&self, threads: usize) -> bool { self.nodes.len() > 1 && threads > 1 }
 
     /// Assign `threads` workers to L3 domains, one index per worker, balanced by
     /// fill so a domain with more CPUs takes proportionally more threads and no
@@ -97,15 +89,11 @@ impl NumaTopology {
     }
 
     /// Pin the calling thread to a cache domain. Returns whether the bind took.
-    pub fn bind_to_domain(&self, domain: usize) -> bool {
-        self.domains.get(domain).is_some_and(|cpus| sys::bind_thread(cpus))
-    }
+    pub fn bind_to_domain(&self, domain: usize) -> bool { self.domains.get(domain).is_some_and(|cpus| sys::bind_thread(cpus)) }
 
     /// Pin the calling thread to a memory domain, for the threads that first-touch
     /// the TT's slices into place. Returns whether the bind took.
-    pub fn bind_to_node(&self, node: usize) -> bool {
-        self.nodes.get(node).is_some_and(|cpus| sys::bind_thread(cpus))
-    }
+    pub fn bind_to_node(&self, node: usize) -> bool { self.nodes.get(node).is_some_and(|cpus| sys::bind_thread(cpus)) }
 }
 
 impl fmt::Display for NumaTopology {
@@ -115,9 +103,7 @@ impl fmt::Display for NumaTopology {
 }
 
 /// Fill ratio of a domain once one more thread joins it. Lower means more room.
-fn fill(occupied: usize, domain: &[Cpu]) -> f64 {
-    (occupied + 1) as f64 / domain.len().max(1) as f64
-}
+fn fill(occupied: usize, domain: &[Cpu]) -> f64 { (occupied + 1) as f64 / domain.len().max(1) as f64 }
 
 /// The CPUs the process may run on: its affinity mask if the kernel will tell us,
 /// else every online CPU. Respecting the mask keeps an instance pinned by `taskset`
@@ -308,13 +294,9 @@ mod sys {
 mod sys {
     use super::Cpu;
 
-    pub fn process_affinity() -> Option<Vec<Cpu>> {
-        None
-    }
+    pub fn process_affinity() -> Option<Vec<Cpu>> { None }
 
-    pub fn bind_thread(_cpus: &[Cpu]) -> bool {
-        false
-    }
+    pub fn bind_thread(_cpus: &[Cpu]) -> bool { false }
 }
 
 #[cfg(test)]

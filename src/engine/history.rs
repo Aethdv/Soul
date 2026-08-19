@@ -115,25 +115,17 @@ impl From<&SearchParams> for HistoryCaps {
 }
 
 impl Default for HistoryCaps {
-    fn default() -> Self {
-        Self::from(&SearchParams::default())
-    }
+    fn default() -> Self { Self::from(&SearchParams::default()) }
 }
 
 impl Default for ContContext {
-    fn default() -> Self {
-        Self { pt: PieceType::None, to: Square(0) }
-    }
+    fn default() -> Self { Self { pt: PieceType::None, to: Square(0) } }
 }
 
 impl ContinuationHistory {
-    pub fn new() -> Self {
-        Self { data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice() }
-    }
+    pub fn new() -> Self { Self { data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice() } }
 
-    pub fn clear(&mut self) {
-        self.data.fill(0);
-    }
+    pub fn clear(&mut self) { self.data.fill(0); }
 
     #[inline(always)]
     pub fn get(&self, stm: Color, prev_pt: PieceType, prev_to: Square, pt: PieceType, to: Square) -> i16 {
@@ -158,19 +150,13 @@ impl ContinuationHistory {
 }
 
 impl Default for ContinuationHistory {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl CaptureHistory {
-    pub fn new() -> Self {
-        Self { data: vec![0; 2 * 6 * 64 * 6].into_boxed_slice() }
-    }
+    pub fn new() -> Self { Self { data: vec![0; 2 * 6 * 64 * 6].into_boxed_slice() } }
 
-    pub fn clear(&mut self) {
-        self.data.fill(0);
-    }
+    pub fn clear(&mut self) { self.data.fill(0); }
 
     #[inline(always)]
     pub fn get(&self, stm: Color, attacker: PieceType, to: Square, victim: PieceType) -> i16 {
@@ -196,29 +182,19 @@ impl CaptureHistory {
 }
 
 impl Default for CaptureHistory {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl CorrectionHistory {
-    pub fn new() -> Self {
-        Self { data: vec![0; 2 * CORRECTION_SIZE].into_boxed_slice() }
-    }
+    pub fn new() -> Self { Self { data: vec![0; 2 * CORRECTION_SIZE].into_boxed_slice() } }
 
-    pub fn clear(&mut self) {
-        self.data.fill(0);
-    }
+    pub fn clear(&mut self) { self.data.fill(0); }
 
     #[inline(always)]
-    fn idx(stm: Color, hash: u64) -> usize {
-        stm as usize * CORRECTION_SIZE + (hash as usize & (CORRECTION_SIZE - 1))
-    }
+    fn idx(stm: Color, hash: u64) -> usize { stm as usize * CORRECTION_SIZE + (hash as usize & (CORRECTION_SIZE - 1)) }
 
     #[inline(always)]
-    pub fn get(&self, stm: Color, hash: u64) -> i32 {
-        self.data[Self::idx(stm, hash)]
-    }
+    pub fn get(&self, stm: Color, hash: u64) -> i32 { self.data[Self::idx(stm, hash)] }
 
     /// Updates the moving average with a new search observation.
     ///
@@ -236,9 +212,7 @@ impl CorrectionHistory {
 }
 
 impl Default for CorrectionHistory {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl History {
@@ -428,6 +402,4 @@ impl Default for History {
 }
 
 #[inline(always)]
-fn butterfly_idx(from: Square, to: Square) -> usize {
-    from.0 as usize * 64 + to.0 as usize
-}
+fn butterfly_idx(from: Square, to: Square) -> usize { from.0 as usize * 64 + to.0 as usize }

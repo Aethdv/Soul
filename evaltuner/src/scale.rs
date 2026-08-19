@@ -76,12 +76,8 @@ impl KController {
         }
     }
 
-    pub fn k(&self) -> f64 {
-        self.k
-    }
-    pub fn k_ref(&self) -> f64 {
-        self.k_ref
-    }
+    pub fn k(&self) -> f64 { self.k }
+    pub fn k_ref(&self) -> f64 { self.k_ref }
 
     pub fn on_epoch(&mut self, epoch: usize, ctx: &TrainerContext, ema_values: &[f64], blend: f64) -> Option<f64> {
         let KMode::Sweep { interval } = self.mode else { return None };

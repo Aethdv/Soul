@@ -384,9 +384,7 @@ impl MovePicker {
     /// Blends MVV-LVA with capture history into one sort score.
     /// Both capture paths score through here, so the formula has one home.
     #[inline(always)]
-    fn cap_score(&self, mvv: i32, chist: i32) -> i32 {
-        mvv + chist / self.capt_hist_divisor
-    }
+    fn cap_score(&self, mvv: i32, chist: i32) -> i32 { mvv + chist / self.capt_hist_divisor }
 
     /// Monomorphized by `PT` for dispatch-free attack lookups.
     #[inline]
@@ -414,9 +412,7 @@ impl MovePicker {
     }
 
     #[inline(always)]
-    fn add_move_packed(&mut self, mv: Move, score: MoveScore) {
-        self.write_packed(pack((score as i32 + SORT_BIAS) as u32, mv));
-    }
+    fn add_move_packed(&mut self, mv: Move, score: MoveScore) { self.write_packed(pack((score as i32 + SORT_BIAS) as u32, mv)); }
 
     /// Append a pre-packed `(sort_score << 16) | move` entry.
     #[inline(always)]
@@ -681,14 +677,10 @@ mod tests {
     };
 
     #[cfg(not(feature = "nostore"))]
-    fn rows(store: &XorBoard) -> Rows<'_> {
-        store
-    }
+    fn rows(store: &XorBoard) -> Rows<'_> { store }
 
     #[cfg(feature = "nostore")]
-    fn rows(_store: &XorBoard) -> Rows<'static> {
-        core::marker::PhantomData
-    }
+    fn rows(_store: &XorBoard) -> Rows<'static> { core::marker::PhantomData }
 
     #[test]
     fn every_stage_together_yields_what_movegen_does() {

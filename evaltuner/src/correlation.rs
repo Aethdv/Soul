@@ -1,10 +1,12 @@
-//! PSQT adjacency analysis: finds outlier differences between adjacent
-//! squares in the mirrored half-board, written to correlation-report.txt.
+//! Piece-Square Table (PSQT) spatial continuity analysis.
+//!
+//! Evaluates gradient smoothness across horizontally mirrored half-boards (4 by 8),
+//! flagging adjacent square pairs whose evaluation difference deviates significantly
+//! from the piece-phase average.
 
 use std::{
     fs::File,
-    io,
-    io::{BufWriter, Write},
+    io::{self, BufWriter, Write},
 };
 
 use crate::engine::eval_params;
@@ -12,22 +14,22 @@ use crate::engine::eval_params;
 const PIECES: [&str; 6] = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
 const PHASES: [&str; 2] = ["MG", "EG"];
 const RANKS: usize = 8;
-const FILES: usize = 4; // half-board, mirrored
-const HALF: usize = RANKS * FILES; // 32
+const FILES: usize = 4; // Horizontally mirrored half-board (A–D files)
+const HALF_BOARD: usize = RANKS * FILES; // 32
+const ADJACENT_PAIRS_PER_SLICE: usize = RANKS * (FILES - 1) + (RANKS - 1) * FILES; // 52
 
-// Outlier threshold: adjacent pairs whose difference exceeds
-// 1.5× the piece-phase mean (floored at 5 cp) are flagged.
+/// Multiplier over the mean step size defining an adjacency outlier.
 const OUTLIER_MULT: f64 = 1.5;
+/// Minimum threshold floor in centipawns to prevent flagging negligible noise on flat tables.
 const OUTLIER_FLOOR: f64 = 5.0;
 
-/// Run PSQT adjacency analysis on the current parameter values.
+/// Analyzes PSQT spatial continuity across all pieces and writes results to `correlation-report.txt`.
 pub fn run_correlation() {
     let values = eval_params::default_values(&eval_params::collect_parameters());
+    let slices = analyze_all(&values);
 
-    let slices = analyse_all(&values);
-
-    if write_report(&slices).is_err() {
-        eprintln!("Failed to write correlation-report.txt");
+    if let Err(e) = write_report(&slices) {
+        eprintln!("Failed to write correlation-report.txt: {e}");
         return;
     }
 
@@ -39,48 +41,50 @@ pub fn run_correlation() {
     }
 }
 
-struct Pair {
-    a: usize,
-    b: usize,
+struct AdjacentPair {
+    sq_a: usize,
+    sq_b: usize,
     diff: i32,
 }
 
-struct SliceStats {
+struct PsqtSliceStats {
     piece: &'static str,
     phase: &'static str,
     count: usize,
     mean: f64,
     max: i32,
-    outliers: Vec<Pair>,
+    outliers: Vec<AdjacentPair>,
 }
 
-fn analyse_all(values: &[f64]) -> Vec<SliceStats> {
+fn analyze_all(values: &[f64]) -> Vec<PsqtSliceStats> {
     let mut slices = Vec::with_capacity(PIECES.len() * PHASES.len());
 
     for (p_idx, &piece) in PIECES.iter().enumerate() {
         let base = p_idx * 64;
 
-        for (ph, &phase) in PHASES.iter().enumerate() {
-            let v = &values[base + ph * HALF..base + ph * HALF + HALF];
-            slices.push(analyse_slice(v, piece, phase));
+        for (ph_idx, &phase) in PHASES.iter().enumerate() {
+            let offset = base + ph_idx * HALF_BOARD;
+            let slice = &values[offset..offset + HALF_BOARD];
+            slices.push(analyze_slice(slice, piece, phase));
         }
     }
     slices
 }
 
-fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceStats {
-    let mut pairs = Vec::new();
+fn analyze_slice(v: &[f64], piece: &'static str, phase: &'static str) -> PsqtSliceStats {
+    let mut pairs = Vec::with_capacity(ADJACENT_PAIRS_PER_SLICE);
 
     for rank in 0..RANKS {
         for file in 0..FILES {
             let idx = rank * FILES + file;
+
+            // Horizontal step (E-W)
             if file + 1 < FILES {
-                let nb = idx + 1;
-                pairs.push(make_pair(v, idx, nb));
+                pairs.push(make_pair(v, idx, idx + 1));
             }
+            // Vertical step (N-S)
             if rank + 1 < RANKS {
-                let nb = idx + FILES;
-                pairs.push(make_pair(v, idx, nb));
+                pairs.push(make_pair(v, idx, idx + FILES));
             }
         }
     }
@@ -90,47 +94,49 @@ fn analyse_slice(v: &[f64], piece: &'static str, phase: &'static str) -> SliceSt
     let mean = total as f64 / n.max(1) as f64;
     let max = pairs.iter().map(|p| p.diff).max().unwrap_or(0);
     let threshold = (mean * OUTLIER_MULT).max(OUTLIER_FLOOR) as i32;
-    let outliers: Vec<Pair> = pairs.into_iter().filter(|p| p.diff > threshold).collect();
+    let outliers: Vec<AdjacentPair> = pairs.into_iter().filter(|p| p.diff > threshold).collect();
 
-    SliceStats { piece, phase, count: n, mean, max, outliers }
+    PsqtSliceStats { piece, phase, count: n, mean, max, outliers }
 }
 
-fn make_pair(v: &[f64], a: usize, b: usize) -> Pair {
-    Pair { a, b, diff: (v[a] - v[b]).round().abs() as i32 }
+#[inline(always)]
+fn make_pair(v: &[f64], sq_a: usize, sq_b: usize) -> AdjacentPair {
+    AdjacentPair { sq_a, sq_b, diff: (v[sq_a] - v[sq_b]).round().abs() as i32 }
 }
 
-fn write_report(slices: &[SliceStats]) -> io::Result<()> {
-    let f = File::create("correlation-report.txt")?;
-    let mut w = BufWriter::new(f);
+fn write_report(slices: &[PsqtSliceStats]) -> io::Result<()> {
+    let file = File::create("correlation-report.txt")?;
+    let mut w = BufWriter::new(file);
 
     writeln!(w, "PSQT Adjacency Analysis\n")?;
 
-    let mut all_outlier_lines: Vec<String> = Vec::new();
+    let mut summary_lines: Vec<String> = Vec::new();
 
     for s in slices {
         writeln!(w, "  {:>7} {}  mean_diff: {:5.1}  max_diff: {:3}  pairs: {}", s.piece, s.phase, s.mean, s.max, s.count,)?;
 
         for p in &s.outliers {
-            let line = format!("{:>7} {}  {}↔{}  {:4}", s.piece, s.phase, sq_name(p.a), sq_name(p.b), p.diff,);
+            let line = format!("{:>7} {}  {}↔{}  {:4}", s.piece, s.phase, square_name(p.sq_a), square_name(p.sq_b), p.diff,);
             writeln!(w, "    {line}")?;
-            all_outlier_lines.push(line);
+            summary_lines.push(line);
         }
     }
 
     writeln!(w)?;
-    if all_outlier_lines.is_empty() {
+    if summary_lines.is_empty() {
         writeln!(w, "No significant outliers: PSQT surface appears smooth.")?;
     } else {
         writeln!(w, "Outlier summary (|diff| > {OUTLIER_MULT}× piece mean):")?;
-        for line in &all_outlier_lines {
+        for line in &summary_lines {
             writeln!(w, "  {line}")?;
         }
     }
+
     w.flush()
 }
 
-// Convert (0..31) → (A1..D8).
-fn sq_name(idx: usize) -> String {
+// Converts (0..31) → (A1..D8).
+fn square_name(idx: usize) -> String {
     let file = (b'A' + (idx % FILES) as u8) as char;
     let rank = idx / FILES + 1;
     format!("{file}{rank}")
@@ -141,10 +147,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sq_name_corners() {
-        assert_eq!(sq_name(0), "A1");
-        assert_eq!(sq_name(3), "D1");
-        assert_eq!(sq_name(4), "A2");
-        assert_eq!(sq_name(31), "D8");
+    fn square_name_coordinates() {
+        assert_eq!(square_name(0), "A1");
+        assert_eq!(square_name(3), "D1");
+        assert_eq!(square_name(4), "A2");
+        assert_eq!(square_name(31), "D8");
     }
 }

@@ -102,27 +102,19 @@ const WHITE_GROUPS: u8 = 0x0F;
 const BLACK_GROUPS: u8 = 0xF0;
 
 #[cfg(test)]
-const fn color_slots(color: Color) -> u64 {
-    0xFFFF << (color as usize * 16)
-}
+const fn color_slots(color: Color) -> u64 { 0xFFFF << (color as usize * 16) }
 
 #[inline(always)]
-const fn class_index(piece: PieceType, color: Color) -> usize {
-    piece as usize * 2 + color as usize
-}
+const fn class_index(piece: PieceType, color: Color) -> usize { piece as usize * 2 + color as usize }
 
 impl PieceId {
     #[inline(always)]
-    pub const fn color(self) -> Color {
-        if self.0 < 16 { Color::White } else { Color::Black }
-    }
+    pub const fn color(self) -> Color { if self.0 < 16 { Color::White } else { Color::Black } }
 
     /// Masked so the bounds check drops. Slots come from a 32-bit mask or from
     /// `at`, both already in range, so the mask only ever hides a bug.
     #[inline(always)]
-    const fn index(self) -> usize {
-        (self.0 & 31) as usize
-    }
+    const fn index(self) -> usize { (self.0 & 31) as usize }
 }
 
 #[inline(always)]
@@ -139,9 +131,7 @@ fn slots(mask: u64) -> impl Iterator<Item = PieceId> {
 }
 
 #[inline(always)]
-fn is_slider(piece: PieceType) -> bool {
-    matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen)
-}
+fn is_slider(piece: PieceType) -> bool { matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen) }
 
 impl XorBoard {
     /// Slots are assigned by a square walk, so two boards built from the same
@@ -197,9 +187,7 @@ impl XorBoard {
     }
 
     #[inline(always)]
-    pub fn row(&self, id: PieceId) -> Bitboard {
-        Bitboard(self.rows[id.index()])
-    }
+    pub fn row(&self, id: PieceId) -> Bitboard { Bitboard(self.rows[id.index()]) }
 
     #[inline(always)]
     pub fn id_at(&self, square: Square) -> Option<PieceId> {
@@ -210,14 +198,10 @@ impl XorBoard {
     }
 
     #[inline(always)]
-    fn slot_at(&self, square: Square) -> u8 {
-        self.at[usize::from(square.0 & 63)]
-    }
+    fn slot_at(&self, square: Square) -> u8 { self.at[usize::from(square.0 & 63)] }
 
     #[inline(always)]
-    fn set_slot_at(&mut self, square: Square, slot: u8) {
-        self.at[usize::from(square.0 & 63)] = slot;
-    }
+    fn set_slot_at(&mut self, square: Square, slot: u8) { self.at[usize::from(square.0 & 63)] = slot; }
 
     /// The transpose, taken one column at a time: which pieces attack any square
     /// in `mask`. Testing a row against a multi-bit mask answers for every square
@@ -457,15 +441,11 @@ impl XorBoard {
 }
 
 impl Undo {
-    pub const fn new() -> Self {
-        Self { rows: [0; SLOTS], at: [0; 64], squares: [NOWHERE; SLOTS] }
-    }
+    pub const fn new() -> Self { Self { rows: [0; SLOTS], at: [0; 64], squares: [NOWHERE; SLOTS] } }
 }
 
 impl Default for Undo {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]

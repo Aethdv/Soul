@@ -56,24 +56,16 @@ impl TimeManager {
     }
 
     #[inline]
-    pub fn is_hard_limit_reached(&self) -> bool {
-        self.start.elapsed() >= self.hard
-    }
+    pub fn is_hard_limit_reached(&self) -> bool { self.start.elapsed() >= self.hard }
 
     #[inline]
-    pub fn soft_limit(&self) -> Duration {
-        self.soft
-    }
+    pub fn soft_limit(&self) -> Duration { self.soft }
 
     #[inline]
-    pub fn hard_limit(&self) -> Duration {
-        self.hard
-    }
+    pub fn hard_limit(&self) -> Duration { self.hard }
 
     #[inline]
-    pub fn elapsed(&self) -> Duration {
-        self.start.elapsed()
-    }
+    pub fn elapsed(&self) -> Duration { self.start.elapsed() }
 
     #[inline]
     pub fn set_bm_stab_factor(&mut self, factor: f64) {
@@ -122,9 +114,7 @@ impl Clock {
     /// True when the CLI/GUI sent neither time nor increment for this side:
     /// e.g. `go depth N` or analysis mode without a clock attached.
     #[inline]
-    fn is_unclocked(&self) -> bool {
-        self.time == 0 && self.inc == 0
-    }
+    fn is_unclocked(&self) -> bool { self.time == 0 && self.inc == 0 }
 
     /// Estimated remaining moves in the game.
     ///
@@ -212,6 +202,4 @@ fn compute_budget(
 /// at least 1 ms so we never produce a zero-length window the search would
 /// abort on entry.
 #[inline]
-fn with_overhead(ms: u64, overhead: u64) -> Duration {
-    Duration::from_millis(ms.saturating_sub(overhead).max(1))
-}
+fn with_overhead(ms: u64, overhead: u64) -> Duration { Duration::from_millis(ms.saturating_sub(overhead).max(1)) }

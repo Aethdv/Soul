@@ -184,14 +184,10 @@ fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
 }
 
 #[inline]
-fn tui_fg(c: Rgb, enabled: bool) -> String {
-    if enabled { color::ansi_fg(c) } else { String::new() }
-}
+fn tui_fg(c: Rgb, enabled: bool) -> String { if enabled { color::ansi_fg(c) } else { String::new() } }
 
 #[inline]
-fn ansi_code(code: &'static str, enabled: bool) -> &'static str {
-    if enabled { code } else { "" }
-}
+fn ansi_code(code: &'static str, enabled: bool) -> &'static str { if enabled { code } else { "" } }
 
 fn fmt_nps(nps: u64) -> String {
     if nps < 1_000_000 {
@@ -222,15 +218,11 @@ fn fmt_score_num(score: i32) -> String {
 }
 
 /// Moves, not plies, to the mate a score encodes.
-fn mate_moves(score: i32) -> i32 {
-    (MATE - score.abs() + 1) / 2
-}
+fn mate_moves(score: i32) -> i32 { (MATE - score.abs() + 1) / 2 }
 
 /// Maps centipawn score to [0, 1] win probability.
 #[inline]
-fn sigmoid(cp: i32) -> f64 {
-    wdl::sigmoid(f64::from(cp), 1.0 / 150.0)
-}
+fn sigmoid(cp: i32) -> f64 { wdl::sigmoid(f64::from(cp), 1.0 / 150.0) }
 
 fn score_color(score: i32) -> Rgb {
     if is_mate(score) {
@@ -360,14 +352,10 @@ fn san_step(board: &mut Position, acc: &mut Vi16x8, mv: Move) -> String {
 }
 
 #[inline]
-fn sq_file(sq: Square) -> char {
-    (b'a' + sq.file()) as char
-}
+fn sq_file(sq: Square) -> char { (b'a' + sq.file()) as char }
 
 #[inline]
-fn sq_rank(sq: Square) -> char {
-    (b'1' + sq.rank()) as char
-}
+fn sq_rank(sq: Square) -> char { (b'1' + sq.rank()) as char }
 
 fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
     let wdl_str = if data.show_wdl {

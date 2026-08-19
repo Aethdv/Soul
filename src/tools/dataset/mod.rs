@@ -58,40 +58,28 @@ impl SoulEntry {
     }
 
     #[inline]
-    pub fn to_fen(&self) -> String {
-        quant::to_fen(self)
-    }
+    pub fn to_fen(&self) -> String { quant::to_fen(self) }
 
     /// Computes total weighted material (`P=1, N=3, B=3, R=5, Q=9`), matching [`Position::material_count`].
     #[inline]
-    pub fn material_count(&self) -> u32 {
-        quant::material_count(self)
-    }
+    pub fn material_count(&self) -> u32 { quant::material_count(self) }
 
     /// Unpacks the entry into a `Position`, through a FEN.
     #[inline]
-    pub fn to_board(&self) -> Position {
-        Position::from_fen(&self.to_fen())
-    }
+    pub fn to_board(&self) -> Position { Position::from_fen(&self.to_fen()) }
 }
 
 /// Converts a WDL probability `[0.0, 1.0]` between White-relative and side-to-move relative perspective (self-inverse).
 #[inline]
-pub fn flip_wdl(wdl: f64, stm: Color) -> f64 {
-    if stm == Color::Black { 1.0 - wdl } else { wdl }
-}
+pub fn flip_wdl(wdl: f64, stm: Color) -> f64 { if stm == Color::Black { 1.0 - wdl } else { wdl } }
 
 /// Converts a packed outcome (`0=loss, 1=draw, 2=win`) between White-relative and side-to-move perspective (self-inverse).
 #[inline]
-pub const fn flip_result(result: u8, stm: Color) -> u8 {
-    if matches!(stm, Color::Black) { 2 - result } else { result }
-}
+pub const fn flip_result(result: u8, stm: Color) -> u8 { if matches!(stm, Color::Black) { 2 - result } else { result } }
 
 /// Converts a centipawn score between White-relative and side-to-move perspective (self-inverse).
 #[inline]
-pub const fn flip_score(score: i32, stm: Color) -> i32 {
-    if matches!(stm, Color::Black) { -score } else { score }
-}
+pub const fn flip_score(score: i32, stm: Color) -> i32 { if matches!(stm, Color::Black) { -score } else { score } }
 
 #[cfg(test)]
 mod tests {

@@ -34,9 +34,7 @@ const fn auto_max(default: i32) -> i32 {
 }
 
 // Default-derived step. Floor of 1 prevents zero-step on tiny defaults.
-const fn auto_step(max: i32) -> i32 {
-    (max / 20).max(1)
-}
+const fn auto_step(max: i32) -> i32 { (max / 20).max(1) }
 
 /// The tunables as an SPSA table, one parameter a line:
 /// `name, int, value, min, max, c_end, r_end`.
@@ -134,9 +132,7 @@ macro_rules! search_params {
 /// Terminal learning rate for the SPSA table.
 const SPSA_R_END: f64 = 0.002;
 
-fn tunable_param_defs() -> Vec<&'static ParamDef> {
-    PARAM_DEFS.iter().filter(|p| !p.frozen).collect()
-}
+fn tunable_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| !p.frozen).collect() }
 
 search_params! {
     pub struct SearchParams {

@@ -43,17 +43,13 @@ pub struct Shuffler {
 }
 
 impl Shuffler {
-    pub fn new(len: usize) -> Self {
-        Self { ids: vec![0; len], order: Vec::new() }
-    }
+    pub fn new(len: usize) -> Self { Self { ids: vec![0; len], order: Vec::new() } }
 
     /// Fills `out` with a uniform random permutation of `0..out.len()`.
     ///
     /// # Panics
     /// If `out` is longer than the length this was constructed for.
-    pub fn fill(&mut self, out: &mut [u32], seed: u64) {
-        self.fill_into(out, seed, bucket_count(out.len()));
-    }
+    pub fn fill(&mut self, out: &mut [u32], seed: u64) { self.fill_into(out, seed, bucket_count(out.len())); }
 
     /// Permutes blocks of `block` consecutive indices instead of the indices themselves.
     ///
@@ -183,9 +179,7 @@ impl Shuffler {
     }
 }
 
-fn bucket_count(n: usize) -> usize {
-    n.div_ceil(TARGET_BUCKET).next_power_of_two().clamp(MIN_BUCKETS, MAX_BUCKETS)
-}
+fn bucket_count(n: usize) -> usize { n.div_ceil(TARGET_BUCKET).next_power_of_two().clamp(MIN_BUCKETS, MAX_BUCKETS) }
 
 /// SplitMix64 (Steele, Lea and Flood 2014), so neighboring task indices give unrelated
 /// generator states. The gamma is the golden-ratio constant, 2^64/φ forced odd.

@@ -170,9 +170,7 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
 /// Evaluates a board using 64-bit floating point weights.
 #[inline(always)]
-pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
-    eval_f64_with_acc(board, values).0
-}
+pub fn eval_f64(board: &Board, values: &[f64]) -> f64 { eval_f64_with_acc(board, values).0 }
 
 /// Evaluates a board and returns the final score along with accumulator lane sums and piece counts.
 pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
@@ -334,9 +332,7 @@ mod tests {
     const TARGET: f64 = 0.5;
     const K: f64 = 0.005;
 
-    fn term_for(slot: usize) -> &'static str {
-        BLOCKS.iter().rev().find(|b| slot >= b.offset).map_or("out of range", |b| b.name)
-    }
+    fn term_for(slot: usize) -> &'static str { BLOCKS.iter().rev().find(|b| slot >= b.offset).map_or("out of range", |b| b.name) }
 
     fn assert_oracle_matches(context: &str, values: &[f64]) {
         for fen in FENS {
@@ -402,9 +398,7 @@ mod tests {
 
     const TEST_CURVE: f64 = 32.0;
 
-    fn curvature(c: f64) -> CombinerParams<f64> {
-        CombinerParams { king_danger: c }
-    }
+    fn curvature(c: f64) -> CombinerParams<f64> { CombinerParams { king_danger: c } }
 
     #[test]
     fn test_king_danger_slope_oracle() {
@@ -502,9 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn test_linear_oracle_verification() {
-        assert_oracle_matches("pipeline", &full_values());
-    }
+    fn test_linear_oracle_verification() { assert_oracle_matches("pipeline", &full_values()); }
 
     #[test]
     fn test_mobility_term_oracle() {

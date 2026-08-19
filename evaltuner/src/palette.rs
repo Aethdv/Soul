@@ -30,6 +30,4 @@ pub use color::{CLEAR_LINE, RESET};
 
 /// Truecolor foreground escape for a color decided at runtime.
 #[must_use]
-pub fn fg(c: Rgb) -> String {
-    crate::engine::ansi_fg(c)
-}
+pub fn fg(c: Rgb) -> String { crate::engine::ansi_fg(c) }

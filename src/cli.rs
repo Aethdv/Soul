@@ -18,9 +18,7 @@ pub struct Help {
 
 impl Help {
     /// Colors when a terminal is reading, plain text when the output is redirected.
-    pub fn new(width: usize) -> Self {
-        Self { width, use_ansi: stdout().is_terminal() }
-    }
+    pub fn new(width: usize) -> Self { Self { width, use_ansi: stdout().is_terminal() } }
 
     /// Overrides the terminal check, for a pager that renders escapes anyway.
     pub fn with_ansi(mut self, enabled: bool) -> Self {
@@ -40,29 +38,21 @@ impl Help {
         println!();
     }
 
-    pub fn command(&self, name: &str, desc: &str) {
-        self.print_line_internal(2, name, "", desc);
-    }
+    pub fn command(&self, name: &str, desc: &str) { self.print_line_internal(2, name, "", desc); }
 
-    pub fn command_args(&self, name: &str, args: &str, desc: &str) {
-        self.print_line_internal(2, name, args, desc);
-    }
+    pub fn command_args(&self, name: &str, args: &str, desc: &str) { self.print_line_internal(2, name, args, desc); }
 
     pub fn command_default(&self, name: &str, desc: &str, default: &str) {
         self.print_line_internal(2, name, "", &self.with_default(desc, default));
     }
 
-    pub fn subcommand(&self, name: &str, args: &str, desc: &str) {
-        self.print_line_internal(4, name, args, desc);
-    }
+    pub fn subcommand(&self, name: &str, args: &str, desc: &str) { self.print_line_internal(4, name, args, desc); }
 
     pub fn subcommand_default(&self, name: &str, args: &str, desc: &str, default: &str) {
         self.print_line_internal(4, name, args, &self.with_default(desc, default));
     }
 
-    pub fn option(&self, flags: &str, value: &str, desc: &str) {
-        self.print_line_internal(2, flags, value, desc);
-    }
+    pub fn option(&self, flags: &str, value: &str, desc: &str) { self.print_line_internal(2, flags, value, desc); }
 
     pub fn option_default(&self, flags: &str, value: &str, desc: &str, default: &str) {
         self.print_line_internal(2, flags, value, &self.with_default(desc, default));

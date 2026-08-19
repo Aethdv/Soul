@@ -248,9 +248,7 @@ fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
 }
 
 /// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
-fn probe(config_path: &str, dataset: &str, task: Task) {
-    run::run(Some(dataset), &load_config(config_path).evaltune, None, task);
-}
+fn probe(config_path: &str, dataset: &str, task: Task) { run::run(Some(dataset), &load_config(config_path).evaltune, None, task); }
 
 fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     // Otherwise `i / (n - 1)` is 0/0 and every point on the grid comes out NaN.

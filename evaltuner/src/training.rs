@@ -203,9 +203,7 @@ pub fn merge_weights(phase: Vec<f64>, sample: &[f32]) -> Vec<f64> {
 
 impl GradientStats {
     #[must_use]
-    pub fn new(window: usize) -> Self {
-        Self { p95: 1.0, alpha: 2.0 / (window as f64 + 1.0), count: 0 }
-    }
+    pub fn new(window: usize) -> Self { Self { p95: 1.0, alpha: 2.0 / (window as f64 + 1.0), count: 0 } }
 
     pub fn update(&mut self, norm: f64) {
         if self.count == 0 {
@@ -302,21 +300,15 @@ impl TunableData for loader::SoulEntry {
     /// Evaluation via FEN round-trip: valid but slow.
     /// Production code uses `eval_record` with a packed `FeatureRecord`.
     #[inline]
-    fn eval(&self, values: &[f64]) -> f64 {
-        eval_f64(&self.to_board(), values)
-    }
+    fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.to_board(), values) }
 
     #[inline]
-    fn result(&self) -> f64 {
-        f64::from(self.result) / 2.0
-    }
+    fn result(&self) -> f64 { f64::from(self.result) / 2.0 }
 }
 
 impl TunableData for loader::EpdEntry {
     #[inline]
-    fn eval(&self, values: &[f64]) -> f64 {
-        eval_f64(&self.board, values)
-    }
+    fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.board, values) }
 
     #[inline]
     fn result(&self) -> f64 {
@@ -326,20 +318,14 @@ impl TunableData for loader::EpdEntry {
 }
 
 /// A non-finite trail is the unseeded state, which is what `unset_smooth` writes.
-fn smooth(trail: f64, loss: f64) -> f64 {
-    if trail.is_finite() { A_FAST.mul_add(loss - trail, trail) } else { loss }
-}
+fn smooth(trail: f64, loss: f64) -> f64 { if trail.is_finite() { A_FAST.mul_add(loss - trail, trail) } else { loss } }
 
 /// A checkpoint written before smoothed selection carries no trail; it re-seeds from the
 /// first epoch after resume.
-fn unset_smooth() -> f64 {
-    f64::NAN
-}
+fn unset_smooth() -> f64 { f64::NAN }
 /// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
 /// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
-fn unset_best() -> f64 {
-    f64::MAX
-}
+fn unset_best() -> f64 { f64::MAX }
 /// JSON has no NaN, so an unseeded trail is written as `null`, and `default` covers only a key
 /// that is absent. Without this a run with no holdout cannot resume its own checkpoint.
 fn unset_if_null<'de, D: Deserializer<'de>>(de: D) -> Result<f64, D::Error> {

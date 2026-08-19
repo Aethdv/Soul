@@ -183,18 +183,10 @@ enum Param {
     Const(i32),
 }
 
-const fn S(mg: i32, eg: i32) -> Param {
-    Param::S(mg, eg)
-}
-const fn CS(mg: i32, eg: i32) -> Param {
-    Param::CS(mg, eg)
-}
-const fn V(v: i32) -> Param {
-    Param::Val(v)
-}
-const fn CV(v: i32) -> Param {
-    Param::Const(v)
-}
+const fn S(mg: i32, eg: i32) -> Param { Param::S(mg, eg) }
+const fn CS(mg: i32, eg: i32) -> Param { Param::CS(mg, eg) }
+const fn V(v: i32) -> Param { Param::Val(v) }
+const fn CV(v: i32) -> Param { Param::Const(v) }
 
 /// A tapered table's slots, every MG then every EG, named after the const they
 /// came from. `shape` is the `S`/`CS` list the values were split out of and is all
@@ -501,14 +493,10 @@ macro_rules! collect_groups {
     }};
 }
 
-pub fn collect_parameters() -> Vec<Tunable> {
-    param_groups!(collect_groups)
-}
+pub fn collect_parameters() -> Vec<Tunable> { param_groups!(collect_groups) }
 
 #[must_use]
-pub fn default_values(params: &[Tunable]) -> Vec<f64> {
-    params.iter().map(|p| p.value).collect()
-}
+pub fn default_values(params: &[Tunable]) -> Vec<f64> { params.iter().map(|p| p.value).collect() }
 
 define_psqt_params! {
     // Files A-D (mirrored to E-H) × 8 ranks

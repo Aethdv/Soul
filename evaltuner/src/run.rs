@@ -77,9 +77,7 @@ pub struct TrainerContext<'a> {
 
 impl TrainerContext<'_> {
     /// The configured loss, for probes that read its Hessian.
-    pub fn loss_fn(&self) -> LossFn {
-        self.loss_fn
-    }
+    pub fn loss_fn(&self) -> LossFn { self.loss_fn }
 
     pub fn passes_vol_filter(&self, record: &FeatureRecord) -> bool {
         if self.vol_threshold == 0 || record.score == loader::SoulEntry::NO_SCORE {
@@ -240,9 +238,7 @@ pub enum Outcome {
 
 impl Outcome {
     #[must_use]
-    pub fn trained(&self) -> bool {
-        !matches!(self, Self::NotTrained)
-    }
+    pub fn trained(&self) -> bool { !matches!(self, Self::NotTrained) }
 }
 
 /// Trains on `dataset_path`, or on the dataset the `resume_path` checkpoint names.
