@@ -127,7 +127,7 @@ impl XBoardState {
     }
 
     /// Reset to a fresh root position: rebuild the accumulator and reseed the
-    /// repetition history with the new root hash. FRC flag rides along.
+    /// repetition history with the new root hash.
     fn load_position(&mut self, board: Position) {
         self.board = board;
         self.board.is_frc = self.is_frc;

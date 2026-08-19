@@ -766,19 +766,8 @@ mod tests {
         assert_eq!(decoded.castling_rooks[ROOK_W_KS], Square(5));
     }
 
-    fn move_shape(fen: &str, want: impl Fn(Move) -> bool) -> (Position, Move) {
-        let pos = Position::from_fen(fen);
-        let mv = gen_legal_moves(&pos)
-            .iter()
-            .find(|&&m| want(m))
-            .copied()
-            .expect("a move of the asked shape");
-
-        (pos, mv)
-    }
-
     fn assert_move_roundtrip(fen: &str, want: impl Fn(Move) -> bool) {
-        let (pos, mv) = move_shape(fen, want);
+        let (pos, mv) = pick(fen, want);
         let promo = mv.promo().map_or(0, |p| match p {
             PieceType::Knight => 0,
             PieceType::Bishop => 1,
@@ -813,7 +802,7 @@ mod tests {
 
     #[test]
     fn capture_flag_derives_from_the_black_board() {
-        let (pos, mv) = move_shape("4k3/4P3/8/8/8/8/8/4K3 b - - 0 1", |m| m.is_tactical());
+        let (pos, mv) = pick("4k3/4P3/8/8/8/8/8/4K3 b - - 0 1", |m| m.is_tactical());
         let wire = u16::from(mv.from().0) | (u16::from(mv.to().0) << 6);
         assert_eq!(decode_move(wire, &pos), Some(mv));
     }
