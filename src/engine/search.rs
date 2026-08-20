@@ -1487,6 +1487,8 @@ impl Worker<'_> {
                         self.history.update_capture(stm, attacker, mv.to(), victim, bonus);
                     }
 
+                    let malus = (depth.pow(2) * sp.hist_malus_mult).min(sp.hist_malus_cap);
+
                     // ── Quiet Malus (~25 Elo)
                     // A bonus alone can only lift entries, so a move that cut once
                     // and keeps failing never comes back down.
@@ -1494,7 +1496,7 @@ impl Worker<'_> {
                     for i in 0..quiet_limit {
                         let qm = self.stack[ply].quiet_moves[i];
                         let q_pt = self.pos.expect_piece_at(qm.from());
-                        self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
+                        self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -malus);
                     }
 
                     // ── Capture Malus
@@ -1505,7 +1507,7 @@ impl Worker<'_> {
                         let cm = self.stack[ply].capture_moves[i];
                         let attacker = self.pos.expect_piece_at(cm.from());
                         let victim = if cm.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(cm.to()) };
-                        self.history.update_capture(stm, attacker, cm.to(), victim, -bonus);
+                        self.history.update_capture(stm, attacker, cm.to(), victim, -malus);
                     }
                     break;
                 }
