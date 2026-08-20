@@ -263,10 +263,10 @@ search_params! {
         NT(lmr_retained,        1),
 
         NT(capt_hist_divisor,  32),
+        NT(capt_malus_mult,     6),
+        NT(capt_malus_cap,   2400),
         NT(hist_bonus_mult,     4),
         NT(hist_bonus_cap,   1600),
-        NT(hist_malus_mult,     6),
-        NT(hist_malus_cap,   2400),
 
         //                    default    min    max  step
         NT(quiet_hist_cap,      16384,  8192, 32000),
