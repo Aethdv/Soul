@@ -2,12 +2,13 @@
 //!
 //! Spawns N persistent worker threads, each playing complete games
 //! from book openings, filtering positions by search verification
-//! and quiet-move heuristics, then flushing results to disk in .soul.zst format.
+//! and adjudication, then flushing whole games to disk in viriformat.
 //!
 //! The hot path lives in `WorkerState::play_game()`; this module is just
 //! the conductor: load books, dispatch work, flush to disk, print stats.
 
 use std::{
+    fs::OpenOptions,
     io::{Write, stdout},
     num::NonZero,
     path::Path,
@@ -24,38 +25,35 @@ use std::{
 use super::{
     config::DatagenConfig,
     stats::{GlobalStats, get_rss_kb},
-    worker::WorkerState,
+    worker::{Game, WorkerState},
 };
 use crate::{
     cli::Help,
-    color::RESET,
-    core::{board::STARTPOS, defs::MAX_DEPTH, util::format_comma as format_num},
-    tools::dataset::{SoulEntry, append_encoded, count_encoded, load_epd_fens},
+    color::{self, RESET},
+    core::{
+        board::STARTPOS,
+        defs::MAX_DEPTH,
+        util::{format_comma as format_num, format_duration, pct, safe_div},
+    },
+    tools::dataset::{load_epd_fens, scan_viri_games, write_game},
 };
 
-const GREEN: &str = "\x1b[92m";
-const YELLOW: &str = "\x1b[93m";
-const RED: &str = "\x1b[91m";
-
-const BADGE_OK: &str = "\x1b[92m[OK]\x1b[0m";
-const BADGE_LOW: &str = "\x1b[93m[LOW]\x1b[0m";
-const BADGE_BAD: &str = "\x1b[91m[BAD]\x1b[0m";
+const GREEN: &str = color::OK_PEN;
+const YELLOW: &str = color::WARN_PEN;
+const RED: &str = color::ALARM_PEN;
 
 /// Dashboard refresh interval.
-/// 10 Hz is smooth enough without burning CPU on terminal writes.
 const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
-/// Number of lines the dashboard occupies. We print this many newlines on
-/// first render, then cursor-up by this amount on every subsequent frame.
-const DASHBOARD_LINES: usize = 14;
+
+/// Number of lines the dashboard occupies.
+const DASHBOARD_LINES: usize = 11;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     let (parsed, resume) = parse_args(args);
-
     let book_fens = if parsed.startpos {
         vec![STARTPOS.to_string()]
     } else {
         let fens = load_books(&parsed.book_paths);
-
         if fens.is_empty() {
             eprintln!("{RED}Error: No opening positions loaded!{RESET}");
             return;
@@ -63,7 +61,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
         fens
     };
 
-    println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len(),);
+    println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len());
 
     let mut config = resolve_config(parsed, resume);
     let start_count = if resume { load_existing_count(&config.output_path) } else { 0 };
@@ -94,13 +92,12 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
     });
 
     let mut total_generated = start_count;
-    let mut pending: Vec<SoulEntry> = Vec::with_capacity(save_interval * 2);
+    let mut flushed_at = start_count;
+    let mut pending: Vec<u8> = Vec::with_capacity(save_interval * 8);
 
     // Shared counter visible to the dashboard thread.
     let shared_generated = Arc::new(AtomicUsize::new(total_generated));
     let finished = Arc::new(AtomicBool::new(false));
-
-    let rr = config.random_restart;
 
     // Dashboard thread
     {
@@ -113,7 +110,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
             let mut first_frame = true;
 
             while !stop_mon.load(Ordering::Relaxed) && !finish_mon.load(Ordering::Relaxed) {
-                let snap = Snapshot::capture(&global_mon, &gen_mon, target, rr);
+                let snap = Snapshot::capture(&global_mon, &gen_mon, target);
 
                 render_dashboard(&snap, &mut first_frame);
                 sleep(DASHBOARD_INTERVAL);
@@ -123,7 +120,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     // Each worker owns its TT and history table for the entire run.
     // One allocation per worker, no churn between games.
-    let (tx, rx) = channel::<Vec<SoulEntry>>();
+    let (tx, rx) = channel::<Game>();
     let mut handles = Vec::with_capacity(num_threads);
 
     for _ in 0..num_threads {
@@ -134,27 +131,33 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
         handles.push(spawn(move || {
             loop {
-                if stop_w.load(Ordering::Relaxed) || worker.global.saved.load(Ordering::Relaxed) >= target_u {
+                if stop_w.load(Ordering::Relaxed) || worker.global.plies.load(Ordering::Relaxed) >= target_u {
                     break;
                 }
 
-                let entries = worker.play_game();
-                if !entries.is_empty() && tx.send(entries).is_err() {
+                let game = worker.play_game();
+                if !game.moves.is_empty() && tx.send(game).is_err() {
                     break;
                 }
             }
         }));
     }
+
     drop(tx); // channel closes when all senders drop
 
     // Flush results to disk periodically
-    for entries in rx {
-        total_generated += entries.len();
+    for game in rx {
+        total_generated += game.moves.len();
         shared_generated.store(total_generated, Ordering::Relaxed);
         config.generated_count = total_generated as u64;
-        pending.extend(entries);
 
-        if pending.len() >= save_interval {
+        // The header's own eval field is the opening position's, which is the first
+        // score recorded.
+        let opening_eval = game.moves.first().map_or(0, |&(_, score)| score);
+        write_game(&mut pending, &game.opening, game.result, opening_eval, &game.moves);
+
+        if total_generated >= flushed_at + save_interval {
+            flushed_at = total_generated;
             flush_to_disk(&output_path, &mut pending, &config);
         }
 
@@ -175,37 +178,11 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) {
 
     // Final report
     println!();
-    let snap = Snapshot::capture(&global, &AtomicUsize::new(total_generated), target, config.random_restart);
+    let snap = Snapshot::capture(&global, &AtomicUsize::new(total_generated), target);
     print_final_report(&snap, &output_path);
 
-    config.generated_count = snap.saved;
+    config.generated_count = snap.plies;
     let _ = config.save();
-}
-
-/// Formats elapsed seconds into the most natural unit.
-/// Datagen runs range from minutes to days, so we adapt the display.
-fn format_eta(seconds: f64) -> String {
-    let secs = seconds as u64;
-    let (d, h, m, s) = (secs / 86_400, (secs % 86_400) / 3_600, (secs % 3_600) / 60, secs % 60);
-
-    match d {
-        1.. => format!("{d}d {h}h {m}m"),
-        0 if h > 0 => format!("{h}h {m}m {s}s"),
-        _ => format!("{m}m {s}s"),
-    }
-}
-
-/// Safe division that returns 0.0 instead of NaN/Inf.
-/// Percentage math shows up everywhere in datagen stats.
-#[inline]
-fn safe_div(num: f64, den: f64) -> f64 {
-    if den > 0.0 { num / den } else { 0.0 }
-}
-
-/// Percentage with safe denominator.
-#[inline]
-fn pct(part: u64, whole: u64) -> f64 {
-    safe_div(part as f64, whole as f64) * 100.0
 }
 
 /// A consistent point-in-time capture of all atomic counters.
@@ -217,18 +194,8 @@ struct Snapshot {
     elapsed: f64,
     generated: u64,
     target: u64,
-    attempted: u64,
-    saved: u64,
-    passed_filters: u64,
     games: u64,
     plies: u64,
-    random_restart: bool,
-    filtered_quiet: u64,
-    filtered_score: u64,
-    filtered_ply: u64,
-    filtered_pieces: u64,
-    filtered_incorrect: u64,
-    filtered_tactical: u64,
     search_fail: u64,
     term_check: u64,
     term_stale: u64,
@@ -243,23 +210,13 @@ impl Snapshot {
     /// Reads every atomic counter with `Relaxed` ordering.
     /// Relaxed is fine here: we're displaying approximate progress,
     /// not synchronizing memory. Counters only ever increase.
-    fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64, random_restart: bool) -> Self {
+    fn capture(global: &GlobalStats, generated: &AtomicUsize, target: u64) -> Self {
         Self {
             elapsed: global.start_time.elapsed().as_secs_f64(),
             generated: generated.load(Ordering::Relaxed) as u64,
             target,
-            attempted: global.attempted.load(Ordering::Relaxed),
-            saved: global.saved.load(Ordering::Relaxed),
-            passed_filters: global.passed_filters.load(Ordering::Relaxed),
             games: global.games.load(Ordering::Relaxed),
             plies: global.plies.load(Ordering::Relaxed),
-            random_restart,
-            filtered_quiet: global.filtered_quiet.load(Ordering::Relaxed),
-            filtered_score: global.filtered_score.load(Ordering::Relaxed),
-            filtered_ply: global.filtered_ply.load(Ordering::Relaxed),
-            filtered_pieces: global.filtered_pieces.load(Ordering::Relaxed),
-            filtered_incorrect: global.filtered_incorrect.load(Ordering::Relaxed),
-            filtered_tactical: global.filtered_tactical.load(Ordering::Relaxed),
             search_fail: global.search_fail.load(Ordering::Relaxed),
             term_check: global.term_check.load(Ordering::Relaxed),
             term_stale: global.term_stale.load(Ordering::Relaxed),
@@ -271,40 +228,18 @@ impl Snapshot {
         }
     }
 
-    /// Positions saved per second (current session only).
-    fn rate(&self) -> f64 {
-        safe_div(self.saved as f64, self.elapsed)
-    }
+    /// Positions recorded per second (current session only).
+    fn rate(&self) -> f64 { safe_div(self.plies as f64, self.elapsed) }
 
     /// Overall completion percentage.
-    fn progress_pct(&self) -> f64 {
-        pct(self.generated, self.target)
-    }
-
-    /// What fraction of attempted positions survived all filters.
-    fn pass_rate(&self) -> f64 {
-        pct(self.passed_filters, self.attempted)
-    }
+    fn progress_pct(&self) -> f64 { pct(self.generated, self.target) }
 
     /// Average game length in plies, a useful sanity check.
     /// Typical selfplay games run 60-200 plies depending on resign threshold.
-    fn avg_ply(&self) -> f64 {
-        safe_div(self.plies as f64, self.games as f64)
-    }
+    fn avg_ply(&self) -> f64 { safe_div(self.plies as f64, self.games as f64) }
 
     /// ETA in seconds based on current throughput.
-    fn eta_secs(&self) -> f64 {
-        safe_div(self.target.saturating_sub(self.generated) as f64, self.rate())
-    }
-
-    fn total_filtered(&self) -> u64 {
-        self.filtered_quiet
-            + self.filtered_score
-            + self.filtered_ply
-            + self.filtered_pieces
-            + self.filtered_incorrect
-            + self.filtered_tactical
-    }
+    fn eta_secs(&self) -> f64 { safe_div(self.target.saturating_sub(self.generated) as f64, self.rate()) }
 
     fn total_terminations(&self) -> u64 {
         self.term_check + self.term_stale + self.term_d50 + self.term_drep + self.term_dmat + self.term_draw_adj + self.term_resign
@@ -312,17 +247,13 @@ impl Snapshot {
 }
 
 /// Renders the live progress dashboard using ANSI cursor movement.
-/// Overwrites the same 10 lines in-place for a clean, flicker-free display.
 fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
-    // Quality badge reflects the underlying filter selectivity, not just how often
-    // we skip positions for variety.
-    let normalized = snap.pass_rate();
-    let badge = if normalized > 30.0 {
-        BADGE_OK
-    } else if normalized > 10.0 {
-        BADGE_LOW
+    let badge = if snap.avg_ply() > 60.0 {
+        format!("{GREEN}[OK]{RESET}")
+    } else if snap.avg_ply() > 30.0 {
+        format!("{YELLOW}[LOW]{RESET}")
     } else {
-        BADGE_BAD
+        format!("{RED}[BAD]{RESET}")
     };
 
     if *first_frame {
@@ -345,36 +276,27 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
 
     println!("\r\x1b[KRate:            {:.3} k/s", snap.rate() / 1000.0);
 
-    if snap.random_restart {
-        println!("\r\x1b[KAttempted:       {}", format_num(snap.attempted));
-        println!("\r\x1b[K",); // preserves alignment
-    } else {
-        println!("\r\x1b[KGames:           {}", format_num(snap.games));
-        println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
-    }
-
-    println!("\r\x1b[KFiltered Quiet:  {}", format_num(snap.filtered_quiet));
-    println!("\r\x1b[KFiltered Score:  {}", format_num(snap.filtered_score));
-    println!("\r\x1b[KFiltered Ply:    {}", format_num(snap.filtered_ply));
-    println!("\r\x1b[KFiltered Pieces: {}", format_num(snap.filtered_pieces));
-    println!("\r\x1b[KFiltered Incorr: {}", format_num(snap.filtered_incorrect));
-    println!("\r\x1b[KFiltered Tact:   {}", format_num(snap.filtered_tactical));
+    println!("\r\x1b[KGames:           {}", format_num(snap.games));
+    println!("\r\x1b[KAvg ply:         {:.1}", snap.avg_ply());
+    println!("\r\x1b[KCheckmate:       {}", format_num(snap.term_check));
+    println!("\r\x1b[KDraw (rules):    {}", format_num(snap.term_stale + snap.term_d50 + snap.term_drep + snap.term_dmat));
+    println!("\r\x1b[KDraw (adj):      {}", format_num(snap.term_draw_adj));
+    println!("\r\x1b[KResign (adj):    {}", format_num(snap.term_resign));
     println!("\r\x1b[KBest Move fails: {}", format_num(snap.search_fail));
     println!("\r\x1b[KRAM alloc:       {} MB", get_rss_kb() / 1024);
-    println!("\r\x1b[KElapsed:         {}", format_eta(snap.elapsed));
-    println!("\r\x1b[KETA:             {}", format_eta(snap.eta_secs()));
+    println!("\r\x1b[KElapsed:         {}", format_duration((snap.elapsed * 1000.0) as u64));
+    println!("\r\x1b[KETA:             {}", format_duration((snap.eta_secs() * 1000.0) as u64));
 
     let _ = stdout().flush();
 }
 
 /// Prints the final generation report: the definitive summary of a run.
 fn print_final_report(snap: &Snapshot, output_path: &str) {
-    let total_filt = snap.total_filtered();
     let total_term = snap.total_terminations();
 
     println!(
         "{GREEN}[OK]{RESET} {} positions in {:.1}s ({:.3}k/s)",
-        format_num(snap.saved),
+        format_num(snap.plies),
         snap.elapsed,
         snap.rate() / 1000.0,
     );
@@ -382,33 +304,10 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     println!("{GREEN}[OK]{RESET} Saved to {output_path}");
     println!();
     println!("[FINAL STATS]");
-
-    if snap.random_restart {
-        println!("  Total Positions:  {}", format_num(snap.attempted));
-    } else {
-        println!("  Total Games:      {}", format_num(snap.games));
-        println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
-    }
-
-    println!();
-    println!("  Positions:");
-    println!("    Attempted:      {}", format_num(snap.attempted));
-    println!("    Saved:          {} ({:.1}% pass rate)", format_num(snap.saved), snap.pass_rate(),);
-    println!("    Filtered:       {}", format_num(total_filt));
-    println!();
-    println!("  Filter Breakdown:");
-    println!("    Quiet filter:   {} ({:.1}%)", format_num(snap.filtered_quiet), pct(snap.filtered_quiet, total_filt),);
-    println!("    Score filter:   {} ({:.1}%)", format_num(snap.filtered_score), pct(snap.filtered_score, total_filt),);
-    println!("    Ply filter:     {} ({:.1}%)", format_num(snap.filtered_ply), pct(snap.filtered_ply, total_filt),);
-    println!("    Pieces filter:  {} ({:.1}%)", format_num(snap.filtered_pieces), pct(snap.filtered_pieces, total_filt),);
-
-    println!(
-        "    Incorrect filt: {} ({:.1}%)",
-        format_num(snap.filtered_incorrect),
-        pct(snap.filtered_incorrect, total_filt),
-    );
-
-    println!("    Qsearch filt:   {} ({:.1}%)", format_num(snap.filtered_tactical), pct(snap.filtered_tactical, total_filt),);
+    println!("  Total Games:      {}", format_num(snap.games));
+    println!("  Total Positions:  {}", format_num(snap.plies));
+    println!("  Avg Plies/Game:   {:.1}", snap.avg_ply());
+    println!("  Search Failures:  {}", format_num(snap.search_fail));
     println!();
     println!("  Game Terminations:");
 
@@ -426,9 +325,6 @@ fn print_final_report(snap: &Snapshot, output_path: &str) {
     for (label, count) in terminations {
         println!("    {label:<15} {} ({:.1}%)", format_num(count), pct(count, total_term),);
     }
-
-    println!();
-    println!("  Search Failures:  {}", format_num(snap.search_fail));
 }
 
 /// Loads opening positions from one or more EPD/FEN files.
@@ -481,23 +377,7 @@ fn print_banner(config: &DatagenConfig, num_threads: usize, book_count: usize, s
         ),
     }
 
-    println!("Resign: ±{}cp, Score filter: ±{}cp", config.resign_cp, config.score_filter,);
-
-    if config.filter_quiet {
-        println!("Filter: quiet positions only");
-    }
-
-    if config.min_ply > 0 {
-        println!("Filter: min ply = {}", config.min_ply);
-    }
-
-    if config.min_pieces > 0 {
-        println!("Filter: min pieces = {}", config.min_pieces);
-    }
-
-    if config.eval_contradiction_limit != i32::MAX {
-        println!("Filter: eval contradiction limit = {} cp", config.eval_contradiction_limit);
-    }
+    println!("Resign: ±{}cp", config.resign_cp);
 
     if start_count > 0 {
         println!("Resume: {start_count} existing positions");
@@ -507,12 +387,18 @@ fn print_banner(config: &DatagenConfig, num_threads: usize, book_count: usize, s
 
 /// Flushes pending entries to disk and saves config state.
 /// Called periodically during generation and once at the end.
-fn flush_to_disk(output_path: &str, pending: &mut Vec<SoulEntry>, config: &DatagenConfig) {
+fn flush_to_disk(output_path: &str, pending: &mut Vec<u8>, config: &DatagenConfig) {
     if pending.is_empty() {
         return;
     }
 
-    if let Err(e) = append_encoded(output_path, pending) {
+    let appended = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_path)
+        .and_then(|mut f| f.write_all(pending));
+
+    if let Err(e) = appended {
         eprintln!("{RED}[ERROR] Failed to save batch: {e}{RESET}");
     }
     pending.clear();
@@ -526,10 +412,12 @@ fn load_existing_count(path: &str) -> usize {
         return 0;
     }
 
-    count_encoded(path).unwrap_or_else(|e| {
-        eprintln!("{RED}Error: cannot resume {path}: {e}{RESET}");
-        process::exit(1);
-    })
+    scan_viri_games(path)
+        .unwrap_or_else(|e| {
+            eprintln!("{RED}Error: cannot resume {path}: {e}{RESET}");
+            process::exit(1);
+        })
+        .plies as usize
 }
 
 fn print_help() {
@@ -542,31 +430,19 @@ fn print_help() {
     h.header("Options:");
     h.option_default("-n, --count", "<N>", "Target number of positions to generate", "8,000,000");
     h.option_default("-t, --threads", "<N>", "Number of threads", "auto");
-    h.option_default("-o, --output", "<PATH>", "Output file path", "data.soul.zst");
+    h.option_default("-o, --output", "<PATH>", "Output file path", "data.vf");
     h.option_default("-b, --book", "<PATH>", "Opening book path", "UHO_Lichess_4852_v1.epd");
     h.option_default("-d, --depth", "<N>", "Search depth (default 6; MAX when --soft/--nodes set without --depth)", "6");
     h.option("--soft", "<N>", "Soft node limit");
     h.option("--nodes", "<N>", "Hard node limit");
     h.option_default("--plies", "<N>", "Max game length", "300");
-    h.option_default("--buf", "<N>", "Buffer size per thread", "256");
     h.option("--resume", "", "Resume from existing config/output");
     h.option_default("--save-interval", "<N>", "Save interval", "5000");
-    h.option_default("--random-plies", "<N>", "Random plies (half-moves) from book position (random-restart)", "6");
-    h.option("--no-random-restart", "", "Disable random-restart; use full game mode");
     h.option("--startpos", "", "Use standard start position instead of book files");
-    h.option_default("--sample", "<0-1>", "Randomly sample fraction of positions", "0.7");
-    h.option("--all", "", "Disable quiet position filtering");
     h.option_default("--resign", "<CP>", "Resign threshold in centipawns", "800");
-    h.option_default("--filter", "<CP>", "Max score for saved positions", "450");
-    h.option_default("--qsearch", "<CP>", "Skip positions where |search - static| delta exceeds this threshold", "disabled");
-    h.option_default("--min-ply", "<N>", "Skip positions before this ply", "0");
-    h.option_default("--min-pieces", "<N>", "Skip positions with fewer pieces", "4");
-    h.option_default(
-        "--eval-contradiction-limit",
-        "<CP>",
-        "Skip positions where eval contradicts game outcome by more than this (centipawns)",
-        "disabled",
-    );
+    h.header("Notes:");
+    println!("  Every ply of every game is recorded. Which of them train is decided at load");
+    println!("  time by the tuner's replay filter, not here.");
 }
 
 fn parse_args(args: &[&str]) -> (DatagenConfig, bool) {
@@ -632,19 +508,9 @@ fn parse_args(args: &[&str]) -> (DatagenConfig, bool) {
             "-t" | "--threads" => take_opt!(it, cfg.thread_count),
 
             "--resign" => take!(it, cfg.resign_cp),
-            "--filter" => take!(it, cfg.score_filter),
             "--plies" => take!(it, cfg.max_plies),
-            "--buf" => take!(it, cfg.buffer_size),
             "--save-interval" => take!(it, cfg.save_interval),
-            "--sample" => take!(it, cfg.sample_rate),
-            "--min-ply" => take!(it, cfg.min_ply),
-            "--min-pieces" => take!(it, cfg.min_pieces),
-            "--eval-contradiction-limit" => take!(it, cfg.eval_contradiction_limit),
-            "--qsearch" => take!(it, cfg.qsearch_filter),
-            "--random-plies" => take!(it, cfg.random_plies),
 
-            "--all" => cfg.filter_quiet = false,
-            "--no-random-restart" => cfg.random_restart = false,
             "--startpos" => cfg.startpos = true,
             "--resume" => resume = true,
             "-h" | "--help" => {

@@ -38,19 +38,13 @@ impl Vi32x8 {
     }
 
     #[inline(always)]
-    pub fn from_raw(v: __m256i) -> Self {
-        Self(v)
-    }
+    pub fn from_raw(v: __m256i) -> Self { Self(v) }
 
     #[inline(always)]
-    pub fn as_u64x4(self) -> Vu64x4 {
-        Vu64x4(self.0)
-    }
+    pub fn as_u64x4(self) -> Vu64x4 { Vu64x4(self.0) }
 
     #[inline(always)]
-    pub fn as_i16x16(self) -> Vi16x16 {
-        Vi16x16(self.0)
-    }
+    pub fn as_i16x16(self) -> Vi16x16 { Vi16x16(self.0) }
 
     /// Horizontal sum to scalar i32.
     #[inline]
@@ -187,14 +181,10 @@ impl Vu64x4 {
     }
 
     #[inline(always)]
-    pub fn as_i16x16(self) -> Vi16x16 {
-        Vi16x16(self.0)
-    }
+    pub fn as_i16x16(self) -> Vi16x16 { Vi16x16(self.0) }
 
     #[inline(always)]
-    pub fn as_i32x8(self) -> Vi32x8 {
-        Vi32x8(self.0)
-    }
+    pub fn as_i32x8(self) -> Vi32x8 { Vi32x8(self.0) }
 }
 
 impl Add for Vu64x4 {
@@ -226,9 +216,7 @@ impl BitAnd for Vu64x4 {
 
 impl BitAndAssign for Vu64x4 {
     #[inline(always)]
-    fn bitand_assign(&mut self, rhs: Self) {
-        *self = *self & rhs;
-    }
+    fn bitand_assign(&mut self, rhs: Self) { *self = *self & rhs; }
 }
 
 impl BitOr for Vu64x4 {
@@ -242,9 +230,7 @@ impl BitOr for Vu64x4 {
 
 impl BitOrAssign for Vu64x4 {
     #[inline(always)]
-    fn bitor_assign(&mut self, rhs: Self) {
-        *self = *self | rhs;
-    }
+    fn bitor_assign(&mut self, rhs: Self) { *self = *self | rhs; }
 }
 
 impl BitXor for Vu64x4 {
@@ -258,17 +244,13 @@ impl BitXor for Vu64x4 {
 
 impl BitXorAssign for Vu64x4 {
     #[inline(always)]
-    fn bitxor_assign(&mut self, rhs: Self) {
-        *self = *self ^ rhs;
-    }
+    fn bitxor_assign(&mut self, rhs: Self) { *self = *self ^ rhs; }
 }
 
 impl Not for Vu64x4 {
     type Output = Self;
     #[inline(always)]
-    fn not(self) -> Self {
-        self ^ Self::ones()
-    }
+    fn not(self) -> Self { self ^ Self::ones() }
 }
 
 impl Vi16x16 {
@@ -285,9 +267,7 @@ impl Vi16x16 {
     }
 
     #[inline(always)]
-    pub fn from_raw(v: __m256i) -> Self {
-        Self(v)
-    }
+    pub fn from_raw(v: __m256i) -> Self { Self(v) }
 
     /// Loads 16 contiguous i16s directly from memory.
     ///
@@ -323,9 +303,7 @@ impl Vi16x16 {
 
     /// Clamp to [0, max]: ReLU then cap.
     #[inline(always)]
-    pub fn clamp_relu(self, ceil: Self) -> Self {
-        self.max(Self::zero()).min(ceil)
-    }
+    pub fn clamp_relu(self, ceil: Self) -> Self { self.max(Self::zero()).min(ceil) }
 
     #[inline(always)]
     pub fn mulhi(self, rhs: Self) -> Self {
@@ -359,14 +337,10 @@ impl Vi16x16 {
     }
 
     #[inline(always)]
-    pub fn as_u64x4(self) -> Vu64x4 {
-        Vu64x4(self.0)
-    }
+    pub fn as_u64x4(self) -> Vu64x4 { Vu64x4(self.0) }
 
     #[inline(always)]
-    pub fn as_i32x8(self) -> Vi32x8 {
-        Vi32x8(self.0)
-    }
+    pub fn as_i32x8(self) -> Vi32x8 { Vi32x8(self.0) }
 }
 
 impl Add for Vi16x16 {
@@ -417,9 +391,7 @@ impl BitXor for Vi16x16 {
 impl Not for Vi16x16 {
     type Output = Self;
     #[inline(always)]
-    fn not(self) -> Self {
-        self ^ Self::splat(-1)
-    }
+    fn not(self) -> Self { self ^ Self::splat(-1) }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -428,107 +400,79 @@ pub struct Vf32x8(pub __m256);
 
 impl Vf32x8 {
     #[inline(always)]
-    pub fn zero() -> Self {
-        Self(unsafe { _mm256_setzero_ps() })
-    }
+    pub fn zero() -> Self { Self(unsafe { _mm256_setzero_ps() }) }
 
     #[inline(always)]
-    pub fn splat(v: f32) -> Self {
-        Self(unsafe { _mm256_set1_ps(v) })
-    }
+    pub fn splat(v: f32) -> Self { Self(unsafe { _mm256_set1_ps(v) }) }
 
     /// Load 8 contiguous f32s directly from memory.
     ///
     /// # Safety
     /// `ptr` must be valid for reading 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn loadu(ptr: *const f32) -> Self {
-        Self(unsafe { _mm256_loadu_ps(ptr) })
-    }
+    pub unsafe fn loadu(ptr: *const f32) -> Self { Self(unsafe { _mm256_loadu_ps(ptr) }) }
 
     /// Store 8 contiguous f32s directly to memory.
     ///
     /// # Safety
     /// `ptr` must be valid for writing 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn storeu(self, ptr: *mut f32) {
-        unsafe { _mm256_storeu_ps(ptr, self.0) };
-    }
+    pub unsafe fn storeu(self, ptr: *mut f32) { unsafe { _mm256_storeu_ps(ptr, self.0) }; }
 }
 
 impl Add for Vf32x8 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_add_ps(self.0, rhs.0) })
-    }
+    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_ps(self.0, rhs.0) }) }
 }
 
 impl AddAssign for Vf32x8 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
+    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
 }
 
 impl Sub for Vf32x8 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_sub_ps(self.0, rhs.0) })
-    }
+    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_ps(self.0, rhs.0) }) }
 }
 
 impl SubAssign for Vf32x8 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) {
-        *self = *self - rhs;
-    }
+    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
 }
 
 impl Mul for Vf32x8 {
     type Output = Self;
     #[inline(always)]
-    fn mul(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_mul_ps(self.0, rhs.0) })
-    }
+    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm256_mul_ps(self.0, rhs.0) }) }
 }
 
 impl MulAssign for Vf32x8 {
     #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
+    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
 }
 
 impl Div for Vf32x8 {
     type Output = Self;
     #[inline(always)]
-    fn div(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_div_ps(self.0, rhs.0) })
-    }
+    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm256_div_ps(self.0, rhs.0) }) }
 }
 
 impl DivAssign for Vf32x8 {
     #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) {
-        *self = *self / rhs;
-    }
+    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
 }
 
 impl Neg for Vf32x8 {
     type Output = Self;
     #[inline(always)]
-    fn neg(self) -> Self {
-        Self(unsafe { _mm256_sub_ps(_mm256_setzero_ps(), self.0) })
-    }
+    fn neg(self) -> Self { Self(unsafe { _mm256_sub_ps(_mm256_setzero_ps(), self.0) }) }
 }
 
 impl From<[f32; 8]> for Vf32x8 {
     #[inline(always)]
-    fn from(arr: [f32; 8]) -> Self {
-        unsafe { Self::loadu(arr.as_ptr()) }
-    }
+    fn from(arr: [f32; 8]) -> Self { unsafe { Self::loadu(arr.as_ptr()) } }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -537,107 +481,79 @@ pub struct Vf64x4(pub __m256d);
 
 impl Vf64x4 {
     #[inline(always)]
-    pub fn zero() -> Self {
-        Self(unsafe { _mm256_setzero_pd() })
-    }
+    pub fn zero() -> Self { Self(unsafe { _mm256_setzero_pd() }) }
 
     #[inline(always)]
-    pub fn splat(v: f64) -> Self {
-        Self(unsafe { _mm256_set1_pd(v) })
-    }
+    pub fn splat(v: f64) -> Self { Self(unsafe { _mm256_set1_pd(v) }) }
 
     /// Load 4 contiguous f64s directly from memory.
     ///
     /// # Safety
     /// `ptr` must be valid for reading 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn loadu(ptr: *const f64) -> Self {
-        Self(unsafe { _mm256_loadu_pd(ptr) })
-    }
+    pub unsafe fn loadu(ptr: *const f64) -> Self { Self(unsafe { _mm256_loadu_pd(ptr) }) }
 
     /// Store 4 contiguous f64s directly to memory.
     ///
     /// # Safety
     /// `ptr` must be valid for writing 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn storeu(self, ptr: *mut f64) {
-        unsafe { _mm256_storeu_pd(ptr, self.0) };
-    }
+    pub unsafe fn storeu(self, ptr: *mut f64) { unsafe { _mm256_storeu_pd(ptr, self.0) }; }
 }
 
 impl Add for Vf64x4 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_add_pd(self.0, rhs.0) })
-    }
+    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_pd(self.0, rhs.0) }) }
 }
 
 impl AddAssign for Vf64x4 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
+    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
 }
 
 impl Sub for Vf64x4 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_sub_pd(self.0, rhs.0) })
-    }
+    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_pd(self.0, rhs.0) }) }
 }
 
 impl SubAssign for Vf64x4 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) {
-        *self = *self - rhs;
-    }
+    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
 }
 
 impl Mul for Vf64x4 {
     type Output = Self;
     #[inline(always)]
-    fn mul(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_mul_pd(self.0, rhs.0) })
-    }
+    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm256_mul_pd(self.0, rhs.0) }) }
 }
 
 impl MulAssign for Vf64x4 {
     #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
+    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
 }
 
 impl Div for Vf64x4 {
     type Output = Self;
     #[inline(always)]
-    fn div(self, rhs: Self) -> Self {
-        Self(unsafe { _mm256_div_pd(self.0, rhs.0) })
-    }
+    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm256_div_pd(self.0, rhs.0) }) }
 }
 
 impl DivAssign for Vf64x4 {
     #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) {
-        *self = *self / rhs;
-    }
+    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
 }
 
 impl Neg for Vf64x4 {
     type Output = Self;
     #[inline(always)]
-    fn neg(self) -> Self {
-        Self(unsafe { _mm256_sub_pd(_mm256_setzero_pd(), self.0) })
-    }
+    fn neg(self) -> Self { Self(unsafe { _mm256_sub_pd(_mm256_setzero_pd(), self.0) }) }
 }
 
 impl From<[f64; 4]> for Vf64x4 {
     #[inline(always)]
-    fn from(arr: [f64; 4]) -> Self {
-        unsafe { Self::loadu(arr.as_ptr()) }
-    }
+    fn from(arr: [f64; 4]) -> Self { unsafe { Self::loadu(arr.as_ptr()) } }
 }
 
 impl From<Vf64x4> for [f64; 4] {

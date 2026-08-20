@@ -1,10 +1,7 @@
-//! Non-blocking single-producer multi-consumer broadcast channel.
+//! Single-producer multi-consumer broadcast channel.
 //!
-//! `send(msg)` heap-allocates one message, wakes every receiver, and returns.
-//! `recv(handler)` blocks until a message arrives, runs the handler with a
-//! shared reference to it, then automatically signals completion (decrements
-//! the outstanding-receiver count). When every receiver has returned from
-//! `recv`, the sender's `wait()` unblocks and the message is deallocated.
+//! One message is heap-allocated per `send`, shared by reference with every receiver, and
+//! freed by the sender's `wait()` once all of them have returned from `recv`.
 //!
 //! A generation bit toggles each `send` so receivers don't pick up stale
 //! messages between `wait` and the next `send`. An `exit` flag shuts down
@@ -46,9 +43,7 @@ fn pack(remaining: u32, generation: bool) -> u32 {
     remaining | (generation as u32) << 31
 }
 
-fn unpack(v: u32) -> (u32, bool) {
-    (v & (u32::MAX >> 1), (v >> 31) != 0)
-}
+fn unpack(v: u32) -> (u32, bool) { (v & (u32::MAX >> 1), (v >> 31) != 0) }
 
 pub fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
     let shared = Arc::new(Shared {
@@ -68,8 +63,7 @@ pub fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
 }
 
 impl<M> Sender<M> {
-    /// Stores a heap-allocated `msg`, toggles the generation, wakes every
-    /// receiver, and returns. The message is freed in `wait()`.
+    /// The message is freed in `wait()`.
     pub fn send(&self, msg: M) {
         let shared = &*self.shared;
 
@@ -82,8 +76,7 @@ impl<M> Sender<M> {
         wake_all(&shared.futex);
     }
 
-    /// Blocks until every receiver has returned from `recv`, then frees the
-    /// message so the next `send()` can allocate fresh.
+    /// Blocks until every receiver has returned from `recv`, then frees the message.
     pub fn wait(&self) {
         let shared = &*self.shared;
         let mut val = shared.futex.load(Acquire);
@@ -105,8 +98,7 @@ impl<M> Sender<M> {
         }
     }
 
-    /// Signals all receivers to exit and unparks them. After this call,
-    /// every parked `recv()` returns `None` and receivers should terminate.
+    /// After this, every parked `recv` returns `None` and receivers should terminate.
     pub fn wake(&self) {
         let shared = &*self.shared;
         shared.exit.store(true, Release);
@@ -115,11 +107,8 @@ impl<M> Sender<M> {
 }
 
 impl<M> Receiver<M> {
-    /// Blocks until `send()` delivers a message with a fresh generation,
-    /// runs `handler` on a shared reference to it, automatically decrements
-    /// the outstanding-receiver count, and returns `Some(handler_result)`.
-    ///
-    /// Returns `None` if the channel has been shut down via `Sender::wake()`.
+    /// Blocks until `send` delivers a message this receiver has not seen, or returns `None`
+    /// once the channel has been shut down via [`Sender::wake`].
     pub fn recv<R>(&mut self, handler: impl FnOnce(&M) -> R) -> Option<R> {
         let shared = &*self.shared;
 

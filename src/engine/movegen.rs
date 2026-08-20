@@ -1,25 +1,23 @@
 //! Pseudo-legal move generation and strict legality filtering.
 //!
-//! Why not generate legal moves directly? Bitboard tricks compute every pawn
-//! push in one shift and every knight hop in one lookup, bulk operations
-//! oblivious to legality. But pins, checks, and en-passant x-rays need per-move
-//! reasoning. Generating too many and filtering beats being careful from the
-//! start: bulk bitwise generation, then a legality pass against the position's
-//! pins and checks.
+//! A bitboard computes every pawn push in one shift and every knight hop in one
+//! lookup, bulk operations oblivious to legality. Pins, checks, and en-passant
+//! x-rays need per-move reasoning, so generation runs blind and a legality pass
+//! drops the moves that leave the king in check.
 
 use crate::core::{
     board::{
-        BLACK_OO, BLACK_OOO, Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS, WHITE_OO, WHITE_OOO,
+        Position, ROOK_B_KS, ROOK_B_QS, ROOK_W_KS, ROOK_W_QS,
         bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb, line_bb},
     },
-    defs::{Bitboard, Color, Direction, FILE_A, FILE_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
+    defs::{Bitboard, Color, Direction, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
     moves::{Move, MoveList},
 };
 
-/// Queen first, correct in 99.9% of positions. Knight underpromotion
-/// (the sneaky fork) is the one worth knowing; rook and bishop ride along for completeness.
+/// Generation order, by piece value. Priority is the movepicker's `PROMO_*_SCORE` band, which
+/// puts knight second: it checks and forks where a queen cannot.
 const QUIET_PROMOS: [u16; 4] = [Move::PROM_Q, Move::PROM_R, Move::PROM_B, Move::PROM_N];
-/// Same priority ordering for promotion-captures.
+/// Same order for promotion-captures.
 const CAPTURE_PROMOS: [u16; 4] = [Move::PROM_Q_CAPTURE, Move::PROM_R_CAPTURE, Move::PROM_B_CAPTURE, Move::PROM_N_CAPTURE];
 
 /// Every strictly legal move in the position.
@@ -60,7 +58,7 @@ pub fn gen_pseudo_moves(board: &Position) -> MoveList {
     list
 }
 
-/// Generate only strictly tactical pseudo-legal moves (captures and promotions).
+/// Captures and promotions only, still pseudo-legal.
 #[inline]
 pub fn gen_tactical_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
@@ -92,18 +90,19 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
 
     let piece = board.piece_at(from);
 
-    // Castling: the 'to' square encodes the rook's home square.
-    // A TT collision with the CASTLE flag but a garbage 'to' would make
-    // apply_castling lift a non-rook piece and place a phantom rook,
-    // permanently corrupting the board after unmake.
-    // Geometry guards reject that cheaply; the legality check then rejects
-    // a castle whose right is gone, whose corridor is blocked, or that crosses
-    // check, none of which were verified for a move that never went through generation.
+    // to names the rook's home square, so a collision with the CASTLE flag and a junk
+    // to makes apply_castling lift a non-rook and drop a phantom rook, corruption that
+    // unmake compounds instead of repairing.
+    //
+    // Only the mover's own two slots count. Scanning all four reaches a stale enemy slot,
+    // and accepts a castle onto the square that rook abandoned and one of ours later took.
+    // is_castle_move_legal owns the rest: the right, the corridor, and the king's path.
     if mv.is_castling() {
+        let (ks, qs) = if stm == Color::White { (ROOK_W_KS, ROOK_W_QS) } else { (ROOK_B_KS, ROOK_B_QS) };
         return piece == PieceType::King
             && board.piece_at(to) == PieceType::Rook
             && us.check_bit(to)
-            && board.castling_rooks.contains(&to)
+            && (to == board.castling_rooks[ks] || to == board.castling_rooks[qs])
             && board.is_castle_move_legal(stm, from, to);
     }
 
@@ -118,11 +117,10 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
         return false;
     }
 
-    // Pawn-only flags must come from a pawn. A collision pairing promotion,
-    // en passant, or double push with a slider or knight move slips past the
-    // per-piece attack check below, then trips make_move's pawn-special paths;
-    // phantom en passant, a victim removed off the wrong square, corrupting the
-    // board. The castle flag is already handled (king-only) above.
+    // Pawn-only flags must come from a pawn. A slider or knight move flagged as a
+    // promotion, en passant, or double push clears the per-piece attack check below,
+    // then reaches make_move's pawn paths and arms a phantom en passant square or lifts
+    // a victim off the wrong square. The castle flag is king-only and handled above.
     if piece != PieceType::Pawn && (mv.is_promotion() || mv.is_en_passant() || mv.is_double_push()) {
         return false;
     }
@@ -169,7 +167,7 @@ pub fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
     }
 }
 
-/// Legality: does this move leave our king safe?
+/// Does this move leave our king safe?
 ///
 /// Most moves pass trivially. The interesting cases:
 ///   • King moves    - destination must not be attacked.
@@ -185,8 +183,8 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
     // King moves
     if from == ksq {
         if mv.is_castling() {
-            // Castling out of check is flatly illegal:
-            // all other castling constraints were enforced during generation.
+            // Castling out of check is flatly illegal. Everything else was settled by
+            // is_castle_move_legal, which both the generator and the TT validator call.
             return checkers.is_empty();
         }
         // is_attacked::<true> removes the king from occupancy so
@@ -222,25 +220,22 @@ pub fn is_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, check
     to == checker || between_bb(ksq, checker).check_bit(to)
 }
 
-/// En passant creates a unique legality headache: two pawns vanish from
-/// the same rank simultaneously (ours departs, theirs is captured).
-/// If both were masking a rook or queen from our king along that rank,
-/// the capture reveals a discovered check, the only move in chess that can
-/// do this without involving the moving piece's own file.
+/// En passant is the only move that clears two squares on one rank: ours departs, theirs
+/// is captured beside it. A pin test on the moving pawn cannot see the second removal, so
+/// a rook or queen screened by both pawns gives a discovered check.
 ///
-/// We simulate the resulting occupancy and check for sliding x-rays.
+/// The slider probes run against the post-capture occupancy instead.
 #[inline]
 fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checkers: Bitboard, opp: Color) -> bool {
     let from = mv.from();
     let to = mv.to();
-    // The captured pawn is exactly one rank behind the en passant destination square.
-    // In our rank-major square encoding (index = rank · 8 + file), ±8 shifts by exactly one rank.
-    // This is equivalent to the to ^ 8 trick used in update_accumulator.
+    // The captured pawn stands one rank behind the destination, and `^ 8` gets there
+    // without knowing which way: an en passant destination is always on rank 3 or rank 6,
+    // and flipping the low rank bit walks each of those toward the pawn that just moved.
     let cap_sq = Square(to.0 ^ 8);
 
-    // If already in check, EP must resolve it:
-    // capture the checker (the captured pawn IS the checker)
-    // or block the ray.
+    // An en passant capture answers a check only by taking the checker, which is then the
+    // pawn that just double-pushed, or by landing on the ray between king and checker.
     if checkers.is_not_empty() {
         let checker = checkers.lsb();
         if checker != cap_sq && !between_bb(ksq, checker).check_bit(to) {
@@ -253,36 +248,26 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
         return false;
     }
 
-    // ── Horizontal discovered checks
+    // Both pawns off, ours onto the destination.
+    let ep_occ = (board.occ ^ from.bitboard() ^ cap_sq.bitboard()) | to.bitboard();
+
+    // ── Horizontal discovered check
+    // Only the shared rank can lose two screens at once, so the rook probe is gated on it.
     if ksq.rank() == from.rank() {
         let rq = board.pieces(PieceType::Rook, opp) | board.pieces(PieceType::Queen, opp);
-
-        if rq.is_not_empty() {
-            let rank_occ = board.occ ^ from.bitboard() ^ cap_sq.bitboard();
-
-            if (atk_rook(ksq, rank_occ) & rq).is_not_empty() {
-                return false;
-            }
-        }
-    }
-
-    // ── Diagonal discovered check via captured-pawn removal
-    // Unlike the horizontal case, the diagonal case involves only the captured pawn
-    // (and the capturing pawn moving). We simulate post-EP occupancy and probe for
-    // diagonal sliding attacks on the king.
-    let bq = board.pieces(PieceType::Bishop, opp) | board.pieces(PieceType::Queen, opp);
-    if bq.is_not_empty() {
-        let ep_occ = (board.occ ^ from.bitboard() ^ cap_sq.bitboard()) | to.bitboard();
-        if (atk_bishop(ksq, ep_occ) & bq).is_not_empty() {
+        if (atk_rook(ksq, ep_occ) & rq).is_not_empty() {
             return false;
         }
     }
-    true
+
+    // ── Diagonal discovered check
+    // The captured pawn alone can be the screen, so nothing gates this one.
+    let bq = board.pieces(PieceType::Bishop, opp) | board.pieces(PieceType::Queen, opp);
+    (atk_bishop(ksq, ep_occ) & bq).is_empty()
 }
 
-/// Const-generic on color and `TACTICAL` mode: each combination gets its own
-/// copy, direction and rank logic resolved at compile time. No branches for
-/// "which way do pawns go?" It's baked into the binary.
+/// Const-generic on color and `TACTICAL`, so the pawn directions and the promotion rank
+/// resolve at compile time and nothing in here branches on which way pawns move.
 #[inline(always)]
 fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList) {
     let us = board.side_bb[US];
@@ -295,16 +280,13 @@ fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut Mo
     gen_king::<TACTICAL>(board, acc, us, them);
 
     if !TACTICAL {
-        gen_castling::<US>(board, acc);
+        board.for_each_castle(US, |mv| acc.push(mv));
     }
 }
 
-/// Pawns: the most irregular piece in chess.
-///
-/// Every other piece has clean, symmetric movement.
-/// Pawns are special in five different ways:
-/// color-dependent direction, double push from home, diagonal capture,
-/// promotion on the back rank (four choices), and en passant.
+/// Pawns are the one irregular piece: direction depends on color, the first move may
+/// double, capture is diagonal, the last rank promotes four ways, and en passant takes
+/// a piece that never stood on the destination square.
 #[inline]
 fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList, them: Bitboard, occ: Bitboard) {
     let empty = !occ;
@@ -332,7 +314,8 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
         }
 
         // ── Double pushes
-        // Must pass through the 3rd rank on the way, since it can't leap over pieces.
+        // A pawn cannot leap, so the second step starts only from the pushes that landed
+        // on the third rank.
         let mut doubles = (all_pushes & third_rank).shift(up) & empty;
         while doubles.is_not_empty() {
             let to = doubles.pop_lsb();
@@ -341,13 +324,10 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
     }
 
     // ── Diagonal captures
-    // File masks prevent board wrapping.
-    // Left and right directions are strictly relative to the side-to-move's
-    // visual perspective (e.g. for Black, left shifts toward the H-file).
-    let (mask_l, mask_r) = if US == Color::White { (!FILE_A, !FILE_H) } else { (!FILE_H, !FILE_A) };
-
-    let cap_l = (pawns & mask_l).shift(left) & them;
-    let cap_r = (pawns & mask_r).shift(right) & them;
+    // Left and right are relative to the side-to-move's view of the board, so for Black,
+    // left shifts toward the H-file. The wrap-around file mask lives in `shift`.
+    let cap_l = pawns.shift(left) & them;
+    let cap_r = pawns.shift(right) & them;
     let mut cap_l_promo = cap_l & promo_rank;
     let mut cap_l_standard = cap_l & !promo_rank;
 
@@ -380,15 +360,16 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
     }
 
     // ── En passant
+    // The squares an enemy pawn on `ep_sq` would strike are the squares ours strike it
+    // from, so the lookup runs inverted.
     if let Some(ep_sq) = board.en_passant {
-        let mut attackers = board.get_attackers_on(ep_sq, US) & pawns;
+        let mut attackers = atk_pawn(ep_sq, US.opposite()) & pawns;
         while attackers.is_not_empty() {
             acc.push(Move::new(attackers.pop_lsb(), ep_sq, Move::EP_CAPTURE));
         }
     }
 }
 
-/// Generate all pseudo-legal knight moves (captures and quiets).
 #[inline]
 fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::Knight] & us {
@@ -400,9 +381,7 @@ fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: B
     }
 }
 
-/// We iterate over bishops, rooks and the corresponding queen components
-/// to compute attack bitboards. Magic lookups are fast, and the real win is
-/// in the dense bitboard transformations that follow.
+/// A queen appears in both loops, once for each half of its move set.
 #[inline]
 fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: Bitboard, us: Bitboard, them: Bitboard) {
     // Diagonal movers: bishops + queen's diagonal component.
@@ -428,7 +407,7 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
     }
 }
 
-/// Generate all pseudo-legal king moves (captures and quiets, excluding castling).
+/// King steps only; castling is generated separately.
 #[inline]
 fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::King] & us {
@@ -440,47 +419,6 @@ fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitb
     }
 }
 
-/// ── Castling (Chess960-compatible)
-///
-/// Encoded as king→rook (not king→destination) so it generalizes to
-/// Fischer Random positions where the rook can start on either side.
-///
-/// Three requirements, all checked here during generation:
-///   1. Corridor between king and rook is free of other pieces.
-///   2. King is not currently in check.
-///   3. King does not pass through or land on an attacked square.
-#[inline]
-fn gen_castling<const US: Color>(board: &Position, acc: &mut MoveList) {
-    let k_bb = board.role_bb[PieceType::King] & board.side_bb[US];
-    if k_bb.is_empty() {
-        return;
-    }
-
-    let ksq = k_bb.lsb();
-
-    let (oo_mask, oo_idx, ooo_mask, ooo_idx) = if US == Color::White {
-        (WHITE_OO, ROOK_W_KS, WHITE_OOO, ROOK_W_QS)
-    } else {
-        (BLACK_OO, ROOK_B_KS, BLACK_OOO, ROOK_B_QS)
-    };
-
-    // The right must be held before we read its rook-home slot: an unheld slot
-    // can alias the other side's and double-generate. With the right held the
-    // slot is live, and is_castle_move_legal, shared verbatim with TT-move
-    // validation, owns the corridor and through-check logic.
-    for (mask, idx) in [(oo_mask, oo_idx), (ooo_mask, ooo_idx)] {
-        if board.castling_rights & mask == 0 {
-            continue;
-        }
-
-        let rsq = board.castling_rooks[idx];
-        if board.is_castle_move_legal(US, ksq, rsq) {
-            acc.push(Move::new(ksq, rsq, Move::CASTLE));
-        }
-    }
-}
-
-/// Push all four promotion variants (Queen, Rook, Bishop, Knight) to the move list.
 #[inline]
 fn emit_promotions(acc: &mut MoveList, from: Square, to: Square, capture: bool) {
     for &flag in if capture { &CAPTURE_PROMOS } else { &QUIET_PROMOS } {
@@ -514,6 +452,7 @@ mod tests {
             !moves.contains(&ep_move),
             "EP move should be illegal due to diagonal discovered check exposing the mover's king"
         );
+
         let pos2 = Position::from_fen("4k3/8/8/r2Pp2K/8/8/8/8 w - e6 0 1");
         let moves2 = gen_legal_moves(&pos2);
         assert!(
@@ -524,11 +463,6 @@ mod tests {
 
     #[test]
     fn tt_castle_move_validates_corridor() {
-        // A TT hash collision can hand back a CASTLE-flagged move from an
-        // unrelated position. King-home/rook-home geometry alone is not enough:
-        // castling through an occupied corridor makes apply_castling drop a rook
-        // onto the blocker and corrupt the board. is_pseudo_legal must run the
-        // full legality check, not just the geometry.
         let pos = Position::from_fen("r3k2r/8/8/8/8/8/8/R3K1NR w KQkq - 0 1");
         let e1 = Square(4);
         let kingside = Move::new(e1, Square(7), Move::CASTLE); // blocked by the knight on g1
@@ -538,11 +472,25 @@ mod tests {
     }
 
     #[test]
+    fn tt_castle_rejects_the_opponents_stale_rook_slot() {
+        let mut pos = Position::from_fen("r3k3/1P6/8/8/8/8/8/R3K3 b Qq - 0 1");
+        let mut acc = pos.get_initial_accumulator();
+        for mv in [
+            Move::new(Square(60), Square(61), Move::QUIET),
+            Move::new(Square(49), Square(56), Move::PROM_R_CAPTURE),
+            Move::new(Square(61), Square(62), Move::QUIET),
+        ] {
+            pos.make_move(mv, &mut acc);
+        }
+        assert_eq!(pos.castling_rooks[ROOK_B_QS], Square(56), "the stale slot is what makes this reachable");
+        let cross_board = Move::new(Square(4), Square(56), Move::CASTLE);
+        assert!(!is_pseudo_legal(&pos, cross_board), "a rook on the opponent's stale slot is not a castling partner");
+        let genuine = Move::new(Square(4), Square(0), Move::CASTLE);
+        assert!(is_pseudo_legal(&pos, genuine), "White still holds the queenside right with a clear corridor");
+    }
+
+    #[test]
     fn tt_double_push_validates_start_rank() {
-        // A TT collision can hand back a DOUBLE_PUSH from the wrong rank. Played,
-        // it arms a phantom en passant square; a later EP capture removes a pawn
-        // that isn't there and unmake then conjures one, board corruption that
-        // outlives the move. The origin must be the pawn's start rank.
         let pos = Position::from_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1"); // pawn on e3
         let phantom = Move::new(Square::from_coords(4, 2), Square::from_coords(4, 4), Move::DOUBLE_PUSH);
         assert!(!is_pseudo_legal(&pos, phantom), "double push from the third rank must be rejected");
@@ -551,12 +499,8 @@ mod tests {
         assert!(is_pseudo_legal(&start, real), "double push from the second rank must pass");
     }
 
-    /// Legality perft (after Rose): at each node, sweep every 16-bit move encoding
+    /// Legality perft (from Rose): at each node, sweep every 16-bit move encoding
     /// and recurse on whatever `is_pseudo_legal` + `is_legal` jointly accept.
-    /// A 16-bit TT key lets collisions feed the search any encoding, so this drives the
-    /// validators exactly as collisions do. Matching known-good perft proves the pair
-    /// accepts precisely the legal moves: no spurious move (which `make_move` would
-    /// turn into a corrupt board) and none missing.
     #[test]
     fn legality_perft_matches_reference() {
         // (FEN, [perft(0), perft(1), …])
@@ -613,7 +557,7 @@ mod tests {
 
         for raw in 0..=u16::MAX {
             // 8, 9, 13 are unused flag nibbles the generator never emits, so a real
-            // collision never carries them; counting them would double-count the
+            // collision never produces them; counting them would double-count the
             // quiet/capture move they decode to.
             if matches!(raw >> 12, 8 | 9 | 13) {
                 continue;
@@ -632,12 +576,6 @@ mod tests {
         nodes
     }
 
-    /// Make/unmake integrity fuzzer, the state-level companion to the legality perft,
-    /// which only counts. For positions drawn from a random playout, every move the
-    /// validators accept must make into a self-consistent board (occupancy is the color
-    /// union, roles partition it, the mailbox mirrors the bitboards, both kings stand,
-    /// and every incremental key matches a from-scratch recompute) and must unmake back
-    /// to the original position unchanged.
     #[test]
     fn fuzz_make_unmake_integrity() {
         const POSITIONS: usize = 256;
@@ -684,7 +622,6 @@ mod tests {
             assert_consistent(&child, pos, mv);
             let fresh = child.get_initial_accumulator();
             assert_eq!(acc.to_array(), fresh.to_array(), "accumulator diverged {}", context(pos, mv));
-
             child.unmake_move(mv, &undo);
             assert!(board_eq(&child, pos), "unmake did not restore {}", context(pos, mv));
         }
@@ -754,7 +691,5 @@ mod tests {
             && a.fullmove_number == b.fullmove_number
     }
 
-    fn context(pos: &Position, mv: Move) -> String {
-        format!("after {} from {}", mv.to_uci(pos.is_frc), pos.as_fen())
-    }
+    fn context(pos: &Position, mv: Move) -> String { format!("after {} from {}", mv.to_uci(pos.is_frc), pos.as_fen()) }
 }

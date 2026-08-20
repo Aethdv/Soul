@@ -1,4 +1,4 @@
-//! Openings minted on demand, a fresh pool per run rather than one fixed list.
+//! Openings drawn on demand, a fresh pool per run rather than one fixed list.
 //!
 //! `genfens N seed S book <path|None> <extra>` prints N lines of
 //! `info string genfens <fen>` and exits. The `book` supplies the lines to play
@@ -25,14 +25,12 @@ const MAX_ATTEMPTS: usize = 100;
 
 pub fn run(args: &[&str]) {
     let request = Request::parse(args);
-
     let Some(book) = request.book() else {
         eprintln!("genfens: no positions loaded from '{}'", request.book.as_deref().unwrap_or_default());
         return;
     };
 
     let mut rng = Rng::with_seed(request.seed);
-
     for _ in 0..request.count {
         let Some(fen) = opening(&book, &mut rng, request.plies) else {
             eprintln!("genfens: no playable opening in {MAX_ATTEMPTS} attempts");
@@ -101,7 +99,6 @@ fn opening(book: &[String], rng: &mut Rng, plies: Option<usize>) -> Option<Strin
 fn play_out(book: &[String], rng: &mut Rng, plies: usize) -> Option<String> {
     let mut pos = Position::from_fen(&book[rng.usize(..book.len())]);
     let mut acc = pos.get_initial_accumulator();
-
     for _ in 0..plies {
         let moves = gen_legal_moves(&pos);
         if moves.is_empty() {
@@ -125,7 +122,6 @@ mod tests {
     fn pool(seed: u64, count: usize) -> Vec<String> {
         let book = vec![STARTPOS.to_owned()];
         let mut rng = Rng::with_seed(seed);
-
         (0..count).filter_map(|_| opening(&book, &mut rng, None)).collect()
     }
 
@@ -139,7 +135,6 @@ mod tests {
     fn every_opening_has_a_move_to_play() {
         let pool = pool(7, 32);
         assert_eq!(pool.len(), 32, "the whole count, none dropped");
-
         for fen in pool {
             let pos = Position::try_from_fen(&fen).expect("an emitted opening parses as a FEN");
             assert!(!gen_legal_moves(&pos).is_empty(), "{fen} has no move to play");
@@ -149,7 +144,6 @@ mod tests {
     #[test]
     fn both_sides_get_the_move() {
         let pool = pool(3, 32);
-
         assert!(pool.iter().any(|fen| fen.contains(" w ")), "no White to move in 32 openings");
         assert!(pool.iter().any(|fen| fen.contains(" b ")), "no Black to move in 32 openings");
     }
@@ -157,7 +151,6 @@ mod tests {
     #[test]
     fn the_runner_invocation_parses() {
         let request = Request::parse(&["8", "seed", "42", "book", "None", "depth", "6"]);
-
         assert_eq!(request.count, 8);
         assert_eq!(request.seed, 42);
         assert_eq!(request.book, None, "the literal None is no book");
@@ -167,7 +160,6 @@ mod tests {
     #[test]
     fn a_book_that_loads_nothing_has_no_openings() {
         let request = Request::parse(&["8", "seed", "42", "book", "/nonexistent.epd"]);
-
         assert_eq!(request.book(), None, "no falling back to the start position");
     }
 }

@@ -15,7 +15,7 @@ use crate::{
 /// (FRC `e1h1`) notation, so a GUI using either convention parses.
 pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
     // Non-ASCII would put a multibyte boundary mid-slice below and panic; reject it.
-    if uci.len() < 4 || !uci.is_ascii() {
+    if !matches!(uci.len(), 4 | 5) || !uci.is_ascii() {
         return Err(MoveError::InvalidFormat);
     }
 
@@ -23,7 +23,6 @@ pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
     let to_sq = square_from_str(&uci[2..4])?;
 
     let promo = if uci.len() == 5 { Some(piece_from_char(uci.chars().nth(4).unwrap())?) } else { None };
-    // Find matching legal move
     let legal = gen_legal_moves(board);
 
     legal
@@ -34,15 +33,10 @@ pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
             }
 
             // ── Castling Normalization
-            // Internal representation is King-onto-Rook (FRC), but incoming strings
-            // may use standard King-to-destination notation (e.g., e1g1).
-            // Delegate to to_uci to normalize both formats for reliable comparison.
-            if mv.is_castling() && mv.to_uci(board.is_frc) == uci {
-                return true;
-            }
-
-            // Fallback: If GUI sends standard castling (e1g1) but we are in FRC mode, still accept it.
-            if mv.is_castling() && mv.from() == from_sq {
+            // Castling is stored king-onto-rook, which the comparison above already
+            // matches. A GUI sending the king-to-file form (e1g1) instead names a
+            // square the king lands on, so it is resolved from the rook's side.
+            if mv.is_castling() && promo.is_none() && mv.from() == from_sq {
                 let rank = from_sq.rank();
                 let is_kingside = mv.to().file() > from_sq.file();
                 let dest_file = if is_kingside { 6 } else { 2 }; // G or C
@@ -75,5 +69,30 @@ fn piece_from_char(c: char) -> Result<PieceType, MoveError> {
         'b' => Ok(PieceType::Bishop),
         'n' => Ok(PieceType::Knight),
         _ => Err(MoveError::InvalidFormat),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CASTLING: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+
+    #[test]
+    fn castling_parses_from_either_notation() {
+        let board = Position::from_fen(CASTLING);
+        let kingside = parse_uci_move(&board, "e1h1").unwrap();
+        let queenside = parse_uci_move(&board, "e1a1").unwrap();
+        assert_eq!(parse_uci_move(&board, "e1g1").unwrap(), kingside);
+        assert_eq!(parse_uci_move(&board, "e1c1").unwrap(), queenside);
+        assert!(kingside.is_castling() && queenside.is_castling());
+        assert!(parse_uci_move(&board, "e1g1q").is_err());
+    }
+
+    #[test]
+    fn a_move_string_is_four_or_five_characters() {
+        let board = Position::from_fen(CASTLING);
+        assert!(parse_uci_move(&board, "e1g1xx").is_err());
+        assert!(parse_uci_move(&board, "a1a").is_err());
     }
 }

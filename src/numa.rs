@@ -16,17 +16,6 @@
 //! it works on any Linux and needs no `libc`; only the binding itself is a syscall,
 //! and that path is x86-64 Linux. Everywhere else the whole module degrades to a
 //! single domain and binding becomes a no-op.
-//!
-//! Two refinements stay out until a box asks for them, and they're noted here so
-//! they don't get lost: the SLIT distance matrix (`node{N}/distance`), worth reading
-//! only once placement is distance-aware across far-apart nodes, and L3 bundling
-//! (SF's `BundledL3Policy`), worth adding only when a machine splinters into so many
-//! tiny domains that binding to each stops helping. Detecting either ahead of a
-//! consumer is structure nothing reads, so each waits for the placement that needs it.
-//!
-//! Further out, the L3 domains are also the natural unit for a per-domain copy of a
-//! shared correction history, the moment corrhist becomes shared at all, which is an
-//! experiment in its own right. The domains are detected and ready when it lands.
 
 use std::{fmt, fs, thread};
 
@@ -36,52 +25,35 @@ type Cpu = usize;
 /// The machine's locality map: memory domains and the finer cache domains that
 /// subdivide them. Both partition the CPUs the process is actually allowed on.
 pub struct NumaTopology {
-    /// NUMA nodes, the memory domains. The TT spreads its pages across these.
+    /// The memory domains.
     nodes: Vec<Vec<Cpu>>,
-    /// L3 domains, the cache domains. Search threads bind to these. Falls back to
-    /// `nodes` when the cache topology can't be read.
+    /// The cache domains, falling back to `nodes` when the cache topology can't be read.
     domains: Vec<Vec<Cpu>>,
 }
 
 impl NumaTopology {
-    /// Read the topology from the running system. It collapses to a single domain
-    /// only when `/sys` is unreadable, as off Linux. On Linux it reads the nodes and
+    /// Collapses to a single domain only when `/sys` is unreadable, as off Linux. On Linux it reads the nodes and
     /// L3 domains, including the NPS1 EPYC that shows one node over many caches.
     pub fn detect() -> Self {
         let allowed = allowed_cpus();
         let nodes = read_numa_nodes(&allowed).unwrap_or_else(|| vec![allowed.clone()]);
         // ♪ numa numa iei ♪
         let domains = read_l3_domains(&allowed).unwrap_or_else(|| nodes.clone());
-
         Self { nodes, domains }
     }
 
-    /// Number of memory domains. The TT clear spreads its slices across this many.
-    pub fn num_nodes(&self) -> usize {
-        self.nodes.len()
-    }
+    pub fn num_nodes(&self) -> usize { self.nodes.len() }
 
-    /// Number of cache domains. Threads distribute across this many.
-    pub fn num_domains(&self) -> usize {
-        self.domains.len()
-    }
+    pub fn num_domains(&self) -> usize { self.domains.len() }
 
-    /// Whether binding earns its keep: more than one domain to spread over, and
-    /// more than one thread to spread.
-    pub fn should_bind(&self, threads: usize) -> bool {
-        self.domains.len() > 1 && threads > 1
-    }
+    pub fn should_bind(&self, threads: usize) -> bool { self.domains.len() > 1 && threads > 1 }
 
-    /// Whether spreading the TT across nodes pays: more than one memory domain to
-    /// spread over, and more than one thread to share the bandwidth. A lone thread
-    /// wants its table local, not striped across remote controllers.
-    pub fn should_distribute(&self, threads: usize) -> bool {
-        self.nodes.len() > 1 && threads > 1
-    }
+    /// A lone thread wants its table local, not striped across remote controllers.
+    pub fn should_distribute(&self, threads: usize) -> bool { self.nodes.len() > 1 && threads > 1 }
 
-    /// Assign `threads` workers to L3 domains, one index per worker, balanced by
-    /// fill so a domain with more CPUs takes proportionally more threads and no
-    /// node is favored (which would fight other instances sharing the box).
+    /// One domain index per worker, balanced by fill so a domain with more CPUs takes
+    /// proportionally more threads and no node is favored, which would fight other
+    /// instances sharing the box.
     pub fn distribute(&self, threads: usize) -> Vec<usize> {
         let mut assignment = Vec::with_capacity(threads);
         let mut occupied = vec![0usize; self.domains.len().max(1)];
@@ -97,16 +69,12 @@ impl NumaTopology {
         assignment
     }
 
-    /// Pin the calling thread to a cache domain. Returns whether the bind took.
-    pub fn bind_to_domain(&self, domain: usize) -> bool {
-        self.domains.get(domain).is_some_and(|cpus| sys::bind_thread(cpus))
-    }
+    /// Returns whether the bind took.
+    pub fn bind_to_domain(&self, domain: usize) -> bool { self.domains.get(domain).is_some_and(|cpus| sys::bind_thread(cpus)) }
 
     /// Pin the calling thread to a memory domain, for the threads that first-touch
     /// the TT's slices into place. Returns whether the bind took.
-    pub fn bind_to_node(&self, node: usize) -> bool {
-        self.nodes.get(node).is_some_and(|cpus| sys::bind_thread(cpus))
-    }
+    pub fn bind_to_node(&self, node: usize) -> bool { self.nodes.get(node).is_some_and(|cpus| sys::bind_thread(cpus)) }
 }
 
 impl fmt::Display for NumaTopology {
@@ -116,13 +84,12 @@ impl fmt::Display for NumaTopology {
 }
 
 /// Fill ratio of a domain once one more thread joins it. Lower means more room.
-fn fill(occupied: usize, domain: &[Cpu]) -> f64 {
-    (occupied + 1) as f64 / domain.len().max(1) as f64
-}
+fn fill(occupied: usize, domain: &[Cpu]) -> f64 { (occupied + 1) as f64 / domain.len().max(1) as f64 }
 
 /// The CPUs the process may run on: its affinity mask if the kernel will tell us,
 /// else every online CPU. Respecting the mask keeps an instance pinned by `taskset`
-/// from binding onto CPUs it was fenced off from, which matters under concurrency.
+/// from binding onto CPUs it was fenced off from, which is how several instances
+/// share a box without fighting for the same cores.
 fn allowed_cpus() -> Vec<Cpu> {
     if let Some(mask) = sys::process_affinity() {
         return mask;
@@ -166,8 +133,8 @@ fn read_l3_domains(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
             continue;
         }
 
-        let shared = read_l3_siblings(cpu)?;
-        let group: Vec<Cpu> = parse_cpu_list(&shared).into_iter().filter(|c| allowed.contains(c)).collect();
+        let siblings = read_l3_siblings(cpu)?;
+        let group: Vec<Cpu> = parse_cpu_list(&siblings).into_iter().filter(|c| allowed.contains(c)).collect();
 
         for &c in &group {
             grouped[c] = true;
@@ -180,8 +147,8 @@ fn read_l3_domains(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
     (!domains.is_empty()).then_some(domains)
 }
 
-/// The `shared_cpu_list` of a CPU's level-3 cache. The cache index for L3 isn't
-/// fixed (it's whichever index reports `level` 3), so we scan for it.
+/// The `shared_cpu_list` of a CPU's level-3 cache. The cache index for L3 isn't fixed; it is
+/// whichever index reports `level` 3.
 fn read_l3_siblings(cpu: Cpu) -> Option<String> {
     for index in 0..8 {
         let base = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index{index}");
@@ -270,8 +237,8 @@ mod sys {
             mask[cpu / 64] |= 1u64 << (cpu % 64);
         }
 
-        // SAFETY: sched_setaffinity(0, bytes, ptr) reads `bytes` of mask for the
-        // calling thread (pid 0); `bytes` is `words * 8`, exactly the buffer.
+        // SAFETY: sched_setaffinity(0, bytes, ptr) reads bytes of mask for the
+        // calling thread (pid 0); bytes is words * 8, exactly the buffer.
         let ret = unsafe { syscall3(SYS_SCHED_SETAFFINITY, 0, words * 8, mask.as_ptr() as usize) };
         if ret != 0 {
             return false;
@@ -308,13 +275,9 @@ mod sys {
 mod sys {
     use super::Cpu;
 
-    pub fn process_affinity() -> Option<Vec<Cpu>> {
-        None
-    }
+    pub fn process_affinity() -> Option<Vec<Cpu>> { None }
 
-    pub fn bind_thread(_cpus: &[Cpu]) -> bool {
-        false
-    }
+    pub fn bind_thread(_cpus: &[Cpu]) -> bool { false }
 }
 
 #[cfg(test)]

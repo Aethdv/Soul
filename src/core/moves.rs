@@ -38,18 +38,18 @@ use crate::core::defs::{MAX_MOVES, PieceType, Square};
 #[repr(transparent)]
 pub struct Move(u16);
 
-// No niche (0 is valid null move), so Option<Move> = 4 bytes.
+// No niche: 0 is a valid null move, so Option<Move> cannot pack into the same two bytes.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
+const _: () = assert!(std::mem::size_of::<Option<Move>>() == 4);
 
 impl Move {
     pub const QUIET: u16 = 0;
     pub const CAPTURE: u16 = 1;
 
-    // Bit 1 of the flag nibble = promotion. MovePicker relies on this ordering:
-    // Since PROM_Q (14) > PROM_R (10) > PROM_B (6) > PROM_N (2), and MovePicker
-    // bitpacks the move's inner value into its sort key, Queen promotions natively
-    // evaluate as larger u16 values and sort to the back of the array, which is popped first.
-    // If you break this numeric hierarchy, quiet promotion ordering will silently regress!
+    // Bit 1 of the flag nibble marks a promotion, and the values run PROM_Q (14) > PROM_R (10)
+    // > PROM_B (6) > PROM_N (2) on purpose: MovePicker bitpacks the move into its sort key, so
+    // queen promotions land at the back of the array and pop first. Reordering these regresses
+    // quiet promotion ordering with nothing to catch it.
     pub const PROM_N: u16 = 2;
     pub const PROM_N_CAPTURE: u16 = 3;
 
@@ -99,93 +99,63 @@ impl Move {
 
     /// Null move (no move).
     #[inline(always)]
-    pub const fn null() -> Self {
-        Self(0)
-    }
+    pub const fn null() -> Self { Self(0) }
 
     /// Construct from raw 16-bit encoding.
     #[inline(always)]
-    pub const fn from_u16(raw: u16) -> Self {
-        Self(raw)
-    }
+    pub const fn from_u16(raw: u16) -> Self { Self(raw) }
 
     /// Raw 16-bit encoding.
     #[inline(always)]
-    pub const fn inner(self) -> u16 {
-        self.0
-    }
+    pub const fn inner(self) -> u16 { self.0 }
 
     /// Move is null (placeholder).
     #[inline(always)]
-    pub const fn is_null(self) -> bool {
-        self.0 == 0
-    }
+    pub const fn is_null(self) -> bool { self.0 == 0 }
 
     /// Origin square.
     #[inline(always)]
-    pub const fn from(self) -> Square {
-        Square((self.0 & Self::MASK_SQ) as u8)
-    }
+    pub const fn from(self) -> Square { Square((self.0 & Self::MASK_SQ) as u8) }
 
     /// Destination square.
     #[inline(always)]
-    pub const fn to(self) -> Square {
-        Square(((self.0 >> Self::SHIFT_TO) & Self::MASK_SQ) as u8)
-    }
+    pub const fn to(self) -> Square { Square(((self.0 >> Self::SHIFT_TO) & Self::MASK_SQ) as u8) }
 
     /// Move flag (type encoding).
     #[inline(always)]
-    pub const fn flag(self) -> u16 {
-        (self.0 >> Self::SHIFT_FLAG) & Self::MASK_FLAG
-    }
+    pub const fn flag(self) -> u16 { (self.0 >> Self::SHIFT_FLAG) & Self::MASK_FLAG }
 
     /// Move captures something.
     #[inline(always)]
-    pub const fn is_capture(self) -> bool {
-        (self.0 & 0x1000) != 0
-    }
+    pub const fn is_capture(self) -> bool { (self.0 & 0x1000) != 0 }
 
     /// Move is an en passant capture.
     #[inline(always)]
-    pub const fn is_en_passant(self) -> bool {
-        (self.0 & 0xF000) == 0x5000
-    }
+    pub const fn is_en_passant(self) -> bool { (self.0 & 0xF000) == 0x5000 }
 
     /// Move is a castling (standard or Chess960).
     #[inline(always)]
-    pub const fn is_castling(self) -> bool {
-        (self.0 & 0xF000) == 0xC000
-    }
+    pub const fn is_castling(self) -> bool { (self.0 & 0xF000) == 0xC000 }
 
     /// Move is a promotion (any piece).
     #[inline(always)]
-    pub const fn is_promotion(self) -> bool {
-        (self.0 & 0x2000) != 0
-    }
+    pub const fn is_promotion(self) -> bool { (self.0 & 0x2000) != 0 }
 
     /// Move is non-capturing.
     #[inline(always)]
-    pub const fn is_quiet(self) -> bool {
-        !self.is_capture()
-    }
+    pub const fn is_quiet(self) -> bool { !self.is_capture() }
 
     /// Non-capturing, non-castling: eligible for history heuristic.
     #[inline(always)]
-    pub const fn is_history_quiet(self) -> bool {
-        self.is_quiet() && !self.is_castling()
-    }
+    pub const fn is_history_quiet(self) -> bool { self.is_quiet() && !self.is_castling() }
 
     /// Capture or promotion.
     #[inline(always)]
-    pub const fn is_tactical(self) -> bool {
-        self.is_capture() || self.is_promotion()
-    }
+    pub const fn is_tactical(self) -> bool { self.is_capture() || self.is_promotion() }
 
     /// Pawn double push (sets en passant square).
     #[inline(always)]
-    pub const fn is_double_push(self) -> bool {
-        (self.0 & 0xF000) == 0x4000
-    }
+    pub const fn is_double_push(self) -> bool { (self.0 & 0xF000) == 0x4000 }
 
     /// Promoted piece type, if any.
     #[inline(always)]
@@ -247,9 +217,7 @@ impl Move {
 }
 
 impl fmt::Debug for Move {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_uci(false))
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.to_uci(false)) }
 }
 
 /// Stack-allocated move list. No heap allocation on the hot path.
@@ -260,9 +228,7 @@ pub struct MoveList {
 
 impl MoveList {
     #[inline(always)]
-    pub const fn new() -> Self {
-        Self { moves: [MaybeUninit::uninit(); MAX_MOVES], len: 0 }
-    }
+    pub const fn new() -> Self { Self { moves: [MaybeUninit::uninit(); MAX_MOVES], len: 0 } }
 
     #[inline(always)]
     pub fn push(&mut self, mv: Move) {
@@ -274,24 +240,16 @@ impl MoveList {
     }
 
     #[inline(always)]
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
+    pub fn clear(&mut self) { self.len = 0; }
 
     #[inline(always)]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
+    pub const fn len(&self) -> usize { self.len }
 
     #[inline(always)]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
+    pub const fn is_empty(&self) -> bool { self.len == 0 }
 
     #[inline(always)]
-    pub fn iter(&self) -> std::slice::Iter<'_, Move> {
-        self.as_slice().iter()
-    }
+    pub fn iter(&self) -> std::slice::Iter<'_, Move> { self.as_slice().iter() }
 
     #[inline(always)]
     pub fn as_slice(&self) -> &[Move] {
@@ -314,9 +272,7 @@ impl MoveList {
 }
 
 impl Default for MoveList {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Index<usize> for MoveList {
@@ -343,23 +299,17 @@ impl<'a> IntoIterator for &'a MoveList {
     type Item = &'a Move;
     type IntoIter = std::slice::Iter<'a, Move>;
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
 }
 
 impl Deref for MoveList {
     type Target = [Move];
 
     #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
+    fn deref(&self) -> &Self::Target { self.as_slice() }
 }
 
 impl DerefMut for MoveList {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
+    fn deref_mut(&mut self) -> &mut Self::Target { self.as_mut_slice() }
 }

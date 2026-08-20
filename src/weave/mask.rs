@@ -76,9 +76,7 @@ impl BitOr for VMask {
 impl Not for VMask {
     type Output = Self;
     #[inline(always)]
-    fn not(self) -> Self {
-        self ^ Self::all_true()
-    }
+    fn not(self) -> Self { self ^ Self::all_true() }
 }
 
 impl BitXor for VMask {

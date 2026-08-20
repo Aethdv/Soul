@@ -1,10 +1,15 @@
 //! Terminal formatting utilities.
 
-use crate::color::RESET;
+use std::io::{IsTerminal, stdout};
 
-pub const HEADER: &str = "\x1b[92m";
-pub const ARG: &str = "\x1b[91m";
-pub const CMD: &str = "\x1b[33m";
+use crate::color::{CORAL_PEN, GOLD_PEN, GREY_PEN, OK_PEN, RESET, TEAL_PEN};
+
+/// Section titles.
+pub const HEADER: &str = OK_PEN;
+/// Argument placeholders.
+pub const ARG: &str = CORAL_PEN;
+/// Command and flag names.
+pub const CMD: &str = GOLD_PEN;
 
 pub struct Help {
     width: usize,
@@ -12,10 +17,10 @@ pub struct Help {
 }
 
 impl Help {
-    pub fn new(width: usize) -> Self {
-        Self { width, use_ansi: true }
-    }
+    /// Colors when a terminal is reading, plain text when the output is redirected.
+    pub fn new(width: usize) -> Self { Self { width, use_ansi: stdout().is_terminal() } }
 
+    /// Overrides the terminal check, for a pager that renders escapes anyway.
     pub fn with_ansi(mut self, enabled: bool) -> Self {
         self.use_ansi = enabled;
         self
@@ -33,51 +38,36 @@ impl Help {
         println!();
     }
 
-    pub fn command(&self, name: &str, desc: &str) {
-        self.print_line_internal(2, name, "", desc);
-    }
+    pub fn command(&self, name: &str, desc: &str) { self.print_line_internal(2, name, "", desc); }
 
-    pub fn command_args(&self, name: &str, args: &str, desc: &str) {
-        self.print_line_internal(2, name, args, desc);
-    }
+    pub fn command_args(&self, name: &str, args: &str, desc: &str) { self.print_line_internal(2, name, args, desc); }
 
     pub fn command_default(&self, name: &str, desc: &str, default: &str) {
-        let full_desc = if self.use_ansi {
-            format!("{desc} \x1b[90m(default: \x1b[36m{default}\x1b[90m)\x1b[0m")
-        } else {
-            format!("{desc} (default: {default})")
-        };
-        self.print_line_internal(2, name, "", &full_desc);
+        self.print_line_internal(2, name, "", &self.with_default(desc, default));
     }
 
-    pub fn subcommand(&self, name: &str, args: &str, desc: &str) {
-        self.print_line_internal(4, name, args, desc);
-    }
+    pub fn subcommand(&self, name: &str, args: &str, desc: &str) { self.print_line_internal(4, name, args, desc); }
 
     pub fn subcommand_default(&self, name: &str, args: &str, desc: &str, default: &str) {
-        let full_desc = if self.use_ansi {
-            format!("{desc} \x1b[90m(default: \x1b[36m{default}\x1b[90m)\x1b[0m")
-        } else {
-            format!("{desc} (default: {default})")
-        };
-        self.print_line_internal(4, name, args, &full_desc);
+        self.print_line_internal(4, name, args, &self.with_default(desc, default));
     }
 
-    pub fn option(&self, flags: &str, value: &str, desc: &str) {
-        self.print_line_internal(2, flags, value, desc);
-    }
+    pub fn option(&self, flags: &str, value: &str, desc: &str) { self.print_line_internal(2, flags, value, desc); }
 
     pub fn option_default(&self, flags: &str, value: &str, desc: &str, default: &str) {
-        let full_desc = if self.use_ansi {
-            format!("{desc} \x1b[90m(default: \x1b[36m{default}\x1b[90m)\x1b[0m")
-        } else {
-            format!("{desc} (default: {default})")
-        };
-        self.print_line_internal(2, flags, value, &full_desc);
+        self.print_line_internal(2, flags, value, &self.with_default(desc, default));
     }
 
     pub fn example(&self, cmd: &str) {
         println!("  {cmd}");
+    }
+
+    fn with_default(&self, desc: &str, default: &str) -> String {
+        if self.use_ansi {
+            format!("{desc} {GREY_PEN}(default: {TEAL_PEN}{default}{GREY_PEN}){RESET}")
+        } else {
+            format!("{desc} (default: {default})")
+        }
     }
 
     fn print_line_internal(&self, indent: usize, name: &str, args: &str, desc: &str) {

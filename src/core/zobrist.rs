@@ -3,7 +3,7 @@
 //!
 //! Every feature a position can carry, a white pawn on e4, an en passant target
 //! on e6, the castling rights as a whole, gets its own random 64-bit key, drawn
-//! once at startup. A position's hash is the XOR of the keys for every
+//! once at compile time. A position's hash is the XOR of the keys for every
 //! feature it currently has.
 //!
 //! XOR being its own inverse is the whole trick: one key toggles a feature on or
@@ -19,21 +19,16 @@ pub const PIECE_KEYS_LEN: usize = 64 * 14; // 64 squares · 7 types (including N
 pub const EP_KEYS_LEN: usize = 8; // files
 pub const CASTLING_KEYS_LEN: usize = 16; // 2⁴
 
-/// A compile-time pseudo-random number generator (PRNG).
-///
-/// We need to generate hundreds of 64-bit random numbers to populate the Zobrist tables,
-/// but we want to do it at compile-time to avoid any runtime overhead during engine startup.
+/// The Zobrist tables need hundreds of 64-bit values, and a `const fn` generator puts them
+/// in the binary instead of on the startup path.
 pub struct ConstRng {
     state: u64,
 }
 
 impl ConstRng {
-    pub const fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
+    pub const fn new(seed: u64) -> Self { Self { state: seed } }
 
     /// Marsaglia's xorshift.
-    /// The shifts (13, 7, 17) are optimal constants that create a full-period generator.
     #[inline]
     pub const fn next(&mut self) -> u64 {
         let mut x = self.state;
@@ -54,7 +49,6 @@ pub struct ZobristKeys {
 
 pub static KEYS: ZobristKeys = init_keys();
 
-/// Hash feature for a piece on a square.
 #[inline(always)]
 pub fn key_piece(pt: PieceType, color: Color, sq: Square) -> u64 {
     // [PieceType + ColorOffset][Square]
@@ -73,7 +67,6 @@ pub fn key_ep(sq: Square) -> u64 {
     *debug_index!(KEYS.en_passant, idx)
 }
 
-/// Hash feature for the current castling rights bitmask.
 #[inline(always)]
 pub fn key_castling(rights: u8) -> u64 {
     debug_assert!(rights < 16, "key_castling: rights overflow");
@@ -82,9 +75,7 @@ pub fn key_castling(rights: u8) -> u64 {
 
 /// Hash feature toggled when it is Black's turn to move.
 #[inline(always)]
-pub fn key_side() -> u64 {
-    KEYS.side
-}
+pub fn key_side() -> u64 { KEYS.side }
 
 #[inline]
 const fn init_keys() -> ZobristKeys {
@@ -117,8 +108,7 @@ const fn init_keys() -> ZobristKeys {
     }
     // Empty rights must hash to nothing. make_move XORs key_castling on every rights
     // change, so a non-zero key at index 0 desyncs the incremental hash from
-    // calc_zobrist (which skips zero rights) the moment castling rights run out. Drawn
-    // above, then zeroed, so the non-zero-rights keys keep their values.
+    // calc_zobrist (which skips zero rights) the moment castling rights run out.
     castling[0] = 0;
 
     let side = rng.next();

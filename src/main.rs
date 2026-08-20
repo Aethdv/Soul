@@ -5,7 +5,8 @@
 
 use std::{
     env::args,
-    io::{self, BufRead},
+    fs,
+    io::{self, BufRead, IsTerminal},
     process,
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
@@ -19,17 +20,17 @@ use soul::{
     engine::{
         history::History,
         search::{Limits, SearchConfig, SearchDisplay, Searcher},
-        search_params::SearchParams,
+        search_params::{SearchParams, spsa_table},
         tt::TranspositionTable,
     },
     protocols, tools,
 };
 
+const SPSA_SCREENFUL: usize = 70;
+
 #[allow(clippy::too_many_lines)]
 fn main() {
     let args: Vec<String> = args().collect();
-
-    // Handle commands
     if args.len() > 1 {
         match args[1].as_str() {
             "help" | "--help" | "-h" => {
@@ -56,23 +57,42 @@ fn main() {
                 let board = Position::from_fen(STARTPOS);
                 tools::perft::run(&board, depth, true);
             },
+            "spsa" => {
+                let table = spsa_table();
+                if table.lines().count() > SPSA_SCREENFUL && io::stdout().is_terminal() {
+                    match fs::write("spsa.txt", &table) {
+                        Ok(()) => println!("{} params written to spsa.txt", table.lines().count()),
+                        Err(e) => {
+                            eprintln!("spsa.txt: {e}");
+                            process::exit(1);
+                        },
+                    }
+                } else {
+                    print!("{table}");
+                }
+            },
+            #[cfg(feature = "rigs")]
             "speedtest" => {
                 let limit = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                 tools::speedtest::run(limit);
             },
+            #[cfg(feature = "datagen")]
             "datagen" => {
                 let stop = Arc::new(AtomicBool::new(false));
                 let datagen_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::datagen::run(&datagen_args, &stop);
             },
+            #[cfg(feature = "datagen")]
             "genfens" => {
                 let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::genfens::run(&genfens_args);
             },
+            #[cfg(feature = "rigs")]
             "measure" => {
                 let measure_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::measure::run(&measure_args);
             },
+            #[cfg(feature = "dataset")]
             "dataset" => {
                 let dataset_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::dataset::cli::run(&dataset_args);
@@ -95,10 +115,6 @@ fn main() {
                 let mut searcher = Searcher::new(&cfg, &board, &[], Arc::new(TranspositionTable::new(16, 1)));
                 searcher.iterative_deepening(&mut history_table);
             },
-            // A whole command in one argument is how a runner spawns an engine,
-            // soul "genfens 8 seed 42 book None" "quit", so it goes to the
-            // protocol rather than the subcommand table. A single word that
-            // matched nothing above is a typo and still says so.
             _ if args[1].contains(' ') => {
                 protocols::uci::run_commands(&args[1..]);
             },

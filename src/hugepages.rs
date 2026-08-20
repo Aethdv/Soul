@@ -8,11 +8,6 @@
 //! 1GB page another 512×, and at 1GB the page table for a 256GB region is 2KB
 //! that simply stays in cache.
 //!
-//! So the allocator asks for the largest page it can, falls back when the pool
-//! isn't there, and reports which size it got. Every tier returns zeroed memory
-//! and faults it in up front, so the first search runs hot; `clear` rewrites the
-//! pages in place rather than discarding them, keeping them resident.
-//!
 //! Huge pages are x86-64 Linux only here; other targets get a plain zeroed allocation.
 //! That path issues `mmap`/`madvise`/`munmap` as raw syscalls, so the build needs
 //! no `libc` at all.
@@ -68,7 +63,7 @@ impl<T> HugePages<T> {
     /// The pages come lazily, so the first write to each one faults it in.
     /// The TT uses this to drive first-touch from its own NUMA-bound threads,
     /// which places each page on the node that touched it. `zeroed` is this
-    /// same map with the pre-fault folded in, for the single-domain path.
+    /// same map with the pre-fault folded in.
     ///
     /// # Safety
     /// As [`zeroed`]: `T` must be valid when zero-initialized.
@@ -83,7 +78,8 @@ impl<T> HugePages<T> {
     ///
     /// # Safety
     /// `T` must be valid when zero-initialized: the mapping comes back zeroed and
-    /// is reinterpreted as `T` without running any constructor.
+    /// is reinterpreted as `T` without running any constructor. Its alignment must
+    /// also fit within a page, which is all a mapping's base is guaranteed to be.
     pub unsafe fn zeroed(min_bytes: usize) -> Self {
         // SAFETY: caller's contract on T.
         let pages = unsafe { Self::mapped(min_bytes) };
@@ -94,10 +90,7 @@ impl<T> HugePages<T> {
         pages
     }
 
-    /// The page size the OS actually gave us.
-    pub fn kind(&self) -> PageKind {
-        self.kind
-    }
+    pub fn kind(&self) -> PageKind { self.kind }
 
     /// Reset to an empty table, leaving the pages resident.
     ///
@@ -105,16 +98,16 @@ impl<T> HugePages<T> {
     /// syscall, but then the next search re-faults every page it touches, on the
     /// clock; the cost of emptying belongs here, off it, with the pages kept hot.
     ///
-    /// The caller guarantees no searcher is concurrently probing (this runs on
-    /// `ucinewgame`, when the engine is idle).
-    pub fn clear(&self) {
-        // SAFETY: idle precondition: no searcher reads the region during the clear.
+    /// # Safety
+    /// Nothing may read the region while it is cleared. The write is not atomic,
+    /// so a probe racing it is a data race however atomic the element type is.
+    pub unsafe fn clear(&self) {
+        // SAFETY: caller's contract.
         unsafe { zero_region(self.ptr.cast::<u8>().as_ptr(), self.bytes) };
     }
 }
 
-/// Zero `bytes` from `base`, shared by the allocation pre-fault and the
-/// `ucinewgame` clear. The write is memory-bandwidth-bound, so one pass is the floor.
+/// The write is memory-bandwidth-bound, so one pass is the floor.
 ///
 /// # Safety
 /// `base` must be writable for `bytes`, and nothing may read the region concurrently.
@@ -168,8 +161,8 @@ mod linux {
 
     /// The tier ladder: 1GB hugetlb, 2MB hugetlb, then a plain mapping hinted
     /// toward transparent huge pages. Each tier rounds the length up to its page
-    /// size: a `hugetlb` mapping is rejected outright unless the length is a
-    /// whole multiple, the bug that silently drops a careless caller to 4KB.
+    /// size, so the byte count kept for the free names the whole mapping and the
+    /// tail cannot outlive the `munmap`.
     pub fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
         // 1GB only past a gigabyte, or rounding up to the boundary is mostly waste.
         if min_bytes >= GB {
@@ -226,10 +219,7 @@ mod linux {
                 unmap(over, head);
             }
 
-            let tail = align - head;
-            if tail > 0 {
-                unmap(NonNull::new_unchecked(aligned.add(len)), tail);
-            }
+            unmap(NonNull::new_unchecked(aligned.add(len)), align - head);
             NonNull::new_unchecked(aligned)
         }
     }

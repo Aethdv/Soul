@@ -1,14 +1,18 @@
 //! The attack relation, stored from-side.
 //!
-//! Every incremental attack table in the field indexes by square: Rebel's byte,
-//! Rookie's direction bits, KnightCap's id bitset, Rose's colour-split pair.
-//! This one indexes by piece, so `rows[id]` is what piece `id` attacks and the
-//! square-indexed table is a transpose to compute where it is wanted.
+//! The incremental tables in the field index by square: Rebel's byte, Rookie's
+//! direction bits, KnightCap's id bitset, Rose's color-split pair. Chess 4.5
+//! kept a from-side table too, keyed by the occupied square and paired with the
+//! maintained transpose. Here the key is the piece and only this direction is
+//! kept, so `rows[id]` is what piece `id` attacks and the square-indexed view is
+//! a transpose computed where it is wanted.
 //!
 //! A move rewrites about one whole row where a square-indexed table scatters
 //! nine bits, and the union views come free: a square ORs a side together and
 //! forgets which piece set the bit, where here the contributor is the index.
-//! The unmake record counts pieces touched, not squares attacked.
+//!
+//! Nothing xors. The name is the difference between a piece's old row and its
+//! new one, the event stream a threat-input net consumes.
 //!
 //! Maintained through the search's make and unmake.
 
@@ -32,7 +36,6 @@ use crate::core::{
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PieceId(u8);
 
-/// The rows, plus the bookkeeping that names them.
 #[derive(Clone, Debug)]
 pub struct XorBoard {
     /// `rows[id]`: every square piece `id` attacks under the current occupancy.
@@ -44,7 +47,7 @@ pub struct XorBoard {
     /// Slot to square, `NOWHERE` when the piece is off the board.
     squares: [u8; SLOTS],
     kind: [PieceType; SLOTS],
-    /// Slot masks per (type, colour), patched on promotion. Keyed by slot, so
+    /// Slot masks per (type, color), patched on promotion. Keyed by slot, so
     /// "every rook and queen" is an AND rather than a scan.
     class: [u64; 12],
     /// The three slider classes, unioned once instead of on every gather. Only
@@ -55,10 +58,9 @@ pub struct XorBoard {
 
 /// The store as it stood at the node, restored wholesale by unmake.
 ///
-/// One snapshot serves every move tried at a ply: each make and its unmake put
-/// the state back where it was, so all of a node's siblings would otherwise
-/// save the same 352 bytes over and over. `kind` and `class` stay out of it,
-/// since only a promotion moves them.
+/// One snapshot serves every move tried at a ply, since each unmake puts the
+/// state back where its make found it. `kind` and `class` stay out: only a
+/// promotion moves them.
 #[derive(Clone, Copy, Debug)]
 pub struct Undo {
     rows: [u64; SLOTS],
@@ -74,7 +76,6 @@ struct Mover {
     to: Square,
 }
 
-/// Which slots the move disturbs and where they end up.
 #[derive(Clone, Copy, Debug)]
 struct Plan {
     movers: [Mover; 2],
@@ -87,47 +88,35 @@ struct Plan {
 const SLOTS: usize = 32;
 const NOWHERE: u8 = 0xFF;
 
-/// Slots 0 to 7 and 16 to 23: the eight-wide window each colour's sliders are
+/// Slots 0 to 7 and 16 to 23: the eight-wide window each color's sliders are
 /// seeded into. Only sliders can be affected by a move they did not make, so
 /// the gather only ever has to look here, and it looks at a fixed four groups
 /// rather than all eight.
 const SLIDER_WINDOW: u64 = 0x00FF_00FF;
 
-/// Groups of four slots the column test looks at, one bit per group.
-/// `WINDOW_GROUPS` is [`SLIDER_WINDOW`] in the same currency.
+/// The column test's groups, one bit per four slots. `WINDOW_GROUPS` is
+/// [`SLIDER_WINDOW`] in the same units.
 const ALL_GROUPS: u8 = 0xFF;
 const WINDOW_GROUPS: u8 = 0b0011_0011;
 const WHITE_GROUPS: u8 = 0x0F;
 const BLACK_GROUPS: u8 = 0xF0;
 
-#[inline(always)]
-const fn color_slots(color: Color) -> u64 {
-    0xFFFF << (color as usize * 16)
-}
+#[cfg(test)]
+const fn color_slots(color: Color) -> u64 { 0xFFFF << (color as usize * 16) }
 
-/// `class` is keyed by piece type then colour; one place computes that.
 #[inline(always)]
-const fn class_index(piece: PieceType, color: Color) -> usize {
-    piece as usize * 2 + color as usize
-}
+const fn class_index(piece: PieceType, color: Color) -> usize { piece as usize * 2 + color as usize }
 
 impl PieceId {
     #[inline(always)]
-    pub const fn color(self) -> Color {
-        if self.0 < 16 { Color::White } else { Color::Black }
-    }
+    pub const fn color(self) -> Color { if self.0 < 16 { Color::White } else { Color::Black } }
 
-    /// Masked, so every `rows`/`squares`/`kind` access is in range by construction
-    /// and the compiler drops the check. A slot out of range would be a bug the
-    /// mask hides, and slots only ever come from a 32-bit mask's set bits or
-    /// from `at`, both of which are already in range.
+    /// Masked so the bounds check drops. Slots come from a 32-bit mask or from
+    /// `at`, both already in range, so the mask only ever hides a bug.
     #[inline(always)]
-    const fn index(self) -> usize {
-        (self.0 & 31) as usize
-    }
+    const fn index(self) -> usize { (self.0 & 31) as usize }
 }
 
-/// The set slots of a mask, low to high.
 #[inline(always)]
 fn slots(mask: u64) -> impl Iterator<Item = PieceId> {
     let mut rest = mask;
@@ -142,9 +131,7 @@ fn slots(mask: u64) -> impl Iterator<Item = PieceId> {
 }
 
 #[inline(always)]
-fn is_slider(piece: PieceType) -> bool {
-    matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen)
-}
+fn is_slider(piece: PieceType) -> bool { matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen) }
 
 impl XorBoard {
     /// Slots are assigned by a square walk, so two boards built from the same
@@ -161,7 +148,7 @@ impl XorBoard {
 
         let mut next = [0usize, 16];
 
-        // Sliders first, so they land in the low half of each colour's range and
+        // Sliders first, so they land in the low half of each color's range and
         // the gather can skip the rest. A side can legally promote its way past
         // eight, which the gather handles by widening rather than by anything
         // here having to care.
@@ -188,9 +175,9 @@ impl XorBoard {
         board
     }
 
-    /// Recomputes every row from the bookkeeping: the oracle the incremental
-    /// path answers to, and how a root position is seeded.
-    pub fn refresh(&mut self, pos: &Position) {
+    /// Recomputes every row: how a root position is seeded, and the oracle the
+    /// incremental path answers to.
+    fn refresh(&mut self, pos: &Position) {
         self.rows = [0; SLOTS];
         for slot in 0..SLOTS {
             if self.squares[slot] != NOWHERE {
@@ -199,11 +186,8 @@ impl XorBoard {
         }
     }
 
-    /// What one piece attacks: the from-side query the store exists to answer.
     #[inline(always)]
-    pub fn row(&self, id: PieceId) -> Bitboard {
-        Bitboard(self.rows[id.index()])
-    }
+    pub fn row(&self, id: PieceId) -> Bitboard { Bitboard(self.rows[id.index()]) }
 
     #[inline(always)]
     pub fn id_at(&self, square: Square) -> Option<PieceId> {
@@ -213,17 +197,11 @@ impl XorBoard {
         }
     }
 
-    /// `1 + id`, or zero for an empty square. Masked, so every `at` access is in
-    /// range by construction and the compiler drops the check.
     #[inline(always)]
-    fn slot_at(&self, square: Square) -> u8 {
-        self.at[usize::from(square.0 & 63)]
-    }
+    fn slot_at(&self, square: Square) -> u8 { self.at[usize::from(square.0 & 63)] }
 
     #[inline(always)]
-    fn set_slot_at(&mut self, square: Square, slot: u8) {
-        self.at[usize::from(square.0 & 63)] = slot;
-    }
+    fn set_slot_at(&mut self, square: Square, slot: u8) { self.at[usize::from(square.0 & 63)] = slot; }
 
     /// The transpose, taken one column at a time: which pieces attack any square
     /// in `mask`. Testing a row against a multi-bit mask answers for every square
@@ -232,7 +210,7 @@ impl XorBoard {
     /// Written by hand: left to the autovectorizer it is a thirty-two iteration
     /// dependency chain rather than eight lane tests folded into a slot set.
     #[inline(always)]
-    pub fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
+    fn slider_attackers_of(&self, mask: Bitboard) -> u64 {
         let sliders = self.slider_slots;
         if sliders & !SLIDER_WINDOW == 0 {
             self.column::<WINDOW_GROUPS>(mask) & sliders
@@ -241,17 +219,10 @@ impl XorBoard {
         }
     }
 
-    /// Which pieces attack any square in `mask`, sliders and leapers alike.
-    #[inline(always)]
-    pub fn attackers_of(&self, mask: Bitboard) -> u64 {
-        self.column::<ALL_GROUPS>(mask)
-    }
-
     /// The pieces of `stm`'s opponent giving check.
     ///
     /// Only one side can be checking, so the column test covers that side's
-    /// slots and no more. Slots of captured pieces hold an empty row and drop
-    /// out of the test on their own.
+    /// slots and no more.
     #[inline(always)]
     pub fn checkers(&self, pos: &Position) -> Bitboard {
         let king = pos.pieces(PieceType::King, pos.stm);
@@ -267,13 +238,10 @@ impl XorBoard {
         slots(attackers).fold(Bitboard(0), |squares, id| squares | Square(self.squares[id.index()]).bitboard())
     }
 
-    /// Over the groups of four slots `GROUPS` selects.
-    ///
-    /// Every caller wants a different slice of the thirty-two rows and none of
-    /// them wants a runtime bound: a const mask keeps the loop unrolled and the
-    /// unwanted groups never reach the machine code. The wide arm loads eight
-    /// rows at a time, so a group mask that splits a pair would test slots the
-    /// caller excluded, and the assert holds callers to pairs.
+    /// Over the groups of four slots `GROUPS` selects. A const mask keeps the
+    /// loop unrolled and the unwanted groups out of the machine code. The wide
+    /// arm loads eight rows at once, so a mask splitting a pair would test slots
+    /// the caller excluded; the assert holds callers to pairs.
     #[inline(always)]
     fn column<const GROUPS: u8>(&self, mask: Bitboard) -> u64 {
         const { assert!(GROUPS & 0x55 == (GROUPS >> 1) & 0x55, "the group mask must select whole pairs") }
@@ -315,8 +283,6 @@ impl XorBoard {
         }
     }
 
-    /// Moves a slot from the class it holds to `piece`, on a promotion and on
-    /// the unmake that walks one back.
     #[inline(always)]
     fn reclass(&mut self, id: PieceId, piece: PieceType) {
         let slot = id.index();
@@ -372,10 +338,7 @@ impl XorBoard {
         let (first, second) = (plan.movers[0], plan.movers[1]);
         let castling = plan.castling;
 
-        let mut affected = self.slider_attackers_of(changed) & !(1 << first.id.index());
-        if castling {
-            affected &= !(1 << second.id.index());
-        }
+        let mut affected = self.slider_attackers_of(changed) & !(1 << first.id.index()) & !(1 << second.id.index());
 
         if let Some((victim, square)) = plan.victim {
             affected &= !(1 << victim.index());
@@ -386,10 +349,7 @@ impl XorBoard {
 
         self.relocate(mv, &plan);
 
-        let mut rest = affected;
-        while rest != 0 {
-            let id = PieceId(rest.trailing_zeros() as u8);
-            rest &= rest - 1;
+        for id in slots(affected) {
             self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
         }
 
@@ -399,8 +359,6 @@ impl XorBoard {
         }
     }
 
-    /// Takes the rows a ply's snapshot holds, which is what every move tried
-    /// there has to return them to.
     #[inline(always)]
     pub fn snapshot(&self, undo: &mut Undo) {
         undo.rows = self.rows;
@@ -483,15 +441,11 @@ impl XorBoard {
 }
 
 impl Undo {
-    pub const fn new() -> Self {
-        Self { rows: [0; SLOTS], at: [0; 64], squares: [NOWHERE; SLOTS] }
-    }
+    pub const fn new() -> Self { Self { rows: [0; SLOTS], at: [0; 64], squares: [NOWHERE; SLOTS] } }
 }
 
 impl Default for Undo {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -516,15 +470,35 @@ mod tests {
         "1rqbkrbn/1ppppp1p/1n6/p1N3p1/8/2P4P/PP1PPPP1/1RQBKRBN w FBfb - 0 1",
     ];
 
-    /// The tensor's x-ray fields for `color`.
-    fn tensor_xray(pos: &Position, color: Color) -> (Bitboard, Bitboard) {
-        use crate::core::board::spatial::SpatialTensor;
+    impl XorBoard {
+        fn xray_row(&self, id: PieceId, slider_squares: Bitboard) -> Bitboard {
+            let from = Square(self.squares[id.index()]);
+            let mut through = Bitboard(0);
+            for square in Bitboard(self.rows[id.index()]) & slider_squares {
+                let Some(blocker) = self.id_at(square) else { continue };
+                let past = line_bb(from, square) & !between_bb(from, square) & !from.bitboard() & !square.bitboard();
+                through |= Bitboard(self.rows[blocker.index()]) & past;
+            }
+            through
+        }
 
-        let t = SpatialTensor::compute(pos, pos.pinned_pieces(Color::White).0, pos.pinned_pieces(Color::Black).0);
-        if color == Color::White {
-            (Bitboard(t.w_ortho_xray()), Bitboard(t.w_diag_xray()))
-        } else {
-            (Bitboard(t.b_ortho_xray()), Bitboard(t.b_diag_xray()))
+        fn legal_rows(&self, color: Color, pinned: Bitboard, ksq: Square) -> impl Iterator<Item = (PieceId, Bitboard)> + '_ {
+            let king = self.class[class_index(PieceType::King, color)];
+
+            slots(color_slots(color) & !king).filter_map(move |id| {
+                let raw = self.squares[id.index()];
+                if raw == NOWHERE {
+                    return None;
+                }
+
+                let square = Square(raw);
+                let row = self.row(id);
+                Some((id, if pinned.check_bit(square) { self.pinned_row(id, square, row, ksq) } else { row }))
+            })
+        }
+
+        fn attack_map(&self, color: Color, pinned: Bitboard, ksq: Square) -> Bitboard {
+            self.legal_rows(color, pinned, ksq).fold(Bitboard(0), |acc, (_, row)| acc | row)
         }
     }
 
@@ -607,14 +581,6 @@ mod tests {
                     assert!((exact & !fill & !sliders).is_empty(), "gap off own sliders, {color:?}, {fen} ply {ply}\n{pos}");
                 }
 
-                for color in [Color::White, Color::Black] {
-                    let pinned = pos.pinned_pieces(color);
-                    let own = pos.side_bb[color];
-                    let (ortho, diag) = board.xray_maps(color, pinned, own, pos.occ);
-                    let (want_o, want_d) = tensor_xray(&pos, color);
-                    assert_eq!(ortho, want_o, "xray ortho {color:?}, {fen} ply {ply}\n{pos}");
-                    assert_eq!(diag, want_d, "xray diag {color:?}, {fen} ply {ply}\n{pos}");
-                }
                 assert_eq!(board.checkers(&pos), pos.checkers(), "checkers, {fen} ply {ply}\n{pos}");
 
                 // Per-piece mobility against the same count taken the long way.

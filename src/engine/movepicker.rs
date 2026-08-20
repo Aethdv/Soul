@@ -1,9 +1,8 @@
 //! Staged move generation and heuristic ordering.
 //!
-//! Most nodes cut off on the hash move or the first good capture, so generating
-//! and scoring every quiet up front is work thrown away. The picker yields moves
-//! in stages, best guesses first, and generates a stage only once the cheaper
-//! ones run dry.
+//! Most search nodes cut off on the hash move or the first good capture; generating
+//! quiets eagerly wastes work. The picker yields moves in stages, best guesses first,
+//! and generates a stage only when the earlier ones are exhausted.
 //!
 //! | Stage         | Content                       | Sorting           |
 //! |---------------|-------------------------------|-------------------|
@@ -12,10 +11,9 @@
 //! | `Quiets`      | Non-captures                  | History heuristic |
 //! | `BadCaptures` | SEE-losing captures, deferred | MVV-LVA           |
 //!
-//! Moves are bitpacked with their heuristic scores into `u32`s and sorted
-//! ascending using Rust's native `sort_unstable` (ipnsort). This allows
-//! popping the highest-scored moves from the back in 𝒪(1) time without
-//! index shifting.
+//! Moves are bitpacked with their heuristic scores into `u32` values and sorted
+//! ascending with `sort_unstable` (ipnsort). This allows popping the highest-scored
+//! moves from the back in 𝒪(1) time without index shifting.
 
 use std::mem::MaybeUninit;
 
@@ -24,35 +22,54 @@ use crate::core::board::xorboard::XorBoard;
 use crate::{
     core::{
         board::{
-            B_OO_EMPTY, B_OOO_EMPTY, BLACK_OO, BLACK_OOO, CASTLE_B_KS, CASTLE_B_KS_CHECK, CASTLE_B_QS, CASTLE_B_QS_CHECK,
-            CASTLE_W_KS, CASTLE_W_KS_CHECK, CASTLE_W_QS, CASTLE_W_QS_CHECK, Position, W_OO_EMPTY, W_OOO_EMPTY, WHITE_OO, WHITE_OOO,
+            Position,
             attacks::Pins,
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook},
         },
         defs::{Bitboard, Color, MAX_MOVES, MoveScore, NOT_A, NOT_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
         moves::Move,
     },
-    debug_index,
+    debug_index, debug_index_mut,
     engine::{
         history::{ContContext, History},
         search::SearchConfig,
-        see::see_ge_with,
+        see::see_ge,
     },
 };
 
-/// Where a slider's attacks come from. `nostore` has no store to read, so the
-/// argument carries nothing and every slider falls back to its probe.
+/// Where a slider's attacks come from. `nostore` has no store to read, so the argument
+/// holds nothing and every slider falls back to its probe.
 #[cfg(not(feature = "nostore"))]
 type Rows<'a> = &'a XorBoard;
 #[cfg(feature = "nostore")]
 type Rows<'a> = core::marker::PhantomData<&'a ()>;
 
-// Ensure move bit-packing assumes correctly.
 const _: () = assert!(std::mem::size_of::<Move>() == 2);
 
-// Why not a lazy partial selection sort to save cycles on early cutoffs?
-// Because Big-O is a lie when it hits modern hardware.
-// An ipnsort beats a branch-heavy selection sort loop, even when K is small.
+// Sort scores use non-overlapping bands: history quiets < killers < promotions.
+// History values are clamped below the killer floor to prevent band intrusion.
+const SORT_BIAS: i32 = 32768;
+const QUIET_SCORE_MAX: i32 = 63000;
+const KILLER_SCORES: [u32; 2] = [65000, 64000];
+const PROMO_B_SCORE: u32 = 65532;
+const PROMO_R_SCORE: u32 = 65533;
+const PROMO_N_SCORE: u32 = 65534;
+const PROMO_Q_SCORE: u32 = 65535;
+
+// An edit that overlaps two bands fails the build instead of the search.
+const _: () = {
+    assert!(QUIET_SCORE_MAX < KILLER_SCORES[1] as i32);
+    assert!(KILLER_SCORES[1] < KILLER_SCORES[0]);
+    assert!(KILLER_SCORES[0] < PROMO_B_SCORE);
+    assert!(PROMO_B_SCORE < PROMO_R_SCORE);
+    assert!(PROMO_R_SCORE < PROMO_N_SCORE);
+    assert!(PROMO_N_SCORE < PROMO_Q_SCORE);
+    assert!(PROMO_Q_SCORE <= u16::MAX as u32);
+    // The bias alone puts an i16 capture score inside the band, so packing needs no clamp.
+    assert!(MoveScore::MIN as i32 + SORT_BIAS == 0);
+    assert!(MoveScore::MAX as i32 + SORT_BIAS <= u16::MAX as i32);
+};
+
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
@@ -144,12 +161,9 @@ impl MovePicker {
         }
     }
 
-    // The duplicated literal below is load-bearing: Rust guarantees no copy
-    // elision, and a bare struct literal in return position is the one shape
-    // rustc reliably builds in the caller's slot. Delegating to new() and
-    // mutating the result, or routing both constructors through a shared
-    // builder, measurably recopies the ~1KB picker once per qsearch node
-    // (~1% nps).
+    // Duplicating the struct literal avoids a ~1KB stack copy (~1% NPS loss).
+    // Rust lacks guaranteed copy elision; returning an explicit literal is the only
+    // shape rustc reliably constructs in place within the caller's frame.
     #[inline]
     pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
         Self {
@@ -178,11 +192,15 @@ impl MovePicker {
         }
     }
 
-    /// Produce the next move in priority order, or `None` when exhausted.
+    /// Yields the next move in priority order, or `None` when exhausted.
     #[inline(always)]
     pub fn next(&mut self, board: &Position, rows: Rows<'_>, history: &History) -> Option<Move> {
         loop {
             match self.stage {
+                // ── TT Move Ordering (~56 Elo)
+                // The move a previous search stored is the best guess available here,
+                // and yielding it ahead of generation means a cutoff can land before a
+                // single move has been generated.
                 Stage::Hash => {
                     self.stage = Stage::GenCaptures;
                     if let Some(mv) = self.hash_move {
@@ -192,32 +210,20 @@ impl MovePicker {
 
                 Stage::GenCaptures => {
                     self.gen_captures(board, rows, history);
-                    // We sort captures independently of quiet moves.
-                    // Even if a strong quiet move has a high history score,
-                    // it will never override a capture because they are processed
-                    // in strictly cordoned stages.
+                    // Captures sort in their own stage; MVV-LVA scores do not need to align with quiet bands.
                     self.sort_candidates();
                     self.stage = Stage::YieldCaptures;
                 },
 
                 Stage::YieldCaptures => {
                     if self.count == 0 {
-                        // INVARIANT: when YieldCaptures is exhausted, count is exactly 0,
-                        // so GenQuiets reuses the array from index 0 without a clear. The
-                        // deferred bad captures sit at the array top, a region the quiets
-                        // never reach (their combined count can't exceed MAX_MOVES).
-                        if self.is_qsearch && !self.in_check {
-                            self.stage = Stage::GenQSearchQuiets;
-                        } else {
-                            self.stage = Stage::GenQuiets;
-                        }
+                        // Array is exhausted (count == 0), so GenQuiets reuses index 0 without clearing.
+                        // Deferred bad captures sit safely at the high end (total moves <= MAX_MOVES).
+                        self.stage = if self.is_qsearch && !self.in_check { Stage::GenQSearchQuiets } else { Stage::GenQuiets };
                         continue;
                     }
-                    // Pop from the back; since the array is sorted ascending,
-                    // the highest-scored moves sit at the end. Popping via count -= 1
-                    // is 𝒪(1) and avoids the expensive index-shifting of remove(0).
                     self.count -= 1;
-                    // SAFETY: count was strictly > 0 above, so this index holds a valid packed move.
+                    // SAFETY: count was non-zero; index holds an initialized packed move.
                     let packed = unsafe { debug_index!(self.candidates, self.count).assume_init() };
                     let mv = Move::from_u16(packed as u16);
                     if Some(mv) == self.hash_move {
@@ -225,27 +231,21 @@ impl MovePicker {
                     }
 
                     // ── Good / Bad Capture Split
-                    // A SEE-losing capture rarely deserves to jump ahead of every quiet; a
-                    // killer or a high-history move usually refutes the node first. Defer it:
-                    // park the packed entry at the array top, which the quiets never fill, and
-                    // drain it last in YieldBadCaptures. Promotions stay up front regardless,
-                    // they win a piece outright. Qsearch opts out, its own SEE prune already
-                    // culls losing captures, so a second SEE here would be wasted.
+                    // Defer SEE-losing captures: killers and strong quiets usually refute the
+                    // node first. Promotions bypass this check (winning material is guaranteed).
+                    // Qsearch bypasses this check because its standalone SEE prune already handles it.
                     if !self.is_qsearch && !mv.is_promotion() {
                         let attacker = board.piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
-                        // Both read the value table on purpose: mvvlva_a is an ordering
-                        // penalty, and comparing material needs one scale.
+
+                        // Use victim table for both to compare values on the same absolute scale.
                         let victim_val = *debug_index!(self.mvvlva_v, victim as usize);
                         let attacker_val = *debug_index!(self.mvvlva_v, attacker as usize);
-                        // A capture winning material (victim worth at least the attacker) has
-                        // SEE >= 0, so it's good without the exchange walk; only material-losing
-                        // captures are ambiguous enough to need SEE. The common cutoff-causing
-                        // captures sort to the front and skip it entirely.
-                        if victim_val < attacker_val && !see_ge_with(board, mv, -self.good_capture_margin, &self.pins) {
-                            // SAFETY: count + bad_count <= total moves <= MAX_MOVES, so the park
-                            // slot MAX_MOVES-1-bad_count is always >= count, never aliasing the
-                            // active region [0, count) nor the quiets that later fill it.
+
+                        // If victim >= attacker, SEE >= 0 is guaranteed; only material-losing captures need SEE.
+                        if victim_val < attacker_val && !see_ge(board, mv, -self.good_capture_margin, &self.pins) {
+                            // SAFETY: count + bad_count <= MAX_MOVES, so MAX_MOVES - 1 - bad_count >= count.
+                            // The park slot never aliases active captures or subsequent quiets.
                             unsafe {
                                 self.candidates
                                     .as_mut_ptr()
@@ -267,7 +267,6 @@ impl MovePicker {
 
                 Stage::GenQuiets => {
                     self.gen_quiets(board, rows, history);
-
                     #[cfg(feature = "mvpstats")]
                     {
                         self.quiets_gen = self.count as u32;
@@ -278,15 +277,13 @@ impl MovePicker {
 
                 Stage::YieldQuiets => {
                     if self.count == 0 {
-                        // Quiets done; reuse count as a top-down cursor over the parked bad
-                        // captures. It halts at MAX_MOVES - bad_count, draining none when the
-                        // split deferred nothing (or in qsearch, where bad_count stays 0).
+                        // Quiets exhausted. Reset count to MAX_MOVES to drain parked bad captures top-down.
                         self.count = MAX_MOVES;
                         self.stage = Stage::YieldBadCaptures;
                         continue;
                     }
                     self.count -= 1;
-                    // SAFETY: self.count was strictly checked > 0 above, proving this index holds a valid move.
+                    // SAFETY: count was non-zero; index holds an initialized move.
                     let mv = unsafe { self.read_move(self.count) };
 
                     if Some(mv) != self.hash_move {
@@ -297,34 +294,37 @@ impl MovePicker {
                         return Some(mv);
                     }
                 },
+
                 Stage::YieldBadCaptures => {
-                    // The deferred losing captures occupy [MAX_MOVES - bad_count, MAX_MOVES),
-                    // best at the top since YieldCaptures parked them in descending score.
-                    // count walks down from MAX_MOVES, yielding best-first, until drained.
+                    // Deferred captures occupy [MAX_MOVES - bad_count, MAX_MOVES), ordered descending.
+                    // Draining downwards from MAX_MOVES yields best-first.
                     if self.count == MAX_MOVES - self.bad_count {
                         self.stage = Stage::Done;
                         continue;
                     }
                     self.count -= 1;
-                    // SAFETY: count is in (MAX_MOVES - bad_count, MAX_MOVES], every slot
-                    // written by the park step in YieldCaptures.
+                    // SAFETY: index is within [MAX_MOVES - bad_count, MAX_MOVES), initialized in YieldCaptures.
                     let mv = unsafe { self.read_move(self.count) };
 
                     if Some(mv) != self.hash_move {
                         return Some(mv);
                     }
                 },
+
                 Stage::Done => return None,
             }
         }
     }
 
-    /// Sort the live candidate window ascending, so the best-scored moves land
-    /// at the end and pop off the back in 𝒪(1).
+    /// Sorts the live candidate window ascending, so the best moves land at the end.
+    ///
+    /// A lazy partial selection sort is the obvious alternative for a node that cuts on its
+    /// first move. It loses: the asymptotics say one pass beats a full sort, and the branch
+    /// predictor disagrees, so ipnsort wins even when K is small.
     #[inline]
     fn sort_candidates(&mut self) {
         if self.count > 1 {
-            // SAFETY: the gen step just wrote the first `count` entries; the rest
+            // SAFETY: the gen step just wrote the first count entries; the rest
             // of the array stays uninitialized and out of the sorted slice.
             unsafe { self.candidates[..self.count].assume_init_mut() }.sort_unstable();
         }
@@ -381,12 +381,10 @@ impl MovePicker {
         }
     }
 
-    /// Blend MVV-LVA with capture history into a single sort score.
-    /// Single source of truth for the capture ordering formula.
+    /// Blends MVV-LVA with capture history into one sort score.
+    /// Both capture paths score through here, so the formula has one home.
     #[inline(always)]
-    fn cap_score(&self, mvv: i32, chist: i32) -> i32 {
-        mvv + chist / self.capt_hist_divisor
-    }
+    fn cap_score(&self, mvv: i32, chist: i32) -> i32 { mvv + chist / self.capt_hist_divisor }
 
     /// Monomorphized by `PT` for dispatch-free attack lookups.
     #[inline]
@@ -399,13 +397,13 @@ impl MovePicker {
         occ: Bitboard,
         history: &History,
     ) {
-        let a_pen = *crate::debug_index!(self.mvvlva_a, PT as usize);
+        let a_pen = *debug_index!(self.mvvlva_a, PT as usize);
         let stm = board.stm;
 
         for from in board.role_bb[PT as usize] & us {
             for to in Self::attacks::<PT>(rows, from, occ) & them {
                 let victim = board.piece_at(to);
-                let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
+                let v_val = *debug_index!(self.mvvlva_v, victim as usize);
                 let chist = history.score_capture(stm, PT, to, victim);
                 let score = self.cap_score(v_val - a_pen, chist);
                 self.add_move_packed(Move::new(from, to, Move::CAPTURE), score as MoveScore);
@@ -414,27 +412,22 @@ impl MovePicker {
     }
 
     #[inline(always)]
-    fn add_move_packed(&mut self, mv: Move, score: MoveScore) {
-        let sort_score = (score as i32 + 32768).clamp(0, 65535) as u32;
-        self.write_packed((sort_score << 16) | (mv.inner() as u32));
-    }
+    fn add_move_packed(&mut self, mv: Move, score: MoveScore) { self.write_packed(pack((score as i32 + SORT_BIAS) as u32, mv)); }
 
     /// Append a pre-packed `(sort_score << 16) | move` entry.
     #[inline(always)]
     fn write_packed(&mut self, packed: u32) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
-        crate::debug_index_mut!(self.candidates, self.count).write(packed);
+        debug_index_mut!(self.candidates, self.count).write(packed);
         self.count += 1;
     }
 
-    /// Append a capture, scored as `MVV-LVA + capture_history / divisor`.
-    /// Promotion-captures bypass this path entirely; they go through `add_promo_caps`.
+    /// Appends one capture. Promotion-captures never come through here.
     #[inline]
     fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let mvv = self.mvv_lva(mv, attacker, victim);
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
-
         self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
     }
 
@@ -443,14 +436,14 @@ impl MovePicker {
     #[inline]
     fn add_promo_caps(&mut self, board: &Position, from: Square, to: Square) {
         let victim = board.piece_at(to);
-        let v_val = *crate::debug_index!(self.mvvlva_v, victim as usize);
-        let a_pen = *crate::debug_index!(self.mvvlva_a, PieceType::Pawn as usize);
+        let v_val = *debug_index!(self.mvvlva_v, victim as usize);
+        let a_pen = *debug_index!(self.mvvlva_a, PieceType::Pawn as usize);
         let base = v_val - a_pen;
 
-        let q = base + *crate::debug_index!(self.mvvlva_v, PieceType::Queen as usize);
-        let r = base + *crate::debug_index!(self.mvvlva_v, PieceType::Rook as usize);
-        let b = base + *crate::debug_index!(self.mvvlva_v, PieceType::Bishop as usize);
-        let n = base + *crate::debug_index!(self.mvvlva_v, PieceType::Knight as usize);
+        let q = base + *debug_index!(self.mvvlva_v, PieceType::Queen as usize);
+        let r = base + *debug_index!(self.mvvlva_v, PieceType::Rook as usize);
+        let b = base + *debug_index!(self.mvvlva_v, PieceType::Bishop as usize);
+        let n = base + *debug_index!(self.mvvlva_v, PieceType::Knight as usize);
 
         self.add_move_packed(Move::new(from, to, Move::PROM_Q_CAPTURE), q as MoveScore);
         self.add_move_packed(Move::new(from, to, Move::PROM_R_CAPTURE), r as MoveScore);
@@ -460,21 +453,18 @@ impl MovePicker {
 
     /// Most Valuable Victim - Least Valuable Attacker: `V(victim) - V(attacker)`.
     ///
-    /// Promotion-captures never reach this function; they're scored entirely
-    /// by `add_promo_caps`, which is why there's no promotion term here.
-    /// The Stage segregation in `MovePicker::next` ensures all captures are
-    /// yielded before any quiet moves, so a global bias isn't needed.
+    /// Promotion-captures are scored entirely by `add_promo_caps`, which is why there is no
+    /// promotion term here.
     #[inline(always)]
     fn mvv_lva(&self, mv: Move, attacker: PieceType, victim: PieceType) -> MoveScore {
         if mv.is_en_passant() {
             return self.mvvlva_ep as MoveScore;
         }
         debug_assert!(mv.promo().is_none(), "mvv_lva is only reached by non-promotion captures");
-        debug_assert!(usize::from(victim) < 8);
-        debug_assert!(usize::from(attacker) < 8);
-
-        let v = *crate::debug_index!(self.mvvlva_v, victim as usize);
-        let a = *crate::debug_index!(self.mvvlva_a, attacker as usize);
+        debug_assert!(usize::from(victim) < self.mvvlva_v.len());
+        debug_assert!(usize::from(attacker) < self.mvvlva_a.len());
+        let v = *debug_index!(self.mvvlva_v, victim as usize);
+        let a = *debug_index!(self.mvvlva_a, attacker as usize);
         (v - a) as MoveScore
     }
 
@@ -512,7 +502,7 @@ impl MovePicker {
         self.gen_piece_quiets::<{ PieceType::Rook }>(board, rows, us, empty, occ, history);
         self.gen_piece_quiets::<{ PieceType::Queen }>(board, rows, us, empty, occ, history);
         self.gen_piece_quiets::<{ PieceType::King }>(board, rows, us, empty, occ, history);
-        self.gen_castling(board, us, occ, history);
+        board.for_each_castle(board.stm, |mv| self.add_quiet(board, mv, history));
     }
 
     #[inline]
@@ -524,31 +514,29 @@ impl MovePicker {
     #[inline(always)]
     fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
-        let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.cont1, self.cont2, self.cont4);
-        // Combined history values stay well inside [-32768, 32768] in practice.
-        // Soft-gravity attractors prevent any single table from sitting near its
-        // ±16384 cap, so even with four tables the summed range never approaches
-        // the sort band edges. Measured on bench: zero saturation in ~11M quiets.
-        // Clamped at 63000 so the [64000, 65535] band stays exclusive for
-        // killers and promotions.
-        let mut sort_score = (score + 32768).clamp(0, 63000) as u32;
 
-        // Quiet promotions outrank all other quiet moves.
-        // Queen first (almost always best), then knight (fork potential),
-        // then rook/bishop (needed for correctness, rarely chosen).
-        if mv.is_promotion() {
-            sort_score = match mv.promo() {
-                Some(PieceType::Queen) => 65535,
-                Some(PieceType::Knight) => 65534,
-                Some(PieceType::Rook) => 65533,
-                _ => 65532,
-            };
+        // A promotion or a killer outranks any history score, so it takes a fixed band. The
+        // knight sits above rook and bishop because its fork is the underpromotion that wins.
+        let sort_score = if mv.is_promotion() {
+            match mv.promo() {
+                Some(PieceType::Queen) => PROMO_Q_SCORE,
+                Some(PieceType::Knight) => PROMO_N_SCORE,
+                Some(PieceType::Rook) => PROMO_R_SCORE,
+                _ => PROMO_B_SCORE,
+            }
         } else if mv == self.killers[0] {
-            sort_score = 65000;
+            KILLER_SCORES[0]
         } else if mv == self.killers[1] {
-            sort_score = 64000;
-        }
-        self.write_packed((sort_score << 16) | (mv.inner() as u32));
+            KILLER_SCORES[1]
+        } else {
+            let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.cont1, self.cont2, self.cont4);
+            // Four tables sum here and the clamp still never fires: soft-gravity attractors
+            // keep each one away from its own ±16384 cap. Measured on bench, zero saturation
+            // in ~11M quiets.
+            (score + SORT_BIAS).clamp(0, QUIET_SCORE_MAX) as u32
+        };
+
+        self.write_packed(pack(sort_score, mv));
     }
 
     /// Emit all four quiet promotions for a single pawn push.
@@ -611,67 +599,6 @@ impl MovePicker {
         }
     }
 
-    #[inline]
-    fn gen_castling(&mut self, board: &Position, us: Bitboard, occ: Bitboard, history: &History) {
-        let king_bb = board.role_bb[PieceType::King] & us;
-        if king_bb.is_empty() {
-            return;
-        }
-
-        let stm = board.stm;
-        let ksq = king_bb.lsb();
-        let opp = stm.opposite();
-
-        let (oo_mask, ooo_mask, ks_idx, qs_idx) =
-            if stm == Color::White { (WHITE_OO, WHITE_OOO, 0, 1) } else { (BLACK_OO, BLACK_OOO, 2, 3) };
-
-        // Kingside
-        if (board.castling_rights & oo_mask) != 0 {
-            let rsq = board.castling_rooks[ks_idx];
-            let (data, checks, empty_mask) = if stm == Color::White {
-                (&CASTLE_W_KS, &CASTLE_W_KS_CHECK, W_OO_EMPTY)
-            } else {
-                (&CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY)
-            };
-            self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
-        }
-
-        // Queenside
-        if (board.castling_rights & ooo_mask) != 0 {
-            let rsq = board.castling_rooks[qs_idx];
-            let (data, checks, empty_mask) = if stm == Color::White {
-                (&CASTLE_W_QS, &CASTLE_W_QS_CHECK, W_OOO_EMPTY)
-            } else {
-                (&CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY)
-            };
-            self.try_castle(board, occ, ksq, rsq, data, checks, empty_mask, opp, Move::CASTLE, history);
-        }
-    }
-
-    /// Validate and emit a single castling move.
-    ///
-    /// `data` layout: `[king_origin, rook_origin, king_dest, rook_dest]`.
-    /// Standard chess takes the fast path (single bitboard AND for emptiness);
-    /// Chess960 falls through to the general per-square walk.
-    #[allow(clippy::too_many_arguments)]
-    fn try_castle(
-        &mut self,
-        board: &Position,
-        occ: Bitboard,
-        ksq: Square,
-        rsq: Square,
-        data: &[u8; 4],
-        check_sqs: &[u8],
-        empty_mask: Bitboard,
-        opp: Color,
-        flag: u16,
-        history: &History,
-    ) {
-        if board.is_castle_legal(occ, ksq, rsq, data, check_sqs, empty_mask, opp) {
-            self.add_quiet(board, Move::new(ksq, rsq, flag), history);
-        }
-    }
-
     /// Extracts the move from the packed item at `i`.
     #[inline(always)]
     unsafe fn read_move(&self, i: usize) -> Move {
@@ -695,14 +622,13 @@ impl MovePicker {
         }
     }
 
-    /// A slider's row is already what the probe would recompute, so the store
-    /// answers here and the magics stay for the leapers: a row costs the
-    /// mailbox load before the row load, where `atk_knight` is the load.
+    /// Sliders read precomputed attacks from the row store, bypassing magic bitboards.
+    /// Leapers (`atk_knight`) use direct lookups instead to avoid the mailbox-then-row
+    /// double load.
     ///
-    /// The fallback is not dead code. The rows are derived data and a square
-    /// the position calls occupied must name a slot, but nothing in the type
-    /// system says so, and a store that disagreed would otherwise generate from
-    /// an empty row.
+    /// The fallback is not dead code. Row data is derived state; because the type
+    /// system cannot enforce board-store coherence, the fallback prevents generating
+    /// attacks from an empty row if the store desynchronizes.
     #[cfg(not(feature = "nostore"))]
     #[inline(always)]
     fn slider_attacks<const PT: PieceType>(rows: &XorBoard, from: Square, occ: Bitboard) -> Bitboard {
@@ -725,6 +651,81 @@ impl MovePicker {
             PieceType::Rook => atk_rook(from, occ),
             PieceType::Queen => atk_bishop(from, occ) | atk_rook(from, occ),
             _ => Bitboard(0),
+        }
+    }
+}
+
+/// Sort score in the high half, move in the low, so an ascending integer sort orders by
+/// score.
+#[inline(always)]
+fn pack(sort_score: u32, mv: Move) -> u32 {
+    debug_assert!(sort_score <= u32::from(u16::MAX), "sort score outside the packed band");
+    (sort_score << 16) | u32::from(mv.inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, atomic::AtomicBool},
+        time::Instant,
+    };
+
+    use super::*;
+    use crate::{
+        core::board::{STARTPOS, xorboard::XorBoard},
+        engine::{movegen::gen_pseudo_moves, search::Limits, search_params::SearchParams},
+    };
+
+    #[cfg(not(feature = "nostore"))]
+    fn rows(store: &XorBoard) -> Rows<'_> { store }
+
+    #[cfg(feature = "nostore")]
+    fn rows(_store: &XorBoard) -> Rows<'static> { core::marker::PhantomData }
+
+    #[test]
+    fn every_stage_together_yields_what_movegen_does() {
+        const FENS: [&str; 6] = [
+            STARTPOS,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
+            "1rqbkrbn/1ppppp1p/1n6/p1N3p1/8/2P4P/PP1PPPP1/1RQBKRBN w FBfb - 0 1",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        ];
+
+        let cfg = SearchConfig::new(
+            Limits { silent: true, ..Default::default() },
+            Instant::now(),
+            Arc::new(AtomicBool::new(false)),
+            0,
+            SearchParams::default(),
+        );
+
+        let history = History::new();
+
+        for fen in FENS {
+            let board = Position::from_fen(fen);
+            let store = XorBoard::new(&board);
+            let mut picker = MovePicker::new(
+                None,
+                &cfg,
+                Pins::new(&board),
+                [Move::null(); 2],
+                Bitboard(0),
+                ContContext::default(),
+                ContContext::default(),
+                ContContext::default(),
+            );
+
+            let mut picked = Vec::new();
+            while let Some(mv) = picker.next(&board, rows(&store), &history) {
+                picked.push(mv.inner());
+            }
+
+            picked.sort_unstable();
+            let mut expected: Vec<u16> = gen_pseudo_moves(&board).iter().map(|mv| mv.inner()).collect();
+            expected.sort_unstable();
+            assert_eq!(picked, expected, "{fen}");
         }
     }
 }

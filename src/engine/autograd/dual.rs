@@ -1,17 +1,19 @@
-//! Forward-mode AD via dual numbers for the HCE eval graph.
+//! Forward-mode automatic differentiation via dual numbers for the HCE evaluation graph.
 //!
-//! Tunable inputs are the 2 accumulator lanes plus every EvalParams weight.
-//! Each dual number carries one partial per input in `[f32; DUAL_N]`, where
-//! `DUAL_N` is derived from the param count, so adding a term grows it for free.
+//! # Parameters
+//! Differentiates with respect to the two accumulator lanes and all [`EvalParams`] weights.
+//! Dual numbers store partial derivatives in a `[f32; DUAL_N]` array, sized at compile time
+//! from the total parameter count.
 //!
-//! Because the eval is linear in its parameters, the production training loop uses
-//! `eval_linear_grad`: direct feature extraction, ~30× cheaper. This dual path is
-//! the correctness oracle: run both, compare, any disagreement means the
-//! hand-derived gradient has a bug.
+//! # Purpose
+//! Serves as a reference implementation (oracle) for testing. Because the evaluation is
+//! linear in its parameters, production training uses `eval_linear_grad` (direct feature
+//! extraction, ~30× cheaper). Any divergence between the two indicates a bug in the
+//! analytical gradient.
 //!
-//! An `active` flag marks whether a node carries any gradient. A constant has
-//! `active = false`, so an operator with a constant operand skips the gradient
-//! chunk loop entirely.
+//! # Implementation Details
+//! Values track an `active` flag to indicate non-zero derivatives. Operations with constant
+//! operands bypass gradient propagation entirely.
 
 use std::{
     fmt,
@@ -25,8 +27,6 @@ use crate::{core::defs::TOTAL_PHASE, engine::eval_params, weave::Vf32x8};
 /// of 8 for the AVX2 chunk loop. Auto-grows when an eval term is added.
 pub const DUAL_N: usize = (eval_params::DUAL_SLOTS + 7) & !7;
 
-/// A dual number: value + gradient vector + active flag.
-///
 /// `active` is `false` exactly when every gradient slot is zero (a constant),
 /// which lets the operators skip gradient work in 𝒪(1).
 #[derive(Clone, Copy)]
@@ -39,18 +39,10 @@ pub struct DualNode {
 
 impl DualNode {
     #[inline(always)]
-    pub fn floor(self) -> Self {
-        // Straight-Through Estimator: floor is a staircase, flat between integers,
-        // gradient zero almost everywhere, so pass the upstream gradient through
-        // untouched and let training see past the quantization.
-        Self { val: self.val.floor(), grad: self.grad, active: self.active }
-    }
+    pub fn floor(self) -> Self { Self { val: self.val.floor(), grad: self.grad, active: self.active } }
 
-    /// Constant: zero gradient, no active slots.
     #[inline(always)]
-    pub fn constant(val: f64) -> Self {
-        Self { grad: [0.0; DUAL_N], val, active: false }
-    }
+    pub fn constant(val: f64) -> Self { Self { grad: [0.0; DUAL_N], val, active: false } }
 
     /// Seed a dual variable; `grad[idx] = 1.0`, active bit set.
     #[inline(always)]
@@ -60,26 +52,13 @@ impl DualNode {
         Self { grad, val, active: true }
     }
 
-    /// Zero value, zero gradient.
     #[inline(always)]
-    pub fn zero() -> Self {
-        Self { grad: [0.0; DUAL_N], val: 0.0, active: false }
-    }
+    pub fn zero() -> Self { Self { grad: [0.0; DUAL_N], val: 0.0, active: false } }
 }
 
 impl fmt::Debug for DualNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dual({:.4}, active={})", self.val, self.active)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "Dual({:.4}, active={})", self.val, self.active) }
 }
-
-// Every operator short-circuits on !active: a constant operand carries no gradient,
-// so its chunk loop is skipped outright. Roughly half the eval's operations have a
-// constant operand, so this is the common path, not a rare one.
-//
-// The gradient loop itself lives in grad_map1/grad_map2: DUAL_N / 8 AVX2 chunks of
-// 8 f32 behind one audited unsafe surface, each operator supplying just its
-// chain-rule formula as a closure.
 
 /// Map `f` lane-wise across two gradient vectors into `out`, in `DUAL_N / 8`
 /// chunks of 8 f32. The single unsafe surface every binary operator's gradient shares.
@@ -135,7 +114,6 @@ impl Add for DualNode {
         }
 
         let mut grad = [0.0f32; DUAL_N];
-
         if self.active && rhs.active {
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| ga + gb);
         } else if self.active {
@@ -143,7 +121,6 @@ impl Add for DualNode {
         } else {
             grad.copy_from_slice(&rhs.grad);
         }
-
         Self { grad, val, active }
     }
 }
@@ -162,7 +139,6 @@ impl Sub for DualNode {
         }
 
         let mut grad = [0.0f32; DUAL_N];
-
         if self.active && rhs.active {
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| ga - gb);
         } else if self.active {
@@ -170,7 +146,6 @@ impl Sub for DualNode {
         } else {
             grad_map1(&rhs.grad, &mut grad, |gb| Vf32x8::zero() - gb);
         }
-
         Self { grad, val, active }
     }
 }
@@ -192,7 +167,6 @@ impl Mul for DualNode {
         let b = rhs.val as f32;
 
         let mut grad = [0.0f32; DUAL_N];
-
         if self.active && rhs.active {
             let (va, vb) = (Vf32x8::splat(a), Vf32x8::splat(b));
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| vb * ga + va * gb);
@@ -203,7 +177,6 @@ impl Mul for DualNode {
             let va = Vf32x8::splat(a);
             grad_map1(&rhs.grad, &mut grad, |gb| va * gb);
         }
-
         Self { grad, val, active }
     }
 }
@@ -226,7 +199,6 @@ impl Div for DualNode {
         let a = self.val as f32;
 
         let mut grad = [0.0f32; DUAL_N];
-
         if self.active && rhs.active {
             let (va, vb, vb2) = (Vf32x8::splat(a), Vf32x8::splat(b), Vf32x8::splat(b2));
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| (vb * ga - va * gb) / vb2);
@@ -237,7 +209,6 @@ impl Div for DualNode {
             let (va, vb2) = (Vf32x8::splat(-a), Vf32x8::splat(b2));
             grad_map1(&rhs.grad, &mut grad, |gb| (va * gb) / vb2);
         }
-
         Self { grad, val, active }
     }
 }
@@ -254,7 +225,6 @@ impl Neg for DualNode {
         }
 
         let mut grad = [0.0f32; DUAL_N];
-
         grad_map1(&self.grad, &mut grad, |ga| Vf32x8::zero() - ga);
         Self { grad, val: -self.val, active: self.active }
     }
@@ -284,7 +254,6 @@ impl EvalMath for DualNode {
         DualVec4(out)
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
     fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4 {
         let mut out = [DualNode::zero(); 4];
@@ -306,58 +275,37 @@ impl EvalMath for DualNode {
     }
 
     #[inline(always)]
-    fn zero() -> Self {
-        DualNode::zero()
-    }
+    fn zero() -> Self { DualNode::zero() }
 
     #[inline(always)]
-    fn new(val: f64) -> Self {
-        DualNode::constant(val)
-    }
+    fn new(val: f64) -> Self { DualNode::constant(val) }
 
     #[inline(always)]
-    fn from_i32(val: i32) -> Self {
-        DualNode::constant(f64::from(val))
-    }
+    fn from_i32(val: i32) -> Self { DualNode::constant(f64::from(val)) }
 
     #[inline(always)]
-    fn max(self, other: Self) -> Self {
-        if self.val >= other.val { self } else { other }
-    }
+    fn max(self, other: Self) -> Self { if self.val >= other.val { self } else { other } }
 
     #[inline(always)]
-    fn min(self, other: Self) -> Self {
-        if self.val <= other.val { self } else { other }
-    }
+    fn min(self, other: Self) -> Self { if self.val <= other.val { self } else { other } }
 
     #[inline(always)]
-    fn abs(self) -> Self {
-        if self.val < 0.0 { -self } else { self }
-    }
+    fn abs(self) -> Self { if self.val < 0.0 { -self } else { self } }
 
     #[inline(always)]
-    fn to_i32(self) -> i32 {
-        self.val as i32
-    }
+    fn to_i32(self) -> i32 { self.val as i32 }
 
     #[inline(always)]
-    fn to_f64(self) -> f64 {
-        self.val
-    }
+    fn to_f64(self) -> f64 { self.val }
 
     #[inline(always)]
-    fn trunc(self) -> Self {
-        Self { val: self.val.trunc(), grad: self.grad, active: self.active }
-    }
+    fn trunc(self) -> Self { Self { val: self.val.trunc(), grad: self.grad, active: self.active } }
 
     #[inline(always)]
     fn math_clamp(self, min: Self, max: Self) -> Self {
-        // Pinned to a bound, the output is flat in every input: gradient zero, node
-        // constant. Only the pass-through interior carries gradient.
         if self.val <= min.val {
             return Self { val: min.val, grad: [0.0; DUAL_N], active: false };
         }
-
         if self.val >= max.val {
             return Self { val: max.val, grad: [0.0; DUAL_N], active: false };
         }
@@ -418,9 +366,7 @@ impl EnvVec4 for DualVec4 {
     type Vec8 = DualVec8;
 
     #[inline(always)]
-    fn zero() -> Self {
-        DualVec4([DualNode::zero(); 4])
-    }
+    fn zero() -> Self { DualVec4([DualNode::zero(); 4]) }
 
     #[inline(always)]
     fn splat(val: i32) -> Self {
@@ -429,14 +375,10 @@ impl EnvVec4 for DualVec4 {
     }
 
     #[inline(always)]
-    fn from_lanes(a: DualNode, b: DualNode, c: DualNode, d: DualNode) -> Self {
-        DualVec4([a, b, c, d])
-    }
+    fn from_lanes(a: DualNode, b: DualNode, c: DualNode, d: DualNode) -> Self { DualVec4([a, b, c, d]) }
 
     #[inline(always)]
-    fn extract<const N: i32>(self) -> DualNode {
-        self.0[N as usize]
-    }
+    fn extract<const N: i32>(self) -> DualNode { self.0[N as usize] }
 
     #[inline(always)]
     fn srai<const N: i32>(self) -> Self {
@@ -476,9 +418,7 @@ impl EnvVec8 for DualVec8 {
     type Vec4 = DualVec4;
 
     #[inline(always)]
-    fn zero() -> Self {
-        DualVec8([DualNode::zero(); 8])
-    }
+    fn zero() -> Self { DualVec8([DualNode::zero(); 8]) }
 
     #[inline(always)]
     fn splat(val: i16) -> Self {
@@ -497,12 +437,8 @@ impl EnvVec8 for DualVec8 {
     }
 
     #[inline(always)]
-    fn load_i32_4(self) -> DualVec4 {
-        DualVec4([self.0[0], self.0[1], self.0[2], self.0[3]])
-    }
+    fn load_i32_4(self) -> DualVec4 { DualVec4([self.0[0], self.0[1], self.0[2], self.0[3]]) }
 
     #[inline(always)]
-    fn extract<const N: i32>(self) -> DualNode {
-        self.0[N as usize]
-    }
+    fn extract<const N: i32>(self) -> DualNode { self.0[N as usize] }
 }

@@ -1,7 +1,8 @@
 //! Universal Chess Interface (UCI) protocol implementation.
 //!
-//! Handles standard I/O communication, parsing GUI commands into internal engine state,
-//! and formatting search results for the GUI.
+//! Commands arrive on stdin, are dispatched by `process_command`, and mutate one
+//! `UciState`. A search never runs on this thread: `go` hands the position to the
+//! search worker and returns, so `stop` and `isready` still get answered.
 
 use std::{
     io::{self, Write},
@@ -65,6 +66,8 @@ pub struct UciState {
     board: Position,
     accumulator: Vi16x8,
     history: Vec<u64>,
+    /// The move-ordering heuristic tables, carried across positions within a game
+    /// and reset by `ucinewgame`.
     persistent_history: History,
     tt: Arc<TranspositionTable>,
     stop: Arc<AtomicBool>,
@@ -220,8 +223,8 @@ pub fn run_commands(lines: &[String]) {
             break;
         }
 
-        // `go` hands the search to another thread and returns, so a `quit` on the
-        // next line would stop it before it reported. `cmd_go` raises the flag
+        // go hands the search to another thread and returns, so a quit on the
+        // next line would stop it before it reported. cmd_go raises the flag
         // before it sends, so this cannot miss the start of a search.
         while state.is_searching.load(Ordering::Relaxed) {
             thread::yield_now();
@@ -235,27 +238,31 @@ pub fn run_commands(lines: &[String]) {
 
 pub fn run_cli_go(args: &[String]) {
     let state = UciState::new();
-    let board = state.board;
-    let stop = state.stop.clone();
-    let is_searching = state.is_searching.clone();
-
-    let overhead = state.overhead;
-
     let mut iter = args.iter().map(String::as_str).peekable();
-    let limits = parse_go_limits(&board, &mut iter);
-    let display = state.search_display();
+    let limits = parse_go_limits(&state.board, &mut iter);
 
-    let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
+    dispatch_search(&state, limits);
+
+    while state.is_searching.load(Ordering::Relaxed) {
+        thread::yield_now();
+    }
+}
+
+/// Build the config for `limits` and hand the root position to the search worker.
+/// Returns as soon as it is sent; waiting for the result is the caller's business.
+fn dispatch_search(state: &UciState, limits: Limits) {
+    let display = state.search_display();
+    let mut cfg =
+        SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, display, SearchParams::default());
     cfg.threads = state.threads;
     cfg.node_slots = SearchConfig::node_slots(state.threads);
 
-    let search_tx = state.search_tx.clone();
-
-    is_searching.store(true, Ordering::Relaxed);
-    search_tx
+    state.is_searching.store(true, Ordering::Relaxed);
+    state
+        .search_tx
         .send(SearchCommand::Go(
             Box::new(cfg),
-            board,
+            state.board,
             state.history.clone(),
             state.persistent_history.clone(),
             state.tt.clone(),
@@ -263,10 +270,6 @@ pub fn run_cli_go(args: &[String]) {
             state.smp_pool.clone(),
         ))
         .unwrap();
-
-    while is_searching.load(Ordering::Relaxed) {
-        thread::yield_now();
-    }
 }
 
 pub fn parse_go_limits<'a, I>(board: &Position, tokens: &mut Peekable<I>) -> Limits
@@ -346,9 +349,14 @@ pub fn print_help(use_ansi: bool) {
     h.command("key", "Print Zobrist hash");
     h.command_args("bench", "<N>", "Benchmark to depth N");
     h.command_args("divide", "<N>", "Perft divide test");
+    #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
+    h.command("spsa", "Print the tunable search params as an SPSA table");
+    #[cfg(feature = "datagen")]
     h.command("datagen", "Generate self-play training data");
+    #[cfg(feature = "dataset")]
     h.command("dataset", "Manage datasets (inspect, info, encode)");
+    #[cfg(feature = "datagen")]
     h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
@@ -439,17 +447,15 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "isready" => println!("readyok"),
         "ucinewgame" => {
             state.stop_search();
-            state.is_searching.store(false, Ordering::Relaxed);
             state.persistent_history.clear();
-            state.tt.clear(state.threads);
+            // SAFETY: stop_search spins until the worker clears is_searching, which it
+            // does only after pool.wait() parks every helper, so nothing can probe the table.
+            unsafe { state.tt.clear(state.threads) };
             state.load_position(Position::from_fen(STARTPOS));
         },
         "position" => cmd_position(state, &mut tokens),
         "go" => cmd_go(state, &mut tokens),
-        "stop" => {
-            state.stop_search();
-            state.is_searching.store(false, Ordering::Relaxed);
-        },
+        "stop" => state.stop_search(),
 
         "setoption" => cmd_setoption(state, &mut tokens),
         "license" => print_license(),
@@ -468,9 +474,12 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "bench" => tools::bench::run(parse_val(&mut tokens), 16),
-        "divide" => tools::perft::run(&state.board, parse_val(&mut tokens), true),
+        "divide" => tools::perft::run(&state.board, parse_default(&mut tokens, 5), true),
+        #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(0),
+        #[cfg(feature = "datagen")]
         "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        #[cfg(feature = "datagen")]
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {
@@ -562,36 +571,8 @@ where I: Iterator<Item = &'a str> {
 fn cmd_go<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     state.stop_search();
-
     let limits = parse_go_limits(&state.board, tokens);
-
-    let board = state.board;
-    let stop = state.stop.clone();
-    let history = state.history.clone();
-    let overhead = state.overhead;
-
-    let start_time = Instant::now();
-    let display = state.search_display();
-    let mut cfg = SearchConfig::new_full(limits, start_time, stop, overhead, display, SearchParams::default());
-    cfg.threads = state.threads;
-    cfg.node_slots = SearchConfig::node_slots(state.threads);
-
-    state.is_searching.store(true, Ordering::Relaxed);
-
-    // persistent_history carries the move-ordering heuristic table across
-    // positions within a game; it's reset by ucinewgame.
-    state
-        .search_tx
-        .send(SearchCommand::Go(
-            Box::new(cfg),
-            board,
-            history,
-            state.persistent_history.clone(),
-            state.tt.clone(),
-            state.history_tx.clone(),
-            state.smp_pool.clone(),
-        ))
-        .unwrap();
+    dispatch_search(state, limits);
 }
 
 fn cmd_setoption<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
@@ -677,18 +658,26 @@ where
     T: FromStr + Default,
     I: Iterator<Item = &'a str>,
 {
+    parse_default(tokens, T::default())
+}
+
+/// The next token, or `fallback` when it is missing or unparsable. Peeks first, so
+/// a token that isn't a value for this key stays for whoever it does belong to.
+fn parse_default<'a, T, I>(tokens: &mut Peekable<I>, fallback: T) -> T
+where
+    T: FromStr,
+    I: Iterator<Item = &'a str>,
+{
     if let Some(token) = tokens.peek()
         && let Ok(val) = token.parse()
     {
         tokens.next();
         return val;
     }
-    T::default()
+    fallback
 }
 
-fn parse_bool(value: &str) -> bool {
-    matches!(value.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1")
-}
+fn parse_bool(value: &str) -> bool { matches!(value.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1") }
 
 fn cmd_isatty<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {

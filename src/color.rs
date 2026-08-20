@@ -1,24 +1,61 @@
-//! Perceptual color: sRGB → OkLab/OkLCH for gradients that never muddy.
+//! Perceptual color: sRGB → OkLab/OkLCH
 //!
 //! Two interpolation paths, both perceptual so no ramp dips through gray at its
 //! midpoint; `advantage` sweeps authored OkLCH waypoints (hue-aware) for the
-//! win/loss gradient, and `mix` blends any two sRGB colors through OkLab. The
-//! engine's pretty-print and the search tuner both draw from here, so the
-//! colors can't drift apart.
+//! win/loss gradient, and `mix` blends any two sRGB colors through OkLab.
 
 pub type Rgb = (u8, u8, u8);
 
 pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
+/// Erase to end of line, leaving what sits before the cursor.
+pub const CLEAR_LINE: &str = "\x1b[K";
 
-/// Dead-level neutral: the color of exactly zero advantage → `+0.00`.
-/// Engine eval and tuner Elo both paint their zero state with it.
-pub const LEVEL: Rgb = (120, 170, 220);
+/// Every hue the engine and the tuner draw with, as a value and as a ready escape:
+/// `mix` and the ramps want the triple, a format string wants the escape. Roles stay
+/// with their users, so `tui.rs` writes `const WIN: Rgb = color::JADE;`.
+macro_rules! palette {
+    ($( $name:ident / $pen:ident = $r:literal, $g:literal, $b:literal; $note:literal )*) => {
+        $(
+            #[doc = $note]
+            pub const $name: Rgb = ($r, $g, $b);
+            #[doc = $note]
+            pub const $pen: &str = concat!("\x1b[38;2;", $r, ";", $g, ";", $b, "m");
+        )*
+    };
+}
 
-/// Branding gold: table headers and field labels.
-pub const GOLD: Rgb = (218, 165, 32);
+#[rustfmt::skip]
+palette! {
+    LEVEL  / LEVEL_PEN  = 120, 170, 220; "cool blue, for a score at exactly zero"
+    GOLD   / GOLD_PEN   = 218, 165,  32; "goldenrod"
+    AMBER  / AMBER_PEN  = 255, 215,   0; "bright gold"
+    STEEL  / STEEL_PEN  = 176, 196, 222; "light steel blue"
+    SLATE  / SLATE_PEN  = 119, 136, 153; "grey blue"
+    TEAL   / TEAL_PEN   =  72, 209, 204; "bright teal"
+    MINT   / MINT_PEN   = 122, 205, 196; "muted teal"
+    JADE   / JADE_PEN   = 100, 200, 120; "soft green"
+    CORAL  / CORAL_PEN  = 224, 105, 100; "soft red"
+    MAUVE  / MAUVE_PEN  = 151, 125, 191; "muted purple"
+    IVORY  / IVORY_PEN  = 246, 238, 218; "warm off-white"
+    HAZE   / HAZE_PEN   = 139, 154, 171; "cool grey blue"
+    TAUPE  / TAUPE_PEN  = 150, 140, 128; "muted taupe"
+    ASH    / ASH_PEN    = 118, 112, 104; "dark taupe"
+    GREY   / GREY_PEN   = 130, 130, 130; "neutral grey"
+    TRACK  / TRACK_PEN  =  58,  62,  72; "near-black, for the empty half of a bar"
+    FLOOR  / FLOOR_PEN  = 112, 120, 134; "the faintest fill a bar shows"
+}
 
-// Advantage-gradient waypoints as (L, C, H°). Authored in OkLCH, never flattened.
+// The ramp's ends and midpoint, so a datagen badge and an eval bar agree on what
+// green and red mean. A test pins them to advantage().
+#[rustfmt::skip]
+palette! {
+    OK    / OK_PEN    =  36, 200, 140; "the ramp's win end"
+    WARN  / WARN_PEN  = 220, 187,  80; "the ramp's midpoint"
+    ALARM / ALARM_PEN = 225,  89,  91; "the ramp's loss end"
+}
+
+// Advantage-gradient waypoints as (L, C, H°).
 const WIN_GOLD: (f64, f64, f64) = (0.80, 0.13, 92.0);
 const WIN_GREEN: (f64, f64, f64) = (0.76, 0.16, 145.0);
 const WIN_DEEP: (f64, f64, f64) = (0.74, 0.155, 162.0);
@@ -52,15 +89,13 @@ pub fn ansi_fg(c: Rgb) -> String {
 }
 
 /// Write an ANSI truecolor foreground escape for `c` into `w`.
-pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result {
-    write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
-}
+pub fn write_ansi_fg(w: &mut impl core::fmt::Write, c: Rgb) -> core::fmt::Result { write!(w, "\x1b[38;2;{};{};{}m", c.0, c.1, c.2) }
 
 /// Drop the escapes from colored text bound for a file or a pipe.
 ///
-/// Only what this module writes: `ESC [` params `m`, and `ESC [ K`. Anything
-/// else keeps its text, escape included, since scanning on for a terminator
-/// would swallow the prose up to the next one.
+/// Only what this module writes: `ESC [` params `m`, and `ESC [ K`. Anything else
+/// ends the scan and passes through with its escape and everything after it, since
+/// hunting on for a terminator would swallow the prose up to the next one.
 #[must_use]
 pub fn strip(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -72,8 +107,6 @@ pub fn strip(text: &str) -> String {
 
         let params = rest.strip_prefix("\x1b[").unwrap_or_default();
         let Some(end) = params.find(|c: char| !c.is_ascii_digit() && c != ';') else { break };
-        // Narrower than the CSI grammar on purpose: over-accepting eats prose,
-        // under-accepting leaves an escape in a log.
         if !matches!(params.as_bytes()[end], b'm' | b'K') {
             break;
         }
@@ -123,7 +156,6 @@ fn oklab_to_srgb(l: f64, a: f64, b: f64) -> Rgb {
 /// sRGB → OkLab.
 fn srgb_to_oklab(c: Rgb) -> (f64, f64, f64) {
     let (r, g, b) = (decode(c.0), decode(c.1), decode(c.2));
-
     let l = 0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b;
     let m = 0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b;
     let s = 0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b;
@@ -155,18 +187,27 @@ mod tests {
 
     #[test]
     fn strip_leaves_only_the_text() {
-        let colored = format!("{}Gauge:{} 0.739x", ansi_fg((218, 165, 32)), "\x1b[0m");
-
+        let colored = format!("{}Gauge:{RESET} 0.739x", ansi_fg(GOLD));
         assert_eq!(strip(&colored), "Gauge: 0.739x");
         assert_eq!(strip("nothing to drop"), "nothing to drop");
         assert_eq!(strip(""), "");
     }
 
-    /// An escape with no terminator would otherwise swallow the rest of the line,
-    /// or the words up to whatever letter the prose reaches first.
     #[test]
     fn strip_keeps_text_after_an_unterminated_escape() {
         assert_eq!(strip("before\x1b[38;2;1;2;3after"), "before\x1b[38;2;1;2;3after");
         assert_eq!(strip("before\x1b[38;2;1;2;3 more"), "before\x1b[38;2;1;2;3 more");
+    }
+}
+
+#[cfg(test)]
+mod status_pens {
+    use super::{ALARM_PEN, OK_PEN, WARN_PEN, advantage, ansi_fg};
+
+    #[test]
+    fn the_status_pens_match_the_advantage_ramp() {
+        assert_eq!(OK_PEN, ansi_fg(advantage(1.0)), "OK_PEN");
+        assert_eq!(WARN_PEN, ansi_fg(advantage(0.0)), "WARN_PEN");
+        assert_eq!(ALARM_PEN, ansi_fg(advantage(-1.0)), "ALARM_PEN");
     }
 }

@@ -59,9 +59,9 @@ impl LazySmpPool {
                     .recv(|(config, board, history)| {
                         let mut local_cfg = config.clone();
                         local_cfg.thread_id = helper_id;
-                        let mut htable = History::new();
+                        let mut history_table = History::new();
                         let mut ctx = Searcher::new(&local_cfg, board, history, tt.clone());
-                        ctx.iterative_deepening(&mut htable);
+                        ctx.iterative_deepening(&mut history_table);
                     })
                     .is_some()
                 {}
@@ -75,10 +75,10 @@ impl LazySmpPool {
             return;
         }
 
-        let mut hcfg = (*cfg).clone();
+        let mut helper_cfg = (*cfg).clone();
 
-        hcfg.limits.silent = true;
-        self.tx.send((hcfg, board, history.to_vec()));
+        helper_cfg.limits.silent = true;
+        self.tx.send((helper_cfg, board, history.to_vec()));
     }
 
     pub fn wait(&self) {

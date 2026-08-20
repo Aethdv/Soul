@@ -25,12 +25,9 @@ macro_rules! debug_index {
 
 /// Unchecked mutated indexing in release, bounds-checked in debug.
 ///
-/// Why not `get_unchecked_mut`?
-/// Both produce a `&mut T`, but this macro derives the reference through `as_mut_ptr()`
-/// (an immutable borrow of the field to obtain a raw pointer) followed by pointer arithmetic
-/// and dereference. LLVM sees the `&mut T` as originating from a local pointer,
-/// not directly from a field borrow, which can avoid forcing reloads of sibling fields on
-/// every call, though whether this optimization fires depends on LLVM's aliasing analysis.
+/// The `&mut T` comes from `as_mut_ptr()` and pointer arithmetic rather than
+/// `get_unchecked_mut`, so LLVM sees it originating from a local pointer instead of a field
+/// borrow. That can spare reloads of sibling fields, where the aliasing analysis cooperates.
 ///
 /// Usage: `debug_index_mut!(collection, index)`
 #[macro_export]

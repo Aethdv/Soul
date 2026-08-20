@@ -1,7 +1,6 @@
 //! Unified error handling.
 //!
-//! Defines strongly typed error variants for FEN parsing, move application,
-//! option handling, and engine runtime faults.
+//! Typed error variants for FEN parsing, move application, and engine faults.
 
 use thiserror::Error;
 
@@ -69,30 +68,3 @@ impl EngineError {
         Self::SearchPanic(msg)
     }
 }
-
-/// Option parsing errors for setoption commands.
-#[derive(Debug, Error)]
-pub enum OptionError {
-    #[error("Unknown option: '{name}'")]
-    UnknownOption { name: String },
-    #[error("Invalid value '{value}' for option '{name}': {reason}")]
-    InvalidValue { name: String, value: String, reason: &'static str },
-    #[error("Missing value for option '{0}'")]
-    MissingValue(String),
-}
-
-/// Unified engine error type for Result returns.
-#[derive(Debug, Error)]
-pub enum SoulError {
-    #[error(transparent)]
-    Fen(#[from] FenError),
-    #[error(transparent)]
-    Move(#[from] MoveError),
-    #[error(transparent)]
-    Engine(#[from] EngineError),
-    #[error(transparent)]
-    Option(#[from] OptionError),
-}
-
-/// Convenient Result alias for engine operations.
-pub type SoulResult<T> = Result<T, SoulError>;

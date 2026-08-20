@@ -55,7 +55,6 @@ pub const fn mirror_sq(sq: usize) -> usize {
 const fn init_psqt() -> [AlignedTable; 14] {
     let mut tables = [AlignedTable([[0; 8]; 64]); 14];
     let mut pt = 0;
-
     while pt < 6 {
         let mg_w = MG_MATERIAL[pt];
         let eg_w = EG_MATERIAL[pt];
@@ -85,9 +84,7 @@ const fn init_psqt() -> [AlignedTable; 14] {
 }
 
 /// Saturating i32 → i16 cast.
-const fn clamp_i16(v: i32) -> i16 {
-    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
+const fn clamp_i16(v: i32) -> i16 { v.clamp(i16::MIN as i32, i16::MAX as i32) as i16 }
 
 #[inline]
 const fn get_raw_mg(pt: usize, sq64: usize) -> i32 {

@@ -88,7 +88,6 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
 pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.stm = pos.stm.opposite();
     let stm = pos.stm;
-
     if stm == Color::Black {
         pos.fullmove_number -= 1;
     }
@@ -124,10 +123,6 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
 }
 
 /// Incrementally updates the accumulator with PSQT vector deltas.
-///
-/// This is pure arithmetic over the position's read-only board state; nothing is mutated.
-/// Castling is handled as a clean four-delta update rather than
-/// the add-then-undo pattern, since we know the exact geometry up front.
 #[inline]
 pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
     let stm = pos.stm;
@@ -151,13 +146,8 @@ pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceT
     if captured != PieceType::None {
         *acc -= psqt::get_vec(captured, to, opp);
     } else if mv.is_en_passant() {
-        // The captured pawn is always exactly one rank from `to`:
-        //   White captures up   → victim is on rank(to)-1 → to ^ 8 subtracts 8.
-        //   Black captures down → victim is on rank(to)+1 → to ^ 8 adds 8.
-        //
-        // XOR-8 toggles bit 3, which equals ±8 in index space.
-        // The direction is always correct because the captured pawn occupies
-        // the rank that still has its bit-3 in the opposite state from `to`.
+        // The victim pawn sits one rank behind `to`.
+        // Toggling bit 3 (±8) maps rank 5 → 4 for White and rank 2 → 3 for Black.
         *acc -= psqt::get_vec(PieceType::Pawn, to ^ 8, opp);
     }
 }
@@ -179,15 +169,12 @@ pub fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceTy
     }
 }
 
-/// Routes one piece's Zobrist key into the correction key its type owns;
-/// pawns to `pawn_key`, knight/bishop to `minor_key`, rook/queen to `major_key`,
-/// king to neither. Mirrors the inline `hash` toggles in `make_move`;
-/// XOR is self-inverse, so the same call serves a piece leaving its origin
-/// and arriving on its destination.
+/// Routes one piece's Zobrist key into the correction key its type owns: pawns to
+/// `pawn_key`, knight and bishop to `minor_key`, rook and queen to `major_key`, king
+/// to none. XOR is self-inverse, so one call serves the departure and the arrival.
 #[inline(always)]
 fn toggle_corr_key(pos: &mut Position, pt: PieceType, color: Color, sq: Square) {
     let key = zobrist::key_piece(pt, color, sq);
-
     match pt {
         PieceType::Pawn => pos.pawn_key ^= key,
         PieceType::Knight | PieceType::Bishop => pos.minor_key ^= key,
@@ -252,10 +239,6 @@ fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm:
 }
 
 /// Revokes castling rights touched by the move's origin and destination.
-///
-/// A single combined AND handles king/rook departures (from-square)
-/// and rook captures (to-square). If anything changed, we XOR the old
-/// and new rights into the hash in one shot.
 #[inline]
 fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: Square, to: Square, old: u8) {
     if old == 0 {
@@ -303,7 +286,6 @@ fn refresh_en_passant(pos: &mut Position, mv: Move, from: Square, to: Square, ol
 
     if mv.is_double_push() {
         let ep_sq = Square(u8::midpoint(from.0, to.0));
-
         if pos.can_capture_ep(ep_sq, pos.stm) {
             pos.en_passant = Some(ep_sq);
             pos.hash ^= zobrist::key_ep(ep_sq);

@@ -31,12 +31,6 @@ pub fn atk_bishop(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
     (ne | nw | se | sw) & !generator
 }
 
-/// Queen attacks (all 8 directions).
-#[inline(always)]
-pub fn atk_queen(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
-    atk_rook(generator, empty) | atk_bishop(generator, empty)
-}
-
 /// Knight attacks.
 #[inline(always)]
 pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
@@ -60,18 +54,6 @@ pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
 pub fn atk_king(kings: Vu64x4) -> Vu64x4 {
     let attacks = kings | kings.shift_east() | kings.shift_west();
     (attacks | attacks.shift_north() | attacks.shift_south()) & !kings
-}
-
-/// White Pawn attacks: NW and NE.
-#[inline(always)]
-pub fn atk_pawn_w(pawns: Vu64x4) -> Vu64x4 {
-    pawns.shift_nw() | pawns.shift_ne()
-}
-
-/// Black Pawn attacks: SW and SE.
-#[inline(always)]
-pub fn atk_pawn_b(pawns: Vu64x4) -> Vu64x4 {
-    pawns.shift_sw() | pawns.shift_se()
 }
 
 /// All eight spatial influence surfaces, computed in two vectorized passes.
@@ -122,7 +104,7 @@ impl SpatialTensor {
             .0
             & !pinned_b;
 
-        let gen_ortho = Vu64x4::from_lanes(w_rq, b_rq, 0, 0); // Lanes: [W_direct, B_direct, unused, unused]
+        let gen_ortho = Vu64x4::from_lanes(w_rq, b_rq, 0, 0);
         let us_pcs_ortho = Vu64x4::from_lanes(w_pcs, b_pcs, 0, 0);
 
         let (gen_n, gen_s, gen_e, gen_w) = (
@@ -134,14 +116,11 @@ impl SpatialTensor {
 
         let ortho_direct = gen_n | gen_s | gen_e | gen_w;
 
-        // Computes "shadow" attacks that pass through exactly one friendly piece.
-        // The algorithm treats squares where direct attacks hit friendly pieces as
-        // NEW generators, then flood-fills from those points in the same direction.
+        // Computes orthogonal X-ray ("shadow") attacks passing through exactly one friendly piece.
         //
-        // This is highly efficient in SIMD because the first pass gen_n etc.
-        // already contains the occupancy-masked rays. Bitwise ANDing with us_pcs
-        // identifies all points where a friendly piece was hit, and fill_n(gen_n & us)
-        // continues the ray from those hit-points.
+        // Friendly pieces hit during the first pass (`gen_* & us_pcs_ortho`) serve as
+        // secondary generators. Refilling from these collision points continues the rays
+        // past the first blocker until the next obstruction.
         let ortho_xray = {
             let (n, s, e, w) = (
                 fill_north(gen_n & us_pcs_ortho, empty).shift_north(),
@@ -179,41 +158,25 @@ impl SpatialTensor {
         Self { ortho_direct, ortho_xray, diag_direct, diag_xray }
     }
     #[inline]
-    pub fn w_ortho_direct(&self) -> u64 {
-        self.ortho_direct.extract::<0>()
-    }
+    pub fn w_ortho_direct(&self) -> u64 { self.ortho_direct.extract::<0>() }
     #[inline]
-    pub fn b_ortho_direct(&self) -> u64 {
-        self.ortho_direct.extract::<1>()
-    }
+    pub fn b_ortho_direct(&self) -> u64 { self.ortho_direct.extract::<1>() }
 
     #[inline]
-    pub fn w_diag_direct(&self) -> u64 {
-        self.diag_direct.extract::<0>()
-    }
+    pub fn w_diag_direct(&self) -> u64 { self.diag_direct.extract::<0>() }
     #[inline]
-    pub fn b_diag_direct(&self) -> u64 {
-        self.diag_direct.extract::<1>()
-    }
+    pub fn b_diag_direct(&self) -> u64 { self.diag_direct.extract::<1>() }
 
     /// Squares white controls ONLY via shadow (battery/X-ray),
     /// strictly through exactly 1 own piece blocker.
     #[inline]
-    pub fn w_ortho_xray(&self) -> u64 {
-        self.ortho_xray.extract::<0>()
-    }
+    pub fn w_ortho_xray(&self) -> u64 { self.ortho_xray.extract::<0>() }
     #[inline]
-    pub fn b_ortho_xray(&self) -> u64 {
-        self.ortho_xray.extract::<1>()
-    }
+    pub fn b_ortho_xray(&self) -> u64 { self.ortho_xray.extract::<1>() }
     #[inline]
-    pub fn w_diag_xray(&self) -> u64 {
-        self.diag_xray.extract::<0>()
-    }
+    pub fn w_diag_xray(&self) -> u64 { self.diag_xray.extract::<0>() }
     #[inline]
-    pub fn b_diag_xray(&self) -> u64 {
-        self.diag_xray.extract::<1>()
-    }
+    pub fn b_diag_xray(&self) -> u64 { self.diag_xray.extract::<1>() }
 }
 
 #[cfg(test)]
@@ -226,11 +189,9 @@ mod tests {
         let pos = Position::from_fen("4k3/8/8/8/8/P7/8/R1N1K3 w - - 0 1");
         let st = SpatialTensor::compute(&pos, 0, 0);
         let xray = st.w_ortho_xray();
-
         let a4 = 1u64 << 24;
         let d1 = 1u64 << 3;
         let b3 = 1u64 << 17;
-
         assert!((xray & a4) != 0, "Should X-ray North from A3 to A4");
         assert!((xray & d1) != 0, "Should X-ray East from C1 to D1");
         assert!((xray & b3) == 0, "Phantom X-ray detected! A3 should not radiate East to B3");
@@ -240,12 +201,9 @@ mod tests {
     fn test_phantom_xray_bishop() {
         let pos = Position::from_fen("4k3/8/8/3p4/4P3/P7/8/R4K1B w - - 0 1");
         let st = SpatialTensor::compute(&pos, 0, 0);
-
         let d5 = 1u64 << (4 * 8 + 3); // 35
         let f5 = 1u64 << (4 * 8 + 5); // 37
-
         let diag_xray = st.w_diag_xray();
-
         assert!((diag_xray & d5) != 0, "Should X-ray NW from E4 to D5");
         assert!((diag_xray & f5) == 0, "Phantom X-ray detected! E4 should not radiate NE (only NW)");
     }
@@ -254,10 +212,8 @@ mod tests {
     fn test_self_occlusion() {
         let pos = Position::from_fen("4k3/8/8/8/8/R7/8/R3K3 w - - 0 1");
         let st = SpatialTensor::compute(&pos, 0, 0);
-
         let a3 = 1u64 << 16;
         let w_ortho_direct = st.w_ortho_direct();
-
         assert!((w_ortho_direct & a3) != 0, "Rook at A1 should defend Rook at A3");
     }
 }

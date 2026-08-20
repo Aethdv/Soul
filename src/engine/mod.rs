@@ -17,4 +17,5 @@ pub mod see;
 pub mod term;
 pub mod tm;
 pub mod tt;
+pub mod tui;
 pub mod wdl;

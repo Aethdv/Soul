@@ -22,7 +22,6 @@ const CASTLING_FEN: [(u8, usize, char, u8); 4] =
     [(WHITE_OO, 0, 'K', b'A'), (WHITE_OOO, 1, 'Q', b'A'), (BLACK_OO, 2, 'k', b'a'), (BLACK_OOO, 3, 'q', b'a')];
 
 /// Standard rook home squares.
-/// Indexed by the same slot order as [`CASTLING_FEN`].
 const STANDARD_ROOK_HOMES: [Square; 4] = [
     Square(7),  // h1: white O-O
     Square(0),  // a1: white O-O-O
@@ -156,12 +155,9 @@ impl Display for Fen<'_> {
 
 /// Produces the FEN string for the current position.
 ///
-/// In FRC mode, switches to Shredder-FEN castling notation when the rooks
-/// don't sit on their standard home files; otherwise `KQkq` would be ambiguous
-/// and couldn't round-trip faithfully.
-pub fn as_fen(pos: &Position) -> String {
-    Fen(pos).to_string()
-}
+/// FRC switches to Shredder-FEN castling notation once a rook sits off its standard
+/// file: `KQkq` cannot say which rook it means, and the FEN stops round-tripping.
+pub fn as_fen(pos: &Position) -> String { Fen(pos).to_string() }
 
 /// Prints a board diagram with evaluation and position metadata.
 pub fn pretty_print(pos: &Position) {
@@ -239,7 +235,6 @@ fn finish_position(mut pos: Position) -> Result<Position, FenError> {
     let them = us.opposite();
     let their_king_sq = (pos.role_bb[PieceType::King] & pos.side_bb[them]).lsb();
 
-    // is_attacked::<false> is the most efficient way to check this.
     if pos.is_attacked::<false>(their_king_sq, us, Bitboard::EMPTY) {
         return Err(FenError::IllegalCheck);
     }
@@ -280,9 +275,7 @@ fn has_standard_rook_homes(pos: &Position) -> bool {
 }
 
 /// Parses the piece-placement field (`rnbqkbnr/pppppppp/...`).
-///
-/// Walks the string rank-by-rank from the 8th rank down.
-/// Digits skip empty squares: letters place pieces. Slashes separate ranks.
+/// Letters place pieces, slashes separate ranks.
 fn parse_placement(pos: &mut Position, field: &str) -> Result<(), FenError> {
     let (mut rank, mut file): (i32, i32) = (7, 0);
     let mut rank_count: u8 = 1;
@@ -296,14 +289,12 @@ fn parse_placement(pos: &mut Position, field: &str) -> Result<(), FenError> {
                 rank -= 1;
                 file = 0;
                 rank_count += 1;
-
                 if rank < 0 {
                     return Err(FenError::TooManyRanks { rank: 0, count: rank_count });
                 }
             },
             '1'..='8' => {
                 file += (ch as u8 - b'0') as i32;
-
                 if file > 8 {
                     return Err(FenError::FileOverflow { rank: rank as u8, file: file as u8 });
                 }
@@ -358,22 +349,17 @@ fn parse_en_passant(pos: &mut Position, token: &str) -> Result<(), FenError> {
 ///   rank inward from the board edge.
 /// - Shredder-FEN (`AHah`): each letter directly names the rook's file,
 ///   disambiguating FRC positions where rooks can sit on any square.
-///
-/// For Shredder notation, king-side vs queen-side is inferred by comparing
-/// the rook's file to its king's file.
 fn parse_castling_rights(pos: &mut Position, token: &str) {
     let wk_file = king_file(pos, Color::White);
     let bk_file = king_file(pos, Color::Black);
 
     for ch in token.chars() {
         match ch {
-            // Standard: discover the rook by scanning from the board edge.
             'K' => assign_rook(pos, Color::White, WHITE_OO, 0, KINGSIDE_FILE, SEARCH_LEFT),
             'Q' => assign_rook(pos, Color::White, WHITE_OOO, 1, QUEENSIDE_FILE, SEARCH_RIGHT),
             'k' => assign_rook(pos, Color::Black, BLACK_OO, 2, KINGSIDE_FILE, SEARCH_LEFT),
             'q' => assign_rook(pos, Color::Black, BLACK_OOO, 3, QUEENSIDE_FILE, SEARCH_RIGHT),
 
-            // Shredder: file letter directly identifies the rook.
             'A'..='H' => {
                 let file = ch as u8 - b'A';
                 let (bit, slot) = if file < wk_file { (WHITE_OOO, 1) } else { (WHITE_OO, 0) };
@@ -386,7 +372,7 @@ fn parse_castling_rights(pos: &mut Position, token: &str) {
                 pos.castling_rights |= bit;
                 pos.castling_rooks[slot] = Square::from_coords(file, 7); // rank 7
             },
-            _ => {}, // Ignore unknown chars gracefully.
+            _ => {}, // gracefully ignore unknown chars.
         }
     }
 }
@@ -410,13 +396,12 @@ fn king_file(pos: &Position, color: Color) -> u8 {
 /// returning the first rook encountered.
 ///
 /// Used to resolve `KQkq` notation in both standard and FRC positions; the
-/// edge-inward scan guarantees we find the outermost rook on the correct side.
+/// edge-inward scan lands on the outermost rook of the correct side.
 fn find_rook(pos: &Position, color: Color, start_file: u8, step: i8) -> Option<Square> {
     let rank = color.back_rank();
     let mut file = start_file as i8;
     while (0..8).contains(&file) {
         let sq = Square(rank * 8 + file as u8);
-
         if pos.piece_at(sq) == PieceType::Rook && pos.side_bb[color].check_bit(sq) {
             return Some(sq);
         }
