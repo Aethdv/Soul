@@ -42,7 +42,7 @@ use crate::{
     core::{
         board::{Position, attacks::Pins, xorboard::XorBoard},
         defs::{
-            Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_mate, is_win, mate_in, mated_in,
+            Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_loss, is_mate, is_win, mate_in, mated_in,
         },
         moves::Move,
     },
@@ -1096,7 +1096,7 @@ impl Worker<'_> {
             self.stack[ply + 1].is_null = false;
 
             let score = -score?;
-            if score >= beta {
+            if score >= beta && !is_loss(score) {
                 let null_score = if is_win(score) { beta } else { score };
 
                 // ── Verification Search
