@@ -267,12 +267,10 @@ impl SearchDisplay {
 }
 
 impl SearchConfig {
-    /// Creates a configuration with default display settings.
     pub fn new(limits: Limits, start_time: Instant, stop: Arc<AtomicBool>, overhead: u64, search_params: SearchParams) -> Self {
         Self::new_full(limits, start_time, stop, overhead, SearchDisplay::DEFAULT, search_params)
     }
 
-    /// Full constructor for fine-grained control over all parameters.
     pub fn new_full(
         limits: Limits,
         start_time: Instant,
@@ -300,7 +298,6 @@ impl SearchConfig {
         }
     }
 
-    /// `threads` zeroed node counters, one slot per thread.
     pub fn node_slots(threads: usize) -> Arc<[AtomicU64]> { (0..threads).map(|_| AtomicU64::new(0)).collect() }
 
     /// Composed LMR reduction in `LMR_SCALE` units.

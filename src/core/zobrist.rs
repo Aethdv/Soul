@@ -19,8 +19,6 @@ pub const PIECE_KEYS_LEN: usize = 64 * 14; // 64 squares · 7 types (including N
 pub const EP_KEYS_LEN: usize = 8; // files
 pub const CASTLING_KEYS_LEN: usize = 16; // 2⁴
 
-/// A compile-time pseudo-random number generator (PRNG).
-///
 /// The Zobrist tables need hundreds of 64-bit values, and a `const fn` generator puts them
 /// in the binary instead of on the startup path.
 pub struct ConstRng {
@@ -51,7 +49,6 @@ pub struct ZobristKeys {
 
 pub static KEYS: ZobristKeys = init_keys();
 
-/// Hash feature for a piece on a square.
 #[inline(always)]
 pub fn key_piece(pt: PieceType, color: Color, sq: Square) -> u64 {
     // [PieceType + ColorOffset][Square]
@@ -70,7 +67,6 @@ pub fn key_ep(sq: Square) -> u64 {
     *debug_index!(KEYS.en_passant, idx)
 }
 
-/// Hash feature for the current castling rights bitmask.
 #[inline(always)]
 pub fn key_castling(rights: u8) -> u64 {
     debug_assert!(rights < 16, "key_castling: rights overflow");

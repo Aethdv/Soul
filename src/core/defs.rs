@@ -49,7 +49,6 @@ pub const ADJ_RESIGN_SCORE: i32 = 3000;
 
 const _: () = assert!(LANE_MG == 0 && LANE_EG == 1, "Tapered SIMD madd requires MG and EG at lanes 0 and 1 respectively.");
 
-/// Which wire protocol the engine is currently speaking.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Protocol {
     #[default]
@@ -93,15 +92,12 @@ impl Color {
         DIRS[self as usize]
     }
 
-    /// First rank from this side's perspective.
     #[inline(always)]
     pub const fn back_rank(self) -> u8 { (self as u8) * 7 }
 
-    /// Where this side's pawns stand in the starting position.
     #[inline(always)]
     pub const fn pawn_start_rank(self) -> u8 { 1 + (self as u8) * 5 }
 
-    /// The rank where pawns promote.
     #[inline(always)]
     pub const fn promotion_rank(self) -> u8 { 7 - (self as u8) * 7 }
 }

@@ -50,8 +50,7 @@ pub fn checkers(pos: &Position) -> Bitboard {
 
 /// Collects all pieces of `attacker`'s army that attack `sq`.
 ///
-/// Unlike `is_attacked` (which short-circuits on the first hit),
-/// this builds the full attacker set: needed for check evasion, SEE, and similar.
+/// Unlike `is_attacked`, which short-circuits on the first hit, this builds the full set.
 #[inline(always)]
 pub fn attackers_of(pos: &Position, sq: Square, attacker: Color) -> Bitboard {
     all_attackers_to(pos, sq, pos.occ) & pos.side_bb[attacker]

@@ -20,11 +20,9 @@ pub static KNIGHT_ATTACKS: [Bitboard; 64] = init_knight_attacks();
 pub static KING_ATTACKS: [Bitboard; 64] = init_king_attacks();
 
 /// Unobstructed rook rays (full rank ∪ file, excluding source square).
-/// Used for slider alignment, pin detection, and mobility evaluation.
 pub static PSEUDO_ROOK_ATTACKS: [Bitboard; 64] = init_pseudo_rook_attacks();
 
 /// Unobstructed bishop rays (all 4 diagonals, excluding source square).
-/// Used for slider alignment, pin detection, and mobility evaluation.
 pub static PSEUDO_BISHOP_ATTACKS: [Bitboard; 64] = init_pseudo_bishop_attacks();
 
 // Build-time generated tables: ROOKS, BISHOPS, ATTACK_TABLE, LINES, BETWEEN.
@@ -106,8 +104,6 @@ pub fn line_bb(sq1: Square, sq2: Square) -> Bitboard { Bitboard(LINES[sq1][sq2])
 #[inline(always)]
 pub fn between_bb(sq1: Square, sq2: Square) -> Bitboard { Bitboard(BETWEEN[sq1][sq2]) }
 
-/// Precomputes pawn capture targets for both colors.
-///
 /// ```text
 /// White pawn on d4 (targets c5, e5):    Black pawn on d5 (targets c4, e4):
 ///   . . c . e . . .                       . . . . . . . .
@@ -128,7 +124,6 @@ const fn init_pawn_attacks() -> [[Bitboard; 64]; 2] {
     table
 }
 
-/// Precomputes the passed-pawn front spans.
 /// Table index 0 = White (ranks above), index 1 = Black (ranks below).
 const fn init_passed_pawn_masks() -> [[Bitboard; 64]; 2] {
     let mut table = [[Bitboard(0); 64]; 2];
@@ -158,8 +153,6 @@ const fn init_passed_pawn_masks() -> [[Bitboard; 64]; 2] {
     table
 }
 
-/// Precomputes knight moves for all 64 squares.
-///
 /// ```text
 ///   . x . x .
 ///   x . . . x
@@ -210,7 +203,6 @@ const fn init_king_attacks() -> [Bitboard; 64] {
     table
 }
 
-/// Generates full-board orthogonal rays (rank ∪ file) excluding the origin square.
 const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
     let mut table = [Bitboard(0); 64];
     let mut sq = 0usize;
@@ -227,7 +219,6 @@ const fn init_pseudo_rook_attacks() -> [Bitboard; 64] {
     table
 }
 
-/// Generates full-board diagonal rays (all 4 diagonals) excluding the origin square.
 const fn init_pseudo_bishop_attacks() -> [Bitboard; 64] {
     let mut table = [Bitboard(0); 64];
     let mut sq = 0usize;
