@@ -10,6 +10,7 @@ use std::{
 };
 
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::{
     alarm,
@@ -17,7 +18,7 @@ use crate::{
     engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color, eval_record, pct},
     groups::GROUP_NAMES,
     lion::GateCensus,
-    palette::{self, BRAND, COUNT, DIM, LAB, MOVED, RESET, VAL},
+    palette::{self, ALARM, BRAND, CLEAR_LINE, COUNT, DIM, LAB, MOVED, RESET, VAL},
     run::{TrainerContext, artifact},
     training::{phase_of, phase_weights, sigmoid},
 };
@@ -25,6 +26,9 @@ use crate::{
 pub const PIECE_NAMES: [&str; PIECE_TABLES] = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
 
 const EIGHTH_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Epochs a sparkline shows.
+const SPARK_WINDOW: usize = 40;
 
 /// offsets, widths and order come from `BLOCKS`,
 #[rustfmt::skip]
@@ -63,6 +67,83 @@ pub struct BestEpochs<'a> {
     pub best_train_epoch: usize,
     pub last_val: Option<f64>,
     pub last_train: Option<f64>,
+}
+
+/// What an epoch recorded, named once for the two logs that keep it and the line that shows it.
+///
+/// Field order is the JSON record's. A run with no holdout leaves `val_loss` and `ref_loss` at
+/// NaN, which serde writes as `null` and the status line shows as a dash.
+#[derive(Serialize)]
+pub struct EpochStats {
+    pub epoch: usize,
+    pub train_loss: f64,
+    pub val_loss: f64,
+    pub ref_loss: f64,
+    pub lr: f64,
+    pub is_best: bool,
+    pub psqt_norm: f64,
+    pub mob_norm: f64,
+    pub overfit: bool,
+    pub drifted: bool,
+    pub moved: usize,
+    pub gauge: f64,
+    pub step_l1: f64,
+    pub clipped: u64,
+}
+
+impl EpochStats {
+    /// Header for the loss table in `evaltune_log.txt`; its widths are [`Self::log_row`]'s.
+    pub fn log_header() -> String { format!("{:>5}  {:>11}  {:>11}  {:>11}  {:>8}", "epoch", "L_train", "L_val", "L_ref", "LR") }
+
+    pub fn log_row(&self) -> String {
+        format!(
+            "{:>5}  {:>11.6}  {:>11.6}  {:>11.6}  {:>8.4}{}",
+            self.epoch,
+            self.train_loss,
+            self.val_loss,
+            self.ref_loss,
+            self.lr,
+            if self.is_best { " *" } else { "" }
+        )
+    }
+
+    /// The live line, one per epoch.
+    ///
+    /// Loss has no absolute scale, so the val cell is colored by its per-epoch trend.
+    /// `prev_val` is NaN on the first epoch, which reads as no trend.
+    pub fn status_line(&self, total_epochs: usize, prev_val: f64, elapsed: f32, mpos: f32) -> String {
+        let Self { epoch, train_loss, val_loss, ref_loss, lr, moved, .. } = *self;
+
+        let (arrow, trend) = if !val_loss.is_finite() || !prev_val.is_finite() || (val_loss - prev_val).abs() < 1e-7 {
+            ('·', LAB.to_string())
+        } else if val_loss < prev_val {
+            ('▼', palette::fg(color::advantage(0.7)))
+        } else {
+            ('▲', palette::fg(color::advantage(-0.7)))
+        };
+
+        let (mark, epoch_c) = if self.is_best { ("✦ ", BRAND) } else { ("  ", DIM) };
+        let warn = match (self.overfit, self.drifted) {
+            (true, _) => format!("  {ALARM}⚠ overfit{RESET}"),
+            (false, true) => format!("  {ALARM}⚠ drift{RESET}"),
+            (false, false) => String::new(),
+        };
+
+        let (val_cell, ref_cell) = if val_loss.is_finite() {
+            (format!("{trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}"), format!("{DIM}{ref_loss:.6}{RESET}"))
+        } else {
+            (format!("{DIM}—{RESET}"), format!("{DIM}—{RESET}"))
+        };
+
+        format!(
+            "{mark}{epoch_c}Epoch {epoch:>3}/{total_epochs}{RESET}  \
+             {LAB}val{RESET} {val_cell}  \
+             {LAB}train{RESET} {DIM}{train_loss:.6}{RESET}  \
+             {LAB}ref{RESET} {ref_cell}  \
+             {LAB}lr{RESET} {VAL}{lr:.4}{RESET}  {LAB}Δp{RESET} {DIM}{moved:>3}{RESET}  \
+             {DIM}{elapsed:.2}s{RESET}  {DIM}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}"
+        )
+    }
 }
 
 /// `0.123456` for a loss, `—` for a run that had no holdout.
@@ -158,7 +239,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
                 let mg_val = values[mg_idx].round() as i32;
                 let eg_val = values[eg_idx].round() as i32;
                 let fixed = params[mg_idx].is_fixed;
-
                 let s = if fixed { format!("CS({mg_val:>3}, {eg_val:>4}),") } else { format!("S({mg_val:>4}, {eg_val:>4}),") };
                 let changed =
                     initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
@@ -458,8 +538,16 @@ pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: u
     }
 }
 
+/// Both series over their last [`SPARK_WINDOW`] epochs. An empty `val` is a run with no holdout.
+pub fn print_loss_history(val: &[f64], train: &[f64]) {
+    if !val.is_empty() {
+        println!("\n  {LAB}L_val{RESET}    {}", loss_sparkline(&val[val.len().saturating_sub(SPARK_WINDOW)..]));
+    }
+    println!("\n  {LAB}L_train{RESET}  {}", loss_sparkline(&train[train.len().saturating_sub(SPARK_WINDOW)..]));
+}
+
 /// Loss history as a sparkline: lower loss → shorter block.
-pub fn loss_sparkline(history: &[f64]) -> String {
+fn loss_sparkline(history: &[f64]) -> String {
     if history.is_empty() {
         return String::new();
     }

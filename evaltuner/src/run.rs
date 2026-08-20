@@ -17,7 +17,7 @@ use std::{
     time::Instant,
 };
 
-use palette::{BRAND, CLEAR_LINE, DIM, LAB, RESET, VAL};
+use palette::{DIM, LAB, RESET, VAL};
 use rayon::prelude::*;
 
 use crate::{
@@ -589,6 +589,7 @@ fn train_loop(
     let has_val = !ctx.val.is_empty();
     let all_params = eval_params::collect_parameters();
     let default_values = eval_params::default_values(&all_params);
+    let slots = all_params.len();
 
     let resume = resume_path.map(|path| {
         println!("Resuming from checkpoint: {}{path}{RESET}", palette::VAL);
@@ -651,16 +652,16 @@ fn train_loop(
     let hold_scale = gauge.holds(&values);
 
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
-    let decay_mask = build_decay_mask(all_params.len());
-    let beta2_mask = build_beta2_mask(all_params.len(), config.beta2);
-    let lr_mask = build_lr_mask(all_params.len(), config);
-    let clip_mask = build_clip_mask(all_params.len());
+    let decay_mask = build_decay_mask(slots);
+    let beta2_mask = build_beta2_mask(slots, config.beta2);
+    let lr_mask = build_lr_mask(slots, config);
+    let clip_mask = build_clip_mask(slots);
 
     // Zero init: 0.99 EMA decay washes out any seed within a few batches.
-    let mut grad_ema = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
-    let mut stagnant_counts = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
+    let mut grad_ema = resume.as_ref().map_or_else(|| vec![0.0_f64; slots], |d| d.grad_ema.clone());
+    let mut stagnant_counts = resume.as_ref().map_or_else(|| vec![0usize; slots], |d| d.stagnant.clone());
 
-    println!("{LAB}Parameters:{RESET} {VAL}{}{RESET}", all_params.len());
+    println!("{LAB}Parameters:{RESET} {VAL}{slots}{RESET}");
     println!("{LAB}Mode:{RESET}       {VAL}{mode_label}{RESET}");
     println!("{LAB}LR Sched:{RESET}   {}", paint_head(&lr_scheduler.describe()));
     println!("{LAB}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
@@ -679,12 +680,12 @@ fn train_loop(
         writeln!(w, "K:         {k:.6} (100cp → {:.1}%)", win_rate_100cp * 100.0).ok();
         writeln!(w, "K mode:    {}", config.k_mode).ok();
         writeln!(w, "Epochs:    {}", config.epochs).ok();
-        writeln!(w, "Params:    {}", all_params.len()).ok();
+        writeln!(w, "Params:    {slots}").ok();
         writeln!(w, "LR:        {}", lr_scheduler.describe()).ok();
         writeln!(w, "WDL:       {}", wdl_scheduler.describe()).ok();
         writeln!(w, "Optimizer: Lion (batch: {}, WD: {})", config.batch_size, config.weight_decay).ok();
         writeln!(w).ok();
-        writeln!(w, "{:>5}  {:>11}  {:>11}  {:>11}  {:>8}", "epoch", "L_train", "L_val", "L_ref", "LR").ok();
+        writeln!(w, "{}", EpochStats::log_header()).ok();
     }
 
     // A sweep reads this file back for its results, so an unopenable path has to say so rather
@@ -704,14 +705,13 @@ fn train_loop(
                 "start_epoch": start_epoch,
                 "dataset": dataset_label,
                 "init": format!("{:?}", config.init),
-                "params": all_params.len(),
+                "params": slots,
             }),
         );
     }
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
-    let mut optimizer =
-        Lion::new(all_params.len(), config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
+    let mut optimizer = Lion::new(slots, config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
 
     if let Some(d) = &resume {
         optimizer.restore_momentum(&d.momentum);
@@ -744,7 +744,6 @@ fn train_loop(
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
 
     let mut progress = resume.as_ref().map_or_else(Progress::default, |d| d.run.progress.clone());
-    let slots = all_params.len();
 
     let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_val_params.clone());
     let mut best_train_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_train_params.clone());
@@ -839,7 +838,7 @@ fn train_loop(
 
         let mut train_loss = 0.0;
         let mut train_count = 0usize;
-        let mut epoch_grads = vec![0.0; values.len()];
+        let mut epoch_grads = vec![0.0; slots];
         let t_grad = Instant::now();
 
         for batch in indices[..epoch_sample].chunks(config.batch_size) {
@@ -852,12 +851,9 @@ fn train_loop(
 
             let n = batch_count.max(1) as f64;
             let norm: f64 = grads.iter().map(|g| g * g).sum::<f64>().sqrt();
-            let avg_norm = norm / n;
+            grad_stats.update(norm / n);
 
-            grad_stats.update(avg_norm);
-
-            let clip_thresh = grad_stats.clip_threshold(config.grad_clip);
-            let threshold = clip_thresh * n;
+            let threshold = grad_stats.clip_threshold(config.grad_clip) * n;
             let scale = if norm > threshold { threshold / norm } else { 1.0 };
             for (i, g) in grads.iter_mut().enumerate() {
                 *g = *g / n * scale;
@@ -880,7 +876,7 @@ fn train_loop(
             }
 
             // The |gradient| trail the auto-freeze below reads.
-            for i in 0..values.len() {
+            for i in 0..slots {
                 if !fixed_mask[i] {
                     grad_ema[i] = 0.99_f64.mul_add(grad_ema[i], 0.01 * grads[i].abs());
                 }
@@ -889,7 +885,7 @@ fn train_loop(
             // Skip the noisy high-LR phase; only average once LR has decayed below 30% of its
             // peak. Before that, snapshot the live weights directly.
             if ema_active {
-                for i in 0..values.len() {
+                for i in 0..slots {
                     ema_values[i] = config.ema_decay.mul_add(ema_values[i], (1.0 - config.ema_decay) * values[i]);
                 }
             } else {
@@ -915,7 +911,7 @@ fn train_loop(
 
         if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
             let mut frozen = 0;
-            for i in 0..values.len() {
+            for i in 0..slots {
                 if !fixed_mask[i] && grad_ema[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
                     stagnant_counts[i] += 1;
                     if stagnant_counts[i] >= config.freeze_consecutive {
@@ -948,7 +944,7 @@ fn train_loop(
             best_train_params.copy_from_slice(&ema_values);
         }
 
-        let improved_val = if has_val {
+        let is_best = if has_val {
             let improved = progress.record_val(epoch, val_loss);
             if improved {
                 best_val_params.copy_from_slice(&ema_values);
@@ -970,7 +966,6 @@ fn train_loop(
             improved_train
         };
 
-        let is_best = improved_val;
         let overfit = if has_val { divergence.update(train_loss, val_loss) } else { false };
         // The overfit flag tests a slope, so a run that simply climbs back uphill never
         // trips it. This tests displacement, against the only bar the run itself supplies:
@@ -983,46 +978,32 @@ fn train_loop(
         let moved = quantized.iter().zip(&prev_quantized).filter(|(q, p)| q != p).count();
         prev_quantized.copy_from_slice(&quantized);
 
-        let psqt_norm = epoch_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
-        let mob_norm = epoch_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
+        let stats = EpochStats {
+            epoch,
+            train_loss,
+            val_loss,
+            ref_loss,
+            lr,
+            is_best,
+            psqt_norm: epoch_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt(),
+            mob_norm: epoch_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt(),
+            overfit,
+            drifted,
+            moved,
+            gauge: gauge.applied,
+            step_l1,
+            clipped: clipped_epoch,
+        };
 
         if let Some(ref mut w) = logger {
-            writeln!(
-                w,
-                "{:>5}  {:>11.6}  {:>11.6}  {:>11.6}  {:>8.4}{}",
-                epoch,
-                train_loss,
-                val_loss,
-                ref_loss,
-                lr,
-                if is_best { " *" } else { "" }
-            )
-            .ok();
+            writeln!(w, "{}", stats.log_row()).ok();
         }
 
         if let Some(ref mut l) = json_logger {
             if is_restart {
                 l.log("restart", &serde_json::json!({ "epoch": epoch }));
             }
-            l.log(
-                "epoch",
-                &serde_json::json!({
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "val_loss": if has_val { serde_json::Value::from(val_loss) } else { serde_json::Value::Null },
-                    "ref_loss": if has_val { serde_json::Value::from(ref_loss) } else { serde_json::Value::Null },
-                    "lr": lr,
-                    "is_best": is_best,
-                    "psqt_norm": psqt_norm,
-                    "mob_norm": mob_norm,
-                    "overfit": overfit,
-                    "drifted": drifted,
-                    "moved": moved,
-                    "gauge": gauge.applied,
-                    "step_l1": step_l1,
-                    "clipped": clipped_epoch
-                }),
-            );
+            l.log("epoch", &stats);
         }
 
         let elapsed = t0.elapsed().as_secs_f32();
@@ -1037,41 +1018,7 @@ fn train_loop(
         val_seconds += f64::from(val_secs);
         epoch_positions += train_count as u64;
 
-        // Loss has no absolute scale, so the live value is colored by its per-epoch trend.
-        let (arrow, trend) = if !has_val || !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
-            ('·', LAB.to_string())
-        } else if val_loss < prev_val_loss {
-            ('▼', palette::fg(color::advantage(0.7)))
-        } else {
-            ('▲', palette::fg(color::advantage(-0.7)))
-        };
-
-        let (mark, epoch_c) = if is_best { ("✦ ", BRAND) } else { ("  ", DIM) };
-        let alarm = palette::fg(color::advantage(-1.0));
-        let warn = match (overfit, drifted) {
-            (true, _) => format!("  {alarm}⚠ overfit{RESET}"),
-            (false, true) => format!("  {alarm}⚠ drift{RESET}"),
-            (false, false) => String::new(),
-        };
-
-        let val_cell = if has_val {
-            format!("{trend}{val_loss:.6}{RESET} {trend}{arrow}{RESET}")
-        } else {
-            format!("{DIM}—{RESET}")
-        };
-        let ref_cell = if has_val { format!("{DIM}{ref_loss:.6}{RESET}") } else { format!("{DIM}—{RESET}") };
-
-        #[rustfmt::skip]
-        println!(
-            "{mark}{epoch_c}Epoch {epoch:>3}/{}{RESET}  \
-             {LAB}val{RESET} {val_cell}  \
-             {LAB}train{RESET} {DIM}{train_loss:.6}{RESET}  \
-             {LAB}ref{RESET} {ref_cell}  \
-             {LAB}lr{RESET} {}{lr:.4}{RESET}  {LAB}Δp{RESET} {DIM}{moved:>3}{RESET}  \
-             {DIM}{elapsed:.2}s{RESET}  {DIM}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}",
-            config.epochs,
-            palette::VAL,
-        );
+        println!("{}", stats.status_line(config.epochs, prev_val_loss, elapsed, mpos));
 
         if config.gate_census {
             let mut total_census = GateCensus::default();
@@ -1089,12 +1036,7 @@ fn train_loop(
         train_history.push(train_loss);
 
         if epoch % 20 == 0 || epoch == config.epochs {
-            let train_tail = &train_history[train_history.len().saturating_sub(40)..];
-            if has_val {
-                let val_tail = &val_history[val_history.len().saturating_sub(40)..];
-                println!("\n  {LAB}L_val{RESET}    {}", loss_sparkline(val_tail));
-            }
-            println!("\n  {LAB}L_train{RESET}  {}", loss_sparkline(train_tail));
+            print_loss_history(&val_history, &train_history);
 
             if epoch != config.epochs {
                 print_params(&all_params, &initial_values, &ema_values);
