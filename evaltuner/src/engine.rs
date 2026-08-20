@@ -44,6 +44,6 @@ mod tests {
                 offenders.push(name);
             }
         }
-        assert!(offeevaltuner/src/run.rsnders.is_empty(), "these reach past engine.rs into soul: {offenders:?}");
+        assert!(offenders.is_empty(), "these reach past engine.rs into soul: {offenders:?}");
     }
 }

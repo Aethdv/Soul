@@ -29,6 +29,29 @@ pub struct Lion {
     step_l1: f64,
 }
 
+/// The per-parameter masks an update reads, one entry per slot in every field.
+pub struct Masks {
+    pub decay: Vec<f64>,
+    pub fixed: Vec<bool>,
+    pub beta2: Vec<f64>,
+    pub lr: Vec<f64>,
+    pub clip: Vec<(f64, f64)>,
+}
+
+impl Masks {
+    /// Every slot at the same setting: none fixed, none clipped, unit decay and rate.
+    #[must_use]
+    pub fn uniform(slots: usize, beta2: f64) -> Self {
+        Self {
+            decay: vec![1.0; slots],
+            fixed: vec![false; slots],
+            beta2: vec![beta2; slots],
+            lr: vec![1.0; slots],
+            clip: vec![(f64::NEG_INFINITY, f64::INFINITY); slots],
+        }
+    }
+}
+
 /// Gating diagnostic counts aggregated over parameter-update events.
 #[derive(Clone, Copy, Default)]
 pub struct GateCensus {
@@ -118,34 +141,25 @@ impl Lion {
         census
     }
 
-    pub fn update(
-        &mut self,
-        params: &mut [f64],
-        gradients: &[f64],
-        decay_mask: &[f64],
-        fixed_mask: &[bool],
-        beta2: &[f64],
-        lr_mask: &[f64],
-        clip_mask: &[(f64, f64)],
-    ) {
+    pub fn update(&mut self, params: &mut [f64], gradients: &[f64], masks: &Masks) {
         debug_assert_eq!(params.len(), self.momentum.len());
         debug_assert_eq!(params.len(), gradients.len());
-        debug_assert_eq!(params.len(), decay_mask.len());
-        debug_assert_eq!(params.len(), fixed_mask.len());
-        debug_assert_eq!(params.len(), beta2.len());
-        debug_assert_eq!(params.len(), lr_mask.len());
-        debug_assert_eq!(params.len(), clip_mask.len());
+        debug_assert_eq!(params.len(), masks.decay.len());
+        debug_assert_eq!(params.len(), masks.fixed.len());
+        debug_assert_eq!(params.len(), masks.beta2.len());
+        debug_assert_eq!(params.len(), masks.lr.len());
+        debug_assert_eq!(params.len(), masks.clip.len());
 
         for i in 0..params.len() {
-            if fixed_mask[i] {
+            if masks.fixed[i] {
                 continue;
             }
 
             let param = params[i];
             let momentum = self.momentum[i];
             let gradient = gradients[i];
-            let decay = decay_mask[i];
-            let eff_lr = self.lr * lr_mask[i];
+            let decay = masks.decay[i];
+            let eff_lr = self.lr * masks.lr[i];
 
             // 1. Blended search direction and gate decision.
             let (c, verdict) = self.gate(momentum, gradient);
@@ -160,7 +174,7 @@ impl Lion {
             };
 
             // 3. Bounds, counting the truncations: a pinned parameter otherwise reads as converged.
-            let (min, max) = clip_mask[i];
+            let (min, max) = masks.clip[i];
             let clamped = updated.clamp(min, max);
             self.clipped[i] += u64::from(clamped != updated);
             params[i] = clamped;
@@ -170,7 +184,7 @@ impl Lion {
             self.momentum[i] = if gradient.abs() < DEAD_ZONE && momentum.abs() < DEAD_ZONE {
                 0.0
             } else {
-                beta2[i].mul_add(momentum, (1.0 - beta2[i]) * gradient)
+                masks.beta2[i].mul_add(momentum, (1.0 - masks.beta2[i]) * gradient)
             };
         }
     }
@@ -230,8 +244,6 @@ enum Gate {
 mod tests {
     use super::*;
 
-    const OPEN_BOUNDS: [(f64, f64); 1] = [(f64::NEG_INFINITY, f64::INFINITY)];
-
     #[test]
     fn census_separates_every_gate_outcome() {
         let momentum = [0.5, 0.5, 0.001, 1e-9, 0.0, -1e-6, 0.5];
@@ -253,38 +265,27 @@ mod tests {
     #[test]
     fn lion_clipping_works() {
         let mut params = vec![1.5];
-        let decay_mask = vec![0.0];
-        let fixed_mask = vec![false];
-        let clip_mask = vec![(-2.0, 2.0)];
         let grads_neg = vec![-1.0];
-
+        let masks = Masks { decay: vec![0.0], clip: vec![(-2.0, 2.0)], ..Masks::uniform(1, 0.99) };
         let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
         opt.restore_momentum(&[-0.5]);
-        let beta2 = vec![0.99];
-        let lr_mask = vec![1.0; params.len()];
-        opt.update(&mut params, &grads_neg, &decay_mask, &fixed_mask, &beta2, &lr_mask, &clip_mask);
+        opt.update(&mut params, &grads_neg, &masks);
         assert!((params[0] - 2.0).abs() < 1e-9, "parameter must clamp to upper bound: {}", params[0]);
-
         let mut params_sparse = vec![10.0];
         let grads_sparse = vec![0.0];
-        let lr_mask2 = vec![1.0; params_sparse.len()];
         let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
-        opt.update(&mut params_sparse, &grads_sparse, &decay_mask, &fixed_mask, &beta2, &lr_mask2, &clip_mask);
+        opt.update(&mut params_sparse, &grads_sparse, &masks);
         assert!((params_sparse[0] - 2.0).abs() < 1e-9, "sparse update must enforce clamp bounds: {}", params_sparse[0]);
     }
 
     #[test]
     fn lion_zero_gradient_does_not_step() {
-        let decay_mask = vec![0.0];
-        let fixed_mask = vec![false];
-        let beta2 = vec![0.99];
-        let lr_mask = vec![1.0];
+        let masks = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
         let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
-
         for m0 in [0.5, -0.5] {
             let mut params = vec![1.0];
             opt.restore_momentum(&[m0]);
-            opt.update(&mut params, &[0.0], &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN_BOUNDS);
+            opt.update(&mut params, &[0.0], &masks);
             assert!((params[0] - 1.0).abs() < 1e-12, "zero gradient must not take sign step (m={m0}): {}", params[0]);
         }
     }
@@ -293,12 +294,9 @@ mod tests {
     fn lion_no_clipping_by_default() {
         let mut params = vec![100.0];
         let grads = vec![0.0];
-        let decay_mask = vec![0.0];
-        let fixed_mask = vec![false];
+        let masks = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
         let mut opt = Lion::new(1, 0.9, 0.1, 0.0);
-        let lr_mask = vec![1.0; params.len()];
-        let beta2 = vec![0.99];
-        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN_BOUNDS);
+        opt.update(&mut params, &grads, &masks);
         assert!((params[0] - 100.0).abs() < 0.01, "unbounded parameter must not clamp: {}", params[0]);
     }
 
@@ -306,13 +304,9 @@ mod tests {
     fn lion_zero_gradient_still_applies_weight_decay() {
         let mut params = vec![10.0];
         let grads = vec![0.0];
-        let decay_mask = vec![1.0];
-        let fixed_mask = vec![false];
         // decay = lr · wd · d · p = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
         let mut opt = Lion::new(1, 0.9, 1.0, 0.05);
-        let lr_mask = vec![1.0; params.len()];
-        let beta2 = vec![0.99];
-        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN_BOUNDS);
+        opt.update(&mut params, &grads, &Masks::uniform(1, 0.99));
         let expected = 10.0 - 0.5;
         assert!((params[0] - expected).abs() < 1e-6, "expected {expected}, got {}", params[0]);
     }
@@ -321,15 +315,12 @@ mod tests {
     fn lion_sign_update_unchanged() {
         let mut params = vec![1.0];
         let grads = vec![1.0]; // g = 1.0, m = 0.0 → c = 0.1
-        let decay_mask = vec![0.5];
-        let fixed_mask = vec![false];
+        let masks = Masks { decay: vec![0.5], ..Masks::uniform(1, 0.99) };
         // decay = 0.2 · 0.01 · 0.5 · 1.0 = 0.001
         // sign update = 0.2 · sign(0.1) = 0.2
         // net: 1.0 - 0.001 - 0.2 = 0.799
         let mut opt = Lion::new(1, 0.9, 0.2, 0.01);
-        let lr_mask = vec![1.0; params.len()];
-        let beta2 = vec![0.99];
-        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN_BOUNDS);
+        opt.update(&mut params, &grads, &masks);
         let expected = 1.0 - 0.001 - 0.2;
         assert!((params[0] - expected).abs() < 1e-6, "expected {expected}, got {}", params[0]);
     }
@@ -338,14 +329,11 @@ mod tests {
     fn lion_skips_sign_update_on_momentum_gradient_disagreement() {
         let mut params = vec![5.0];
         let grads = vec![-1.0];
-        let decay_mask = vec![0.0];
-        let fixed_mask = vec![false];
+        let masks = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
         // c = 0.9 · 0.5 + 0.1 · (-1.0) = 0.35 (> 0), standard Lion would step.
         let mut opt = Lion::new(1, 0.9, 0.1, 0.0);
         opt.restore_momentum(&[0.5]);
-        let lr_mask = vec![1.0; params.len()];
-        let beta2 = vec![0.99];
-        opt.update(&mut params, &grads, &decay_mask, &fixed_mask, &beta2, &lr_mask, &OPEN_BOUNDS);
+        opt.update(&mut params, &grads, &masks);
         assert!((params[0] - 5.0).abs() < 1e-9, "directional conflict must hold step: {}", params[0]);
     }
 }

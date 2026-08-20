@@ -7,7 +7,8 @@ use std::ops::Range;
 
 use crate::{
     config::EvalTuneConfig,
-    engine::{LAYOUT, TABLE_SQUARES},
+    engine::{LAYOUT, TABLE_SQUARES, Tunable},
+    lion::Masks,
 };
 
 /// Bound on each mobility weight. The four lanes multiply raw counts of safe squares and
@@ -70,11 +71,23 @@ pub fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
     })
 }
 
+/// Every mask one run reads, derived from the parameter roster and the config.
+pub fn build_masks(params: &[Tunable], config: &EvalTuneConfig) -> Masks {
+    let slots = params.len();
+    Masks {
+        decay: build_decay_mask(slots),
+        fixed: params.iter().map(|p| p.is_fixed).collect(),
+        beta2: build_beta2_mask(slots, config.beta2),
+        lr: build_lr_mask(slots, config),
+        clip: build_clip_mask(slots),
+    }
+}
+
 /// The per-parameter weight decay multiplier mask.
 ///
 /// - PSQT (0.5×).
 /// - Mobility (1.5×).
-pub fn build_decay_mask(slots: usize) -> Vec<f64> {
+fn build_decay_mask(slots: usize) -> Vec<f64> {
     (0..slots)
         .map(|index| match param_group(index) {
             ParamGroup::Psqt => {
@@ -94,7 +107,7 @@ pub fn build_decay_mask(slots: usize) -> Vec<f64> {
 ///
 /// - PSQT (0.995).
 /// - Mobility (0.95).
-pub fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
+fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
     (0..slots)
         .map(|index| match param_group(index) {
             ParamGroup::Psqt => 0.995,
@@ -117,7 +130,7 @@ pub fn build_lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
 }
 
 /// Allowed parameter value bounds `(min, max)` for optimizer steps.
-pub fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
+fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
     let king_danger_offset = LAYOUT.king_danger_offset;
     (0..slots)
         .map(|index| {

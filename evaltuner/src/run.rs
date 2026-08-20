@@ -27,7 +27,7 @@ use crate::{
         Color, FeatureRecord, LAYOUT, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record,
         eval_record_full, flip_wdl,
     },
-    groups::{GROUP_NAMES, build_beta2_mask, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
+    groups::{GROUP_NAMES, build_masks, group_ranges},
     lion::{GateCensus, Lion},
     loader::{dataset_fingerprint, load_datasets, resolve_dataset_paths},
     logger::JsonLogger,
@@ -418,7 +418,7 @@ fn train_entries(
 
     let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &groups, split_seed);
     let total = entries.len();
-    
+
     // One time cost
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
@@ -597,11 +597,7 @@ fn train_loop(
     let mut gauge = Gauge::new(probe, &default_values);
     let hold_scale = gauge.holds(&values);
 
-    let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
-    let decay_mask = build_decay_mask(slots);
-    let beta2_mask = build_beta2_mask(slots, config.beta2);
-    let lr_mask = build_lr_mask(slots, config);
-    let clip_mask = build_clip_mask(slots);
+    let mut masks = build_masks(&all_params, config);
 
     let mut grad_ema = resume.as_ref().map_or_else(|| vec![0.0_f64; slots], |d| d.grad_ema.clone());
     let mut stagnant_counts = resume.as_ref().map_or_else(|| vec![0usize; slots], |d| d.stagnant.clone());
@@ -709,9 +705,9 @@ fn train_loop(
     let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
 
     if let Some(d) = &resume {
-        fixed_mask.copy_from_slice(&d.frozen);
+        masks.fixed.copy_from_slice(&d.frozen);
     } else if config.unfreeze_epoch > 0 {
-        for f in &mut fixed_mask[base_end..] {
+        for f in &mut masks.fixed[base_end..] {
             *f = true;
         }
         println!("Progressive unfreeze: params {base_end}+ frozen until epoch {}", config.unfreeze_epoch);
@@ -788,11 +784,11 @@ fn train_loop(
             // Before the update, while momentum still holds what the gate is about to read.
             if config.gate_census {
                 for (census, range) in epoch_census.iter_mut().zip(&group_ranges) {
-                    census.absorb(optimizer.census(range.clone(), &grads, &fixed_mask));
+                    census.absorb(optimizer.census(range.clone(), &grads, &masks.fixed));
                 }
             }
 
-            optimizer.update(&mut values, &grads, &decay_mask, &fixed_mask, &beta2_mask, &lr_mask, &clip_mask);
+            optimizer.update(&mut values, &grads, &masks);
             k_ctrl.on_batch(k_grad, batch_count, lr, scale, config.weight_decay);
             canonicalize(&mut values, &all_params);
 
@@ -802,7 +798,7 @@ fn train_loop(
 
             // The |gradient| trail the auto-freeze below reads.
             for i in 0..slots {
-                if !fixed_mask[i] {
+                if !masks.fixed[i] {
                     grad_ema[i] = 0.99_f64.mul_add(grad_ema[i], 0.01 * grads[i].abs());
                 }
             }
@@ -826,7 +822,7 @@ fn train_loop(
 
         if config.unfreeze_epoch > 0 && epoch == config.unfreeze_epoch {
             for (i, p) in all_params.iter().enumerate() {
-                fixed_mask[i] = p.is_fixed;
+                masks.fixed[i] = p.is_fixed;
             }
             println!("  Unfrozen all remaining parameters at epoch {epoch}");
         }
@@ -834,10 +830,10 @@ fn train_loop(
         if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
             let mut frozen = 0;
             for i in 0..slots {
-                if !fixed_mask[i] && grad_ema[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
+                if !masks.fixed[i] && grad_ema[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
                     stagnant_counts[i] += 1;
                     if stagnant_counts[i] >= config.freeze_consecutive {
-                        fixed_mask[i] = true;
+                        masks.fixed[i] = true;
                         frozen += 1;
                     }
                 } else {
@@ -967,7 +963,7 @@ fn train_loop(
                 ema: &ema_values,
                 grad_ema: &grad_ema,
                 stagnant: &stagnant_counts,
-                frozen: &fixed_mask,
+                frozen: &masks.fixed,
                 best_val_params: &best_val_params,
                 best_train_params: &best_train_params,
             }) {
@@ -1026,7 +1022,7 @@ fn train_loop(
     }
 
     drop(logger);
-    sensitivity_report(&all_params, &grad_ema, &fixed_mask);
+    sensitivity_report(&all_params, &grad_ema, &masks.fixed);
 
     let last_val = val_history.last().copied();
     let last_train = train_history.last().copied();
