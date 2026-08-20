@@ -7,14 +7,8 @@ use std::ops::{Index, IndexMut, Not};
 
 pub use crate::core::primitives::*;
 
-/// Centipawn evaluation
-pub type Score = i32;
 /// Move-ordering heuristic value
 pub type MoveScore = i16;
-/// Search depth
-pub type Depth = i32;
-/// Half-move distance from the root
-pub type Ply = usize;
 
 /// Upper bound on legal moves in any position (theoretical legal max being 218).
 pub const MAX_MOVES: usize = 256;
