@@ -1,9 +1,8 @@
 //! Transposition table: the search's memory of positions it has already seen.
 //!
-//! When iterative deepening revisits a node, it hopes to find it already here:
-//! the score, the best move, the depth that score was proven to, and the static
-//! eval it had. A hit can cut a whole subtree, and since each iteration seeds the
-//! next, deepening stays cheap.
+//! When iterative deepening revisits a node, it hopes to find it already here. A hit
+//! can cut a whole subtree, and since each iteration seeds the next, deepening stays
+//! cheap.
 //!
 //! The table is lockless because Lazy SMP has every thread reading and writing it
 //! at once. Probe and store take `&self` and touch entries through atomics, so no
@@ -12,11 +11,7 @@
 //! score, or a move belonging to another position, which is why every stored move
 //! is re-checked by `is_pseudo_legal` before the search plays it.
 //!
-//! Entries sit in three-slot clusters of 32 bytes, two to a 64-byte cache line,
-//! so a probe is one line fetch that never straddles two. The three slots give
-//! replacement a choice of victim: it favors deeper entries, and a qsearch store
-//! takes only a slot that is empty, already shallow, or aged out, so it cannot
-//! evict a deep entry from this search.
+//! Entries sit in three-slot clusters, so replacement has a choice of victim.
 
 use std::{
     arch, mem, slice,
@@ -47,7 +42,6 @@ const _: () = assert!(mem::size_of::<TtEntry>() == 10);
 const _: () = assert!(mem::size_of::<Cluster>() == 32);
 const _: () = assert!(mem::align_of::<Cluster>() == 32);
 
-/// `quality = depth - gen_diff · AGE_FACTOR`.
 /// Higher values evict stale entries faster.
 const AGE_FACTOR: i32 = 4;
 /// `age` is 5 bits; generation distance is read modulo 32.
@@ -55,8 +49,6 @@ const AGE_MASK: u8 = 0x1F;
 
 const CLUSTER_SIZE: usize = 3;
 
-/// Whether a stored score is a usable cutoff in the current window.
-///
 /// An exact score always is. A lower bound (the position failed high when stored)
 /// only proves the truth is at least this high, so it cuts only once it clears
 /// beta; an upper bound is the mirror, usable only at or below alpha.
@@ -132,7 +124,6 @@ pub struct TtHit {
     pub eval: i32,
 }
 
-/// The payload a store packs into a slot.
 #[derive(Clone, Copy, Default)]
 struct Payload {
     key: u16,
@@ -222,10 +213,9 @@ impl TranspositionTable {
     pub fn resize(&mut self, size_mb: usize, threads: usize) { self.clusters = Self::alloc(size_mb, &self.numa, threads); }
 
     /// Whether this box spreads the TT across nodes at all, so a thread-count
-    /// change can re-place it. False on a single-node box, where it never does.
+    /// change can re-place it.
     pub fn distributes(&self) -> bool { self.numa.num_nodes() > 1 }
 
-    /// The page size backing the table, for the startup `info string`.
     pub fn page_kind(&self) -> PageKind { self.clusters.kind() }
 
     /// The cluster count follows from the page-rounded byte size, so a 1GB-page
@@ -288,14 +278,13 @@ impl TranspositionTable {
         self.generation.store(0, Ordering::Relaxed);
     }
 
-    /// Advance the generation counter, once per new position. Entries from earlier
-    /// generations don't vanish; they just age, growing easier to evict.
+    /// Once per new position. Entries from earlier generations don't vanish; they just
+    /// age, growing easier to evict.
     pub fn new_search(&self) { self.generation.fetch_add(1, Ordering::Relaxed); }
 
     /// Pin the calling search thread to its NUMA-assigned L3 domain, when binding
     /// is worthwhile. Keeps the thread's compute on its cores and the per-thread
-    /// state it allocates next in a warm L3. A no-op on one domain or one thread,
-    /// so a single-threaded run never binds.
+    /// state it allocates next in a warm L3.
     pub fn bind_search_thread(&self, thread_id: usize, threads: usize) {
         if self.numa.should_bind(threads) {
             self.numa.bind_to_domain(self.numa.distribute(threads)[thread_id]);
@@ -323,9 +312,7 @@ impl TranspositionTable {
         self.cluster(self.index(hash)).slots.iter().find_map(|slot| slot.probe_read(key16, ply))
     }
 
-    /// Insert or update this position. The cluster scan takes an empty slot, or the
-    /// same position if it's already here, and otherwise evicts the lowest-quality
-    /// entry, where quality weighs depth against generation age.
+    /// Insert or update this position.
     #[inline(always)]
     pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
         let idx = self.index(hash);
@@ -377,8 +364,6 @@ impl TranspositionTable {
         });
     }
 
-    /// Stores a qsearch result (depth 0).
-    ///
     /// Qsearch floods the table with shallow entries, so its replacement is timid;
     /// it takes this position's own slot, an empty one, another depth-0 entry, or one
     /// whose quality has aged to nothing. A fresh deep result is never evicted for it.
@@ -436,7 +421,6 @@ impl TranspositionTable {
         unsafe { self.clusters.get_unchecked(idx) }
     }
 
-    /// Maps a 64-bit hash to a cluster index.
     #[inline(always)]
     fn index(&self, hash: u64) -> usize {
         // mulhi64: the top 64 bits of hash · len. Lands the hash uniformly
@@ -457,8 +441,6 @@ fn replacement_quality(packed: u16, current_age: u8) -> i32 {
 /// First-touch the cluster region in parallel, each NUMA node's thread zeroing
 /// the slice bound to it. First-touch decides a page's home node, so it spreads
 /// the table across the memory controllers instead of leaving it all on one.
-///
-/// The chunks the threads take are disjoint, so each one zeroes only its own.
 ///
 /// # Safety
 /// No search may be running: this builds an exclusive `&mut` over the shared
