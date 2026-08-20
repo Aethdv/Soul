@@ -247,7 +247,7 @@ clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
 clean: ## Remove all build artifacts
 	@echo "Cleaning..."
 	@cargo clean
-	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval $(EXE)-corrstats $(EXE)-movepicker
+	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval ./datagen ./tools $(EXE)-corrstats $(EXE)-movepicker
 	@rm -f $(EXE_NAME)-v*-avx2* $(EXE_NAME)-v*-avx512*
 	@rm -rf target/pgo-profiles
 	@echo "Done"
