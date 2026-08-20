@@ -134,19 +134,18 @@ pub(crate) use make::castling_targets;
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(32))]
 pub struct Position {
-    /// Occupancy bitboards by color: `side_bb[White]` and `side_bb[Black]`.
+    /// Occupancy bitboards indexed by [`Color`].
     pub side_bb: [Bitboard; 2],
     /// Occupancy bitboards by piece type across both colors.
     pub role_bb: [Bitboard; 6],
-    /// Union of all occupied squares (`side_bb[White] | side_bb[Black]`).
     pub occ: Bitboard,
     /// Full incremental Zobrist hash (pieces, side to move, castling, en passant).
     pub hash: u64,
-    /// Incremental pawn-only Zobrist key; used for pawn structure and pawn correction history.
+    /// Incremental pawn-only Zobrist key. This and the two below key the correction tables.
     pub pawn_key: u64,
-    /// Incremental minor-piece (N+B) Zobrist key; used for minor correction history.
+    /// Incremental minor-piece (N+B) Zobrist key.
     pub minor_key: u64,
-    /// Incremental major-piece (R+Q) Zobrist key; used for major correction history.
+    /// Incremental major-piece (R+Q) Zobrist key.
     pub major_key: u64,
     /// Mailbox, read through `piece_at`; `PieceType::None` where a square is empty.
     pub pieces: [PieceType; 64],
@@ -158,7 +157,6 @@ pub struct Position {
     pub castling_rooks: [Square; 4],
     /// Packed castling rights mask (bits 0–3: White KS, White QS, Black KS, Black QS).
     pub castling_rights: u8,
-    /// Side to move.
     pub stm: Color,
     /// Half-move clock since last capture or pawn push (fifty-move rule counter).
     pub halfmove_clock: u8,
@@ -220,11 +218,9 @@ impl Position {
     /// Use `try_from_fen` for user-supplied FENs where graceful error handling is needed.
     pub fn from_fen(fen: &str) -> Self { Self::try_from_fen(fen).unwrap_or_else(|e| panic!("Invalid FEN: {e}")) }
 
-    /// Parse a FEN string. Returns an error for malformed input.
     pub fn try_from_fen(fen: &str) -> Result<Self, FenError> { Self::try_from_tokens(&mut fen.split_whitespace().peekable()) }
 
-    /// Parse from pre-split FEN tokens
-    /// (useful for UCI `position` commands where the token stream is already available).
+    /// Parse from pre-split FEN tokens.
     pub fn try_from_tokens<'a, I>(parts: &mut iter::Peekable<I>) -> Result<Self, FenError>
     where I: Iterator<Item = &'a str> {
         fen::try_from_tokens(parts)
@@ -234,13 +230,10 @@ impl Position {
     #[inline]
     pub fn make_move(&mut self, mv: Move, acc: &mut Vi16x8) -> StateInfo { make::make_move(self, mv, acc) }
 
-    /// Restore the position to its state before `mv` was played.
     #[inline]
     pub fn unmake_move(&mut self, mv: Move, info: &StateInfo) { make::unmake_move(self, mv, info); }
 
-    /// Pass the turn without moving.
-    /// Returns the undo packet.
-    /// Used by null move pruning: the opponent gets a free move.
+    /// Null move pruning's primitive: the opponent gets a free move.
     #[inline]
     pub fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
@@ -264,7 +257,6 @@ impl Position {
         info
     }
 
-    /// Undo a null move.
     #[inline]
     pub fn unmake_null_move(&mut self, info: &StateInfo) {
         self.stm = self.stm.opposite();
@@ -276,8 +268,7 @@ impl Position {
         self.halfmove_clock = info.halfmove_clock;
     }
 
-    /// Does the given side have any pieces beyond pawns and king?
-    /// Used by NMP to avoid null-moving in pure pawn endings (zugzwang).
+    /// NMP reads this to stay out of pure pawn endings, where zugzwang makes a free move a lie.
     #[inline]
     pub fn has_non_pawn_material(&self, side: Color) -> bool {
         let dominated =
@@ -285,8 +276,6 @@ impl Position {
         dominated.is_not_empty()
     }
 
-    /// Incrementally update the SIMD accumulator for `mv`.
-    ///
     /// Must be called before the move is applied to the board:
     /// it reads the current piece layout to determine what changed.
     #[inline(always)]
@@ -294,9 +283,7 @@ impl Position {
         make::update_accumulator(self, acc, mv, pt, captured, placed);
     }
 
-    /// Compute the SIMD accumulator from scratch by summing PSQT
-    /// vectors for every piece on the board. Used once at position setup:
-    /// after that, `make_move` / `unmake_move` keep it updated incrementally.
+    /// Once at position setup; `make_move` and `unmake_move` keep it current after that.
     pub fn get_initial_accumulator(&self) -> Vi16x8 {
         let mut acc = Vi16x8::splat(0);
         for sq in self.occ {
@@ -306,8 +293,6 @@ impl Position {
         acc
     }
 
-    /// Checks if the current board state has appeared at least 3 times in the game history.
-    ///
     /// Adjudicates strict FIDE threefold repetition (unlike search, which typically
     /// prunes at 2 occurrences). Scans backward within the reversible move horizon
     /// (`halfmove_clock`), as irreversible moves prevent earlier positions from recurring.
@@ -353,21 +338,19 @@ impl Position {
         minors <= 1
     }
 
-    /// Fully validates a castling move encoded as king-onto-rook (`ksq` → `rsq`).
+    /// Fully validates a castling move encoded as king-onto-rook (`ksq` → `rsq`),
+    /// the Chess960 form, resolving the wing by `rsq.file() < ksq.file()`.
     ///
     /// Checks all FIDE castling legality criteria:
     /// 1. Castling rights for the resolved wing are intact.
     /// 2. Transit and destination squares are clear of obstructions.
     /// 3. The king is not in check, nor does it pass through or land on attacked squares.
     ///
-    /// # TT Collision Safety
-    /// Serves as the single source of truth for both move generation and TT move validation.
+    /// The single source of truth for both move generation and TT move validation.
     /// A hash collision can produce a `CASTLE`-flagged move from an unrelated position;
     /// this full validation prevents illegal castling through pieces or into check.
     ///
-    /// # Preconditions
-    /// - The caller must ensure `ksq` and `rsq` currently host `color`'s King and Rook.
-    /// - Wing resolution (`rsq.file() < ksq.file()`) supports standard chess and Chess960 (FRC).
+    /// The caller must ensure `ksq` and `rsq` currently host `color`'s King and Rook.
     #[inline]
     pub fn is_castle_move_legal(&self, color: Color, ksq: Square, rsq: Square) -> bool {
         let queenside = rsq.file() < ksq.file();
@@ -377,7 +360,6 @@ impl Position {
             (Color::Black, false) => (BLACK_OO, &CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY),
             (Color::Black, true) => (BLACK_OOO, &CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY),
         };
-
         self.castling_rights & mask != 0 && self.is_castle_legal(self.occ, ksq, rsq, data, check_sqs, empty, color.opposite())
     }
 
@@ -425,9 +407,6 @@ impl Position {
 
     /// Verifies path clearance and king transit safety for a castling move.
     ///
-    /// Uses precomputed masks for standard chess starting squares, falling back
-    /// to dynamic rank interval scanning for Chess960 (FRC).
-    ///
     /// `data` layout: `[canonical_king_src, canonical_rook_src, king_dst, rook_dst]`.
     #[inline]
     #[allow(clippy::too_many_arguments)]
@@ -442,7 +421,6 @@ impl Position {
         opp: Color,
     ) -> bool {
         // ── Fast path: Standard chess starting placement
-        // If pieces sit on standard squares, use precomputed clearance and check masks.
         if ksq.0 == data[0] && rsq.0 == data[1] && (occ & empty_mask).is_empty() {
             for &sq in check_sqs {
                 if self.is_attacked::<false>(Square(sq), opp, Bitboard(0)) {
@@ -451,7 +429,6 @@ impl Position {
             }
             return true;
         }
-
         // ── Slow path: Chess960 (FRC) arbitrary placement
         // All movement occurs on the home rank. The closed interval spanning the minimum
         // and maximum of both pieces' source and target squares must be entirely empty,
@@ -459,7 +436,6 @@ impl Position {
         let (king_dst, rook_dst) = (data[2], data[3]);
         let min = ksq.0.min(rsq.0).min(king_dst).min(rook_dst);
         let max = ksq.0.max(rsq.0).max(king_dst).max(rook_dst);
-
         for sq in min..=max {
             if sq == ksq.0 || sq == rsq.0 {
                 continue;
@@ -469,13 +445,11 @@ impl Position {
             }
         }
 
-        // Verify the king does not start in, pass through or land on check.
-        // We mask out the king's current square so enemy slider X-rays through the
-        // king onto its transit path are correctly detected.
+        // Masking out the king's own square lets an enemy slider's x-ray through it reach the
+        // transit path, where leaving the king in place would hide the attack behind itself.
         let k_lo = ksq.0.min(king_dst);
         let k_hi = ksq.0.max(king_dst);
         let king_bb = Bitboard(1u64 << ksq.0);
-
         for sq in k_lo..=k_hi {
             if self.is_attacked::<true>(Square(sq), opp, king_bb) {
                 return false;
@@ -486,10 +460,8 @@ impl Position {
 
     /// Serialize the current position back to a FEN string.
     pub fn as_fen(&self) -> String { fen::as_fen(self) }
-
     /// Print a board diagram to stdout.
     pub fn pretty_print(&self) { fen::pretty_print(self) }
-
     #[inline(always)]
     pub fn piece_at(&self, sq: Square) -> PieceType { self.pieces[sq.0 as usize] }
 
@@ -501,7 +473,6 @@ impl Position {
         self.piece_at(sq)
     }
 
-    /// Which color owns the piece on `sq`?
     /// Branchless: tests one bit in Black's occupancy.
     /// Only meaningful when the square is actually occupied.
     #[inline(always)]
@@ -510,11 +481,8 @@ impl Position {
         Color::from(self.side_bb[1].check_bit(sq) as u8)
     }
 
-    /// Bitboard of all pieces of type `pt` belonging to `color`.
     #[inline(always)]
     pub fn pieces(&self, pt: PieceType, color: Color) -> Bitboard { self.role_bb[pt as usize] & self.side_bb[color as usize] }
-
-    /// All occupied squares.
     #[inline(always)]
     pub fn occupancy(&self) -> Bitboard { self.occ }
 
@@ -530,7 +498,7 @@ impl Position {
         p + 3 * n + 3 * b + 5 * r + 9 * q
     }
 
-    /// Number of pieces of type `pt` on the board (both colors combined).
+    /// Number of pieces of type `pt` on the board, both colors combined.
     #[inline(always)]
     pub const fn piece_count(&self, pt: PieceType) -> i32 {
         if pt.is_none() {
@@ -552,7 +520,6 @@ impl Position {
     /// Bitboard of all enemy pieces currently giving check to the side to move.
     #[inline(always)]
     pub fn checkers(&self) -> Bitboard { attacks::checkers(self) }
-
     /// All pieces of `attacker`'s color that attack `sq`.
     #[inline(always)]
     pub fn get_attackers_on(&self, sq: Square, attacker: Color) -> Bitboard { attacks::attackers_of(self, sq, attacker) }
@@ -576,7 +543,7 @@ impl Position {
     /// # Caveat
     /// Due to generator exclusions in parallel flood-fill routines, squares hosting
     /// friendly sliders are excluded from the final mask. Consequently, mutual defenses
-    /// (e.g., a rook defending a friendly rook) do not appear.
+    /// (e.g. a rook defending a friendly rook) do not appear.
     ///
     /// This is safe for querying whether opponent pieces or squares are under attack,
     /// but must not be used to check if friendly pieces are defended.

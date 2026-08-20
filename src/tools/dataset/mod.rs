@@ -50,7 +50,7 @@ impl Default for SoulEntry {
 }
 
 impl SoulEntry {
-    /// Sentinel evaluation assigned to positions without search labels (e.g., raw EPD records).
+    /// Sentinel evaluation assigned to positions without search labels (e.g. raw EPD records).
     pub const NO_SCORE: i16 = i16::MAX;
 
     pub fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> Self {
