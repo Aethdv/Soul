@@ -56,8 +56,9 @@ use crate::{
         tm::TimeManager,
         tt,
         tt::TranspositionTable,
+        tui,
     },
-    tools::{perft::perft, tui},
+    tools::perft::perft,
     weave::{Vi16x8, Vu64x4},
 };
 
