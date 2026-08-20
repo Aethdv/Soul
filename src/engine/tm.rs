@@ -20,8 +20,6 @@ use crate::{
     engine::{search::Limits, search_params::SearchParams},
 };
 
-/// Tracks elapsed time against precomputed soft / hard budgets.
-///
 /// Constructed once at the start of a search; queried each iteration to
 /// decide when to stop iterating (`soft`) and when to bail mid-search
 /// regardless of progress (`hard`).
@@ -88,11 +86,7 @@ impl TimeManager {
     }
 }
 
-/// The side-to-move's view of the time control: their remaining time,
-/// their increment, and the CLI/GUI-supplied `movestogo` (0 if absent).
-///
-/// All the per-move budget arithmetic lives on this type so the public
-/// constructor stays a flat list of decisions rather than a wall of math.
+/// The side-to-move's view of the time control. `movestogo` is 0 when absent.
 struct Clock {
     time: u64,
     inc: u64,
@@ -101,7 +95,6 @@ struct Clock {
 }
 
 impl Clock {
-    /// Pick the side-to-move's clock fields out of the protocol message.
     fn for_stm(limits: &Limits, stm: Color, game_ply: u64) -> Self {
         let (time, inc) = match stm {
             Color::White => (limits.wtime, limits.winc),
@@ -111,13 +104,10 @@ impl Clock {
         Self { time, inc, movestogo: limits.movestogo, game_ply }
     }
 
-    /// True when the CLI/GUI sent neither time nor increment for this side:
-    /// e.g. `go depth N` or analysis mode without a clock attached.
+    /// What `go depth N` or analysis mode without a clock attached looks like.
     #[inline]
     fn is_unclocked(&self) -> bool { self.time == 0 && self.inc == 0 }
 
-    /// Estimated remaining moves in the game.
-    ///
     /// If the CLI/GUI supplied `movestogo`, we trust it (front-loading slightly
     /// by subtracting 0.5). Otherwise, we interpolate between an opening estimate
     /// and an endgame estimate using the current game phase: more moves expected
@@ -157,7 +147,6 @@ impl Clock {
         (hard.saturating_add(self.inc)).min(self.time)
     }
 
-    /// The per-move share plus `tm_soft_inc`% of the increment.
     fn soft_ms(&self, mtg: f64, params: &SearchParams) -> u64 {
         let base = (self.time as f64 / mtg) as u64;
         let inc_contrib = (self.inc as f64 * (params.tm_soft_inc as f64 / 100.0)) as u64;
@@ -165,11 +154,8 @@ impl Clock {
     }
 }
 
-/// Resolve the `(soft, hard)` budget pair for the side to move.
-///
-/// Walks the precedence ladder documented at the module level. The clocked path is
-/// the only one that consults `phase` and `params`; everything above it short-circuits
-/// before they're touched.
+/// The precedence ladder is the one documented at the module level. Its clocked rung is the
+/// only one that consults `phase` and `params`; everything above short-circuits first.
 fn compute_budget(
     limits: &Limits,
     stm: Color,
@@ -198,8 +184,6 @@ fn compute_budget(
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }
 
-/// Subtract communication overhead from a millisecond budget, clamped to
-/// at least 1 ms so we never produce a zero-length window the search would
-/// abort on entry.
+/// The 1 ms floor keeps a zero-length window off the search, which would abort on entry.
 #[inline]
 fn with_overhead(ms: u64, overhead: u64) -> Duration { Duration::from_millis(ms.saturating_sub(overhead).max(1)) }

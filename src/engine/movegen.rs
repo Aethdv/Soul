@@ -14,10 +14,10 @@ use crate::core::{
     moves::{Move, MoveList},
 };
 
-/// Queen first, almost always right. Knight is the underpromotion that matters, since it
-/// checks and forks where a queen cannot; rook and bishop ride along.
+/// Generation order, by piece value. Priority is the movepicker's `PROMO_*_SCORE` band, which
+/// puts knight second: it checks and forks where a queen cannot.
 const QUIET_PROMOS: [u16; 4] = [Move::PROM_Q, Move::PROM_R, Move::PROM_B, Move::PROM_N];
-/// Same priority ordering for promotion-captures.
+/// Same order for promotion-captures.
 const CAPTURE_PROMOS: [u16; 4] = [Move::PROM_Q_CAPTURE, Move::PROM_R_CAPTURE, Move::PROM_B_CAPTURE, Move::PROM_N_CAPTURE];
 
 /// Every strictly legal move in the position.
