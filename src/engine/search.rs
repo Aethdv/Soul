@@ -42,7 +42,8 @@ use crate::{
     core::{
         board::{Position, attacks::Pins, xorboard::XorBoard},
         defs::{
-            Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_loss, is_mate, is_win, mate_in, mated_in,
+            Bitboard, Color, INF, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Square, draw_score, is_loss, is_mate, is_win, mate_in,
+            mated_in,
         },
         moves::Move,
     },
