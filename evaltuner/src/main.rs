@@ -66,6 +66,14 @@ struct Args {
     help: bool,
 }
 
+/// What every probe takes; they differ only in the [`Task`] they dispatch.
+#[derive(clap::Args)]
+struct ProbeArgs {
+    #[arg(short, long, default_value = DEFAULT_CONFIG)]
+    config: String,
+    dataset: String,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     #[command(name = "ablation")]
@@ -90,35 +98,15 @@ enum Commands {
         dataset: String,
     },
     #[command(name = "gather-cost")]
-    GatherCost {
-        #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
-        dataset: String,
-    },
+    GatherCost(ProbeArgs),
     #[command(name = "curvature")]
-    Curvature {
-        #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
-        dataset: String,
-    },
+    Curvature(ProbeArgs),
     #[command(name = "val-cost")]
-    ValCost {
-        #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
-        dataset: String,
-    },
+    ValCost(ProbeArgs),
     #[command(name = "batch-size")]
-    BatchSize {
-        #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
-        dataset: String,
-    },
+    BatchSize(ProbeArgs),
     #[command(name = "momentum")]
-    Momentum {
-        #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
-        dataset: String,
-    },
+    Momentum(ProbeArgs),
     #[command(name = "score")]
     Score {
         #[arg(short, long, default_value = DEFAULT_CONFIG)]
@@ -196,21 +184,11 @@ fn main() {
         Some(Commands::SeedSpread { count, config: config_path, epochs, log, dataset }) => {
             seeds::run_seed_spread(&dataset, &config_path, epochs, count, &log);
         },
-        Some(Commands::GatherCost { config: config_path, dataset }) => {
-            probe(&config_path, &dataset, Task::GatherCost);
-        },
-        Some(Commands::Curvature { config: config_path, dataset }) => {
-            probe(&config_path, &dataset, Task::Curvature);
-        },
-        Some(Commands::ValCost { config: config_path, dataset }) => {
-            probe(&config_path, &dataset, Task::ValCost);
-        },
-        Some(Commands::BatchSize { config: config_path, dataset }) => {
-            probe(&config_path, &dataset, Task::BatchSize);
-        },
-        Some(Commands::Momentum { config: config_path, dataset }) => {
-            probe(&config_path, &dataset, Task::Momentum);
-        },
+        Some(Commands::GatherCost(args)) => probe(&args, Task::GatherCost),
+        Some(Commands::Curvature(args)) => probe(&args, Task::Curvature),
+        Some(Commands::ValCost(args)) => probe(&args, Task::ValCost),
+        Some(Commands::BatchSize(args)) => probe(&args, Task::BatchSize),
+        Some(Commands::Momentum(args)) => probe(&args, Task::Momentum),
         Some(Commands::Score { config: config_path, sample, params, loss, shipped, datasets }) => {
             let Some(loss) = parse_loss(loss.as_deref(), &config_path) else {
                 return;
@@ -269,7 +247,7 @@ fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
 }
 
 /// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
-fn probe(config_path: &str, dataset: &str, task: Task) { run::run(Some(dataset), &load_config(config_path).evaltune, None, task); }
+fn probe(args: &ProbeArgs, task: Task) { run::run(Some(&args.dataset), &load_config(&args.config).evaltune, None, task); }
 
 fn log_space(min: f64, max: f64, points: usize) -> Vec<f64> {
     // Otherwise i / (n - 1) is 0/0 and every point on the grid comes out NaN.
