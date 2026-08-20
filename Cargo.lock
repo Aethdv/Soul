@@ -456,7 +456,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "zerocopy",
- "zstd",
 ]
 
 [[package]]
