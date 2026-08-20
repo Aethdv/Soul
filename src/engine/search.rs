@@ -770,10 +770,9 @@ impl<'cfg> Searcher<'cfg> {
             nps: u64::try_from(nps).unwrap_or(u64::MAX),
             time_ms: ms,
             hashfull: self.tt.hashfull(),
-            show_wdl: self.cfg.display.show_wdl,
             history,
             board: &self.root_pos,
-            use_ansi: self.cfg.display.use_ansi,
+            display: &self.cfg.display,
         }
     }
 
@@ -786,7 +785,7 @@ impl<'cfg> Searcher<'cfg> {
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
             tui::print_pretty_search_info(&data);
         } else {
-            tui::print_search_info(self.cfg.limits.protocol, &data, self.cfg.display.pretty_print);
+            tui::print_search_info(self.cfg.limits.protocol, &data);
         }
     }
 

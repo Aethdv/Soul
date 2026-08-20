@@ -13,7 +13,7 @@ use crate::{
     },
     engine::{
         movegen::gen_legal_moves,
-        search::{Line, PvSnapshot},
+        search::{Line, PvSnapshot, SearchDisplay},
         wdl,
     },
     weave::Vi16x8,
@@ -59,15 +59,14 @@ pub struct SearchInfoData<'a> {
     pub time_ms: u128,
     pub hashfull: usize,
     pub pv: &'a Line,
-    pub show_wdl: bool,
     pub history: &'a [PvSnapshot],
     pub board: &'a Position,
-    pub use_ansi: bool,
+    pub display: &'a SearchDisplay,
 }
 
-pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: bool) {
+pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>) {
     match protocol {
-        Protocol::Uci => print_uci(data, pretty),
+        Protocol::Uci => print_uci(data),
         Protocol::XBoard => print_xboard(data),
     }
     let _ = io::stdout().flush();
@@ -80,7 +79,7 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>, pretty: 
 /// tail and the last one clears the rest. With no terminal there is nothing to
 /// redraw and the escapes would print as garbage.
 pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
-    let ansi = data.use_ansi;
+    let ansi = data.display.use_ansi;
     if ansi {
         print!("\x1b[H");
     }
@@ -357,8 +356,9 @@ fn sq_file(sq: Square) -> char { (b'a' + sq.file()) as char }
 #[inline]
 fn sq_rank(sq: Square) -> char { (b'1' + sq.rank()) as char }
 
-fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
-    let wdl_str = if data.show_wdl {
+fn print_uci(data: &SearchInfoData<'_>) {
+    let pretty = data.display.pretty_print;
+    let wdl_str = if data.display.show_wdl {
         let (wf, df, lf) = wdl::wdl_model(data.score, data.board.material_count());
         let w = (wf * 1000.0).round() as u32;
         let d = (df * 1000.0).round() as u32;
@@ -370,13 +370,13 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
 
     if pretty {
         let t = data.time_ms.try_into().unwrap_or(u64::MAX);
-        let mark = bound_mark(data.bound, data.use_ansi);
+        let mark = bound_mark(data.bound, data.display.use_ansi);
 
         print!(
             "info depth {:>2} seldepth {:>2} score {mark}{}{} nodes {:>7} {:>11} time {:>9} hashfull {} pv",
             data.depth,
             data.sel_depth,
-            fmt_score_colored(data.score, 7, data.use_ansi),
+            fmt_score_colored(data.score, 7, data.display.use_ansi),
             wdl_str,
             human(data.nodes),
             fmt_nps(data.nps),
@@ -407,13 +407,13 @@ fn print_uci(data: &SearchInfoData<'_>, pretty: bool) {
     // SAN needs the position each move is played from, so pretty output replays the line.
     let mut replay = pretty.then(|| (*data.board, data.board.get_initial_accumulator()));
     let white_first = data.board.stm == Color::White;
-    let reset = ansi_code(RESET, data.use_ansi);
+    let reset = ansi_code(RESET, data.display.use_ansi);
 
     for (i, &mv) in data.pv.moves[..data.pv.len].iter().enumerate() {
         match replay.as_mut() {
             Some((board, acc)) => {
                 let hue = if (i % 2 == 0) == white_first { PV_WHITE } else { PV_BLACK };
-                print!(" {}{}{reset}", tui_fg(hue, data.use_ansi), san_step(board, acc, mv));
+                print!(" {}{}{reset}", tui_fg(hue, data.display.use_ansi), san_step(board, acc, mv));
             },
             None => print!(" {}", mv.to_uci(data.board.is_frc)),
         }
