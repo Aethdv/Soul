@@ -10,12 +10,11 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        nonpoison::Mutex,
     },
     thread::{self, JoinHandle},
     time::Instant,
 };
-
-use parking_lot::Mutex;
 
 use crate::{
     core::{
