@@ -1,6 +1,9 @@
 EXE_NAME := soul
 DEPTH    ?= 12
 
+FEATURES ?=
+CARGO_FEATURES = $(if $(FEATURES),--features $(FEATURES))
+
 # Evaltune profiling dataset + epoch count.
 ET_DATA   ?= data/big3.txt
 ET_EPOCHS ?= 100
@@ -13,7 +16,7 @@ COMMA := ,
 RUST_HOST := $(shell rustc -vV | sed -n 's/host: //p')
 
 # OpenBench passes CC=cargo (for C/C++ engines). Override it so cc-rs
-# (used by zstd-sys) finds a real C compiler instead of cargo.
+# (used by evaltune's zstd-sys) finds a real C compiler instead of cargo.
 override CC := cc
 
 # If you want to build faster (specify your own number of threads);
@@ -34,15 +37,15 @@ EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
 .PHONY: all help debug release native bench v3 v4 pgo openbench clean \
-        evaltune test oracle flops seefmt fmt clippy profile etprofile \
-        avx2 avx2-bmi2 avx512 corrstats movepicker storecost \
+        evaltune test oracle flops seefmt fmt clippy profile etprofile tools \
+        datagen avx2 avx2-bmi2 avx512 corrstats movepicker storecost \
         windows win-avx2 win-avx2-bmi2 win-avx512
 
 all: openbench
 
 debug: ## Build for development
 	@echo "Building debug..."
-	@RUSTFLAGS="-C target-cpu=native" cargo build
+	@RUSTFLAGS="-C target-cpu=native" cargo build $(CARGO_FEATURES)
 	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
 	@echo "Done: ./$(DEBUG_EXE)"
 
@@ -116,13 +119,19 @@ pgo: check-pgo ## PGO build (recommended)
 native: ## Build optimized for your CPU
 	@echo "Building native..."
 	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release --quiet --target $(RUST_HOST)
+		cargo build --release --quiet --target $(RUST_HOST) $(CARGO_FEATURES)
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
 
 bench: ## Fast compile w/ bench
 	@RUSTFLAGS="-C target-cpu=native" cargo build --profile quick --quiet
 	@./target/quick/$(EXE_NAME) bench $(DEPTH)
+
+tools: ## Native build with datagen, dataset and the measurement rigs
+	@$(MAKE) --no-print-directory native FEATURES=datagen,rigs EXE=tools$(EXE_EXT)
+
+datagen: ## Native build with self-play generation and the dataset pipeline
+	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=datagen$(EXE_EXT)
 
 storecost: ## Price XorBoard against a build without it (RUNS=5)
 	@python3 scripts/storecost.py $(RUNS)
@@ -170,7 +179,7 @@ endef
 profile: ## Generate CPU performance profile
 	@echo "Building with debug symbols..."
 	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
-		cargo build --profile profiling --quiet
+		cargo build --profile profiling --quiet --features rigs
 	@cp target/profiling/$(EXE_NAME) $(EXE)
 	@echo "Recording profile..."
 	@rm -f perf.data
@@ -233,6 +242,7 @@ fmt: ## Auto-format with rustfmt
 
 clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
 	@RUSTFLAGS="-C target-cpu=native" cargo clippy --workspace --all-features --all-targets --quiet -- -D warnings
+	@RUSTFLAGS="-C target-cpu=native" cargo clippy -p soul --all-targets --quiet -- -D warnings
 
 clean: ## Remove all build artifacts
 	@echo "Cleaning..."

@@ -1,11 +1,11 @@
-//! Development utilities: benchmarking, perft, and dataset generation.
+//! Development utilities: benchmarking, perft, and the optional dataset and measurement tools.
 
 pub mod bench;
-pub mod byteboard;
-pub mod datagen;
-pub mod dataset;
-pub mod genfens;
-pub mod measure;
+#[cfg(feature = "rigs")] pub mod byteboard;
+#[cfg(feature = "datagen")] pub mod datagen;
+#[cfg(feature = "dataset")] pub mod dataset;
+#[cfg(feature = "datagen")] pub mod genfens;
+#[cfg(feature = "rigs")] pub mod measure;
 pub mod perft;
-pub mod speedtest;
+#[cfg(feature = "rigs")] pub mod speedtest;
 pub mod tui;

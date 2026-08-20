@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 event=${FLOP_EVENT:-fp_ret_sse_avx_ops.all}
 
-bin=$(RUSTFLAGS="-C target-cpu=native" cargo test --release -p soul --no-run --message-format=json 2>/dev/null \
+bin=$(RUSTFLAGS="-C target-cpu=native" cargo test --release -p soul --features dataset --no-run --message-format=json 2>/dev/null \
     | jq -r 'select(.executable != null and .target.kind[0] == "lib") | .executable' | tail -1)
 
 [[ -n $bin ]] || { echo "no lib test binary; cargo test --no-run built nothing" >&2; exit 1; }

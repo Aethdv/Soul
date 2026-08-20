@@ -1,6 +1,8 @@
-soul
-search
-eval
+/soul
+/search
+/eval
+/tools
+/datagen
 target/
 /data/
 openings/

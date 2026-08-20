@@ -349,10 +349,14 @@ pub fn print_help(use_ansi: bool) {
     h.command("key", "Print Zobrist hash");
     h.command_args("bench", "<N>", "Benchmark to depth N");
     h.command_args("divide", "<N>", "Perft divide test");
+    #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
     h.command("spsa", "Print the tunable search params as an SPSA table");
+    #[cfg(feature = "datagen")]
     h.command("datagen", "Generate self-play training data");
+    #[cfg(feature = "dataset")]
     h.command("dataset", "Manage datasets (inspect, info, encode)");
+    #[cfg(feature = "datagen")]
     h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
@@ -471,8 +475,11 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
 
         "bench" => tools::bench::run(parse_val(&mut tokens), 16),
         "divide" => tools::perft::run(&state.board, parse_default(&mut tokens, 5), true),
+        #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(0),
+        #[cfg(feature = "datagen")]
         "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        #[cfg(feature = "datagen")]
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {

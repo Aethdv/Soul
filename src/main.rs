@@ -71,23 +71,28 @@ fn main() {
                     print!("{table}");
                 }
             },
+            #[cfg(feature = "rigs")]
             "speedtest" => {
                 let limit = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                 tools::speedtest::run(limit);
             },
+            #[cfg(feature = "datagen")]
             "datagen" => {
                 let stop = Arc::new(AtomicBool::new(false));
                 let datagen_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::datagen::run(&datagen_args, &stop);
             },
+            #[cfg(feature = "datagen")]
             "genfens" => {
                 let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::genfens::run(&genfens_args);
             },
+            #[cfg(feature = "rigs")]
             "measure" => {
                 let measure_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::measure::run(&measure_args);
             },
+            #[cfg(feature = "dataset")]
             "dataset" => {
                 let dataset_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::dataset::cli::run(&dataset_args);
