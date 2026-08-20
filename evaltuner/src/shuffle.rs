@@ -23,9 +23,7 @@ const TASK_SIZE: usize = 1 << 16;
 
 /// Reusable scratch buffers for generating cache-blocked random permutations.
 pub struct Shuffler {
-    /// Materialized bucket assignments per element.
     bucket_ids: Vec<u8>,
-    /// Scratch buffer for coarse-grained block permutations.
     block_order: Vec<u32>,
 }
 
@@ -157,9 +155,6 @@ impl Shuffler {
 }
 
 fn bucket_count(len: usize) -> usize { len.div_ceil(TARGET_BUCKET).next_power_of_two().clamp(MIN_BUCKETS, MAX_BUCKETS) }
-
-/// The Weyl constant `0x9E37_79B9_7F4A_7C15` is floor(2^64/φ), odd as the additive step needs,
-/// so sequential stream indices land on unrelated generator states.
 fn splitmix64(seed: u64, stream: u64) -> u64 {
     let mut z = seed.wrapping_add(stream.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -245,12 +240,10 @@ mod tests {
         let mut shuffler = Shuffler::new(4);
         let mut out = [0u32; 4];
         let mut seen = [0u32; ORDERINGS];
-
         for trial in 0..TRIALS {
             shuffler.fill(&mut out, trial as u64);
             seen[lehmer_code(&out)] += 1;
         }
-
         let expected = TRIALS as f64 / ORDERINGS as f64;
         let chi2: f64 = seen.iter().map(|&c| (f64::from(c) - expected).powi(2) / expected).sum();
         // 23 degrees of freedom sets the 0.999 quantile at 49.7.
@@ -260,7 +253,6 @@ mod tests {
     /// Computes the Lehmer code index for a permutation of 0..4.
     fn lehmer_code(perm: &[u32; 4]) -> usize {
         const FACTORIAL: [usize; 4] = [6, 2, 1, 1];
-
         (0..4)
             .map(|i| perm[i + 1..].iter().filter(|&&v| v < perm[i]).count() * FACTORIAL[i])
             .sum()
@@ -279,12 +271,9 @@ mod sweep {
         for n in [6_390_000, 32_815_897] {
             let mut shuffler = Shuffler::new(n);
             let mut out = vec![0u32; n];
-
             println!("n = {n}, default {} buckets", bucket_count(n));
-
             for buckets in [16, 32, 64, 128, 256] {
                 shuffler.fill_into(&mut out, 1, buckets);
-
                 let start = Instant::now();
                 for r in 0..5 {
                     shuffler.fill_into(&mut out, r, buckets);

@@ -48,9 +48,6 @@ pub fn param_group(index: usize) -> ParamGroup {
 }
 
 /// Derives the index range of each parameter group from [`param_group`].
-///
-/// Deriving spans directly from group queries guarantees consistency if layout
-/// offsets change, while asserting that every group occupies a contiguous slice.
 pub fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
     let mut spans = [(usize::MAX, 0usize); GROUP_NAMES.len()];
     let mut counts = [0usize; GROUP_NAMES.len()];

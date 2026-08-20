@@ -41,7 +41,6 @@ const FIT_K: f64 = 0.0025;
 const FIT_STEPS: usize = 24;
 const FIT_TOL: f64 = 1e-10;
 
-/// Piece types a material table has an opinion about; the king is fixed at zero.
 const FITTED: usize = 5;
 
 /// Algebraic letters for those five, read off the engine's own table.

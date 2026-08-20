@@ -217,15 +217,11 @@ fn main() {
     }
 }
 
-/// One row per dataset, so an assay runs beside the trainer rather than through it: the split, the
-/// sample weights and the merge into one pool all describe a training run.
+/// One row per dataset, so an assay runs beside the trainer rather than through it.
 fn assay(config_path: &str, datasets: &[String], report: Assay, sample: Option<usize>) {
     assay::run(&report, datasets, &load_config(config_path).evaltune, sample);
 }
 
-/// A config that will not read is fatal, as the replay filter it names already is: a fallback to
-/// defaults runs under a different filter and a different split, answering a different question
-/// than the one asked.
 fn load_config(path: &str) -> TunerConfig {
     TunerConfig::from_file(path).unwrap_or_else(|_| {
         eprintln!("Error: cannot read the config at '{path}'. Fix the path, or run from the repo root.");
@@ -233,8 +229,7 @@ fn load_config(path: &str) -> TunerConfig {
     })
 }
 
-/// Cross-entropy unless asked otherwise, so a comparison between vectors does not shift with
-/// whatever the config happens to train under.
+/// Cross-entropy unless asked otherwise.
 fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
     match name {
         None => Some(LossFn::CrossEntropy),
@@ -246,7 +241,7 @@ fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
     }
 }
 
-/// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
+/// One diagnostic pass over a dataset.
 fn probe(args: &ProbeArgs, task: Task) { run::run(Some(&args.dataset), &load_config(&args.config).evaltune, None, task); }
 
 fn log_space(min: f64, max: f64, points: usize) -> Vec<f64> {
@@ -266,8 +261,7 @@ fn log_space(min: f64, max: f64, points: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Each round doubles the epoch budget and re-centers a three-point grid on the winner,
-/// so the cheap rounds place the bracket and the expensive one only has to split it.
+/// Each round doubles the epoch budget and re-centers a three-point grid on the winner.
 fn sweep_lr_mult(
     dataset: &str,
     config_path: &str,
@@ -330,14 +324,10 @@ fn sweep_lr_mult(
 }
 
 /// One trial's best validation loss, or `f64::MAX` if it never reported one.
-///
-/// The child logs to a scratch file of its own rather than the run log, so a sweep of
-/// short trials does not bury a real run in the file the plotter reads.
 fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
     let log_path = std::env::temp_dir().join(format!("sweep_lr_mult_{}.jsonl", std::process::id()));
     let log_str = log_path.to_string_lossy().into_owned();
     let _ = std::fs::remove_file(&log_str);
-
     let mut extra_args = vec![("--lr-mult", lr_mult.to_string())];
     if let Some(s) = seed {
         extra_args.push(("--seed", s.to_string()));
@@ -346,16 +336,13 @@ fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize
     let start = std::time::Instant::now();
     let success = seeds::spawn_trial(dataset, config_path, epochs, &log_str, &extra_args);
     let elapsed = start.elapsed().as_secs_f32();
-
     let val_loss = if success { seeds::last_best_val(&log_str).unwrap_or(f64::MAX) } else { f64::MAX };
     let _ = std::fs::remove_file(&log_str);
-
     (val_loss, elapsed)
 }
 
 fn run_evaltune(args: Args) -> bool {
     let mut tuner_config = load_config(&args.config);
-
     if let Some(epochs) = args.epochs {
         tuner_config.evaltune.epochs = epochs;
     }
@@ -371,7 +358,6 @@ fn run_evaltune(args: Args) -> bool {
     if let Some(seed) = args.split_seed {
         tuner_config.evaltune.split_seed = Some(seed);
     }
-
     if let Some(mode) = args.init {
         tuner_config.evaltune.init = match mode.as_str() {
             "default" => Init::Default,

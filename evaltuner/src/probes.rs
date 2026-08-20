@@ -100,9 +100,9 @@ fn shipped(ctx: &TrainerContext, config: &EvalTuneConfig) -> (Vec<Tunable>, Vec<
 /// `E|G_B|² = |g|² + tr(Σ)/B`, so one large batch and its chunks give both terms. Numerator and
 /// denominator pool across trials before dividing, a ratio of noisy estimates being biased.
 ///
-/// McCandlish et al., An Empirical Model of Large-Batch Training, 2018, derived for a step
-/// proportional to the gradient. Lion's is `±lr` by sign, so this bounds where a batch stops
-/// improving the gradient, not the step. Grows as `|g|` shrinks; measured at the shipped values.
+/// McCandlish et al., An Empirical Model of Large-Batch Training, 2018. <https://arxiv.org/pdf/1812.06162>
+/// derived for a step proportional to the gradient. Lion's is `±lr` by sign, so this bounds where a batch
+/// stops improving the gradient, not the step. Grows as `|g|` shrinks; measured at the shipped values.
 pub fn batch_size_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
     let (_, values, k, blend) = shipped(ctx, config);
 
@@ -242,8 +242,6 @@ fn accumulate_sign_error(sums: &[Vec<f64>], counts: &[usize], union_sum: &[f64],
                     continue;
                 }
 
-                // Weighted by the whole draw, not by the pair: a coordinate with no true gradient
-                // would otherwise be weighted by its own noise instead of by the zero it deserves.
                 let weight = weights[slot];
                 let flipped = a * b < 0.0;
                 rung.compared += 1;
@@ -266,8 +264,6 @@ fn report(
     ladder: &[Rung],
 ) {
     println!("\n{LAB}Noise scale{RESET} {DIM}({trials} trials against {big} positions at K = {k:.6}){RESET}");
-    // Separate failures: no measurable signal puts the scale above the larger batch, while noise
-    // that failed to fall with batch size is a sampling accident.
     if pooled_noise <= 0.0 {
         println!("  {LAB}unresolved{RESET}    the larger batch measured no less noise, so raise the trial count");
         return;
@@ -306,8 +302,7 @@ fn report(
 ///
 /// `m` is an EMA with weights `(1 − β₂)β₂ʲ`, so it averages `B·(1 + β₂)/(1 − β₂)` positions and
 /// lags the current gradient by `β₂/(1 − β₂)` steps of travel. Writing `a = 1 − β₂`, its squared
-/// error against the true gradient is `(a/2)·tr(Σ)/B + (d/a)²`, minimized at
-/// `a = (4·d²·B / tr(Σ))^(1/3)`.
+/// error against the true gradient is `(a/2)·tr(Σ)/B + (d/a)²`, minimized at `a = (4·d²·B / tr(Σ))^(1/3)`.
 ///
 /// `d` is measured rather than derived from the Hessian: one Lion-shaped step, then the same batch
 /// again, so the sampling noise is identical on both sides and the difference is curvature alone.
@@ -334,13 +329,10 @@ pub fn momentum_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
             continue;
         }
 
-        // Two disjoint draws differ by twice the per-batch variance, which needs no true gradient.
         let gradient: Vec<f64> = a_sum.iter().map(|g| g / a_count as f64).collect();
         let other: Vec<f64> = b_sum.iter().map(|g| g / b_count as f64).collect();
         variance += 0.5 * gradient.iter().zip(&other).map(|(x, y)| (x - y).powi(2)).sum::<f64>();
 
-        // One step of the run's own shape, then the same positions again: identical noise on both
-        // sides, so what is left of the difference is the curvature the step moved through.
         let stepped: Vec<f64> = (0..values.len())
             .map(|i| if params[i].is_fixed { values[i] } else { gradient[i].signum().mul_add(-lr_mask[i], values[i]) })
             .collect();
@@ -363,7 +355,6 @@ pub fn momentum_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
         return;
     }
 
-    // Per unit learning rate, since the step above was taken at exactly `lr_mask`.
     let variance = variance / samples as f64;
     let drift = (drift_sq / samples as f64).sqrt();
     println!("  {LAB}variance{RESET}      {VAL}{variance:.4e}{RESET}  {DIM}tr(Σ)/B, one batch against another{RESET}");

@@ -76,8 +76,6 @@ fn analyze_all(values: &[f64], params: &[Tunable]) -> Vec<PsqtSliceStats> {
 
 fn analyze_slice(v: &[f64], params: &[Tunable], piece: &'static str, phase: &'static str) -> PsqtSliceStats {
     let mut pairs = Vec::with_capacity(ADJACENT_PAIRS_PER_SLICE);
-    // The pawn ranks nobody can occupy are fixed, so a step into one measures an untrained
-    // default rather than roughness.
     let mut push = |a: usize, b: usize| {
         if !params[a].is_fixed && !params[b].is_fixed {
             pairs.push(make_pair(v, a, b));
@@ -130,7 +128,6 @@ fn write_report(slices: &[PsqtSliceStats]) -> io::Result<()> {
     if slices.iter().all(|s| s.outliers.is_empty()) {
         writeln!(w, "\nNo significant outliers: PSQT surface appears smooth.")?;
     }
-
     w.flush()
 }
 

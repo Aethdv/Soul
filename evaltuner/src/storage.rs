@@ -42,7 +42,7 @@ pub struct Checkpoint {
     pub params: BTreeMap<String, ParamState>,
     pub hash: u64,
     pub rng_seed: u64,
-    /// Seed used for the train/val split. Legacy checkpoints fall back to `rng_seed`.
+    /// Seed used for the train/val split.
     #[serde(default)]
     pub split_seed: Option<u64>,
     pub dataset: u64,
@@ -145,7 +145,6 @@ pub fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerState) -
     let tmp_path = format!("{path}.tmp");
     let mut writer = BufWriter::new(File::create(&tmp_path)?);
     serde_json::to_writer(&mut writer, &checkpoint)?;
-    // BufWriter discards its flush error on drop, and the rename would publish the truncation.
     writer.flush()?;
     std::fs::rename(&tmp_path, path)?;
     Ok(())
@@ -262,6 +261,29 @@ mod tests {
         Tunable { name: name.into(), value, idx, is_fixed, freeze_resistant: false }
     }
 
+    fn temp_path(tag: &str) -> String {
+        let name = format!("soul_ckpt_{tag}_{}.json", std::process::id());
+        std::env::temp_dir().join(name).display().to_string()
+    }
+
+    fn saved_state() -> TrainerState<'static> {
+        TrainerState {
+            run: sample_run(),
+            rng_seed: 1,
+            split_seed: 3,
+            dataset: 2,
+            dataset_path: "data/test.txt",
+            values: &[10.0],
+            momentum: &[0.0],
+            ema: &[10.0],
+            grad_ema: &[0.0],
+            stagnant: &[0],
+            frozen: &[false],
+            best_val_params: &[1.5],
+            best_train_params: &[3.5],
+        }
+    }
+
     fn sample_run() -> RunState {
         RunState {
             epoch: 7,
@@ -319,16 +341,13 @@ mod tests {
             best_train_params: &[3.5, 4.5],
         };
 
-        let path = std::env::temp_dir().join(format!("soul_ckpt_test_{}.json", std::process::id()));
-        let path_str = path.to_str().unwrap();
-        save_checkpoint(path_str, &tunables, &state).unwrap();
+        let path = temp_path("roundtrip");
+        save_checkpoint(&path, &tunables, &state).unwrap();
 
         let grown = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true), tunable("gamma", 2, 30.0, false)];
-        let d = load_checkpoint(path_str, &grown, &[1.0, 2.0, 30.0]).unwrap();
-
-        let checkpoint = peek_checkpoint(path_str).unwrap();
-        let _ = std::fs::remove_file(path_str);
-
+        let d = load_checkpoint(&path, &grown, &[1.0, 2.0, 30.0]).unwrap();
+        let checkpoint = peek_checkpoint(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
         assert_eq!((checkpoint.rng_seed, checkpoint.split_seed, checkpoint.dataset), (999, Some(888), 777));
         assert_eq!(checkpoint.dataset_path, "data/test.txt");
         assert_eq!((d.run.epoch, d.run.lr_scale, d.run.k, d.run.k_ref, d.run.k_momentum), (42, 0.5, 1.23, 1.11, 0.42));
@@ -360,25 +379,12 @@ mod tests {
         let tunables = [tunable("alpha", 0, 1.0, false)];
         let state = TrainerState {
             run: RunState { epoch: 20, lr_scale: 1.0, k: 1.0, k_ref: 1.0, k_momentum: 0.0, progress: Progress::default() },
-            rng_seed: 1,
-            split_seed: 2,
-            dataset: 3,
-            dataset_path: "data/test.txt",
-            values: &[10.0],
-            momentum: &[0.1],
-            ema: &[9.0],
-            grad_ema: &[0.01],
-            stagnant: &[0],
-            frozen: &[false],
-            best_val_params: &[1.5],
-            best_train_params: &[3.5],
+            ..saved_state()
         };
-
-        let path = std::env::temp_dir().join(format!("soul_ckpt_unseeded_test_{}.json", std::process::id()));
-        let path_str = path.to_str().unwrap();
-        save_checkpoint(path_str, &tunables, &state).unwrap();
-        let d = load_checkpoint(path_str, &tunables, &[1.0]);
-        let _ = std::fs::remove_file(path_str);
+        let path = temp_path("unseeded");
+        save_checkpoint(&path, &tunables, &state).unwrap();
+        let d = load_checkpoint(&path, &tunables, &[1.0]);
+        let _ = std::fs::remove_file(&path);
         let progress = d.expect("unseeded trail must resume").run.progress;
         assert!(progress.val_smooth.is_nan(), "trail must resume as NaN");
         assert!(progress.train_smooth.is_nan());
@@ -388,11 +394,6 @@ mod tests {
     fn a_rename_refuses_to_resume_but_a_removal_does_not() {
         let tunables = [tunable("alpha", 0, 1.0, false), tunable("beta", 1, 2.0, true)];
         let state = TrainerState {
-            run: sample_run(),
-            rng_seed: 1,
-            split_seed: 2,
-            dataset: 3,
-            dataset_path: "data/test.txt",
             values: &[10.0, 20.0],
             momentum: &[0.1, 0.2],
             ema: &[9.0, 19.0],
@@ -401,19 +402,15 @@ mod tests {
             frozen: &[false, true],
             best_val_params: &[1.5, 2.5],
             best_train_params: &[3.5, 4.5],
+            ..saved_state()
         };
-
-        let path = std::env::temp_dir().join(format!("soul_ckpt_renamed_test_{}.json", std::process::id()));
-        let path_str = path.to_str().unwrap();
-        save_checkpoint(path_str, &tunables, &state).unwrap();
-
+        let path = temp_path("renamed");
+        save_checkpoint(&path, &tunables, &state).unwrap();
         let renamed = [tunable("alpha", 0, 1.0, false), tunable("gamma", 1, 30.0, false)];
-        let refused = load_checkpoint(path_str, &renamed, &[1.0, 30.0]);
-
+        let refused = load_checkpoint(&path, &renamed, &[1.0, 30.0]);
         let shrunk = [tunable("alpha", 0, 1.0, false)];
-        let resumed = load_checkpoint(path_str, &shrunk, &[1.0]);
-        let _ = std::fs::remove_file(path_str);
-
+        let resumed = load_checkpoint(&path, &shrunk, &[1.0]);
+        let _ = std::fs::remove_file(&path);
         assert!(refused.is_err(), "parameter rename must be rejected");
         let d = resumed.expect("parameter removal must resume remaining tunables");
         assert_eq!(d.values, [10.0]);
@@ -424,36 +421,18 @@ mod tests {
     #[test]
     fn checkpoint_without_smoothing_resumes_with_an_open_record() {
         let tunables = [tunable("alpha", 0, 1.0, false)];
-        let state = TrainerState {
-            run: sample_run(),
-            rng_seed: 1,
-            split_seed: 3,
-            dataset: 2,
-            dataset_path: "data/test.txt",
-            values: &[10.0],
-            momentum: &[0.0],
-            ema: &[10.0],
-            grad_ema: &[0.0],
-            stagnant: &[0],
-            frozen: &[false],
-            best_val_params: &[1.5],
-            best_train_params: &[3.5],
-        };
-
-        let path = std::env::temp_dir().join(format!("soul_ckpt_legacy_test_{}.json", std::process::id()));
-        let path_str = path.to_str().unwrap();
-        save_checkpoint(path_str, &tunables, &state).unwrap();
-
-        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path_str).unwrap()).unwrap();
+        let state = saved_state();
+        let path = temp_path("legacy");
+        save_checkpoint(&path, &tunables, &state).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let obj = raw.as_object_mut().unwrap();
         for key in ["val_smooth", "best_val_smooth", "train_smooth", "best_train_smooth"] {
             obj.remove(key);
         }
 
-        std::fs::write(path_str, serde_json::to_string(&raw).unwrap()).unwrap();
-        let d = load_checkpoint(path_str, &tunables, &[1.0]).unwrap();
-        let _ = std::fs::remove_file(path_str);
-
+        std::fs::write(&path, serde_json::to_string(&raw).unwrap()).unwrap();
+        let d = load_checkpoint(&path, &tunables, &[1.0]).unwrap();
+        let _ = std::fs::remove_file(&path);
         assert!(d.run.progress.val_smooth.is_nan());
         assert!(d.run.progress.train_smooth.is_nan());
         assert_eq!((d.run.progress.best_val_smooth, d.run.progress.best_train_smooth), (f64::MAX, f64::MAX));
@@ -463,33 +442,14 @@ mod tests {
     #[test]
     fn a_checkpoint_without_a_split_seed_reads_as_none() {
         let tunables = [tunable("alpha", 0, 1.0, false)];
-        let state = TrainerState {
-            run: sample_run(),
-            rng_seed: 12345,
-            split_seed: 3,
-            dataset: 2,
-            dataset_path: "data/test.txt",
-            values: &[10.0],
-            momentum: &[0.0],
-            ema: &[10.0],
-            grad_ema: &[0.0],
-            stagnant: &[0],
-            frozen: &[false],
-            best_val_params: &[1.5],
-            best_train_params: &[3.5],
-        };
-
-        let path = std::env::temp_dir().join(format!("soul_ckpt_split_test_{}.json", std::process::id()));
-        let path_str = path.to_str().unwrap();
-        save_checkpoint(path_str, &tunables, &state).unwrap();
-
-        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path_str).unwrap()).unwrap();
+        let state = TrainerState { rng_seed: 12345, ..saved_state() };
+        let path = temp_path("split");
+        save_checkpoint(&path, &tunables, &state).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         raw.as_object_mut().unwrap().remove("split_seed");
-        std::fs::write(path_str, serde_json::to_string(&raw).unwrap()).unwrap();
-
-        let checkpoint = peek_checkpoint(path_str).unwrap();
-        let _ = std::fs::remove_file(path_str);
-
+        std::fs::write(&path, serde_json::to_string(&raw).unwrap()).unwrap();
+        let checkpoint = peek_checkpoint(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
         assert_eq!(checkpoint.split_seed, None);
         assert_eq!(checkpoint.rng_seed, 12345);
     }

@@ -113,9 +113,6 @@ fn print_report(results: &[AblationResult]) {
 
 /// Partitions evaluation parameters into disjoint, named ablation groups.
 fn build_groups() -> Vec<Group> {
-    // Layout keeps PSQT as one 384-slot block; ablation wants a piece table at a time,
-    // so these six are built by hand and the block itself is filtered out below.
-    // One piece's table is both phases of the mirrored half-board.
     const TABLE: usize = 2 * TABLE_SQUARES;
     let psqt = eval_params::LAYOUT.psqt_offset;
 

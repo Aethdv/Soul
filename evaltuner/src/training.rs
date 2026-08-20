@@ -53,12 +53,10 @@ pub fn wdl_target(record: &FeatureRecord, k: f64, wdl_blend: f64) -> (f64, f64) 
 
     let score = f64::from(record.score);
     let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / CONFIDENCE_THRESHOLD).min(1.0) };
-
     let expected = sigmoid(score, k);
     let outcome = f64::from(record.result) / 2.0;
     let target = (1.0 - instance_blend).mul_add(outcome, instance_blend * expected);
     let d_target_dk = instance_blend * expected * (1.0 - expected) * score;
-
     (target, d_target_dk)
 }
 
@@ -165,7 +163,6 @@ pub fn merge_weights(phase_weights: Vec<f64>, sample_weights: &[f32]) -> Vec<f64
     }
 
     let mut weights = if phase_weights.is_empty() { vec![1.0; sample_weights.len()] } else { phase_weights };
-
     for (w, &s) in weights.iter_mut().zip(sample_weights) {
         *w *= f64::from(s);
     }
@@ -194,7 +191,6 @@ impl GradientStats {
             return;
         }
         self.count += 1;
-
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
         self.p95 *= (self.alpha * step).exp();
     }
@@ -283,7 +279,6 @@ impl Progress {
 impl TunableData for SoulEntry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.to_board(), values) }
-
     #[inline]
     fn result(&self) -> f64 { f64::from(self.result) / 2.0 }
 }
@@ -291,16 +286,13 @@ impl TunableData for SoulEntry {
 impl TunableData for EpdEntry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.board, values) }
-
     #[inline]
     fn result(&self) -> f64 { flip_wdl(self.result, self.board.stm) }
 }
 
 /// Applies an EMA step, initializing directly to `loss` if the trail is unseeded (`NaN`).
 fn smooth(trail: f64, loss: f64) -> f64 { if trail.is_finite() { A_FAST.mul_add(loss - trail, trail) } else { loss } }
-
 fn unset_smooth() -> f64 { f64::NAN }
-
 fn unset_best() -> f64 { f64::MAX }
 
 /// Deserializes JSON `null` as `f64::NAN` to represent uninitialized EMA trails.

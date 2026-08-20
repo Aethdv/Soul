@@ -80,7 +80,6 @@ impl KController {
     #[inline]
     #[must_use]
     pub const fn k(&self) -> f64 { self.k }
-
     #[inline]
     #[must_use]
     pub const fn k_ref(&self) -> f64 { self.k_ref }
@@ -109,13 +108,8 @@ impl KController {
         let n = batch_count.max(1) as f64;
         let scaled_grad = k_grad / n * scale;
         let eff_lr = lr * lr_mult;
-
         let c = self.beta1.mul_add(self.momentum, (1.0 - self.beta1) * scaled_grad);
-        // sign(0.0) is 1.0: a cold start's zero eval keeps the blended direction
-        // at exactly zero, and without the gate K would slide down by eff_lr
-        // every batch. Only the sign step is dead; decay still fires.
         let direction = if c.abs() < 1e-9 { 0.0 } else { c.signum() };
-
         self.k -= eff_lr * (direction + weight_decay * self.k);
         self.momentum = self.beta2.mul_add(self.momentum, (1.0 - self.beta2) * scaled_grad);
         self.k = self.k.clamp(self.k_min, self.k_max);
@@ -194,8 +188,7 @@ pub fn canonicalize(values: &mut [f64], params: &[Tunable]) {
 pub struct Gauge<'a> {
     pub probe: Vec<&'a FeatureRecord>,
     pub reference: f64,
-    /// Every correction multiplied together, so 1.0 is a run that never pulled on
-    /// the scale and anything else is budget the loss could not price.
+    /// Every correction multiplied together.
     pub applied: f64,
 }
 
@@ -206,11 +199,8 @@ impl<'a> Gauge<'a> {
     /// fold a piece's PSQT mean into its material and the norm moves while every score stands
     /// still. Sizing a correction from that hands a run 20% of scale it never paid for.
     /// [`canonicalize`] closes that direction; measuring the score covers whatever else is there.
-    ///
-    /// The same positions every time, so the ratio is a rescale.
     pub fn measure(probe: &[&FeatureRecord], values: &[f64]) -> f64 {
         let lifted: Vec<f64> = values.iter().enumerate().map(|(i, &v)| v * Self::slot_scale(i, MEASURE_GAIN)).collect();
-
         probe.iter().map(|r| eval_record(r, &lifted).abs()).sum()
     }
 
@@ -336,7 +326,20 @@ mod tests {
         "4k3/pppppppp/8/8/8/8/8/Q3K3 w - - 0 1",
     ];
 
-    /// The result label is unused: the gauge reads scores, never targets.
+    fn learned_k(momentum: f64) -> KController {
+        KController {
+            k: 0.01,
+            k_ref: 0.005,
+            mode: KMode::Learned { lr_mult: 0.001 },
+            k_min: 0.001,
+            k_max: 0.020,
+            beta1: 0.9,
+            beta2: 0.99,
+            momentum,
+        }
+    }
+
+    /// The result label is unused.
     fn probe_records() -> Vec<FeatureRecord> {
         PROBE_FENS
             .iter()
@@ -379,7 +382,6 @@ mod tests {
         let squares = TABLE_SQUARES;
         let queen = PieceType::Queen as usize;
         let table = layout.psqt_offset + queen * 2 * squares;
-
         let mut base = eval_params::default_values(&params);
         let mut drifted = base.clone();
         for v in &mut drifted[table..table + squares] {
@@ -416,7 +418,6 @@ mod tests {
         let mut values = eval_params::default_values(&params);
         let mut optimizer = Lion::new(values.len(), 0.9, 0.1, 0.0);
         optimizer.restore_momentum(&vec![0.5; values.len()]);
-
         let records = probe_records();
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge_ref = Gauge::measure(&probe, &values);
@@ -454,10 +455,8 @@ mod tests {
         let params = eval_params::collect_parameters();
         let defaults = eval_params::default_values(&params);
         let curve = LAYOUT.king_danger_offset;
-
         let mut want = defaults.clone();
         want[curve] = 64.0;
-
         let records = probe_records();
         let probe: Vec<&FeatureRecord> = records.iter().collect();
         let gauge = Gauge::new(probe.clone(), &want);
@@ -491,17 +490,7 @@ mod tests {
 
     #[test]
     fn a_zero_gradient_does_not_slide_learned_k() {
-        let mut ctrl = KController {
-            k: 0.01,
-            k_ref: 0.005,
-            mode: KMode::Learned { lr_mult: 0.001 },
-            k_min: 0.001,
-            k_max: 0.020,
-            beta1: 0.9,
-            beta2: 0.99,
-            momentum: 0.0,
-        };
-
+        let mut ctrl = learned_k(0.0);
         for _ in 0..100 {
             ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.0);
         }
@@ -510,17 +499,7 @@ mod tests {
 
     #[test]
     fn a_zero_gradient_still_steps_with_momentum() {
-        let mut ctrl = KController {
-            k: 0.01,
-            k_ref: 0.005,
-            mode: KMode::Learned { lr_mult: 0.001 },
-            k_min: 0.001,
-            k_max: 0.020,
-            beta1: 0.9,
-            beta2: 0.99,
-            momentum: 0.5,
-        };
-
+        let mut ctrl = learned_k(0.5);
         ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.0);
         let expected = 0.01 - 0.01 * 0.001; // eff_lr = lr · lr_mult
         assert!((ctrl.k - expected).abs() < 1e-15, "momentum should still step K: {} against {expected}", ctrl.k);
@@ -528,17 +507,7 @@ mod tests {
 
     #[test]
     fn a_zero_gradient_still_decays_k() {
-        let mut ctrl = KController {
-            k: 0.01,
-            k_ref: 0.005,
-            mode: KMode::Learned { lr_mult: 0.001 },
-            k_min: 0.001,
-            k_max: 0.020,
-            beta1: 0.9,
-            beta2: 0.99,
-            momentum: 0.0,
-        };
-
+        let mut ctrl = learned_k(0.0);
         let before = ctrl.k;
         ctrl.on_batch(0.0, 256, 0.01, 1.0, 0.00001);
         let expected = before - (0.01 * 0.001) * (0.00001 * before);

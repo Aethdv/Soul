@@ -134,7 +134,6 @@ impl LrScheduler for CosineAnnealing {
         let cycle_len = total / self.cycles.max(1);
         let cycle_pos = (epoch - 1) % cycle_len.max(1);
         let warmup_len = (cycle_len as f64 * self.warmup_ratio) as usize;
-
         if cycle_pos < warmup_len {
             let t = cycle_pos as f64 / warmup_len.max(1) as f64;
             self.min + t * (self.base - self.min)
@@ -175,7 +174,6 @@ impl LrScheduler for WarmupStableDecay {
         let warmup_len = (total as f64 * self.warmup_ratio) as usize;
         let stable_len = (total as f64 * self.stable_ratio) as usize;
         let decay_len = total.saturating_sub(warmup_len + stable_len);
-
         if epoch <= warmup_len {
             let t = epoch as f64 / warmup_len.max(1) as f64;
             self.min + t * (self.base - self.min)
@@ -231,7 +229,6 @@ impl LrScheduler for StableDecay {
 }
 
 /// Linear warmup wrapper: scales the inner scheduler from 0 to 1 over the first N epochs.
-///
 /// The config-reachable form is the `warmup_ratio` field on `Cosine` or `WarmupStableDecay`.
 #[derive(Clone, Debug)]
 pub struct Warmup<S> {
@@ -245,7 +242,6 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
         let base_rate = self.inner.rate(epoch, total);
         if epoch <= self.warmup_epochs { base_rate * (epoch as f64 / self.warmup_epochs as f64) } else { base_rate }
     }
-
     fn describe(&self) -> String { format!("Warmup ({} epochs, {})", self.warmup_epochs, self.inner.describe()) }
 }
 

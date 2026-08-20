@@ -362,7 +362,6 @@ pub fn off_scale_warning(shipped: f64) -> String {
 /// a bound is the bracket's answer rather than the data's, and nothing else says so. The 32.8M set
 /// sat pinned to a `k_min` of 0.003 and settled at 0.001350 once the floor moved.
 pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
-    // Fixed K is the configured value by definition, bound or not.
     if matches!(config.k_mode, KMode::Fixed { .. }) {
         return String::new();
     }
@@ -389,9 +388,6 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
 /// The second table splits each band by signed eval: K is a slope, the first table reads an
 /// offset, and a too-flat K under-predicts the winner and over-predicts the loser for a mean of
 /// zero. Bucketing by `|eval|` would cancel those two inside the bucket.
-///
-/// Realized rate is the label, so it means what the loss means: the game result, or whatever the
-/// blend made of it.
 pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> String {
     const BAND_WIDTH: usize = 4;
     const BANDS: usize = TOTAL_PHASE as usize / BAND_WIDTH;
@@ -409,11 +405,10 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
                 if !ctx.passes_vol_filter(record) {
                     return (counts, predicted, realized);
                 }
-                // Full material divides into the top band rather than owning one of its own.
+
                 let b = (phase_of(record, &phase_w) / BAND_WIDTH).min(BANDS - 1);
                 let eval = eval_record(record, values);
                 let cell = b * CELLS + EDGES.iter().filter(|&&edge| eval >= edge).count();
-
                 counts[cell] += 1;
                 predicted[cell] += sigmoid(eval, k);
                 realized[cell] += f64::from(record.result) / 2.0;
@@ -496,7 +491,6 @@ pub fn gate_census_report(groups: &[GateCensus]) -> String {
     out
 }
 
-/// The eight census columns, in the order both the per-group table and the epoch line print them.
 pub fn gate_columns(c: &GateCensus) -> String {
     format!(
         "{VAL}{:6.4}{RESET}   {VAL}{:5.1}%{RESET}     {VAL}{:5.1}%{RESET}  {VAL}{:5.2}%{RESET}   \
@@ -690,7 +684,6 @@ mod tests {
     fn the_paste_block_reproduces_eval_params() {
         let params = collect_parameters();
         let values = default_values(&params);
-
         let mut printed = Vec::new();
         write_params(&mut printed, &params, &values, Some(&values));
         let printed = String::from_utf8(printed).expect("the paste block is utf-8");
@@ -700,7 +693,6 @@ mod tests {
             .trim_end()
             .trim_end_matches("// -------------------------------------")
             .trim_end();
-
         let source = include_str!("../../src/engine/eval_params.rs");
         let start = source.find("define_psqt_params! {").expect("missing PSQT macro block in eval_params.rs");
         let last = source

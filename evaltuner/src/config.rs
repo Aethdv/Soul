@@ -73,7 +73,6 @@ impl<'de> Visitor<'de> for LossFnVisitor {
         if let Some((extra, _)) = map.next_entry::<String, f64>()? {
             return Err(de::Error::custom(format!("conflicting parameter '{extra}'; specify only 'gamma' or 'epsilon'")));
         }
-
         Ok(loss)
     }
 }
@@ -160,7 +159,6 @@ impl LossFn {
     }
 
     /// Second derivative of the loss with respect to the evaluation score.
-    ///
     /// The curvature probes build the parameter Hessian from it, summing `w_i · H · a_i a_iᵀ`.
     pub fn hessian_scale(self, sig: f64, target: f64, k: f64) -> f64 {
         match self {
@@ -426,8 +424,7 @@ pub struct EvalTuneConfig {
     pub loss: LossFn,
     pub batch_size: usize,
     pub epochs: usize,
-    /// Subsampling fraction drawn randomly per epoch. Unset falls back to the replay filter's
-    /// keep rate on a viriformat set, and to the whole split on any other.
+    /// Subsampling fraction drawn randomly per epoch.
     #[serde(default)]
     pub epoch_sample: Option<f64>,
     /// Warmup epoch at which non-material parameters (mobility, king safety) unfreeze.
@@ -498,7 +495,6 @@ pub struct EvalTuneConfig {
 
 impl TunerConfig {
     /// Parses a configuration file from TOML.
-    ///
     /// Resolves relative filter paths relative to the configuration file's directory.
     pub fn from_file(path: &str) -> Result<Self, Box<dyn Error>> {
         let contents = fs::read_to_string(path).map_err(|e| {

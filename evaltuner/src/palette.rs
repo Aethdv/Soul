@@ -29,8 +29,7 @@ pub const MOVED: &str = color::JADE_PEN;
 
 pub use color::{CLEAR_LINE, RESET, ansi_fg as fg};
 
-/// A warning line: the alarm pen, the `[!]` prefix and a reset, which 20 call sites otherwise
-/// spell out by hand.
+/// A warning line: the alarm pen, the `[!]` prefix and a reset.
 #[macro_export]
 macro_rules! alarm {
     ($($arg:tt)*) => {

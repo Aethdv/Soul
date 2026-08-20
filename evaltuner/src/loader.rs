@@ -39,7 +39,6 @@ pub fn load_epd(path: &str) -> io::Result<Vec<EpdEntry>> {
         }
     }
 
-    // A truncated or mislabelled file otherwise loads short and trains without saying so.
     if unparsed > 0 {
         alarm!("{path}: {unparsed} lines did not parse");
     }
@@ -105,7 +104,6 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
 /// Hashes raw byte representations prior to shuffling, ensuring checkpointed split
 /// seeds deterministically recreate the exact same train/validation partitions.
 pub fn dataset_fingerprint(entries: &[SoulEntry]) -> u64 {
-    // Fixed chunk size guarantees the digest is invariant to thread count.
     const CHUNK_SIZE: usize = 1 << 16;
 
     let digests: Vec<u64> = entries

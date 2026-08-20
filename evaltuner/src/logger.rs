@@ -51,8 +51,6 @@ mod tests {
         let logger = JsonLogger::new(&path).unwrap();
         logger.log("epoch", &serde_json::json!({ "n": 1 }));
         logger.log("final", &serde_json::json!({ "n": 2 }));
-
-        // Read with the logger still open, which is how a sweep reads a running trial's log.
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let events: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();

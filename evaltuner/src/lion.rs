@@ -208,10 +208,8 @@ impl GateCensus {
 
     #[must_use]
     pub fn share(&self, count: u64) -> f64 { if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 } }
-
     #[must_use]
     pub fn percent(&self, count: u64) -> f64 { pct(count, self.total) }
-
     /// Fraction of updates that executed a sign step (`1 - (skipped + dead) / total`).
     #[must_use]
     pub fn active_share(&self) -> f64 { self.share(self.total.saturating_sub(self.skipped + self.dead)) }
@@ -239,10 +237,8 @@ mod tests {
         let momentum = [0.5, 0.5, 0.001, 1e-9, 0.0, -1e-6, 0.5];
         let gradients = [1.0, -1.0, -1.0, -1.0, 0.0, 1e-6, -1.0];
         let fixed_mask = [false, false, false, false, false, false, true];
-
         let mut lion = Lion::new(momentum.len(), 0.9, 1.0, 0.0);
         lion.restore_momentum(&momentum);
-
         let census = lion.census(0..momentum.len(), &gradients, &fixed_mask);
         assert_eq!(census.total, 6, "fixed parameter must be excluded");
         assert_eq!(census.skipped, 2, "gated: momentum above threshold opposing gradient");
@@ -312,7 +308,6 @@ mod tests {
         let grads = vec![0.0];
         let decay_mask = vec![1.0];
         let fixed_mask = vec![false];
-
         // decay = lr · wd · d · p = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
         let mut opt = Lion::new(1, 0.9, 1.0, 0.05);
         let lr_mask = vec![1.0; params.len()];

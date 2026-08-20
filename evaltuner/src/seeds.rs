@@ -107,7 +107,6 @@ pub fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &s
 }
 
 fn trial_dir() -> PathBuf { env::temp_dir().join(format!("evaltune_trial_{}", process::id())) }
-
 #[must_use]
 pub fn last_best_val(log_path: &str) -> Option<f64> { read_final_records(log_path).last().and_then(|record| record.best_val_loss) }
 

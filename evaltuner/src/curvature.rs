@@ -91,17 +91,14 @@ impl Curvature {
     }
 
     /// Computes the eigendecomposition of the correlation matrix for the active parameter subset.
-    ///
     /// Parameters with non-positive diagonal curvature are excluded to avoid zero division.
     #[must_use]
     pub fn spectrum(&self, considered: &[usize]) -> Spectrum {
         let diagonal: Vec<f64> = (0..self.dim).map(|i| self.data[i * self.dim + i]).collect();
         let live: Vec<usize> = considered.iter().copied().filter(|&i| diagonal[i] > 0.0).collect();
         let untouched: Vec<usize> = considered.iter().copied().filter(|&i| diagonal[i] <= 0.0).collect();
-
         let m = live.len();
         let scales: Vec<f64> = live.iter().map(|&i| diagonal[i].sqrt()).collect();
-
         let mut corr = vec![0.0; m * m];
         for (row, &i) in live.iter().enumerate() {
             for (col, &j) in live.iter().enumerate() {
@@ -129,7 +126,6 @@ impl Curvature {
             }
             v
         };
-
         Spectrum { values, vectors: sorted_vectors, live, diagonal, untouched }
     }
 }
@@ -142,7 +138,6 @@ impl Spectrum {
     }
 
     /// Fraction of each parameter's variance lying in the null space (`Σ_k V_jk²` for `k >= determined`).
-    ///
     /// Invariant under orthogonal rotations of the null subspace.
     fn participation(&self) -> Vec<f64> {
         let m = self.live.len();
@@ -256,11 +251,9 @@ impl Spectrum {
 }
 
 /// Cyclic Jacobi rotation diagonalizing a symmetric matrix in-place.
-///
 /// Accumulates orthonormal eigenvectors into `vectors`.
 fn jacobi(matrix: &mut [f64], vectors: &mut [f64], n: usize) {
     let tolerance = 1e-14 * matrix.iter().map(|x| x * x).sum::<f64>().max(f64::MIN_POSITIVE);
-
     for _ in 0..MAX_SWEEPS {
         let off_diagonal_sq: f64 = (0..n)
             .flat_map(|p| (p + 1..n).map(move |q| (p, q)))
@@ -332,7 +325,6 @@ mod tests {
     #[test]
     fn a_duplicated_column_leaves_one_flat_direction() {
         let mut curvature = Curvature::zeros(3);
-
         // a = (1, 1, x): parameters 0 and 1 are perfectly collinear.
         for x in [-2.0, -1.0, 1.0, 3.0] {
             curvature.add_outer(1.0, &[(0, 1.0), (1, 1.0), (2, x)]);
@@ -341,10 +333,8 @@ mod tests {
         let spectrum = curvature.symmetrized().spectrum(&[0, 1, 2]);
         assert!(spectrum.untouched.is_empty(), "every parameter here has positive curvature");
         assert_eq!(spectrum.values.len(), 3);
-
         let smallest = *spectrum.values.last().unwrap();
         assert!(smallest < 1e-12, "aliased pair must leave a null direction, got {smallest}");
-
         let m = 3;
         let col = m - 1;
         let (first, second, third) = (spectrum.vectors[col], spectrum.vectors[m + col], spectrum.vectors[2 * m + col]);
