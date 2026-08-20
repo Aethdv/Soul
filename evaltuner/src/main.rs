@@ -11,6 +11,9 @@ use evaltuner::{
     seeds,
 };
 
+/// Where the tuner looks when `--config` is absent.
+const DEFAULT_CONFIG: &str = "evaltuner/config.toml";
+
 #[derive(Parser)]
 #[command(
     name = "evaltune",
@@ -23,7 +26,7 @@ struct Args {
     command: Option<Commands>,
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     dataset: Option<Vec<String>>,
-    #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+    #[arg(short, long, default_value = DEFAULT_CONFIG)]
     config: String,
     #[arg(short, long)]
     epochs: Option<usize>,
@@ -69,7 +72,7 @@ enum Commands {
     Ablation {
         #[arg(short, long, value_delimiter = ',', num_args = 1..)]
         data: Vec<String>,
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
     },
     #[command(name = "correlation")]
@@ -78,7 +81,7 @@ enum Commands {
     SeedSpread {
         #[arg(long, default_value_t = 8)]
         count: usize,
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         #[arg(short, long, default_value_t = 100)]
         epochs: usize,
@@ -88,25 +91,37 @@ enum Commands {
     },
     #[command(name = "gather-cost")]
     GatherCost {
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         dataset: String,
     },
     #[command(name = "curvature")]
     Curvature {
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         dataset: String,
     },
     #[command(name = "val-cost")]
     ValCost {
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        dataset: String,
+    },
+    #[command(name = "batch-size")]
+    BatchSize {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        dataset: String,
+    },
+    #[command(name = "momentum")]
+    Momentum {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         dataset: String,
     },
     #[command(name = "score")]
     Score {
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         #[arg(long)]
         sample: Option<usize>,
@@ -121,7 +136,7 @@ enum Commands {
     },
     #[command(name = "material")]
     Material {
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         #[arg(long)]
         sample: Option<usize>,
@@ -132,7 +147,7 @@ enum Commands {
     },
     #[command(name = "profile")]
     Profile {
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         #[arg(long)]
         sample: Option<usize>,
@@ -149,7 +164,7 @@ enum Commands {
         max: f64,
         #[arg(long, default_value_t = 6)]
         count: usize,
-        #[arg(short, long, default_value = "evaltuner/evaltune.toml")]
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         #[arg(short, long)]
         epochs: Option<usize>,
@@ -190,11 +205,16 @@ fn main() {
         Some(Commands::ValCost { config: config_path, dataset }) => {
             probe(&config_path, &dataset, Task::ValCost);
         },
+        Some(Commands::BatchSize { config: config_path, dataset }) => {
+            probe(&config_path, &dataset, Task::BatchSize);
+        },
+        Some(Commands::Momentum { config: config_path, dataset }) => {
+            probe(&config_path, &dataset, Task::Momentum);
+        },
         Some(Commands::Score { config: config_path, sample, params, loss, shipped, datasets }) => {
             let Some(loss) = parse_loss(loss.as_deref(), &config_path) else {
                 return;
             };
-
             assay(&config_path, &datasets, Assay::Score { params, loss, shipped }, sample);
         },
         Some(Commands::Material { config: config_path, sample, shipped, datasets }) => {
@@ -230,18 +250,19 @@ fn assay(config_path: &str, datasets: &[String], report: Assay, sample: Option<u
 /// than the one asked.
 fn load_config(path: &str) -> TunerConfig {
     TunerConfig::from_file(path).unwrap_or_else(|_| {
-        eprintln!("Error: defaults would answer a different question. Fix the path, or run from the repo root.");
+        eprintln!("Error: cannot read the config at '{path}'. Fix the path, or run from the repo root.");
         process::exit(1);
     })
 }
 
-/// The yardstick's own loss, `config` for whatever the config file trains under, or a name.
+/// Cross-entropy unless asked otherwise, so a comparison between vectors does not shift with
+/// whatever the config happens to train under.
 fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
     match name {
         None => Some(LossFn::CrossEntropy),
         Some("config") => Some(load_config(config_path).evaltune.loss),
         Some(other) => other.parse().ok().or_else(|| {
-            eprintln!("Unknown --loss '{other}'; expected config or one of {:?}", LossFn::NAMES);
+            eprintln!("Unknown --loss '{other}'; expected 'config' or one of {:?}", LossFn::NAMES);
             None
         }),
     }
@@ -250,19 +271,19 @@ fn parse_loss(name: Option<&str>, config_path: &str) -> Option<LossFn> {
 /// One diagnostic pass over a dataset: everything up to the trainer, then the probe instead of it.
 fn probe(config_path: &str, dataset: &str, task: Task) { run::run(Some(dataset), &load_config(config_path).evaltune, None, task); }
 
-fn log_space(lo: f64, hi: f64, n: usize) -> Vec<f64> {
-    // Otherwise `i / (n - 1)` is 0/0 and every point on the grid comes out NaN.
-    if n <= 1 {
-        return vec![lo];
+fn log_space(min: f64, max: f64, points: usize) -> Vec<f64> {
+    // Otherwise i / (n - 1) is 0/0 and every point on the grid comes out NaN.
+    if points <= 1 {
+        return vec![min];
     }
 
-    let e0 = lo.ln();
-    let e1 = hi.ln();
+    let log_min = min.ln();
+    let log_max = max.ln();
 
-    (0..n)
+    (0..points)
         .map(|i| {
-            let t = i as f64 / (n - 1) as f64;
-            (e0 * (1.0 - t) + e1 * t).exp()
+            let t = i as f64 / (points - 1) as f64;
+            (log_min * (1.0 - t) + log_max * t).exp()
         })
         .collect()
 }
@@ -278,49 +299,53 @@ fn sweep_lr_mult(
     refine_rounds: usize,
     seed: Option<u64>,
 ) {
-    let mut all_results: Vec<(f64, f64, f32)> = Vec::new();
+    let mut results: Vec<(f64, f64, f32)> = Vec::new();
     let mut best = (f64::MAX, grid[0]);
 
-    let row = |lr_mult: f64, val: f64, t: f32| {
-        let label = if val == f64::MAX { "FAILED".to_string() } else { format!("{val:>10.6}") };
-        println!("  {lr_mult:>7.4}    {label}    {t:.1}s");
+    let print_row = |lr_mult: f64, loss: f64, elapsed: f32| {
+        let loss_str = if loss == f64::MAX { "FAILED".to_string() } else { format!("{loss:>10.6}") };
+        println!("  {lr_mult:>7.4}    {loss_str}    {elapsed:.1}s");
     };
 
     for round in 0..=refine_rounds {
-        let ep = base_epochs * (1 << round);
-        let lstep = if grid.len() > 1 { (grid[grid.len() - 1].ln() - grid[0].ln()) / (grid.len() - 1) as f64 } else { 0.5 };
+        let epochs = base_epochs * (1 << round);
+        let log_step = if grid.len() > 1 { (grid[grid.len() - 1].ln() - grid[0].ln()) / (grid.len() - 1) as f64 } else { 0.5 };
 
-        println!("── Round {round}: {ep} epochs");
+        println!("── Round {round}: {epochs} epochs");
         println!("  lr_mult    Best L_val    Time");
         println!("  -------    ----------    ----");
 
         for &lr_mult in &grid {
-            let (val, t) = run_sweep_trial(lr_mult, dataset, config_path, ep, seed);
+            let (loss, duration) = run_sweep_trial(lr_mult, dataset, config_path, epochs, seed);
 
-            row(lr_mult, val, t);
-            all_results.push((lr_mult, val, t));
+            print_row(lr_mult, loss, duration);
+            results.push((lr_mult, loss, duration));
 
-            if val < best.0 {
-                best = (val, lr_mult);
+            if loss < best.0 {
+                best = (loss, lr_mult);
             }
         }
 
         if round < refine_rounds && grid.len() > 1 {
-            let half = lstep / 2.0;
-            let b = best.1.ln();
+            let half_step = log_step / 2.0;
+            let log_best = best.1.ln();
 
-            grid = vec![(b - half).exp().clamp(min, max), b.exp().clamp(min, max), (b + half).exp().clamp(min, max)];
+            grid = vec![
+                (log_best - half_step).exp().clamp(min, max),
+                log_best.exp().clamp(min, max),
+                (log_best + half_step).exp().clamp(min, max),
+            ];
         }
     }
 
-    all_results.sort_by(|a, b| a.1.total_cmp(&b.1));
+    results.sort_by(|a, b| a.1.total_cmp(&b.1));
 
     println!("\n  Sorted by L_val:");
     println!("  lr_mult    Best L_val    Time");
     println!("  -------    ----------    ----");
 
-    for &(lr_mult, val, t) in &all_results {
-        row(lr_mult, val, t);
+    for &(lr_mult, loss, duration) in &results {
+        print_row(lr_mult, loss, duration);
     }
 
     println!("\nBest lr_mult = {:.4} (L_val = {:.6})", best.1, best.0);
@@ -331,24 +356,23 @@ fn sweep_lr_mult(
 /// The child logs to a scratch file of its own rather than the run log, so a sweep of
 /// short trials does not bury a real run in the file the plotter reads.
 fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
-    let log = std::env::temp_dir().join(format!("sweep_lr_mult_{}.jsonl", std::process::id()));
-    let log = log.to_string_lossy().into_owned();
-    let _ = std::fs::remove_file(&log);
+    let log_path = std::env::temp_dir().join(format!("sweep_lr_mult_{}.jsonl", std::process::id()));
+    let log_str = log_path.to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&log_str);
 
-    let mut extra = vec![("--lr-mult", lr_mult.to_string())];
-
+    let mut extra_args = vec![("--lr-mult", lr_mult.to_string())];
     if let Some(s) = seed {
-        extra.push(("--seed", s.to_string()));
+        extra_args.push(("--seed", s.to_string()));
     }
 
     let start = std::time::Instant::now();
-    let ok = seeds::spawn_trial(dataset, config_path, epochs, &log, &extra);
+    let success = seeds::spawn_trial(dataset, config_path, epochs, &log_str, &extra_args);
     let elapsed = start.elapsed().as_secs_f32();
 
-    let val = if ok { seeds::last_best_val(&log).unwrap_or(f64::MAX) } else { f64::MAX };
-    let _ = std::fs::remove_file(&log);
+    let val_loss = if success { seeds::last_best_val(&log_str).unwrap_or(f64::MAX) } else { f64::MAX };
+    let _ = std::fs::remove_file(&log_str);
 
-    (val, elapsed)
+    (val_loss, elapsed)
 }
 
 fn run_evaltune(args: Args) -> bool {
@@ -357,19 +381,15 @@ fn run_evaltune(args: Args) -> bool {
     if let Some(epochs) = args.epochs {
         tuner_config.evaltune.epochs = epochs;
     }
-
     if let Some(seed) = args.seed {
         tuner_config.evaltune.seed = Some(seed);
     }
-
     if let Some(ref path) = args.log {
         tuner_config.evaltune.log_path = path.clone();
     }
-
     if let Some(block) = args.shuffle_block {
         tuner_config.evaltune.shuffle_block = block;
     }
-
     if let Some(seed) = args.split_seed {
         tuner_config.evaltune.split_seed = Some(seed);
     }
@@ -380,7 +400,7 @@ fn run_evaltune(args: Args) -> bool {
             "zero" => Init::Zero,
             "random" => Init::Random,
             other => {
-                eprintln!("Unknown --init '{other}'; expected default, zero or random");
+                eprintln!("Unknown --init '{other}'; expected 'default', 'zero', or 'random'");
                 return false;
             },
         };
@@ -391,8 +411,8 @@ fn run_evaltune(args: Args) -> bool {
     }
 
     // LR schedule: type override or field overrides
-    if let Some(stype) = args.lr_schedule {
-        let s = match stype.as_str() {
+    if let Some(schedule_type) = args.lr_schedule {
+        let schedule = match schedule_type.as_str() {
             "constant" => Some(LrScheduleConfig::Constant { value: args.lr.unwrap_or(0.1) }),
             "linear" => Some(LrScheduleConfig::Linear { start: args.lr.unwrap_or(0.1), end: args.min_lr.unwrap_or(0.0) }),
             "cosine" => Some(LrScheduleConfig::Cosine {
@@ -413,12 +433,12 @@ fn run_evaltune(args: Args) -> bool {
                 stable_ratio: 0.5,
             }),
             _ => {
-                eprintln!("Warning: Unknown LR schedule '{}', ignoring.", stype);
+                eprintln!("Warning: Unknown LR schedule '{schedule_type}', ignoring.");
                 None
             },
         };
 
-        if let Some(s) = s {
+        if let Some(s) = schedule {
             tuner_config.evaltune.lr_schedule = s;
         }
     } else {
@@ -429,29 +449,31 @@ fn run_evaltune(args: Args) -> bool {
     }
 
     // WDL schedule: type override or field overrides
-    let (def_start, def_end) = tuner_config.evaltune.wdl_schedule.defaults();
+    let (default_start, default_end) = tuner_config.evaltune.wdl_schedule.defaults();
 
-    if let Some(stype) = args.wdl_schedule {
-        let s = match stype.as_str() {
-            "constant" => Some(WdlScheduleConfig::Constant { value: args.blend.unwrap_or(def_start) }),
-            "linear" => {
-                Some(WdlScheduleConfig::Linear { start: args.wdl_start.unwrap_or(def_start), end: args.wdl_end.unwrap_or(def_end) })
-            },
-            "cosine" => {
-                Some(WdlScheduleConfig::Cosine { start: args.wdl_start.unwrap_or(def_start), end: args.wdl_end.unwrap_or(def_end) })
-            },
+    if let Some(schedule_type) = args.wdl_schedule {
+        let schedule = match schedule_type.as_str() {
+            "constant" => Some(WdlScheduleConfig::Constant { value: args.blend.unwrap_or(default_start) }),
+            "linear" => Some(WdlScheduleConfig::Linear {
+                start: args.wdl_start.unwrap_or(default_start),
+                end: args.wdl_end.unwrap_or(default_end),
+            }),
+            "cosine" => Some(WdlScheduleConfig::Cosine {
+                start: args.wdl_start.unwrap_or(default_start),
+                end: args.wdl_end.unwrap_or(default_end),
+            }),
             "stable-decay" => Some(WdlScheduleConfig::StableDecay {
-                start: args.wdl_start.unwrap_or(def_start),
-                end: args.wdl_end.unwrap_or(def_end),
+                start: args.wdl_start.unwrap_or(default_start),
+                end: args.wdl_end.unwrap_or(default_end),
                 stable_ratio: 0.35,
             }),
             _ => {
-                eprintln!("Warning: Unknown WDL schedule '{}', ignoring.", stype);
+                eprintln!("Warning: Unknown WDL schedule '{schedule_type}', ignoring.");
                 None
             },
         };
 
-        if let Some(s) = s {
+        if let Some(s) = schedule {
             tuner_config.evaltune.wdl_schedule = s;
         }
     } else {
@@ -475,20 +497,23 @@ fn print_help() {
     h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
-    h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs shuffled");
+    h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs blocked vs shuffled");
     h.command_args("val-cost", "<dataset>", "Time the fused validation pass against two separate ones");
+    h.command_args("batch-size", "<dataset>", "What one step needs: the noise scale, and a batch's sign error");
+    h.command_args("momentum", "<dataset>", "What the step remembers: β₂ against gradient staleness");
     h.command_args("seed-spread", "<dataset> [options]", "Run N seeds of one config, report where they land");
     h.command_args("sweep-lr-mult", "<dataset> [options]", "Sweep lr_mult with auto-grid + refinement");
     h.separator();
 
     h.header("Options");
     h.option("-d, --dataset", "<path,...>", "Paths to .epd, .txt or .vf files");
-    h.option_default("-e, --epochs", "<N>", "Number of training epochs", "4000");
-    h.option_default("-b, --blend", "<ratio>", "Target: 0 = game result, 1 = search score", "0.3");
+    h.option("-e, --epochs", "<N>", "Number of training epochs, overriding the config");
+    h.option("-b, --blend", "<ratio>", "Target: 0 = game result, 1 = search score; flattens any WDL schedule");
     h.option("-r, --resume", "<path>", "Resume from a JSON checkpoint");
     h.option("--lr", "<value>", "Base learning rate");
     h.option("--min-lr", "<value>", "Minimum learning rate (cosine/linear)");
     h.option_default("--warmup", "<ratio>", "Warmup fraction", "0.1");
+    h.option_default("--cycles", "<N>", "Cosine restarts (SGDR), or StepDecay's period in epochs", "1");
     h.option("--lr-schedule", "<type>", "[cosine|linear|constant|wsd|sd]");
     h.option("--wdl-start", "<ratio>", "WDL blend start (scheduled)");
     h.option("--wdl-end", "<ratio>", "WDL blend end (scheduled)");
@@ -497,6 +522,8 @@ fn print_help() {
     h.option("--split-seed", "<u64>", "Reseed the validation holdout, fixed by default");
     h.option("--lr-mult", "<f64>", "Learning-rate multiplier");
     h.option_default("--init", "<mode>", "Starting weights [default|zero|random]", "default");
+    h.option("--log", "<path>", "JSON-lines run log, read back by seed-spread and sweeps");
+    h.option("--shuffle-block", "<N>", "Permute blocks of N consecutive positions, 0 for a full shuffle");
     h.separator();
 
     h.header("Assays: what a dataset says before anything trains on it");

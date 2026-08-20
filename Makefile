@@ -157,6 +157,16 @@ v3: ## AVX2 + BMI2
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
 
+# 2>/dev/null: HEADER_EVENT_DESC is the one section perf cannot read back from a file it wrote.
+# --no-inline: inline expansion spends --max-stack on the thread-start preamble.
+define perf_report
+	@perf report --stdio --header-only 2>/dev/null > $(1)
+	@printf '\n== Self time ==\n' >> $(1)
+	@perf report --stdio --no-children -g none --percent-limit 0.4 >> $(1)
+	@printf '\n== Call graph ==\n' >> $(1)
+	@perf report --stdio --no-inline --children --max-stack 32 --percent-limit 1.0 >> $(1)
+endef
+
 profile: ## Generate CPU performance profile
 	@echo "Building with debug symbols..."
 	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
@@ -166,8 +176,8 @@ profile: ## Generate CPU performance profile
 	@rm -f perf.data
 	@perf record -g --call-graph fp -F 999 ./$(EXE) speedtest
 	@echo "Generating profiling report..."
-	@perf report --stdio --header --inline --children --max-stack 15 --percent-limit 1.0 > profile_data.txt
-	@echo "\nThe profiling report has been generated in profile_data.txt"
+	@$(call perf_report,profile_data.txt)
+	@printf '\nThe profiling report has been generated in profile_data.txt\n'
 	@echo "Done: profile_data.txt"
 
 etprofile: ## Generate CPU performance profile for evaltune (set ET_DATA / ET_EPOCHS)
@@ -179,8 +189,8 @@ etprofile: ## Generate CPU performance profile for evaltune (set ET_DATA / ET_EP
 	@rm -f perf.data
 	@perf record -g --call-graph fp -F 999 ./eval$(EXE_EXT) -d $(ET_DATA) -e $(ET_EPOCHS) --seed 1
 	@echo "Generating profiling report..."
-	@perf report --stdio --header --inline --children --max-stack 15 --percent-limit 1.0 > evaltune_profile_data.txt
-	@echo "\nThe profiling report has been generated in evaltune_profile_data.txt"
+	@$(call perf_report,evaltune_profile_data.txt)
+	@printf '\nThe profiling report has been generated in evaltune_profile_data.txt\n'
 	@echo "Done: evaltune_profile_data.txt"
 
 openbench:

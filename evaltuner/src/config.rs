@@ -1,4 +1,8 @@
-//! Pipeline configuration schemas, loss function definitions, and schedule builders.
+//! The TOML schema, and the loss functions a run reads out of it.
+//!
+//! A loss has four derivatives: the epoch loop takes the first, the K search takes the one
+//! against the target, and the curvature probe takes the second. They have to agree, which is
+//! what the tests below hold them to.
 
 use std::{error::Error, fs, path::Path};
 
@@ -19,7 +23,6 @@ pub const DEFAULT_K_SWEEP_INTERVAL: usize = 200;
 /// Half-width of the uniform draw for [`Init::Random`].
 pub const RANDOM_INIT_SPREAD: f64 = 16.0;
 
-/// Weight initialization strategy prior to optimization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Init {
@@ -32,7 +35,7 @@ pub enum Init {
     Random,
 }
 
-/// Objective loss functions for evaluation parameter optimization.
+/// The objective a run minimizes.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LossFn {
     #[default]
@@ -309,7 +312,10 @@ impl LrScheduleConfig {
         }
     }
 
-    /// Mutates schedule parameters in-place from CLI flags.
+    /// Applies CLI flags to whichever fields the current variant has, leaving the rest alone.
+    ///
+    /// `cycles` is the one flag that means two things: cosine restarts, and `StepDecay`'s period
+    /// in epochs, which is the only way that field is reachable from the command line.
     pub fn apply_overrides(&mut self, lr: Option<f64>, min_lr: Option<f64>, warmup: Option<f64>, cycles: Option<usize>) {
         match self {
             Self::Constant { value } => set(value, lr),
@@ -376,6 +382,8 @@ impl WdlScheduleConfig {
         }
     }
 
+    /// `blend` replaces the schedule outright rather than adjusting it: a configured Linear or
+    /// Cosine blend is discarded for a constant, since a single ratio has no start and end.
     pub fn apply_overrides(&mut self, blend: Option<f64>, start: Option<f64>, end: Option<f64>) {
         if let Some(v) = blend {
             *self = Self::Constant { value: v };
@@ -398,8 +406,6 @@ impl WdlScheduleConfig {
 #[serde(deny_unknown_fields)]
 pub struct TunerConfig {
     pub evaltune: EvalTuneConfig,
-    pub searchtune: SearchTuneConfig,
-    pub general: GeneralConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -420,7 +426,8 @@ pub struct EvalTuneConfig {
     pub loss: LossFn,
     pub batch_size: usize,
     pub epochs: usize,
-    /// Subsampling fraction drawn randomly per epoch. `None` samples the full split.
+    /// Subsampling fraction drawn randomly per epoch. Unset falls back to the replay filter's
+    /// keep rate on a viriformat set, and to the whole split on any other.
     #[serde(default)]
     pub epoch_sample: Option<f64>,
     /// Warmup epoch at which non-material parameters (mobility, king safety) unfreeze.
@@ -429,7 +436,6 @@ pub struct EvalTuneConfig {
     /// Chunk size for blocked sequential shuffling. 0 enforces a full random permutation.
     #[serde(default)]
     pub shuffle_block: usize,
-    /// Path for appending JSONL training telemetry.
     #[serde(default = "default_log_path")]
     pub log_path: String,
     /// Validation plateau patience (in epochs) before halving learning rate.
@@ -448,7 +454,6 @@ pub struct EvalTuneConfig {
     /// Seed for training batch ordering. Randomly initialized if `None`.
     #[serde(default)]
     pub seed: Option<u64>,
-    /// Seed for the validation holdout split.
     #[serde(default)]
     pub split_seed: Option<u64>,
     #[serde(default)]
@@ -459,7 +464,6 @@ pub struct EvalTuneConfig {
     /// Freezes updates to parameters whose gradient magnitude remains stagnant.
     #[serde(default = "default_true")]
     pub auto_freeze: bool,
-    /// Earliest epoch to activate parameter stagnation checks.
     #[serde(default = "default_freeze_start")]
     pub freeze_start_epoch: usize,
     /// Stagnation check cadence (in epochs).
@@ -471,7 +475,6 @@ pub struct EvalTuneConfig {
     /// Required consecutive stagnant checks before locking a parameter.
     #[serde(default = "default_freeze_consecutive")]
     pub freeze_consecutive: usize,
-    /// Optional viriformat replay filter file path.
     #[serde(default)]
     pub replay_filter: Option<String>,
     /// Prunes a label when `|static - search|` in centipawns exceeds this. 0 disables.
@@ -489,65 +492,8 @@ pub struct EvalTuneConfig {
     /// Target game-phase density distribution (`0..=TOTAL_PHASE`, 25 buckets). `None` targets uniform.
     #[serde(default)]
     pub phase_target: Option<Vec<f64>>,
-    /// Hard cap on validation slice size.
     #[serde(default)]
     pub val_max: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct SearchTuneConfig {
-    pub population_scale: f64,
-    pub sigma_init: f64,
-    #[serde(default)]
-    pub sigma_restart: f64,
-    pub min_sigma: f64,
-    pub max_restarts: usize,
-    pub stagnation_threshold: usize,
-    #[serde(default)]
-    pub h2h_pairs: usize,
-    #[serde(default)]
-    pub validation_pairs: usize,
-    pub reeval_interval: usize,
-    pub confidence_factor: f64,
-    #[serde(default = "default_smoothing_radius")]
-    pub smoothing_radius: f64,
-    pub epochs: usize,
-    pub pairs: usize,
-    pub tc: Option<String>,
-    #[serde(default)]
-    pub h2h_tc: Option<String>,
-    #[serde(default)]
-    pub val_tc: Option<String>,
-    pub speed_penalty: f64,
-    pub centering_penalty: f64,
-    pub active_softness: f64,
-    pub sigma_boost_factor: f64,
-
-    /// Snapshot interval (in generations) for parameter boundary saturation reports.
-    #[serde(default = "default_bounds_report_interval")]
-    pub bounds_report_interval: usize,
-    /// Sliding window length (generations) for boundary clamp rate monitoring.
-    #[serde(default = "default_bounds_window_gens")]
-    pub bounds_window_gens: usize,
-    /// Multiplier on expected boundary hit rate required to flag a widening warning.
-    #[serde(default = "default_bounds_alarm_multiplier")]
-    pub bounds_alarm_multiplier: f64,
-    /// Minimum absolute boundary hit rate required to flag a widening warning.
-    #[serde(default = "default_bounds_alarm_floor")]
-    pub bounds_alarm_floor: f64,
-    /// Output file path for parameter boundary reports.
-    #[serde(default = "default_bounds_report_path")]
-    pub bounds_report_path: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct GeneralConfig {
-    pub checkpoint_interval: usize,
-    pub log_level: String,
-    pub log_file: String,
-    pub tensorboard_dir: String,
 }
 
 impl TunerConfig {
@@ -592,74 +538,36 @@ impl Default for TunerConfig {
                 grad_clip: 1.0,
                 k_min: 0.003,
                 k_max: 0.010,
-                k_mode: KMode::Sweep { interval: DEFAULT_K_SWEEP_INTERVAL },
-                patience: 100,
-                ema_decay: 0.999,
+                k_mode: KMode::default(),
+                patience: default_patience(),
+                ema_decay: default_ema_decay(),
                 unfreeze_epoch: 0,
                 seed: None,
                 split_seed: None,
                 init: Init::Default,
                 gate_census: false,
-                auto_freeze: true,
-                freeze_start_epoch: 500,
-                freeze_cadence: 100,
-                freeze_threshold: 1e-7,
-                freeze_consecutive: 2,
+                auto_freeze: default_true(),
+                freeze_start_epoch: default_freeze_start(),
+                freeze_cadence: default_freeze_cadence(),
+                freeze_threshold: default_freeze_threshold(),
+                freeze_consecutive: default_freeze_consecutive(),
                 replay_filter: None,
                 volatility_threshold: 0,
-                volatility_adaptive: true,
+                volatility_adaptive: default_true(),
                 phase_balance: false,
-                phase_balance_cap: 8.0,
+                phase_balance_cap: default_phase_balance_cap(),
                 phase_target: None,
                 epoch_sample: None,
                 val_max: None,
-                lr_psqt: 1.0,
-                lr_material: 1.0,
-                lr_mobility: 1.0,
-                lr_other: 1.0,
-            },
-            searchtune: SearchTuneConfig {
-                population_scale: 2.0,
-                sigma_init: 0.25,
-                sigma_restart: 0.4,
-                min_sigma: 0.02,
-                max_restarts: 3,
-                stagnation_threshold: 15,
-                h2h_pairs: 300,
-                validation_pairs: 1000,
-                reeval_interval: 8,
-                confidence_factor: 2.0,
-                smoothing_radius: 0.1,
-                epochs: 200,
-                pairs: 128,
-                tc: Some("4+0.04".to_string()),
-                h2h_tc: Some("1.0+0.01".to_string()),
-                val_tc: Some("1.0+0.01".to_string()),
-                speed_penalty: 115.0,
-                centering_penalty: 100.0,
-                active_softness: 0.5,
-                sigma_boost_factor: 2.0,
-                bounds_report_interval: 5,
-                bounds_window_gens: 20,
-                bounds_alarm_multiplier: 2.0,
-                bounds_alarm_floor: 0.02,
-                bounds_report_path: "bounds_report.txt".to_string(),
-            },
-            general: GeneralConfig {
-                checkpoint_interval: 50,
-                log_level: "info".into(),
-                log_file: "tuner.log".into(),
-                tensorboard_dir: "runs".into(),
+                lr_psqt: default_one(),
+                lr_material: default_one(),
+                lr_mobility: default_one(),
+                lr_other: default_one(),
             },
         }
     }
 }
 
-const fn default_bounds_report_interval() -> usize { 5 }
-const fn default_bounds_window_gens() -> usize { 20 }
-const fn default_bounds_alarm_multiplier() -> f64 { 2.0 }
-const fn default_bounds_alarm_floor() -> f64 { 0.02 }
-const fn default_smoothing_radius() -> f64 { 0.1 }
 const fn default_patience() -> usize { 100 }
 const fn default_ema_decay() -> f64 { 0.999 }
 const fn default_true() -> bool { true }
@@ -672,7 +580,6 @@ const fn default_phase_balance_cap() -> f64 { 8.0 }
 const fn default_k_sweep_interval() -> usize { DEFAULT_K_SWEEP_INTERVAL }
 const fn default_k_lr_mult() -> f64 { DEFAULT_K_LR_MULT }
 
-fn default_bounds_report_path() -> String { "bounds_report.txt".to_string() }
 fn default_log_path() -> String { "evaltune.jsonl".into() }
 
 #[inline(always)]
@@ -782,17 +689,19 @@ mod tests {
             ("{ delta = 1.0 }", "delta"),
             ("{ gamma = 2.0, epsilon = 0.01 }", "epsilon"),
         ] {
-            let error = parse_loss(doc).expect_err("{doc} must not parse");
+            let Err(error) = parse_loss(doc) else {
+                panic!("{doc} must not parse");
+            };
             assert!(error.to_string().contains(wanted), "error must name '{wanted}': {error}");
         }
     }
 
     #[test]
-    fn loads_default_config_file() { TunerConfig::from_file("evaltune.toml").expect("evaltune.toml must parse"); }
+    fn loads_default_config_file() { TunerConfig::from_file("config.toml").expect("config.toml must parse"); }
 
     #[test]
     fn rejects_unknown_configuration_keys() {
-        let doc = format!("log_levle = \"info\"\n{}", std::fs::read_to_string("evaltune.toml").unwrap());
+        let doc = format!("log_levle = \"info\"\n{}", std::fs::read_to_string("config.toml").unwrap());
         let error = toml::from_str::<TunerConfig>(&doc).expect_err("unknown key must fail deserialization");
         assert!(error.to_string().contains("log_levle"), "error must identify misnamed key: {error}");
     }

@@ -1,11 +1,10 @@
 //! Everything the eval tuner takes from the engine.
 //!
-//! Every module here imports from this file, so the surface between the two is one list
-//! and cannot grow without someone editing it. The test below is what makes that true
-//! rather than intended.
+//! Every module here imports from this file, so the surface between the two is one list.
+//! The test here enforces it.
 //!
-//! The dataset formats are in the list because `soul` owns the readers and the
-//! writer, not because the eval needs them.
+//! The dataset formats are in the list because `soul` owns the readers and the writer,
+//! not because the eval needs them.
 
 pub use soul::{
     cli::Help,
@@ -36,12 +35,12 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
         let mut offenders = Vec::new();
         for entry in std::fs::read_dir(dir).expect("the module's own directory") {
-            let path = entry.expect("a readable entry").path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            if name == "engine.rs" || path.extension().is_none_or(|e| e != "rs") {
+            let entry = entry.expect("a readable entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "engine.rs" || !name.ends_with(".rs") {
                 continue;
             }
-            if std::fs::read_to_string(&path).is_ok_and(|src| src.contains("soul::")) {
+            if std::fs::read_to_string(entry.path()).expect("a readable module").contains("soul::") {
                 offenders.push(name);
             }
         }

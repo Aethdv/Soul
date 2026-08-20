@@ -1,28 +1,22 @@
-//! Dataset diagnostic assays prior to evaluation tuning.
+//! What a dataset says before anything trains on it.
 //!
-//! Three reports:
-//! - `profile`: Summarizes outcome distributions, phase progression, piece imbalances,
-//!   and game termination characteristics.
-//! - `material`: Fits ten tapered material coefficients (5 MG, 5 EG) directly to game
-//!   outcomes via Newton-Raphson logistic regression. Pinned to a midgame pawn of 100, it exposes
-//!   skewed material priors in a single pass without running thousands of tuning epochs.
-//! - `score`: Evaluates parameter vectors across datasets, optimizing the sigmoid scale K
-//!   independently per (vector, dataset) pair to isolate predictive quality from global scale.
-//!
-//! Assays evaluate datasets in natural order without synthetic resampling or holdout splits.
+//! Assays read a set in its natural order, with no resampling and no holdout: they describe what
+//! is there rather than fitting to part of it.
 
 use std::path::Path;
 
 use rayon::prelude::*;
 
 use crate::{
+    alarm,
     config::{EvalTuneConfig, LossFn},
     engine::{
-        DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, QUIET_ENDING, SoulEntry, TOTAL_PHASE, collect_parameters, default_values,
-        eval_record, format_comma, pct, scan_viri_games, sigmoid,
+        Color, DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, PieceType, QUIET_ENDING, SoulEntry, TOTAL_PHASE,
+        collect_parameters, default_values, eval_record, format_comma, pct, scan_viri_games, sigmoid,
     },
     loader::{load_datasets, resolve_dataset_paths},
     palette::{ALARM, COUNT, DIM, LAB, RESET, VAL},
+    report::PIECE_NAMES,
     run::replay_filter,
     scale::golden_search_k,
     storage::load_checkpoint,
@@ -32,39 +26,45 @@ use crate::{
 /// Binary cross-entropy loss for a uniform `p = 0.5` prediction (`ln(2)` nats).
 const COIN_FLIP: f64 = std::f64::consts::LN_2;
 
-/// The bracket the yardstick searches for K, wider than a training run's.
+/// The bracket the score assay searches for K, wider than a training run's.
 ///
 /// A cold-start vector is logged before the gauge normalizes it and can sit a factor of four off
 /// the centipawn scale. Cutting the bracket to what a shipped-scale eval needs would clamp such a
 /// candidate at the edge and report a loss about its units rather than its opinions.
 const SCORE_K: (f64, f64) = (1e-5, 0.2);
 
-/// Fixed sigmoid scaling factor `K` for isolated material logistic fitting.
+/// K for the material fit, held fixed.
 ///
-/// Prevents collinearity between feature weights and `K`, ensuring parameter
-/// identifiability prior to normalizing relative to `P_mg = 100`.
+/// K and the weights are collinear, pinning K leaves the weights
+/// to be read against `P_mg = 100` afterwards.
 const FIT_K: f64 = 0.0025;
 const FIT_STEPS: usize = 24;
 const FIT_TOL: f64 = 1e-10;
 
-/// The five piece types a material table has an opinion about; the king is fixed at zero.
-const PIECES: [&str; 5] = ["pawn", "knight", "bishop", "rook", "queen"];
-/// Single-letter piece symbols.
-const SYMBOLS: [&str; 5] = ["P", "N", "B", "R", "Q"];
+/// Piece types a material table has an opinion about; the king is fixed at zero.
+const FITTED: usize = 5;
+
+/// Algebraic letters for those five, read off the engine's own table.
+const SYMBOLS: [char; FITTED] = [
+    PieceType::Pawn.to_char(Color::White),
+    PieceType::Knight.to_char(Color::White),
+    PieceType::Bishop.to_char(Color::White),
+    PieceType::Rook.to_char(Color::White),
+    PieceType::Queen.to_char(Color::White),
+];
 
 /// Diagnostic report to execute.
 pub enum Assay {
-    /// Cross-entropy or MSE loss of parameter checkpoints across datasets.
+    /// Loss of each parameter vector on each set, with K refit per pair so scale cannot flatter one.
     Score { params: Vec<String>, loss: LossFn, shipped: String },
-    /// Standalone logistic fit of tapered material weights against game outcomes.
+    /// Ten tapered material coefficients fitted to outcomes alone, which shows a skewed material
+    /// prior in one pass instead of thousands of tuning epochs.
     Material { shipped: String },
-    /// Distributional summary of labels, phase, material imbalances, and game endings.
+    /// Labels, phase, material imbalances, and how the games ended.
     Profile,
 }
 
-/// Runs the selected assay over the provided dataset paths.
-///
-/// Comma-joined path arguments are loaded and assayed as a single unified mixture.
+/// Comma-joined paths load as one mixture and report as one row, not as several sets.
 pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample: Option<usize>) {
     let filter = replay_filter(config);
     let mut sets = Vec::new();
@@ -76,7 +76,7 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
 
         let (mut entries, ..) = load_datasets(&paths, &filter);
         if entries.is_empty() {
-            eprintln!("{ALARM}[!] No positions loaded from {dataset}.{RESET}");
+            alarm!("No positions loaded from {dataset}.");
             continue;
         }
 
@@ -92,7 +92,7 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
     }
 
     if sets.is_empty() {
-        eprintln!("{ALARM}[!] Nothing to assay.{RESET}");
+        alarm!("Nothing to assay.");
         return;
     }
 
@@ -113,7 +113,6 @@ struct Set {
     loaded: usize,
 }
 
-/// Aggregated statistics accumulated over a dataset.
 #[derive(Default)]
 struct Counts {
     results: [usize; 3],
@@ -317,10 +316,8 @@ fn score(sets: &[Set], params: &[String], loss: LossFn, shipped: &str) {
     println!("  A constant 0.5 scores ln 2 = 0.693147; under 0.05 of headroom, a set has no outcome signal.{RESET}");
 }
 
-/// Fits 10 tapered material coefficients (5 middlegame, 5 endgame) directly to game results.
-///
-/// Isolates base piece values from positional terms. Normalizes weights relative
-/// to `P_mg = 100` for baseline comparisons.
+/// Fits 10 tapered material coefficients (5 middlegame, 5 endgame) directly to game results,
+/// isolating base piece values from every positional term.
 fn material(sets: &[Set], shipped: &str) {
     let columns: Vec<String> = SYMBOLS
         .iter()
@@ -374,14 +371,14 @@ fn material(sets: &[Set], shipped: &str) {
     println!("{DIM}  L_fit is each set's loss on its own positions and does not compare across sets.{RESET}");
 }
 
-/// Summarizes label distribution, phase characteristics, and piece imbalance frequencies.
 fn profile(sets: &[Set]) {
     let stats: Vec<Counts> = sets.iter().map(count).collect();
 
     let mut labels = Table::new("dataset", strings(&["positions", "win", "draw", "loss", "STM", "score≠result"]));
     let mut design = Table::new("dataset", strings(&["phase", "under 12", "20 or more", "pieces", "scored", "|score|"]));
-    let mut imbalance = Table::new("dataset", PIECES.iter().map(|p| format!("{p}≠")).collect());
-    let mut at_phase = Table::new("dataset", PIECES.iter().map(|p| (*p).to_string()).collect());
+    let pieces = || PIECE_NAMES[..FITTED].iter().map(|p| p.to_lowercase());
+    let mut imbalance = Table::new("dataset", pieces().map(|p| format!("{p}≠")).collect());
+    let mut at_phase = Table::new("dataset", pieces().collect());
 
     for (set, counts) in sets.iter().zip(&stats) {
         let n = set.entries.len() as u64;
@@ -431,7 +428,6 @@ fn profile(sets: &[Set]) {
     print_games(sets);
 }
 
-/// Summarizes game-level metadata from replay archives (`.vf`, `.viri`).
 fn print_games(sets: &[Set]) {
     let scans: Vec<(&Set, GameScan)> = sets
         .iter()
@@ -441,7 +437,7 @@ fn print_games(sets: &[Set]) {
                 Ok(scan) if scan.games > 0 => Some((set, scan)),
                 Ok(_) => None,
                 Err(e) => {
-                    eprintln!("{ALARM}[!] Cannot scan games in {path}: {e}{RESET}");
+                    alarm!("Cannot scan games in {path}: {e}");
                     None
                 },
             }
@@ -526,10 +522,8 @@ fn material_rows(set: &Set) -> Vec<([f64; 10], f64)> {
         .collect()
 }
 
-/// Fits 10 material weights via Newton-Raphson optimization with backtracking line search.
-///
-/// Employs exact analytic gradients and Hessians under the canonical logit link.
-/// Returns `(weights, cross_entropy_loss, iterations)`.
+/// Newton-Raphson with a backtracking line search, on exact analytic gradients and Hessians under
+/// the canonical logit link. Returns `(weights, cross_entropy_loss, iterations)`.
 fn newton_fit(rows: &[([f64; 10], f64)]) -> ([f64; 10], f64, usize) {
     let mut w = [0.0f64; 10];
     let mut loss = fit_loss(rows, &w);

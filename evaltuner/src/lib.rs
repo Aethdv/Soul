@@ -9,7 +9,6 @@ pub mod config;
 pub mod correlation;
 pub mod curvature;
 pub mod engine;
-pub mod error;
 pub mod fnv;
 pub mod groups;
 pub mod lion;

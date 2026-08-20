@@ -1,98 +1,90 @@
-//! The parameter groups the tuner treats differently, and the per-slot masks it
-//! builds from them.
+//! Parameter group classification and per-parameter optimizer masks.
 //!
-//! Groups are contiguous runs of the layout, so a per-group statistic is a subslice
-//! and a per-group policy is a lookup by index.
+//! Groups correspond to contiguous layout slices, enabling slice-based metrics
+//! and flat lookup masks for optimizer hyperparameters.
 
 use std::ops::Range;
 
-use crate::{config::EvalTuneConfig, engine::LAYOUT};
+use crate::{
+    config::EvalTuneConfig,
+    engine::{LAYOUT, TABLE_SQUARES},
+};
 
-/// Hard clamp for mobility parameters to prevent drift from unbounded features.
+/// Bound on each mobility weight. The four lanes multiply raw counts of safe squares and
+/// attacked pieces, where a PSQT coefficient is one or two, so an excursion costs far more score.
 pub const MOB_CLAMP: f64 = 100.0;
-/// `p + c·p²/DANGER_SCALE` turns over and starts falling at `p = DANGER_SCALE/2c`,
-/// so a negative curvature puts that turnover inside the reachable pressure range
-/// and a besieged king scores safer than a lightly pressed one. Zero is the
-/// linear block, so a run parked on the floor has answered the question.
+
+/// Monotonicity bounds for quadratic king-danger scaling: `p + c · p² / SCALE`.
+///
+/// A negative curvature `c` places the turnover point `p = -SCALE / (2c)` within
+/// reachable pressure values, causing an intensely attacked king to score safer
+/// than a moderately attacked one. Clamping `c >= 0` ensures strictly monotonic danger.
 pub const DANGER_CURVE_CLAMP: (f64, f64) = (0.0, 256.0);
 
-/// Lion's parameter groups in layout order, for anything reported per group.
+/// Evaluator parameter group names in layout order.
 pub const GROUP_NAMES: [&str; 4] = ["psqt", "material", "mobility", "other"];
 
-/// Parameter group by position in the layout, the axis the per-group optimizer
-/// masks (decay, momentum, learning rate) all key off.
+/// Parameter group classifications matching layout partitions.
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamGroup {
-    Psqt,
-    Material,
-    Mobility,
-    Other,
+    Psqt = 0,
+    Material = 1,
+    Mobility = 2,
+    Other = 3,
 }
 
-/// Classify a parameter index into its layout group: the single source of the
-/// group boundaries the masks below share.
-pub fn param_group(i: usize) -> ParamGroup {
-    if i < LAYOUT.material_offset {
+/// Resolves the [`ParamGroup`] for a given flat layout index.
+pub fn param_group(index: usize) -> ParamGroup {
+    if index < LAYOUT.material_offset {
         ParamGroup::Psqt
-    } else if i < LAYOUT.mobility_open_offset {
+    } else if index < LAYOUT.mobility_open_offset {
         ParamGroup::Material
-    } else if i < LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len {
+    } else if index < LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len {
         ParamGroup::Mobility
     } else {
         ParamGroup::Other
     }
 }
 
-/// Index of a group in [`GROUP_NAMES`] and in anything else reported per group.
-pub const fn group_index(group: &ParamGroup) -> usize {
-    match group {
-        ParamGroup::Psqt => 0,
-        ParamGroup::Material => 1,
-        ParamGroup::Mobility => 2,
-        ParamGroup::Other => 3,
-    }
-}
-
-/// Each group as an index range, read back off [`param_group`] rather than restated.
+/// Derives the index range of each parameter group from [`param_group`].
 ///
-/// Restating the cuts is how a per-group report drifts into reporting the wrong parameters
-/// after a layout change, silently, since every number it prints stays plausible.
-/// The contiguity the ranges assume is asserted here rather than assumed.
+/// Deriving spans directly from group queries guarantees consistency if layout
+/// offsets change, while asserting that every group occupies a contiguous slice.
 pub fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
-    let mut span = [(usize::MAX, 0usize); GROUP_NAMES.len()];
+    let mut spans = [(usize::MAX, 0usize); GROUP_NAMES.len()];
     let mut counts = [0usize; GROUP_NAMES.len()];
 
-    for i in 0..slots {
-        let g = group_index(&param_group(i));
-        span[g].0 = span[g].0.min(i);
-        span[g].1 = i + 1;
-        counts[g] += 1;
+    for index in 0..slots {
+        let group = param_group(index) as usize;
+        spans[group].0 = spans[group].0.min(index);
+        spans[group].1 = index + 1;
+        counts[group] += 1;
     }
 
-    std::array::from_fn(|g| {
-        if counts[g] == 0 {
+    std::array::from_fn(|group| {
+        if counts[group] == 0 {
             return 0..0;
         }
 
-        let (lo, hi) = span[g];
-        assert_eq!(hi - lo, counts[g], "{} does not occupy a contiguous range of the layout", GROUP_NAMES[g]);
-        lo..hi
+        let (start, end) = spans[group];
+        assert_eq!(end - start, counts[group], "Group '{}' is not contiguous in the parameter layout", GROUP_NAMES[group]);
+        start..end
     })
 }
 
-/// Weight decay mask: not all parameters deserve equal punishment.
+/// The per-parameter weight decay multiplier mask.
 ///
-/// - PSQT center squares decay at 0.5× (central values are more structurally
-///   significant; aggressive decay risks flattening critical gradients).
-/// - Mobility weights decay at 1.5× (these can drift without bound since their
-///   features are unbounded integer counts).
-/// - Everything else decays at 1.0×.
+/// - PSQT (0.5×).
+/// - Mobility (1.5×).
 pub fn build_decay_mask(slots: usize) -> Vec<f64> {
     (0..slots)
-        .map(|i| match param_group(i) {
+        .map(|index| match param_group(index) {
             ParamGroup::Psqt => {
-                let sq = i % 32;
-                let (row, col) = (sq / 4, sq % 4);
-                let is_center = (2..=5).contains(&row) && (2..=3).contains(&col);
+                let sq = index % TABLE_SQUARES;
+                let (rank, file) = (sq / 4, sq % 4);
+                // Half-table files 2..=3 map to files c-d (mirrored as e-f), forming the c3-f6 central box.
+                let is_center = (2..=5).contains(&rank) && (2..=3).contains(&file);
                 if is_center { 0.5 } else { 1.0 }
             },
             ParamGroup::Mobility => 1.5,
@@ -101,11 +93,24 @@ pub fn build_decay_mask(slots: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Per-group learning-rate mask: PSQT, material, mobility, and the rest each scale
-/// by their configured rate, so groups on different gradient scales tune independently.
+/// The per-parameter second-moment decay (`beta2`) mask.
+///
+/// - PSQT (0.995).
+/// - Mobility (0.95).
+pub fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
+    (0..slots)
+        .map(|index| match param_group(index) {
+            ParamGroup::Psqt => 0.995,
+            ParamGroup::Mobility => 0.95,
+            ParamGroup::Material | ParamGroup::Other => default_beta2,
+        })
+        .collect()
+}
+
+/// The per-parameter learning rate mask.
 pub fn build_lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
     (0..slots)
-        .map(|i| match param_group(i) {
+        .map(|index| match param_group(index) {
             ParamGroup::Psqt => config.lr_psqt,
             ParamGroup::Material => config.lr_material,
             ParamGroup::Mobility => config.lr_mobility,
@@ -114,17 +119,16 @@ pub fn build_lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
         .collect()
 }
 
-/// Per-parameter range the sign step may not leave, unbounded outside mobility
-/// and the king-danger curvature.
+/// Allowed parameter value bounds `(min, max)` for optimizer steps.
 pub fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
-    let danger = LAYOUT.king_danger_offset;
+    let king_danger_offset = LAYOUT.king_danger_offset;
     (0..slots)
-        .map(|i| {
-            if i == danger {
+        .map(|index| {
+            if index == king_danger_offset {
                 return DANGER_CURVE_CLAMP;
             }
 
-            match param_group(i) {
+            match param_group(index) {
                 ParamGroup::Mobility => (-MOB_CLAMP, MOB_CLAMP),
                 ParamGroup::Psqt | ParamGroup::Material | ParamGroup::Other => (f64::NEG_INFINITY, f64::INFINITY),
             }

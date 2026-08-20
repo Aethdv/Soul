@@ -1,80 +1,55 @@
 # The Eval Tuner
 
-How it works, and why it's shaped this way.
+Gradient descent on Soul's hand-crafted eval, against WDL-labeled positions.
+The recipe for adding a term is [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md).
 
 ---
 
-## The core idea
+## The gradient is a feature coefficient
 
-Evaluation parameters are the knobs on a mixing board.
-Each one sets how much a positional feature counts: what a pawn shield is worth, how much mobility earns.
-Tuning is finding the knob positions that close the gap between what the engine thinks of a position and what actually happened in the games.
+The eval is a weighted sum, `score = Σ featureᵢ · weightᵢ`, and the tuner minimizes
+`L(σ(K·score), target)` over millions of positions, K converting a centipawn to a win probability.
+Cross-entropy by default; MSE, focal and label-smoothed CE are config options. `wdl_target` sets
+the target between the game result and `σ(K·search_score)`, leaning on the search where it was
+decisive and on the result where it was not.
 
-The engine computes `score = Σ(featureᵢ · weightᵢ)`.
-The tuner moves the weights to minimize `L(sigmoid(score), target)` over millions of positions: cross-entropy by default, with MSE, focal and label-smoothed CE selectable in the config.
-The target is not the game result alone: `wdl_target` blends it with `sigmoid(search_score)`, trusting the eval where the search was decisive and falling back to the result where it was near zero, or entirely when the position carries no score.
-To move a weight you need its gradient: which way to turn the knob, and how far.
+Because the eval is linear in its parameters, a weight's gradient is the feature standing next to
+it:
 
----
-
-## Two ways to get the gradient
-
-The eval is linear in its parameters, king danger aside: every weight shows up as `weight · feature`.
-So a weight's gradient is just its feature coefficient: no calculus at runtime, only bookkeeping.
-If `score = 3·w_shield + 7·w_mobility + …`, then `∂score/∂w_shield = 3`, and that `3` is a fact about the board, not about the weight's value.
-
-**Direct (`eval_linear_grad`): the reference.** Evaluate the position, read each feature coefficient straight off the board, phase, and openness, scatter `outer_deriv · coefficient` into the gradient vector. Around 270 f64 ops and 510 cycles per position on top of the eval itself, priced by `make flops`. It has one caller, the oracle test; what runs every epoch is the cached twin below.
-
-**Dual (`eval_dual_fused`): the oracle.** Forward-mode autodiff: every number carries its gradient vector, the product rule fires on each multiply, the chain rule falls out for free.
-It handles any function, linear or not: drop a `sigmoid(w₁·w₂)` into the eval and it still returns the right gradient where the direct path would quietly hand you a wrong one.
-It earns its keep as a check; run both, diff the gradients, and disagreement means the hand-derived formula has a bug. `test_bonus_terms_oracle` in `tape.rs` is exactly that diff, walking the roster so every term is covered by the row that declares it.
-
-`eval_linear_grad` and `eval_dual_fused` both hardcode squared error, since they exist to be diffed against each other rather than to train. The configured loss reaches the epoch loop only as the outer derivative `∂L/∂score` that scales every scatter, so it never changes what the two paths are asked to agree on.
-
-For encoded `.soul.zst` datasets the direct path has a cached twin in `src/tools/dataset/gradient.rs`: the features are packed into `i8` once at startup, so the epoch loop never recomputes the spatial tensor.
-Both directions dispatch through `LinearTerm`, so a new term brings its packing there, not its math.
-Miss the row and the build fails, miss the pack and `test_encoded_block_coverage_oracle` names the block.
-
----
-
-## Architecture
-
-### Training loop
-
-```mermaid
-flowchart LR
-    EPD["Positions (EPD / .soul.zst)"] --> EF64
-
-    subgraph Forward ["Forward Pass"]
-        EF64["eval_f64 → score"] --> SIG["sigmoid σ(score)"] --> LOSS["L(σ, target)"]
-    end
-
-    subgraph Grad ["Gradient Extraction"]
-        FEAT["Feature coefficients"] --> CHAIN["outer_deriv · feature"]
-    end
-
-    subgraph Optim ["Optimizer"]
-        LION["Lion"] --> W["weights"]
-    end
-
-    SIG -- "outer_deriv" --> CHAIN
-    CHAIN -- "param_grads" --> LION
-    W -. "next epoch" .-> EF64
+```text
+∂score/∂wᵢ = featureᵢ
 ```
 
-### The eval, by bucket
+No calculus at runtime, only bookkeeping scaled by the outer derivative `∂L/∂score`. That is worth
+one rule: **every non-linearity lives in the combiner, never in a term.** King danger is the live
+case, `pressure + pressure²·curvature/DANGER_SCALE`, so it sits in `LinearCombiner` and reaches the
+term as a per-side slope. Put a parameter inside an activation in a term and the scatter computes a
+wrong gradient in silence.
 
-`evaluate_generic<T>` fills per-bucket accumulators, the combiner sums them, then the score flips for side to move.
-Each term writes one bucket; the buckets are the stable shape, not the term list.
-Anything non-linear lives in the combiner, never in a term: that's the line that keeps the direct gradient honest.
-King danger is the live example. Each side's attacker pressure is curved before the two are differenced, so the term stays a linear feature sum and the curve's derivative reaches it as a per-side upstream.
+## Two paths to it
+
+**`eval_linear_grad`** reads the coefficients off the board and scatters them. Its cached twin in
+`gradient.rs` does the same from a `FeatureRecord`, features packed to `i8` once at startup, and
+that is what every epoch runs.
+
+**`eval_dual_fused`** is forward-mode autodiff: every number holds its gradient vector, so the
+product rule fires on each multiply and linearity is never assumed. It is a test, not a path. Run
+both, diff the gradients, and a disagreement means the hand-derived formula is wrong.
+
+Both hardcode squared error. They exist to be diffed against each other, so the configured loss
+would only add a factor both sides share.
+
+## Buckets
+
+Terms write into per-bucket accumulators; the combiner collapses them and flips for side to move.
+The buckets are the stable shape, not the term list.
 
 ```mermaid
 flowchart TD
     ACC["SIMD accumulator: PSQT + material"] --> MGEG["mg_eg"]
     MOB["mobility / threats / battery / xray reach"] --> MOBB["mobility"]
-    BON["bishop pair · rook-open · passers · king-distance · …"] --> BONB["bonus"]
-    SAF["shield / exposure / weak squares · xray ring"] --> SAFB["safety_us − safety_them + xray"]
+    BON["bishop pair · rook-open · passers · ..."] --> BONB["bonus"]
+    SAF["shield / exposure / weak squares · xray ring"] --> SAFB["safety_us - safety_them + xray"]
     ATK["attacker pressure per king"] --> DNG["danger_us / danger_them"]
     PHASE["phase"] --> MGEG
     PHASE --> SAFB
@@ -88,56 +63,69 @@ flowchart TD
     FLIP --> OUT(["score"])
 ```
 
-The `bonus` bucket is the cheap home for any pre-tapered linear term; a term earns its own bucket only when it needs a combiner shape of its own: an activation, a different taper.
+`bonus` takes any linear term that splits into mg and eg; the combiner tapers the pair once, as it
+does the safety block. A term earns a bucket of its own only when the combiner must treat it
+differently: its own activation, its own taper.
 
-### One declaration, many consumers
+One `evaluate_generic<T>` serves all three consumers. `T` is `i32` in search with the weights
+const-inlined, `f64` for the tuner's score, and `DualNode` for the oracle, whose `[f32; DUAL_N]`
+sizes itself from the tunable count.
 
-A tapered bonus is declared once, as a row of the `bonus_terms!` roster in `eval.rs`, and the build derives every other place it used to be named. [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md) lists what falls out.
+## Scale
 
-Two mechanisms carry it. A list hands its rows to a named consumer instead of expanding in place, so `eval.rs`, `gradient.rs` and `tape.rs` all build from the one row. And lists chain: `define_tunables!` holds the core weight rows and passes them through the roster, so a single consumer receives both as one flat sequence and neither declaration repeats the other.
+Scaling the weights by `c` and dividing K by `c` leaves every prediction identical, so the eval's
+overall size is a direction the loss cannot see. `material[p] + psqt[p][sq]` is a piece's whole
+contribution, which makes a constant moved between the two invisible as well. Lion moves along both
+regardless, since its step is `±lr` whatever the gradient says.
 
-A term can no longer be half-declared. Every list that could once disagree with another is the same list now, and the three that stay separate fail loudly: a values row that drifts fails the paste-block test, a block out of order fails the layout assert naming the block, and a wrong constant fails the oracle.
-
-**`T` resolves three ways, one code path:**
-
-|    Context    |     `T`    |                                      What you get                                     |
-|---------------|------------|---------------------------------------------------------------------------------------|
-| Engine search | `i32`      | Fast integer eval, weights const-inlined                                              |
-| Tuner score   | `f64`      | Float eval for sigmoid and loss                                                       |
-| Tuner oracle  | `DualNode` | Forward-mode AD, carries `[f32; DUAL_N]`: `DUAL_N` self-sizes from the tunable count  |
-
----
+`scale.rs` closes both. `canonicalize` folds each piece's mean PSQT into its material term after
+every step, and `Gauge` measures Σ|score| over a fixed probe of positions, rescaling the vector
+back onto that reference with K and Lion's momentum taken along. A run that starts on the shipped
+weights is gauged every batch; a cold start has no scale to hold yet and takes the correction once
+on the way out. Either way the output is in the centipawns `search_params` was written against, and
+the report's `Gauge:` line says how much of that scale the loss could not hold by itself. K itself
+can move during the run, by golden section every few epochs or by a sign step of its own.
 
 ## Files
 
-|                File               |                                               What it does                                                   |
-|-----------------------------------|--------------------------------------------------------------------------------------------------------------|
-| `src/engine/eval.rs`              | `evaluate_generic<T>`: the eval, generic over the math type; the `bonus_terms!` roster and `register_terms!` |
-| `src/engine/eval_params.rs`       | Weight arrays, the core half of the slot map and the tunable list, `Tunable` descriptors                     |
-| `src/engine/combiner.rs`          | `LinearCombiner`: collapses buckets to a scalar, owns every non-linearity                                    |
-| `src/engine/autograd/dual.rs`     | `DualNode`: forward-mode AD engine                                                                           |
-| `src/core/psqt.rs`                | PSQT layout, parameter offsets, index mapping                                                                |
-| `src/tools/dataset/tape.rs`       | `eval_linear_grad` (reference), `eval_dual_fused` (oracle), `eval_f64` (score-only), the oracle tests        |
-| `src/tools/dataset/gradient.rs`   | Cached SoA gradient for `.soul.zst`: `FeatureRecord`, `eval_record`, `accumulate_record_grad`                |
-| `tuner/src/core/config.rs`        | `TunerConfig`: schedules, batch size, and the loss the epoch loop applies                                    |
-| `tuner/src/evaltune/run.rs`       | The run: datasets in, epoch loop, checkpoints out                                                            |
-| `tuner/src/evaltune/lion.rs`      | Lion: sign-of-blend steps, the optimizer the loop drives                                                     |
-| `tuner/src/evaltune/report.rs`    | `write_params`: prints the paste block, keyed to the block-name comments                                     |
+| File | What it holds |
+|---|---|
+| `src/engine/eval.rs` | `evaluate_generic<T>`, the `bonus_terms!` roster, `register_terms!` |
+| `src/engine/eval_params.rs` | Weight arrays, the slot map, `Tunable` descriptors |
+| `src/engine/combiner.rs` | `LinearCombiner`, and every non-linearity |
+| `src/engine/autograd/dual.rs` | `DualNode` |
+| `src/core/psqt.rs` | PSQT layout and index mapping |
+| `src/tools/dataset/tape.rs` | `eval_linear_grad`, `eval_dual_fused`, the oracle tests |
+| `src/tools/dataset/gradient.rs` | `FeatureRecord` and the cached scatter |
+| `evaltuner/src/config.rs` | The TOML schema and the loss functions |
+| `evaltuner/src/run.rs` | Datasets in, epoch loop, checkpoints out |
+| `evaltuner/src/lion.rs` | Lion, and the gate that holds a step |
+| `evaltuner/src/scale.rs` | K, the gauge, and the PSQT/material fold |
+| `evaltuner/src/report.rs` | The paste block and the epoch line |
+| `evaltuner/src/probes.rs` | The one-shot measurements below |
 
----
+## Probes
 
-## Performance notes
+Each answers a question the epoch line cannot, over the same load and split a run would use.
 
-The direct path reuses the eval: `eval_f64` for the score, the feature coefficients derived alongside.
-`make flops` prices it, differencing retired FLOPs and cycles across runs of the same bench positions, scoring only against scoring plus scattering. The gradient costs 272 ops and 510 cycles per position against the eval's own 334 and 676; 25 of those ops are the sigmoid and its loss derivative, the rest the scatter. Ops there are FLOPs, so an FMA or a packed lane counts per element.
+- `curvature` reports what the data determines, what it leaves free, and which parameters restate
+  each other.
+- `batch-size` finds where averaging stops reducing gradient noise, and how much of a batch that
+  size points the wrong way, which is the half a sign optimizer pays for.
+- `momentum` balances that noise against the staleness of what momentum still holds, and prints the
+  β₂ where they meet.
+- `gather-cost` times the gradient pass over sequential, blocked and shuffled orders.
+- `val-cost` times the fused validation traversal against the two it replaced.
 
-The same run prices the cached twin, the one an epoch pays for: 267 ops and 254 cycles to score a record, 205 ops and 138 cycles more to scatter it. Three times the board path's speed for four fifths of its arithmetic, since a record arrives with the feature extraction already done.
+`make flops` prices the gradient itself, differencing retired FLOPs and cycles over the same bench
+positions. Read cycles rather than the clock: boost state moves wall time 10% between runs of one
+binary.
 
-Read the cycles column, not the clock: boost state moves wall time 10% between runs on the same binary, which is enough to read a warm laptop as a regression. And neither column is what binds the epoch loop, which is gathers; `evaltune gather-cost` measures those.
+## Floating point
 
-Subnormals are kept out of the hot loop by construction rather than by MXCSR flags. `sigmoid` clamps its exponent to ±700, short of libm's very slow subnormal fallback between −708 and −744, which ignores FTZ/DAZ anyway; Lion hard-zeroes momentum once both it and the gradient fall under 1e-9; and the decaying EMAs start at zero for exactly the parameters whose gradients go quiet.
-Setting FTZ/DAZ instead would be immediate UB: Rust assumes the floating-point environment is in its default state and optimizes on that, whether or not the register is restored afterwards.
-
----
-
-**→ [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md): the step-by-step recipe for wiring a new term.**
+Subnormals never reach the hot loop, and not by touching MXCSR: setting FTZ/DAZ is immediate UB,
+because Rust assumes the default floating-point environment and optimizes on that whether or not
+the register is restored. Three structural guards do it instead. `sigmoid` clamps its exponent to
+±700, short of libm's very slow subnormal path between −708 and −744. Lion zeroes momentum once it
+and the gradient both fall under 1e-9. And every EMA starts at zero, so a parameter that never sees
+a gradient contributes exact zeros rather than a residue shrinking toward one.

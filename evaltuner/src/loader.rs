@@ -1,68 +1,66 @@
-//! EPD and viriformat loading, and [`load_datasets`] which dispatches by extension.
+//! Dataset ingestion, format dispatch (EPD / viriformat), and validation grouping.
 //!
-//! Re-exports the tuner's datasource types ([`SoulEntry`], [`FeatureRecord`],
-//! [`eval_record`]) through [`crate::engine`].
+//! Handles streaming decompression, sample weighting, and the dataset fingerprint a resume
+//! checks its split against.
 
 use std::{
-    fmt, fs,
-    fs::File,
-    io,
-    io::{BufRead, BufReader},
-    iter, path,
+    fmt,
+    fs::{self, File},
+    io::{self, BufRead, BufReader},
+    iter,
     path::Path,
 };
 
 use rayon::prelude::*;
 use zerocopy::IntoBytes;
 
-pub use crate::engine::{
-    EpdEntry, FeatureRecord, ReplayFilter, SoulEntry, accumulate_record_grad, eval_record, eval_record_full, flip_score, flip_wdl,
-    parse_epd_str, parse_viri_file,
-};
 use crate::{
+    alarm,
+    engine::{EpdEntry, ReplayFilter, SoulEntry, flip_score, flip_wdl, parse_epd_str, parse_viri_file},
     fnv::Fnv1a,
     palette::{self, RESET},
 };
 
-/// Load raw EPD positions, decompressing zstd on the fly.
+/// Loads raw EPD positions, transparently decompressing zstd streams if present.
 pub fn load_epd(path: &str) -> io::Result<Vec<EpdEntry>> {
     let file = File::open(path)?;
     let reader = open_reader(file, Path::new(path))?;
     let mut entries = Vec::new();
+    let mut unparsed = 0usize;
 
     for line in reader.lines() {
         let line = line?;
-        if let Some(entry) = parse_epd_str(&line) {
-            entries.push(entry);
+        if line.trim().is_empty() {
+            continue;
         }
+        match parse_epd_str(&line) {
+            Some(entry) => entries.push(entry),
+            None => unparsed += 1,
+        }
+    }
+
+    // A truncated or mislabelled file otherwise loads short and trains without saying so.
+    if unparsed > 0 {
+        alarm!("{path}: {unparsed} lines did not parse");
     }
     Ok(entries)
 }
 
-/// Load all dataset files by format, dispatching on extension.
+/// - `.viri` / `.vf` → [`parse_viri_file`] with replay gating applied.
+/// - Other extensions → [`load_epd`] converted to [`SoulEntry`].
 ///
-/// `.viri` / `.vf` → [`parse_viri_file`]; anything else → [`load_epd`] plus
-/// [`SoulEntry::from_board`].
-///
-/// `filter` reaches the viriformat path alone; an EPD line stores a position without
-/// the ply or the played move its gates read.
-///
-/// The second return is one weight per position, empty unless a viriformat file
-/// brought weighting gates. Files that bring none contribute ones, so the weights
-/// stay aligned with the entries whatever the paths mix.
-///
-/// The third is the group sizes the split holds out together, summing to the entries: a game where
-/// the format records one, a lone position where it does not. Split by position, a held-out ply
-/// keeps its siblings in train, one move away and carrying the same label, and `L_val` flatters.
+/// # Returns
+/// `(entries, sample_weights, group_sizes)`
+/// - `sample_weights`: Per-position weights, padded to `1.0` if mixing weighted and unweighted sources.
+/// - `group_sizes`: Partition spans held out contiguously during train/validation splits.
+///   Viriformat keeps entire games grouped to prevent correlated adjacent plies from leaking
+///   across the split and artificially deflating validation loss; EPDs default to single-position groups.
 pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>, Vec<f32>, Vec<u32>) {
     let mut all_entries = Vec::new();
     let mut all_weights: Vec<f32> = Vec::new();
     let mut all_groups: Vec<u32> = Vec::new();
 
     for path in paths {
-        let before = all_entries.len();
-        let mut grouped = 0usize;
-
         if path.ends_with(".viri") || path.ends_with(".vf") {
             println!("Loading viriformat dataset: {path}");
             match parse_viri_file(path, filter) {
@@ -72,29 +70,28 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                         all_weights.extend(weights);
                     }
                     all_entries.append(&mut viri_entries);
-                    grouped = games.iter().sum::<u32>() as usize;
                     all_groups.extend(games);
                 },
-                Err(e) => bail_dataset(path, &e),
+                Err(err) => bail_dataset(path, &err),
             }
         } else {
             println!("Loading raw dataset: {path}");
             match load_epd(path) {
                 Ok(epd_entries) => {
-                    for e in &epd_entries {
-                        let stm = e.board.stm;
+                    // No game boundaries in the format, so every position is its own partition.
+                    all_groups.extend(iter::repeat_n(1u32, epd_entries.len()));
+                    for entry in &epd_entries {
+                        let stm = entry.board.stm;
                         all_entries.push(SoulEntry::from_board(
-                            &e.board,
-                            flip_wdl(e.result, stm),
-                            e.eval.map(|v| flip_score(v, stm)),
+                            &entry.board,
+                            flip_wdl(entry.result, stm),
+                            entry.eval.map(|score| flip_score(score, stm)),
                         ));
                     }
                 },
-                Err(e) => bail_dataset(path, &e),
+                Err(err) => bail_dataset(path, &err),
             }
         }
-        // A format that records no games contributes one group per position.
-        all_groups.extend(iter::repeat_n(1u32, all_entries.len() - before - grouped));
     }
 
     if !all_weights.is_empty() {
@@ -103,33 +100,32 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
     (all_entries, all_weights, all_groups)
 }
 
-/// Hashed before shuffle: identifies loaded contents, not a permutation.
-/// A checkpoint's split seed replays the same split only over the same entries.
+/// Computes a parallel digest of loaded dataset entries.
+///
+/// Hashes raw byte representations prior to shuffling, ensuring checkpointed split
+/// seeds deterministically recreate the exact same train/validation partitions.
 pub fn dataset_fingerprint(entries: &[SoulEntry]) -> u64 {
-    /// Fixed, so the digest is the file's and not the machine's thread count.
-    const CHUNK: usize = 1 << 16;
+    // Fixed chunk size guarantees the digest is invariant to thread count.
+    const CHUNK_SIZE: usize = 1 << 16;
 
-    // Every byte of every entry: a hash over a sample, or over a subset of the fields, passes a
-    // dataset the checkpoint never trained on, and the resume it clears reads its own val split.
     let digests: Vec<u64> = entries
-        .par_chunks(CHUNK)
+        .par_chunks(CHUNK_SIZE)
         .map(|chunk| {
             let mut fnv = Fnv1a::new();
             fnv.write_bytes(chunk.as_bytes());
-
             fnv.digest()
         })
         .collect();
 
     let mut fnv = Fnv1a::new();
     fnv.write_bytes(&(entries.len() as u64).to_le_bytes());
-
-    for d in &digests {
-        fnv.write_bytes(&d.to_le_bytes());
+    for digest in &digests {
+        fnv.write_bytes(&digest.to_le_bytes());
     }
     fnv.digest()
 }
 
+/// Resolves comma-separated dataset paths or auto-discovers viriformat files in `data/`.
 pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
     if input == "default" {
         let mut paths = Vec::new();
@@ -156,12 +152,12 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
         let paths: Vec<String> = input
             .split(',')
             .map(str::trim)
-            .map(|s| {
-                if path::Path::new(s).exists() {
-                    s.to_string()
+            .map(|spec| {
+                if Path::new(spec).exists() {
+                    spec.to_string()
                 } else {
-                    let data_prefixed = format!("data/{s}");
-                    if path::Path::new(&data_prefixed).exists() { data_prefixed } else { s.to_string() }
+                    let prefixed = format!("data/{spec}");
+                    if Path::new(&prefixed).exists() { prefixed } else { spec.to_string() }
                 }
             })
             .collect();
@@ -170,19 +166,17 @@ pub fn resolve_dataset_paths(input: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Opens a file for buffered line reading, transparently decompressing zstd if needed.
 fn open_reader(file: File, path: &Path) -> io::Result<Box<dyn BufRead>> {
-    if path.extension().is_some_and(|e| e == "zst") {
+    if path.extension().is_some_and(|ext| ext == "zst") {
         Ok(Box::new(BufReader::new(zstd::Decoder::new(file)?)))
     } else {
         Ok(Box::new(BufReader::new(file)))
     }
 }
 
-/// A file that cannot be read would train the run on less data than it was asked for, and the
-/// shortfall reaches the fingerprint, the split and `L_val` with nothing left to say why.
-fn bail_dataset(path: &str, e: &dyn fmt::Display) -> ! {
-    eprintln!("{}[!] Cannot read dataset {path}: {e}{RESET}", palette::ALARM);
+/// Aborts execution on dataset read errors to prevent training on silent data shortfalls.
+fn bail_dataset(path: &str, err: &dyn fmt::Display) -> ! {
+    alarm!("Cannot read dataset {path}: {err}");
     std::process::exit(1);
 }
 
@@ -191,13 +185,15 @@ mod tests {
     use super::{SoulEntry, dataset_fingerprint};
 
     #[test]
-    fn every_field_of_every_entry_reaches_the_fingerprint() {
+    fn an_edit_beyond_the_first_chunk_changes_the_fingerprint() {
         let entries = vec![SoulEntry::default(); 70_000];
-
         let mut edited = entries.clone();
         edited[69_000].castling = 0b1010;
-
         assert_eq!(dataset_fingerprint(&entries), dataset_fingerprint(&entries), "the same entries must hash the same");
-        assert_ne!(dataset_fingerprint(&entries), dataset_fingerprint(&edited));
+        assert_ne!(
+            dataset_fingerprint(&entries),
+            dataset_fingerprint(&edited),
+            "an edit past the first chunk must reach the digest"
+        );
     }
 }

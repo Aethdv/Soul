@@ -1,33 +1,39 @@
 //! Evaluation-tuner color palette.
 //!
-//! Loss carries no absolute scale, so its color is always relative: per-epoch
-//! trend on the live line, within-window rank on the sparkline, both off
-//! the shared advantage gradient.
-//!
-//! The fixed pens are compile-time escapes, so a format string names one inline and
-//! nothing rebuilds the same strings per report. [`fg`] stays for computed colors.
+//! The hues live in `src/color.rs`. The fixed pens are compile-time escapes,
+//! so a format string names one inline and nothing rebuilds the same strings
+//! per report. [`fg`] stays for computed colors.
 
-use crate::engine::{Rgb, color};
+use crate::engine::color;
 
-/// What each pen means in a report. The hues live in `color`, so the engine and the
-/// tuner cannot drift apart.
 /// Field labels.
 pub const LAB: &str = color::TAUPE_PEN;
+
 /// Config and telemetry values.
 pub const VAL: &str = color::MINT_PEN;
+
 /// Dataset counts.
 pub const COUNT: &str = color::STEEL_PEN;
+
 /// Best-epoch marker.
 pub const BRAND: &str = color::GOLD_PEN;
+
 /// Incidental figures: train, ref, lr.
 pub const DIM: &str = color::ASH_PEN;
+
 /// Warnings and refusals.
 pub const ALARM: &str = color::ALARM_PEN;
+
 /// Parameters the run changed.
 pub const MOVED: &str = color::JADE_PEN;
 
-pub use color::{CLEAR_LINE, RESET};
+pub use color::{CLEAR_LINE, RESET, ansi_fg as fg};
 
-/// Truecolor foreground escape for a color decided at runtime.
-#[must_use]
-pub fn fg(c: Rgb) -> String { crate::engine::ansi_fg(c) }
+/// A warning line: the alarm pen, the `[!]` prefix and a reset, which 20 call sites otherwise
+/// spell out by hand.
+#[macro_export]
+macro_rules! alarm {
+    ($($arg:tt)*) => {
+        eprintln!("{}[!] {}{}", $crate::palette::ALARM, format_args!($($arg)*), $crate::palette::RESET)
+    };
+}

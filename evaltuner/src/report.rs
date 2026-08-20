@@ -1,6 +1,7 @@
-//! Everything a run prints: the parameter tables it pastes back, the end-of-run
-//! summary, and the diagnostics beside it, calibration, sensitivity, the gate
-//! census and the two scale warnings.
+//! Everything a run prints.
+//!
+//! The parameter tables are the run's product: they paste into `eval_params.rs` verbatim, and a
+//! test holds them to that.
 
 use std::{
     fmt::Write as _,
@@ -11,22 +12,21 @@ use std::{
 use rayon::prelude::*;
 
 use crate::{
+    alarm,
     config::{EvalTuneConfig, KMode},
-    engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color, pct},
+    engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color, eval_record, pct},
     groups::GROUP_NAMES,
     lion::GateCensus,
-    loader,
     palette::{self, BRAND, COUNT, DIM, LAB, MOVED, RESET, VAL},
     run::{TrainerContext, artifact},
     training::{phase_of, phase_weights, sigmoid},
 };
 
-/// Eighth-blocks, shortest to tallest; every sparkline here indexes a height level into this.
-const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+pub const PIECE_NAMES: [&str; PIECE_TABLES] = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
 
-/// Trailing comments for the paste block, by block name.
-/// Cosmetic: offsets, widths and order come from `BLOCKS`, so a missing entry
-/// costs a comment and a stale one cannot move a number.
+const EIGHTH_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// offsets, widths and order come from `BLOCKS`,
 #[rustfmt::skip]
 const ANNOTATIONS: &[(&str, &str)] = &[
     ("mobility_open",      "[mobility, battery, threats, xray threats]"),
@@ -52,6 +52,7 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ("enemy_king_dist_eg", "enemy king→passer dist, 7 clamps to 6"),
 ];
 
+/// The best-so-far vectors a run ships, one per series.
 pub struct BestEpochs<'a> {
     pub best_val_params: &'a [f64],
     /// `None` when the run had no holdout: nothing validated, so nothing ranks.
@@ -89,19 +90,24 @@ pub fn print_results(all_params: &[Tunable], initial_values: &[f64], final_ema: 
     );
     print_params(all_params, initial_values, final_ema);
 
-    if let Ok(mut f) = File::create(artifact("evaltune_best.txt")) {
-        let mut w = BufWriter::new(&mut f);
-        // Without a holdout the val block is the train block: selection fell back to it.
+    if let Ok(mut file) = File::create(artifact("evaltune_best.txt")) {
+        let mut writer = BufWriter::new(&mut file);
         if let Some(l) = best.best_val_loss {
-            writeln!(w, "Best L_val: {l:.6} (Epoch {})", best.best_val_epoch).ok();
-            write_params(&mut w, all_params, best.best_val_params, None);
+            writeln!(writer, "Best L_val: {l:.6} (Epoch {})", best.best_val_epoch).ok();
+            write_params(&mut writer, all_params, best.best_val_params, None);
         } else {
-            writeln!(w, "Best L_val: — (no holdout)").ok();
+            writeln!(writer, "Best L_val: — (no holdout)").ok();
         }
-        writeln!(w, "\nBest L_train: {:.6} (Epoch {})", best.best_train_loss, best.best_train_epoch).ok();
-        write_params(&mut w, all_params, best.best_train_params, None);
-        writeln!(w, "\nFinal epoch {final_epoch}:  L_val {}  L_train {}", fmt_loss(best.last_val), fmt_loss(best.last_train),).ok();
-        write_params(&mut w, all_params, final_ema, None);
+        writeln!(writer, "\nBest L_train: {:.6} (Epoch {})", best.best_train_loss, best.best_train_epoch).ok();
+        write_params(&mut writer, all_params, best.best_train_params, None);
+        writeln!(
+            writer,
+            "\nFinal epoch {final_epoch}:  L_val {}  L_train {}",
+            fmt_loss(best.last_val),
+            fmt_loss(best.last_train)
+        )
+        .ok();
+        write_params(&mut writer, all_params, final_ema, None);
     }
 }
 
@@ -142,11 +148,11 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             .unwrap();
 
         writeln!(w, "    {name} = [").ok();
-        for row in 0..8 {
+        for rank in 0..8 {
             write!(w, "        ").ok();
 
-            for col in 0..4 {
-                let sq_idx = row * 4 + col;
+            for file in 0..4 {
+                let sq_idx = rank * 4 + file;
                 let mg_idx = psqt_offset + sq_idx;
                 let eg_idx = psqt_offset + TABLE_SQUARES + sq_idx;
                 let mg_val = values[mg_idx].round() as i32;
@@ -157,7 +163,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
                 let changed =
                     initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
 
-                let cell = if col < 3 { format!("{s: <16}") } else { s };
+                let cell = if file < 3 { format!("{s: <16}") } else { s };
                 write!(w, "{}", highlight(&cell, changed, initial)).ok();
             }
             writeln!(w).ok();
@@ -175,7 +181,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
 
     for block in simple {
         let half = block.len / 2;
-        let pieces = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"];
         writeln!(w, "    {} = [", block.name).ok();
         for i in 0..half {
             let mg_idx = block.offset + i;
@@ -184,7 +189,7 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             let eg_val = values[eg_idx].round() as i32;
             let fixed = params[mg_idx].is_fixed;
             let tag = if fixed { "CS" } else { "S" };
-            let label = pieces.get(i).map_or(String::new(), |name| format!(" // {name}"));
+            let label = PIECE_NAMES.get(i).map_or(String::new(), |name| format!(" // {name}"));
             let s = format!("{tag}({mg_val:>4}, {eg_val:>4}),{label}");
             let changed = initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
             writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
@@ -236,7 +241,6 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
     }
 }
 
-/// Writes a slice of weight parameters as a comma-separated list.
 pub fn write_weight_array<W: Write>(
     w: &mut W,
     offset: usize,
@@ -259,30 +263,24 @@ pub fn write_weight_array<W: Write>(
     }
 }
 
-/// The gauge line reports how hard the pull was; this warns when the final parameters ship off the reference scale.
-///
-/// A run can hold a statistic perfectly and still ship an eval off the scale
-/// `search_params` was written against, which is worth −25 Elo and looks like
-/// nothing in the loss. The tail EMA averages vectors that are individually on
-/// the reference and lands fractionally under it, so the bar sits well clear of
-/// that rather than at the gauge's own 1e-6.
+/// A run can hold the gauge perfectly and still ship an eval off the scale `search_params` was
+/// written against, worth −25 Elo and invisible in the loss. The tail EMA averages vectors that
+/// are each on the reference and lands fractionally under it, so the bar clears that, well above
+/// the gauge's own 1e-6.
 pub fn off_scale_warning(shipped: f64) -> String {
     if (shipped - 1.0).abs() <= 0.01 {
         return String::new();
     }
     format!(
-        "{}[!] Warning: the final-epoch parameters ship at {shipped:.3}× the reference scale.\n\
-         [!] `search_params` reads centipawns; an eval off scale moves every margin with it.{RESET}\n",
+        "{}[!] Warning: the final-epoch parameters ship at {shipped:.3}× reference scale.\n\
+         [!] `search_params` assumes centipawns; eval scale drift distorts all search pruning margins.{RESET}\n",
         palette::ALARM,
     )
 }
 
-/// Warns when the run's K finished against `k_min` or `k_max`.
-///
-/// Both live modes clamp: the golden search never leaves its bracket and `on_batch` clamps the
-/// learned K every batch. A K on a bound is therefore the bracket's answer rather than the data's,
-/// and it is silent otherwise. The 32.8M set spent a run pinned to a `k_min` of 0.003 and settled
-/// at 0.001350 once the floor moved.
+/// Both live modes clamp, the golden search to its bracket and `on_batch` every batch, so a K on
+/// a bound is the bracket's answer rather than the data's, and nothing else says so. The 32.8M set
+/// sat pinned to a `k_min` of 0.003 and settled at 0.001350 once the floor moved.
 pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
     // Fixed K is the configured value by definition, bound or not.
     if matches!(config.k_mode, KMode::Fixed { .. }) {
@@ -294,8 +292,8 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
         return String::new();
     }
     format!(
-        "{}[!] Warning: K = {k:.6} finished against its bracket [{}, {}]. Widen it and rerun;\n\
-         [!] this run reported a clamp rather than an optimum.{RESET}\n",
+        "{}[!] Warning: K = {k:.6} saturated against bracket boundary [{}, {}].\n\
+         [!] Widen the bracket and rerun; this value reflects a clamp rather than an unconstrained optimum.{RESET}\n",
         palette::ALARM,
         config.k_min,
         config.k_max,
@@ -304,18 +302,16 @@ pub fn clamped_k_warning(config: &EvalTuneConfig, k: f64) -> String {
 
 /// Predicted against realized win rate on the validation split, by game phase.
 ///
-/// One global K asserts that a centipawn buys the same win probability in a rook ending as it
-/// does at full material. Whether it does is measurable rather than arguable, and this is the
-/// measurement: a residual that walks monotonically with phase is a material-conditioned target
-/// earning its keep, and noise around zero is that idea deflating before it costs a single game.
+/// One global K asserts a centipawn buys the same win probability in a rook ending as at full
+/// material. A residual moving monotonically with phase says a material-conditioned target would
+/// earn its keep; noise around zero answers no.
 ///
-/// The second table splits each band by eval, because K is a slope and the first table reads an
-/// offset. A band whose K is too flat under-predicts the winning side and over-predicts the
-/// losing side, netting a mean residual of zero, so the split has to keep the sign: bucketed by
-/// `|eval|` those two errors would cancel inside the bucket and hide exactly what is sought.
+/// The second table splits each band by signed eval: K is a slope, the first table reads an
+/// offset, and a too-flat K under-predicts the winner and over-predicts the loser for a mean of
+/// zero. Bucketing by `|eval|` would cancel those two inside the bucket.
 ///
-/// Realized rate comes from the label, so it means the same thing the loss means: on outcome data
-/// it is the game result, and on score-target data it is whatever the blend made of it.
+/// Realized rate is the label, so it means what the loss means: the game result, or whatever the
+/// blend made of it.
 pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> String {
     const BAND_WIDTH: usize = 4;
     const BANDS: usize = TOTAL_PHASE as usize / BAND_WIDTH;
@@ -335,7 +331,7 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
                 }
                 // Full material divides into the top band rather than owning one of its own.
                 let b = (phase_of(record, &phase_w) / BAND_WIDTH).min(BANDS - 1);
-                let eval = loader::eval_record(record, values);
+                let eval = eval_record(record, values);
                 let cell = b * CELLS + EDGES.iter().filter(|&&edge| eval >= edge).count();
 
                 counts[cell] += 1;
@@ -390,7 +386,6 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
         let row: Vec<String> = (0..CELLS)
             .map(|c| {
                 let i = b * CELLS + c;
-
                 match counts[i] {
                     0 => "-".to_string(),
                     n => format!("{:+.1} ({})", rate(predicted[i], n) - rate(realized[i], n), compact(n)),
@@ -408,29 +403,33 @@ pub fn calibration_report(ctx: &TrainerContext, values: &[f64], k: f64) -> Strin
 
 /// Whole-run gate census, per parameter group.
 ///
-/// `band` is the column the cautious-mask question turns on, since it is where our gate and
-/// Liang's disagree; the rest of a retune's difference would be step length, not mask shape.
+/// `band` is the column the cautious-mask question turns on, being where this gate and Liang's
+/// disagree; the rest of a retune's difference would be step length rather than mask shape.
 pub fn gate_census_report(groups: &[GateCensus]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "\n{LAB}Gate census{RESET} {DIM}(share of parameter-updates){RESET}");
     let _ = writeln!(out, "  {LAB}group          φ     skip  canonical    band   c-only   waived     dead  no grad{RESET}");
 
     for (name, c) in GROUP_NAMES.iter().zip(groups) {
-        let _ = writeln!(
-            out,
-            "  {name:<9} {VAL}{:6.4}{RESET}   {VAL}{:5.1}%{RESET}     {VAL}{:5.1}%{RESET}  {VAL}{:5.2}%{RESET}   \
-             {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}",
-            c.active_share(),
-            c.percent(c.skipped),
-            c.percent(c.canonical),
-            c.percent(c.band),
-            c.percent(c.canonical_only),
-            c.percent(c.epsilon_waived),
-            c.percent(c.dead),
-            c.percent(c.absent),
-        );
+        let _ = writeln!(out, "  {name:<9} {}", gate_columns(c));
     }
     out
+}
+
+/// The eight census columns, in the order both the per-group table and the epoch line print them.
+pub fn gate_columns(c: &GateCensus) -> String {
+    format!(
+        "{VAL}{:6.4}{RESET}   {VAL}{:5.1}%{RESET}     {VAL}{:5.1}%{RESET}  {VAL}{:5.2}%{RESET}   \
+         {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}   {VAL}{:5.1}%{RESET}",
+        c.active_share(),
+        c.percent(c.skipped),
+        c.percent(c.canonical),
+        c.percent(c.band),
+        c.percent(c.canonical_only),
+        c.percent(c.epsilon_waived),
+        c.percent(c.dead),
+        c.percent(c.absent),
+    )
 }
 
 pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: usize, result_fn: F) {
@@ -448,13 +447,13 @@ pub fn print_dataset_stats<T, F: Fn(&T) -> f64>(train: &[T], val: &[T], total: u
     println!("  {LAB}White wins:{RESET} {COUNT}{ww}{RESET}");
     println!("  {LAB}Black wins:{RESET} {COUNT}{bw}{RESET}");
     println!("  {LAB}Draws:{RESET}      {COUNT}{dr}{RESET}");
+
     // A datagen run that never filled the result field looks exactly like a set of drawn games.
     // The outcome target is then 0.5 everywhere and only a score-weighted blend can learn.
     if ww + bw == 0 {
-        eprintln!(
-            "{}[!] Warning: no decisive results. Every outcome target is 0.5, so a wdl_schedule\n\
-             [!] near 0.0 trains on a constant.{RESET}",
-            palette::ALARM,
+        alarm!(
+            "Warning: no decisive outcomes detected. Training targets are constant 0.5; \
+             pure outcome training will diverge or stall."
         );
     }
 }
@@ -470,12 +469,11 @@ pub fn loss_sparkline(history: &[f64]) -> String {
     let span = (hi - lo).max(1e-12);
 
     let mut out = String::with_capacity(history.len() * 20);
-
     for &v in history {
         let frac = (v - lo) / span; // 0 = best (lowest), 1 = worst (highest)
         let level = (frac * 8.0).min(7.0) as usize;
         out.push_str(&palette::fg(color::advantage(1.0 - 2.0 * frac)));
-        out.push(BARS[level]);
+        out.push(EIGHTH_BLOCKS[level]);
     }
     out.push_str(RESET);
     out
@@ -484,9 +482,9 @@ pub fn loss_sparkline(history: &[f64]) -> String {
 /// Which parameters the clip bound truncated, and how often.
 ///
 /// Momentum keeps accumulating outward while only the value is clamped, so when the
-/// gradient reverses the gate reads
-/// `m·g ≤ 0` and holds the step for roughly `1/(1−β₂)` updates more. The clamp and the
-/// gate are stickiest together at exactly the moment a parameter tries to leave the wall.
+/// gradient reverses the gate reads `m·g ≤ 0` and holds the step for roughly
+/// `1/(1−β₂)` updates more. The clamp and the gate are stickiest together at exactly
+/// the moment a parameter tries to leave the wall.
 pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String {
     let mut pinned: Vec<_> = params.iter().filter(|p| clipped[p.idx] > 0).collect();
     if pinned.is_empty() {
@@ -506,10 +504,14 @@ pub fn clip_report(params: &[Tunable], clipped: &[u64], updates: u64) -> String 
 }
 
 pub fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bool]) {
-    let Ok(mut f) = fs::File::create(artifact("sensitivity-report.txt")) else { return };
+    let Ok(mut f) = fs::File::create(artifact("sensitivity-report.txt")) else {
+        return;
+    };
+
     let mut w = io::BufWriter::new(&mut f);
     writeln!(w, "Sensitivity Analysis").ok();
     writeln!(w).ok();
+
     let mut sensitivities = Vec::new();
     let mut frozen = Vec::new();
 
@@ -527,18 +529,19 @@ pub fn sensitivity_report(params: &[Tunable], grad_ema: &[f64], fixed_mask: &[bo
     let max_width = |list: &[(f64, usize, &str)]| list.iter().take(10).map(|r| r.2.len()).max().unwrap_or(20) + 1;
     let active_width = max_width(&sensitivities);
     let frozen_width = max_width(&frozen);
-    writeln!(w, "  Top Load-Bearing Parameters:").ok();
+
+    writeln!(w, "  Most sensitive parameters:").ok();
     for (i, (delta, _, name)) in sensitivities.iter().take(10).enumerate() {
         writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
     writeln!(w).ok();
-    writeln!(w, "  Lowest-Impact Parameters:").ok();
+    writeln!(w, "  Least sensitive parameters:").ok();
     for (i, (delta, _, name)) in sensitivities.iter().rev().take(10).enumerate() {
         writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = active_width).ok();
     }
     if !frozen.is_empty() {
         writeln!(w).ok();
-        writeln!(w, "  Highest Sensitivity Auto-Frozen/Fixed Parameters:").ok();
+        writeln!(w, "  Most sensitive frozen parameters:").ok();
         for (i, (delta, _, name)) in frozen.iter().take(10).enumerate() {
             writeln!(w, "    {:>3}. {:<name_width$} ΔL: {:.8}", i + 1, name, delta, name_width = frozen_width).ok();
         }
@@ -553,7 +556,7 @@ pub fn report_phase_balance(hist: &[u64], weights: &[f64], cap: f64, clamped: us
     let imbalance = if min_pop > 0 { max_pop as f64 / min_pop as f64 } else { f64::INFINITY };
     let bars: String = hist
         .iter()
-        .map(|&c| if c == 0 { ' ' } else { BARS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
+        .map(|&c| if c == 0 { ' ' } else { EIGHTH_BLOCKS[(((c as f64 / max_pop.max(1) as f64) * 7.0).round() as usize).min(7)] })
         .collect();
 
     let wmin = weights.iter().copied().fold(f64::INFINITY, f64::min);
@@ -575,16 +578,15 @@ fn annotation(block: &str) -> String {
     }
 }
 
-/// Green ANSI if `changed` and `initial` is `Some` (terminal context).
 fn highlight(text: &str, changed: bool, initial: Option<&[f64]>) -> String {
     if initial.is_some() && changed { format!("{MOVED}{text}{RESET}") } else { text.to_string() }
 }
 
-/// Counts wide enough to crowd a table, shortened to three significant characters.
+/// Counts wide enough to crowd a table, shortened past ten thousand with a K or M suffix.
 fn compact(n: u64) -> String {
     match n {
         0..10_000 => n.to_string(),
-        10_000..10_000_000 => format!("{}k", n / 1000),
+        10_000..10_000_000 => format!("{}K", n / 1000),
         _ => format!("{}M", n / 1_000_000),
     }
 }
@@ -596,14 +598,11 @@ mod tests {
         *,
     };
 
-    /// The output is text, so neither the compiler nor the oracle reads it.
     #[test]
     fn the_paste_block_reproduces_eval_params() {
         let params = collect_parameters();
         let values = default_values(&params);
 
-        // The colored form is the one with the header comments; values as their own
-        // baseline mark nothing changed, so no ANSI lands in it.
         let mut printed = Vec::new();
         write_params(&mut printed, &params, &values, Some(&values));
         let printed = String::from_utf8(printed).expect("the paste block is utf-8");
@@ -615,10 +614,11 @@ mod tests {
             .trim_end();
 
         let source = include_str!("../../src/engine/eval_params.rs");
-        let start = source.find("define_psqt_params! {").expect("no psqt block in eval_params.rs");
-        let last = source.find("define_weight_params! {").expect("no weight block in eval_params.rs");
-        let end = last + source[last..].find("\n}").expect("the weight block never closes") + 2;
-
-        assert_eq!(printed, &source[start..end], "the paste block no longer reproduces eval_params.rs");
+        let start = source.find("define_psqt_params! {").expect("missing PSQT macro block in eval_params.rs");
+        let last = source
+            .find("define_weight_params! {")
+            .expect("missing weight macro block in eval_params.rs");
+        let end = last + source[last..].find("\n}").expect("unclosed weight macro block") + 2;
+        assert_eq!(printed, &source[start..end], "generated macro blocks deviated from eval_params.rs");
     }
 }

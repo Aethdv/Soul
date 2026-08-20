@@ -1,86 +1,72 @@
-//! What a run measures: the WDL target and its sigmoid, phase weighting, the
-//! gradient-norm percentile the clip reads, and the two trails a run keeps,
-//! [`Progress`] for the records it ships and [`DivergenceMonitor`] for the one
-//! it only warns on.
+//! What the epoch loop needs besides the gradient: the target it trains toward, the weights it
+//! samples with, and the trails it watches for a stall or a split.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 pub use crate::engine::sigmoid;
 use crate::{
-    engine::{FeatureRecord, LAYOUT, TOTAL_PHASE, eval_f64, eval_params, flip_wdl},
-    loader,
+    engine::{EpdEntry, FeatureRecord, LAYOUT, SoulEntry, TOTAL_PHASE, eval_f64, eval_params, flip_wdl},
     report::report_phase_balance,
 };
 
-// EMA spans in epochs. Their difference is the trend; the slow span also gates warmup,
-// since a trend read before that span has filled is reading its own seed.
+/// Fast EMA window in epochs.
 pub const TREND_FAST: usize = 10;
+/// Slow EMA window in epochs; also defines the warmup period before divergence checks activate.
 const TREND_SLOW: usize = 40;
+
 pub const A_FAST: f64 = 2.0 / (TREND_FAST as f64 + 1.0);
 const A_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
 
-/// Multiple of the observed per-epoch noise a rise must clear to count as divergence.
+/// Noise multiplier threshold for divergence detection.
 ///
-/// Every figure here is in units of σ, the raw per-epoch validation noise. What gets tested is
-/// the smoothed difference rather than a raw value: both trails smooth the same input, so their
-/// covariance leaves sd(fast − slow) at 0.21σ, well under the 0.47σ that summing their
-/// deviations suggests. It is tested against the noise estimate E|Δval| = 2σ/√π ≈ 1.13σ, so one
-/// unit of that is a 5.3σ bar on a 0.21σ quantity. A flat plateau stays quiet under it, and
-/// drift twenty times under the epoch wobble still trips it. Raw-value intuition suggests 2 or
-/// 3, which lands at 11σ here and never fires at all.
+/// Tested against the mean absolute epoch-to-epoch validation delta `E[|Δval|] = 2σ / √(π) ≈ 1.13σ`.
+/// Because `val_fast` and `val_slow` share inputs, their covariance reduces `sd(fast − slow)` to ≈ 0.21σ.
+/// A unit threshold provides a ~5.3σ barrier against random plateau oscillations while remaining
+/// sensitive to genuine drift.
 const TREND_NOISE_K: f64 = 1.0;
 
-/// Online 95th percentile estimation of gradient norms via SGD.
-///
-/// The estimation happens in log-space to ensure the threshold remains positive and
-/// tracks the order-of-magnitude changes in norms as the learning rate decays.
+/// Online 95th-percentile gradient norm estimator using log-space stochastic approximation.
 pub struct GradientStats {
     p95: f64,
     alpha: f64,
     count: usize,
 }
 
-/// Implemented by both `Entry` (raw EPD) and `SoulEntry` (encoded); the ablation
-/// tool is generic over it.
 pub trait TunableData: Sync + Send {
     fn eval(&self, values: &[f64]) -> f64;
     fn result(&self) -> f64;
 }
 
-/// WDL-blended training target, and its K-derivative.
+/// Computes the blended WDL training target.
 ///
-/// Near-zero search scores (low engine confidence) fall back to the game result;
-/// high-magnitude scores trust the eval fully. `wdl_blend >= 1.0` bypasses
-/// instance scaling for random-restart data: the target is pure `sigmoid(score)`.
-/// 400 cp is the empirical saturation point.
+/// Search scores near zero blend toward the empirical game outcome; high-magnitude scores
+/// saturate toward `sigmoid(score, k)`. When `wdl_blend >= 1.0`, instance-level score scaling
+/// is bypassed.
 ///
-/// The derivative is the target's own response to a K move, `instance_blend ·
-/// σ_e(1 − σ_e) · score`, zero when the target is the bare game result.
-/// The K gradient needs it once the loss is a function of a blended target.
+/// Returns `(target, d(target)/dk)`.
 pub fn wdl_target(record: &FeatureRecord, k: f64, wdl_blend: f64) -> (f64, f64) {
     const CONFIDENCE_THRESHOLD: f64 = 400.0;
 
-    if record.score == loader::SoulEntry::NO_SCORE {
+    if record.score == SoulEntry::NO_SCORE {
         return (f64::from(record.result) / 2.0, 0.0);
     }
 
     let score = f64::from(record.score);
     let instance_blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / CONFIDENCE_THRESHOLD).min(1.0) };
+
     let expected = sigmoid(score, k);
-    // result in {0,1,2} → normalize to [0.0, 1.0] for sigmoid target.
-    let target = (1.0 - instance_blend).mul_add(f64::from(record.result) / 2.0, instance_blend * expected);
-    let dt_dk = instance_blend * expected * (1.0 - expected) * score;
-    (target, dt_dk)
+    let outcome = f64::from(record.result) / 2.0;
+    let target = (1.0 - instance_blend).mul_add(outcome, instance_blend * expected);
+    let d_target_dk = instance_blend * expected * (1.0 - expected) * score;
+
+    (target, d_target_dk)
 }
 
-/// Overfitting detector: fit still improving while generalization degrades.
+/// Overfitting detector comparing fast and slow loss trajectories.
 ///
-/// Neither loss is compared to its own running minimum. A running minimum over a noisy series
-/// settles at the deepest trough it has seen and never recovers, so it sits below the true mean
-/// by roughly the noise amplitude and every ordinary epoch afterward reads as a regression
-/// against it. A trend carries no such bias, and it needs no special case at an LR restart:
-/// a restart lifts both losses at once, and divergence needs train falling. Clearing the
-/// trails there would only blind the detector for a slow span, so nothing clears them.
+/// Evaluates dual-EMA smoothed trends rather than running minima to avoid trough-selection
+/// bias on noisy series. Divergence triggers when training loss is trending down while
+/// validation loss is climbing beyond the estimated noise floor.
 #[derive(Default)]
 pub struct DivergenceMonitor {
     train_fast: f64,
@@ -92,14 +78,10 @@ pub struct DivergenceMonitor {
     seen: usize,
 }
 
-/// A run's best-so-far records, one per series.
+/// Checkpoint loss records selected via smoothed trails.
 ///
-/// Both select on a smoothed trail rather than the raw loss. A running minimum over a
-/// noisy series carries the bias described on [`DivergenceMonitor`], and here it decides
-/// which epoch's parameters get saved, so it would save whichever epoch the noise dug
-/// deepest. The training series gets no exemption: a fixed-magnitude sign step orbits a
-/// minimum rather than settling into it, so train loss stays as noisy as val until the
-/// schedule decays.
+/// Model selection tracks EMA-smoothed loss rather than raw per-epoch values to prevent
+/// overfitting to stochastic troughs in evaluation noise.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Progress {
     pub best_val_loss: f64,
@@ -117,35 +99,34 @@ pub struct Progress {
     pub plateau_count: usize,
 }
 
-/// The eval's own `PHASE`, in piece-type order.
+/// Returns game-phase weights per piece type in standard layout order.
 pub fn phase_weights() -> [f64; 6] {
     let params = eval_params::collect_parameters();
-    let woff = LAYOUT.phase_offset;
-    std::array::from_fn(|pt| params[woff + pt].value)
+    let offset = LAYOUT.phase_offset;
+    std::array::from_fn(|pt| params[offset + pt].value)
 }
 
-/// Game phase of a record, `0..=TOTAL_PHASE`. Fixed for the life of a run, since `PHASE`
-/// are constants rather than tunables.
-pub fn phase_of(rec: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
-    let raw: f64 = (0..6).map(|pt| f64::from(rec.phase_counts[pt]) * phase_w[pt]).sum();
+/// Computes the discrete game phase `[0..=TOTAL_PHASE]` for a position record.
+pub fn phase_of(record: &FeatureRecord, phase_w: &[f64; 6]) -> usize {
+    let raw: f64 = (0..6).map(|pt| f64::from(record.phase_counts[pt]) * phase_w[pt]).sum();
     raw.clamp(0.0, f64::from(TOTAL_PHASE)).trunc() as usize
 }
 
-/// Reweights toward `target` phase distribution, clamped to `[1/cap, cap]`.
-/// `None` is uniform: inverse bucket frequency, lifting sparse phases toward
-/// even representation. `Some(t)` is `target[phase] / observed[phase]`, toward
-/// the density `t`. Mean-1 keeps gradient scale equal to unweighted.
+/// Computes importance weights to balance sample density across game phases.
+///
+/// If `target` is `None`, reweights toward a uniform phase distribution (inverse frequency).
+/// Clamps raw weights to `[1/cap, cap]` and normalizes to mean 1.0.
 pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&[f64]>) -> Vec<f64> {
     let cap = cap.max(1.0);
     let phase_w = phase_weights();
 
     let mut hist = vec![0u64; TOTAL_PHASE as usize + 1];
-    for rec in records {
-        hist[phase_of(rec, &phase_w)] += 1;
+    for record in records {
+        hist[phase_of(record, &phase_w)] += 1;
     }
 
-    let used = hist.iter().filter(|&&c| c > 0).count().max(1);
-    let avg = records.len() as f64 / used as f64;
+    let active_bins = hist.iter().filter(|&&c| c > 0).count().max(1);
+    let avg_count = records.len() as f64 / active_bins as f64;
     let n = records.len() as f64;
     let target_sum: f64 = target.map_or(1.0, |t| t.iter().sum::<f64>().max(1e-12));
     let (lo, hi) = (1.0 / cap, cap);
@@ -153,14 +134,12 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
     let mut clamped = 0usize;
     let mut weights: Vec<f64> = records
         .iter()
-        .map(|rec| {
-            let p = phase_of(rec, &phase_w);
+        .map(|record| {
+            let p = phase_of(record, &phase_w);
+            // This record occupies its own bin, so `hist[p]` is at least one.
             let raw = match target {
-                None => avg / hist[p] as f64,
-                Some(t) => {
-                    let observed = hist[p] as f64 / n;
-                    if observed > 0.0 { (t.get(p).copied().unwrap_or(0.0) / target_sum) / observed } else { 0.0 }
-                },
+                None => avg_count / hist[p] as f64,
+                Some(t) => (t.get(p).copied().unwrap_or(0.0) / target_sum) / (hist[p] as f64 / n),
             };
 
             if raw < lo || raw > hi {
@@ -174,22 +153,21 @@ pub fn build_phase_weights(records: &[FeatureRecord], cap: f64, target: Option<&
     for w in &mut weights {
         *w /= mean;
     }
+
     report_phase_balance(&hist, &weights, cap, clamped);
     weights
 }
 
-/// Folds the loader's per-position weights into the phase ones, back to mean 1.
-///
-/// Either source can be empty, and both normalize the same way, so the gradient
-/// keeps the scale an unweighted run has whichever of them is on.
-pub fn merge_weights(phase: Vec<f64>, sample: &[f32]) -> Vec<f64> {
-    if sample.is_empty() {
-        return phase;
+/// Multiplies per-sample dataset weights into phase weights, normalizing the result to mean 1.0.
+pub fn merge_weights(phase_weights: Vec<f64>, sample_weights: &[f32]) -> Vec<f64> {
+    if sample_weights.is_empty() {
+        return phase_weights;
     }
 
-    let mut weights = if phase.is_empty() { vec![1.0; sample.len()] } else { phase };
-    for (w, s) in weights.iter_mut().zip(sample) {
-        *w *= f64::from(*s);
+    let mut weights = if phase_weights.is_empty() { vec![1.0; sample_weights.len()] } else { phase_weights };
+
+    for (w, &s) in weights.iter_mut().zip(sample_weights) {
+        *w *= f64::from(s);
     }
 
     let mean = weights.iter().sum::<f64>() / weights.len() as f64;
@@ -205,6 +183,10 @@ impl GradientStats {
     #[must_use]
     pub fn new(window: usize) -> Self { Self { p95: 1.0, alpha: 2.0 / (window as f64 + 1.0), count: 0 } }
 
+    /// Updates the quantile estimate with an observed gradient norm.
+    ///
+    /// Steps up by `0.95` when exceeding the estimate and down by `0.05` below it,
+    /// equilibrating at the 95th percentile (`0.05 · 0.95 + 0.95 · (−0.05) = 0`).
     pub fn update(&mut self, norm: f64) {
         if self.count == 0 {
             self.p95 = norm.max(1e-6);
@@ -212,16 +194,15 @@ impl GradientStats {
             return;
         }
         self.count += 1;
-        // Up by p over the estimate, down by (1 - p) under it, which balances where
-        // the estimate sits at the 95th percentile: 0.05 · 0.95 + 0.95 · -0.05 = 0.
+
         let step = if norm > self.p95 { 0.95 } else { -0.05 };
-        // The multiplicative step scales with the current magnitude, so nothing needs a
-        // floor at initialization or once the norms have decayed.
         self.p95 *= (self.alpha * step).exp();
     }
 
-    /// Falls back to `default` until 10 observations are collected:
-    /// estimating a distribution from fewer points is noise, not signal.
+    /// Returns the clipping threshold, falling back to `default` until sufficient samples accumulate.
+    ///
+    /// Floored at 0.1, since an estimate that decays toward zero would clip every later gradient
+    /// down to nothing.
     #[must_use]
     pub fn clip_threshold(&self, default: f64) -> f64 {
         if self.count < 10 {
@@ -232,7 +213,8 @@ impl GradientStats {
 }
 
 impl DivergenceMonitor {
-    /// Feeds one epoch, reporting whether the run is diverging.
+    /// Call once per epoch, or the trails advance at the wrong rate.
+    /// Returns `true` once they split.
     pub fn update(&mut self, train_loss: f64, val_loss: f64) -> bool {
         if self.seen == 0 {
             self.train_fast = train_loss;
@@ -246,9 +228,11 @@ impl DivergenceMonitor {
             self.val_slow += A_SLOW * (val_loss - self.val_slow);
             self.noise += A_SLOW * ((val_loss - self.prev_val).abs() - self.noise);
         }
+
         self.prev_val = val_loss;
         self.seen += 1;
-        self.seen > TREND_SLOW && self.train_fast < self.train_slow && self.val_fast - self.val_slow > TREND_NOISE_K * self.noise
+
+        self.seen > TREND_SLOW && self.train_fast < self.train_slow && (self.val_fast - self.val_slow) > TREND_NOISE_K * self.noise
     }
 }
 
@@ -269,6 +253,7 @@ impl Default for Progress {
 }
 
 impl Progress {
+    /// Updates smoothed training loss and records if a new minimum was reached.
     pub fn record_train(&mut self, epoch: usize, loss: f64) -> bool {
         self.train_smooth = smooth(self.train_smooth, loss);
         if self.train_smooth >= self.best_train_smooth {
@@ -280,8 +265,7 @@ impl Progress {
         true
     }
 
-    /// Reports whether this epoch set a validation record, clearing the plateau
-    /// counter if it did and advancing it otherwise.
+    /// Updates smoothed validation loss and plateau counter, returning `true` on a new record.
     pub fn record_val(&mut self, epoch: usize, loss: f64) -> bool {
         self.val_smooth = smooth(self.val_smooth, loss);
         if self.val_smooth >= self.best_val_smooth {
@@ -296,9 +280,7 @@ impl Progress {
     }
 }
 
-impl TunableData for loader::SoulEntry {
-    /// Evaluation via FEN round-trip: valid but slow.
-    /// Production code uses `eval_record` with a packed `FeatureRecord`.
+impl TunableData for SoulEntry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.to_board(), values) }
 
@@ -306,28 +288,22 @@ impl TunableData for loader::SoulEntry {
     fn result(&self) -> f64 { f64::from(self.result) / 2.0 }
 }
 
-impl TunableData for loader::EpdEntry {
+impl TunableData for EpdEntry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.board, values) }
 
     #[inline]
-    fn result(&self) -> f64 {
-        // EPD gives the result White-relative.
-        flip_wdl(self.result, self.board.stm)
-    }
+    fn result(&self) -> f64 { flip_wdl(self.result, self.board.stm) }
 }
 
-/// A non-finite trail is the unseeded state, which is what `unset_smooth` writes.
+/// Applies an EMA step, initializing directly to `loss` if the trail is unseeded (`NaN`).
 fn smooth(trail: f64, loss: f64) -> f64 { if trail.is_finite() { A_FAST.mul_add(loss - trail, trail) } else { loss } }
 
-/// A checkpoint written before smoothed selection carries no trail; it re-seeds from the
-/// first epoch after resume.
 fn unset_smooth() -> f64 { f64::NAN }
-/// Serde's own f64 default would be 0.0, a record no smoothed loss can ever beat, which
-/// would freeze the matching best-params vector at whatever the checkpoint happened to hold.
+
 fn unset_best() -> f64 { f64::MAX }
-/// JSON has no NaN, so an unseeded trail is written as `null`, and `default` covers only a key
-/// that is absent. Without this a run with no holdout cannot resume its own checkpoint.
+
+/// Deserializes JSON `null` as `f64::NAN` to represent uninitialized EMA trails.
 fn unset_if_null<'de, D: Deserializer<'de>>(de: D) -> Result<f64, D::Error> {
     Ok(Option::<f64>::deserialize(de)?.unwrap_or_else(unset_smooth))
 }
@@ -336,7 +312,6 @@ fn unset_if_null<'de, D: Deserializer<'de>>(de: D) -> Result<f64, D::Error> {
 mod tests {
     use super::*;
 
-    /// Deterministic stand-in for epoch noise, so the assertions below cannot flake.
     fn wobble(i: usize, amp: f64) -> f64 {
         let x = (i as f64 * 12.9898).sin() * 43_758.545_312;
         (x - x.floor()).mul_add(2.0, -1.0) * amp
@@ -344,8 +319,6 @@ mod tests {
 
     #[test]
     fn divergence_quiet_on_a_noisy_plateau() {
-        // Both losses flat with val wobbling 20e-6 an epoch: the shape a running-minimum
-        // comparison flags on roughly every other epoch.
         let mut d = DivergenceMonitor::default();
         let mut fired = 0;
         for e in 0..600 {
@@ -355,12 +328,11 @@ mod tests {
                 fired += 1;
             }
         }
-        assert_eq!(fired, 0, "flat plateau must not read as divergence");
+        assert_eq!(fired, 0, "flat plateau must not trigger divergence");
     }
 
     #[test]
     fn divergence_fires_on_a_real_split() {
-        // Train descending, val climbing, both under the same noise as the plateau case.
         let mut d = DivergenceMonitor::default();
         let mut fired = 0;
         for e in 0..600 {
@@ -376,8 +348,6 @@ mod tests {
 
     #[test]
     fn divergence_stays_quiet_through_a_restart() {
-        // Nothing clears the trails at an LR restart, so this test carries the whole guarantee:
-        // neither the jump nor the recovery that follows it may read as divergence.
         let mut d = DivergenceMonitor::default();
         for e in 0..200 {
             d.update(0.4041 + wobble(e, 4e-6), 0.4053 + wobble(e + 977, 20e-6));
@@ -390,17 +360,16 @@ mod tests {
                 fired += 1;
             }
         }
-        assert_eq!(fired, 0, "a restart cycle must not read as divergence");
+        assert_eq!(fired, 0, "learning rate restart must not trigger divergence");
     }
 
     #[test]
     fn divergence_warms_up_before_reporting() {
         let mut d = DivergenceMonitor::default();
-        // Maximally divergent input, so warmup is the only thing holding the flag down.
         for e in 0..TREND_SLOW {
             let t = e as f64;
-            assert!(!d.update(0.5 - t * 1e-3, 0.5 + t * 1e-3), "reported at epoch {e}, inside the warmup span");
+            assert!(!d.update(0.5 - t * 1e-3, 0.5 + t * 1e-3), "reported at epoch {e}, inside warmup span");
         }
-        assert!(d.update(0.5 - 0.04, 0.5 + 0.04), "must report once the slow span has filled");
+        assert!(d.update(0.5 - 0.04, 0.5 + 0.04), "must report once warmup period completes");
     }
 }

@@ -1,30 +1,29 @@
+//! Learning rate and WDL-blend schedules, and the combinators that compose them.
+//!
+//! A schedule maps the epoch onto a rate. The TOML config names one directly;
+//! [`Warmup`] and [`Sequence`] wrap one from code alone.
+
 use std::f64::consts::PI;
 
-/// Learning rate scheduler trait.
 pub trait LrScheduler: Send + Sync {
-    /// Compute learning rate for the given epoch.
-    /// * `epoch` - Current epoch (1-indexed)
-    /// * `total` - Total number of epochs
+    /// Learning rate for `epoch`, which is 1-indexed and runs to `total`.
     #[must_use]
     fn rate(&self, epoch: usize, total: usize) -> f64;
-
-    /// String description for logging.
     fn describe(&self) -> String;
 
-    /// Wrap this scheduler with linear warmup over the first N epochs.
+    /// Wrap this scheduler with linear warmup over the first `epochs` epochs.
     fn with_warmup(self, epochs: usize) -> Warmup<Self>
     where Self: Sized {
         Warmup { inner: self, warmup_epochs: epochs }
     }
 
-    /// Chain another scheduler after this one.
+    /// Chain `other` after this one, from `switch_epoch` on.
     fn then<S: LrScheduler>(self, other: S, switch_epoch: usize) -> Sequence<Self, S>
     where Self: Sized {
         Sequence { first: self, second: other, switch_epoch }
     }
 }
 
-/// Fixed learning rate throughout training.
 #[derive(Clone, Copy, Debug)]
 pub struct Constant {
     pub value: f64,
@@ -38,11 +37,9 @@ impl Constant {
 impl LrScheduler for Constant {
     #[inline]
     fn rate(&self, _epoch: usize, _total: usize) -> f64 { self.value }
-
     fn describe(&self) -> String { format!("Constant ({})", self.value) }
 }
 
-/// Linear interpolation from start to end over training.
 #[derive(Clone, Copy, Debug)]
 pub struct Linear {
     pub start: f64,
@@ -79,7 +76,6 @@ impl Exponential {
 impl LrScheduler for Exponential {
     #[inline]
     fn rate(&self, epoch: usize, _total: usize) -> f64 { self.start * self.gamma.powi((epoch - 1) as i32) }
-
     fn describe(&self) -> String { format!("Exponential ({} × {}^n)", self.start, self.gamma) }
 }
 
@@ -234,11 +230,9 @@ impl LrScheduler for StableDecay {
     }
 }
 
-/// Linear warmup wrapper: scales inner scheduler from 0 to 1 over first N epochs.
+/// Linear warmup wrapper: scales the inner scheduler from 0 to 1 over the first N epochs.
 ///
-/// This is a code-level combinator: use `.with_warmup()` on any [`LrScheduler`].
-/// It is not directly selectable from the TOML config (use the `warmup_ratio` field
-/// on `Cosine` or `WarmupStableDecay` instead).
+/// The config-reachable form is the `warmup_ratio` field on `Cosine` or `WarmupStableDecay`.
 #[derive(Clone, Debug)]
 pub struct Warmup<S> {
     pub inner: S,
@@ -248,17 +242,14 @@ pub struct Warmup<S> {
 impl<S: LrScheduler> LrScheduler for Warmup<S> {
     #[inline]
     fn rate(&self, epoch: usize, total: usize) -> f64 {
-        let inner_lr = self.inner.rate(epoch, total);
-        if epoch <= self.warmup_epochs { inner_lr * (epoch as f64 / self.warmup_epochs as f64) } else { inner_lr }
+        let base_rate = self.inner.rate(epoch, total);
+        if epoch <= self.warmup_epochs { base_rate * (epoch as f64 / self.warmup_epochs as f64) } else { base_rate }
     }
 
     fn describe(&self) -> String { format!("Warmup ({} epochs, {})", self.warmup_epochs, self.inner.describe()) }
 }
 
-/// Sequence two schedulers: use `first` until `switch_epoch`, then `second`.
-///
-/// This is a code-level combinator: use `.then()` on any [`LrScheduler`].
-/// It is not directly selectable from the TOML config.
+/// Sequence two schedulers: `first` until `switch_epoch`, then `second`.
 #[derive(Clone, Debug)]
 pub struct Sequence<A, B> {
     pub first: A,
@@ -288,7 +279,6 @@ pub trait WdlScheduler: Send + Sync {
     fn describe(&self) -> String;
 }
 
-/// Constant WDL blend.
 #[derive(Clone, Copy, Debug)]
 pub struct ConstantWdl {
     pub value: f64,
@@ -305,7 +295,6 @@ impl WdlScheduler for ConstantWdl {
     fn describe(&self) -> String { format!("ConstantWDL ({})", self.value) }
 }
 
-/// Linear WDL blend from start to end.
 #[derive(Clone, Copy, Debug)]
 pub struct LinearWdl {
     pub start: f64,
@@ -327,7 +316,6 @@ impl WdlScheduler for LinearWdl {
     fn describe(&self) -> String { format!("LinearWDL ({} → {})", self.start, self.end) }
 }
 
-/// Cosine WDL blend from start to end.
 #[derive(Clone, Copy, Debug)]
 pub struct CosineWdl {
     pub start: f64,
@@ -366,7 +354,6 @@ impl WdlScheduler for StableDecayWdl {
     #[inline]
     fn blend(&self, epoch: usize, total: usize) -> f64 {
         let stable_epochs = (total as f64 * self.stable_ratio).round() as usize;
-
         if epoch <= stable_epochs {
             self.start
         } else {
@@ -419,7 +406,7 @@ mod tests {
     #[test]
     fn cosine_with_cycles() {
         let s = CosineAnnealing::new(1.0, 0.0).cycles(2);
-        assert!(s.rate(51, 100) > 0.8, "Second cycle should restart at high LR");
+        assert!(s.rate(51, 100) > 0.8, "cycle 2 must restart at peak learning rate");
     }
 
     #[test]
@@ -434,10 +421,10 @@ mod tests {
     #[test]
     fn warmup_combinator() {
         let s = Constant::new(1.0).with_warmup(10);
-        assert!((s.rate(1, 100) - 0.1).abs() < 1e-10); // 1/10 of full
-        assert!((s.rate(5, 100) - 0.5).abs() < 1e-10); // 5/10 of full
-        assert!((s.rate(10, 100) - 1.0).abs() < 1e-10); // Full rate
-        assert!((s.rate(11, 100) - 1.0).abs() < 1e-10); // Post-warmup
+        assert!((s.rate(1, 100) - 0.1).abs() < 1e-10);
+        assert!((s.rate(5, 100) - 0.5).abs() < 1e-10);
+        assert!((s.rate(10, 100) - 1.0).abs() < 1e-10);
+        assert!((s.rate(11, 100) - 1.0).abs() < 1e-10);
     }
 
     #[test]
@@ -446,6 +433,25 @@ mod tests {
         assert!((s.rate(1, 100) - 1.0).abs() < 1e-10);
         assert!((s.rate(50, 100) - 1.0).abs() < 1e-10);
         assert!((s.rate(51, 100) - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn stable_decay_phase_boundaries() {
+        let s = StableDecay::new(0.03, 0.0001, 0.75);
+        assert!((s.rate(1, 100) - 0.03).abs() < 1e-10);
+        assert!((s.rate(75, 100) - 0.03).abs() < 1e-10, "last stable epoch must still sit at base");
+        assert!(s.rate(76, 100) < 0.03, "decay must begin the epoch after");
+        assert!((s.rate(100, 100) - 0.0001).abs() < 1e-10, "final epoch must land on min");
+    }
+
+    #[test]
+    fn warmup_stable_decay_phase_boundaries() {
+        let s = WarmupStableDecay::new(1.0, 0.0, 0.1, 0.4);
+        assert!(s.rate(1, 100) < 1.0, "warmup must start below base");
+        assert!((s.rate(10, 100) - 1.0).abs() < 1e-10, "warmup must reach base at its last epoch");
+        assert!((s.rate(50, 100) - 1.0).abs() < 1e-10, "stable phase must hold base to its last epoch");
+        assert!(s.rate(51, 100) < 1.0, "decay must begin the epoch after");
+        assert!((s.rate(100, 100) - 0.0).abs() < 1e-10, "final epoch must land on min");
     }
 
     #[test]

@@ -6,8 +6,9 @@
 //! the sigmoid's centipawn→winrate scale; `k_ref` stays frozen so the reference loss
 //! is comparable across runs.
 //!
-//! Targeted best-loss captures track the validation split; separate records
-//! let you inspect both the best-validating and best-training parameters.
+//! The split is cut on whole games, so a held-out ply cannot sit one move from its
+//! own siblings in train. Best-loss captures track validation and training separately,
+//! so both parameter vectors are there to inspect.
 
 use std::{
     fs,
@@ -20,14 +21,18 @@ use palette::{BRAND, CLEAR_LINE, DIM, LAB, RESET, VAL};
 use rayon::prelude::*;
 
 use crate::{
+    alarm,
     config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
-    engine::{Color, FeatureRecord, LAYOUT, Tunable, color, eval_params},
-    groups::{GROUP_NAMES, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
-    lion::{GateCensus, Lion, build_beta2_mask},
-    loader::{self, ReplayFilter, dataset_fingerprint, flip_wdl, resolve_dataset_paths},
+    engine::{
+        Color, FeatureRecord, LAYOUT, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record,
+        eval_record_full, flip_wdl,
+    },
+    groups::{GROUP_NAMES, build_beta2_mask, build_clip_mask, build_decay_mask, build_lr_mask, group_ranges},
+    lion::{GateCensus, Lion},
+    loader::{dataset_fingerprint, load_datasets, resolve_dataset_paths},
     logger::JsonLogger,
     palette,
-    probes::{curvature_report, gather_cost, val_cost},
+    probes::{batch_size_report, curvature_report, gather_cost, momentum_report, val_cost},
     report::*,
     scale::{GAUGE_PROBE, Gauge, KController, canonicalize},
     shuffle::Shuffler,
@@ -39,9 +44,12 @@ use crate::{
 /// same positions. The value is arbitrary and permanent: changing it renumbers every
 /// `best_val_loss` ever recorded on every dataset.
 const VAL_SPLIT_SEED: u64 = 0x5350_4C49_5432_3736;
+
 /// Positions a K fit reads when the run holds nothing out. Bounded because the golden search
-/// reads it some thirty times; a prefix is a fair draw because the split is shuffled before it is cut.
+/// reads it some thirty times; a prefix is a fair draw because the split is shuffled before it
+/// is cut.
 const K_FIT_PROBE: usize = 65_536;
+
 /// Names the directory a run writes its checkpoint and reports into. Set by a parent process
 /// that spawns trials, so a sweep cannot overwrite the artifacts of the run that launched it.
 pub const ARTIFACT_DIR: &str = "EVALTUNE_ARTIFACT_DIR";
@@ -49,7 +57,7 @@ pub const ARTIFACT_DIR: &str = "EVALTUNE_ARTIFACT_DIR";
 /// What a loaded dataset is for.
 ///
 /// Both arms want every step up to `TrainerContext`, feature extraction included, so the choice
-/// rides through the loader rather than growing a second copy of it.
+/// travels through the loader rather than growing a second copy of it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Task {
     Train,
@@ -63,6 +71,12 @@ pub enum Task {
     /// Time one fused validation traversal against the two separate ones it replaced, in a
     /// single process, since the val column's run-to-run spread swallows the difference.
     ValCost,
+    /// What one step needs: the batch size past which averaging stops buying signal, and how
+    /// much of a batch that size points the wrong way. From one large draw, not a run sweep.
+    BatchSize,
+    /// What the step direction should remember: the β₂ balancing momentum's variance against the
+    /// staleness of the gradients it still holds.
+    Momentum,
 }
 
 pub struct TrainerContext<'a> {
@@ -77,23 +91,27 @@ pub struct TrainerContext<'a> {
 
 impl TrainerContext<'_> {
     /// The configured loss, for probes that read its Hessian.
-    pub fn loss_fn(&self) -> LossFn { self.loss_fn }
+    #[inline]
+    #[must_use]
+    pub const fn loss_fn(&self) -> LossFn { self.loss_fn }
 
     pub fn passes_vol_filter(&self, record: &FeatureRecord) -> bool {
-        if self.vol_threshold == 0 || record.score == loader::SoulEntry::NO_SCORE {
+        if self.vol_threshold == 0 || record.score == SoulEntry::NO_SCORE {
             return true;
         }
+
         // Piece count scales the threshold, so complex positions get the wider net.
-        // The floor is the guard: a negative threshold makes `|static - score| <= t`
+        // The floor is the guard: a negative threshold makes |static - score| <= t
         // impossible and silently drops every position.
-        let t = if self.vol_adaptive {
+        let threshold = if self.vol_adaptive {
             let occ = i16::from(record.piece_count);
             self.vol_threshold.saturating_add((occ - 10).saturating_mul(2))
         } else {
             self.vol_threshold
         }
         .max(0);
-        (i32::from(record.static_eval) - i32::from(record.score)).abs() <= t as i32
+
+        (i32::from(record.static_eval) - i32::from(record.score)).abs() <= threshold as i32
     }
 
     pub fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
@@ -101,34 +119,37 @@ impl TrainerContext<'_> {
             .par_chunks(256)
             .fold(
                 || (vec![0.0; values.len()], 0.0f64, 0.0f64, 0usize),
-                |(mut g, mut k_g, mut loss, mut count), chunk| {
-                    for &i in chunk {
-                        let i = i as usize;
+                |(mut grad_acc, mut k_grad_acc, mut loss_acc, mut count), chunk| {
+                    for &idx in chunk {
+                        let i = idx as usize;
                         let record = &self.train[i];
                         if !self.passes_vol_filter(record) {
                             continue;
                         }
+
                         let (target, dt_dk) = wdl_target(record, k, blend);
-                        let eval = loader::eval_record_full(record, values);
-                        let sig = sigmoid(eval.score, k);
+                        let eval = eval_record_full(record, values);
+                        let p = sigmoid(eval.score, k);
                         let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
-                        let gs = self.loss_fn.grad_scale(sig, target, k);
-                        loss += w * self.loss_fn.loss(sig, target);
-                        loader::accumulate_record_grad(record, &eval, gs * w, &mut g);
-                        // ∂L/∂K = (gs / K) · score + ∂L/∂target · dt/dK.
-                        // The first term scales the eval's own sigmoid; the second
-                        // is the WDL target moving with K, and it vanishes when the
-                        // blend is off or the target is the bare game result.
-                        k_g += ((gs / k) * eval.score + self.loss_fn.grad_target(sig, target) * dt_dk) * w;
+                        let gs = self.loss_fn.grad_scale(p, target, k);
+
+                        loss_acc += w * self.loss_fn.loss(p, target);
+                        accumulate_record_grad(record, &eval, gs * w, &mut grad_acc);
+
+                        // ∂L/∂K = (gs / K) · score + ∂L/∂target · dt/dK. The first term scales
+                        // the eval's own sigmoid; the second is the WDL target moving with K,
+                        // and it vanishes when the blend is off or the target is the bare
+                        // game result.
+                        k_grad_acc += ((gs / k) * eval.score + self.loss_fn.grad_target(p, target) * dt_dk) * w;
                         count += 1;
                     }
-                    (g, k_g, loss, count)
+                    (grad_acc, k_grad_acc, loss_acc, count)
                 },
             )
             .reduce(
                 || (vec![0.0; values.len()], 0.0f64, 0.0f64, 0usize),
                 |(g1, kg1, l1, c1), (g2, kg2, l2, c2)| {
-                    let (g, l) = grad_combine((g1, l1), (g2, l2));
+                    let (g, l) = combine_grads((g1, l1), (g2, l2));
                     (g, kg1 + kg2, l, c1 + c2)
                 },
             )
@@ -136,8 +157,8 @@ impl TrainerContext<'_> {
 
     /// Validation loss at each `(k, blend)` probe, over one pass of the split.
     ///
-    /// The eval is the whole cost of that pass and depends on neither, so a second probe rides
-    /// along for a sigmoid and a target more. The epoch report wants two, its live loss and the
+    /// The eval is the whole cost of that pass and depends on neither, so a second probe costs
+    /// a sigmoid and a target more. The epoch report wants two, its live loss and the
     /// frozen-`k_ref` reference; the K search wants one per probe.
     pub fn val_eval<const N: usize>(&self, values: &[f64], probes: [(f64, f64); N]) -> [f64; N] {
         self.split_eval(self.val, self.train_count, values, probes)
@@ -145,7 +166,7 @@ impl TrainerContext<'_> {
 
     /// Loss at one probe over whichever split a K fit can read: the holdout, or a bounded prefix
     /// of the training set for a run without one, since an empty split reports a flat zero and a
-    /// flat loss walks the golden search onto `k_max`.
+    /// flat loss pushes the golden search onto `k_max`.
     pub fn k_fit_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
         if self.val.is_empty() {
             let probe = &self.train[..self.train.len().min(K_FIT_PROBE)];
@@ -162,37 +183,39 @@ impl TrainerContext<'_> {
         values: &[f64],
         probes: [(f64, f64); N],
     ) -> [f64; N] {
-        let (wsum, weight) = records
+        let (weighted_loss_sums, total_weight) = records
             .par_iter()
             .enumerate()
             .fold(
                 || ([0.0_f64; N], 0.0_f64),
-                |(mut wsum, mut weight), (idx, record)| {
+                |(mut sums, mut weight_acc), (idx, record)| {
                     if !self.passes_vol_filter(record) {
-                        return (wsum, weight);
+                        return (sums, weight_acc);
                     }
 
-                    let score = loader::eval_record(record, values);
+                    let score = eval_record(record, values);
                     let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[offset + idx] };
-                    for (sum, &(k, blend)) in wsum.iter_mut().zip(&probes) {
-                        let sig = sigmoid(score, k);
+
+                    for (sum, &(k, blend)) in sums.iter_mut().zip(&probes) {
+                        let p = sigmoid(score, k);
                         let (target, _) = wdl_target(record, k, blend);
-                        *sum += w * self.loss_fn.loss(sig, target);
+                        *sum += w * self.loss_fn.loss(p, target);
                     }
-                    weight += w;
-                    (wsum, weight)
+                    weight_acc += w;
+                    (sums, weight_acc)
                 },
             )
             .reduce(
                 || ([0.0_f64; N], 0.0_f64),
-                |(mut sums, w1), (rhs, w2)| {
-                    for (sum, add) in sums.iter_mut().zip(&rhs) {
-                        *sum += add;
+                |(mut sums1, w1), (sums2, w2)| {
+                    for (s1, s2) in sums1.iter_mut().zip(&sums2) {
+                        *s1 += s2;
                     }
-                    (sums, w1 + w2)
+                    (sums1, w1 + w2)
                 },
             );
-        if weight > 0.0 { wsum.map(|sum| sum / weight) } else { [0.0; N] }
+
+        if total_weight > 0.0 { weighted_loss_sums.map(|sum| sum / total_weight) } else { [0.0; N] }
     }
 }
 
@@ -237,16 +260,17 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    #[inline]
     #[must_use]
-    pub fn trained(&self) -> bool { !matches!(self, Self::NotTrained) }
+    pub const fn trained(&self) -> bool { !matches!(self, Self::NotTrained) }
 }
 
 /// Trains on `dataset_path`, or on the dataset the `resume_path` checkpoint names.
 pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> Outcome {
     let total_start = Instant::now();
-    let effective_dataset: String = match (dataset_path, resume_path) {
-        (Some(p), _) => p.to_string(),
-        (None, Some(rp)) => peek_checkpoint(rp)
+    let effective_dataset = match (dataset_path, resume_path) {
+        (Some(path), _) => path.to_string(),
+        (None, Some(checkpoint)) => peek_checkpoint(checkpoint)
             .ok()
             .map(|cp| cp.dataset_path)
             .filter(|s| !s.is_empty())
@@ -254,33 +278,27 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
         (None, None) => "default".to_string(),
     };
 
-    let paths = resolve_dataset_paths(&effective_dataset);
-    let Some(paths) = paths else {
-        eprintln!(
-            "{}[!] Error: No dataset found. Use --dataset <path> or place .soul.zst files in data/.{RESET}",
-            palette::ALARM,
-        );
+    let Some(paths) = resolve_dataset_paths(&effective_dataset) else {
+        alarm!("Error: No dataset found. Use --dataset <path> or place .vf files in data/.");
         return Outcome::NotTrained;
     };
 
     let filter = replay_filter(config);
-    let replays = paths.iter().any(|p| p.ends_with(".vf") || p.ends_with(".viri"));
-    if replays && config.replay_filter.is_none() {
-        eprintln!(
-            "{}[!] No replay_filter named: every replayed position trains, tactical and in-check ones included.{RESET}",
-            palette::ALARM,
-        );
+    let is_replay_dataset = paths.iter().any(|p| p.ends_with(".vf") || p.ends_with(".viri"));
+    if is_replay_dataset && config.replay_filter.is_none() {
+        alarm!("No replay_filter named: every replayed position trains, tactical and in-check ones included.");
     }
 
-    let (all_entries, sample_weights, groups) = loader::load_datasets(&paths, &filter);
+    let (all_entries, sample_weights, groups) = load_datasets(&paths, &filter);
     if all_entries.is_empty() {
         eprintln!("Error: No positions loaded.");
         return Outcome::NotTrained;
     }
 
     let dataset_label = paths.join(", ");
-    let keep = epoch_keep_fraction(config, &filter, replays);
-    let outcome = train_entries(all_entries, sample_weights, groups, &dataset_label, config, resume_path, task, keep);
+    let keep_fraction = epoch_keep_fraction(config, &filter, is_replay_dataset);
+    let outcome = train_entries(all_entries, sample_weights, groups, &dataset_label, config, resume_path, task, keep_fraction);
+
     let elapsed = total_start.elapsed().as_secs_f32();
     println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
     outcome
@@ -289,13 +307,13 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 /// Permutes whole groups, so a game leaves for the holdout entire, and returns the group sizes in
 /// their new order.
 ///
-/// The weights ride the same permutation, so a position keeps the weight computed for it.
+/// The weights take the same permutation, so a position keeps the weight computed for it.
 fn shuffle_groups(
-    mut entries: Vec<loader::SoulEntry>,
+    mut entries: Vec<SoulEntry>,
     mut weights: Vec<f32>,
     groups: &[u32],
     seed: u64,
-) -> (Vec<loader::SoulEntry>, Vec<f32>, Vec<u32>) {
+) -> (Vec<SoulEntry>, Vec<f32>, Vec<u32>) {
     // One group per position means nothing here records games, so the entries shuffle directly and
     // such a set keeps the holdout its earlier runs measured against.
     if groups.len() == entries.len() {
@@ -310,25 +328,27 @@ fn shuffle_groups(
         starts.push(offset);
         offset += size as usize;
     }
-
     debug_assert_eq!(offset, entries.len(), "the loader left positions outside every group");
 
     let mut order: Vec<u32> = (0..groups.len() as u32).collect();
     fastrand::Rng::with_seed(seed).shuffle(&mut order);
-    let mut shuffled = Vec::with_capacity(entries.len());
-    let mut shuffled_weights = Vec::with_capacity(weights.len());
-    let mut sizes = Vec::with_capacity(groups.len());
-    for &group in &order {
-        let start = starts[group as usize];
-        let size = groups[group as usize] as usize;
 
-        shuffled.extend_from_slice(&entries[start..start + size]);
+    let mut shuffled_entries = Vec::with_capacity(entries.len());
+    let mut shuffled_weights = Vec::with_capacity(weights.len());
+    let mut shuffled_sizes = Vec::with_capacity(groups.len());
+
+    for &group_idx in &order {
+        let start = starts[group_idx as usize];
+        let size = groups[group_idx as usize] as usize;
+
+        shuffled_entries.extend_from_slice(&entries[start..start + size]);
         if !weights.is_empty() {
             shuffled_weights.extend_from_slice(&weights[start..start + size]);
         }
-        sizes.push(size as u32);
+        shuffled_sizes.push(size as u32);
     }
-    (shuffled, shuffled_weights, sizes)
+
+    (shuffled_entries, shuffled_weights, shuffled_sizes)
 }
 
 /// Holdout positions and the groups they came from, taking whole groups off the tail.
@@ -362,11 +382,11 @@ fn holdout(sizes: &[u32], total: usize, target: usize) -> (usize, usize) {
 /// The filter's drop chance is a statement about a replay, so it reaches only a
 /// dataset that came from one; `epoch_sample` is the general knob and wins
 /// wherever it is set.
-fn epoch_keep_fraction(config: &EvalTuneConfig, filter: &ReplayFilter, replays: bool) -> f64 {
+fn epoch_keep_fraction(config: &EvalTuneConfig, filter: &ReplayFilter, is_replay_dataset: bool) -> f64 {
     if let Some(sample) = config.epoch_sample {
         return sample.clamp(0.0, 1.0);
     }
-    if replays && filter.random_fen_skipping {
+    if is_replay_dataset && filter.random_fen_skipping {
         1.0 - filter.random_fen_skip_probability.clamp(0.0, 1.0)
     } else {
         1.0
@@ -390,11 +410,11 @@ pub fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
         return ReplayFilter::UNRESTRICTED;
     };
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("{}[!] Cannot read replay filter {path}: {e}{RESET}", palette::ALARM);
+        alarm!("Cannot read replay filter {path}: {e}");
         std::process::exit(1);
     });
     let filter: ReplayFilter = toml::from_str(&text).unwrap_or_else(|e| {
-        eprintln!("{}[!] Cannot parse replay filter {path}: {e}{RESET}", palette::ALARM);
+        alarm!("Cannot parse replay filter {path}: {e}");
         std::process::exit(1);
     });
     println!("Replay filter: {path}");
@@ -402,7 +422,7 @@ pub fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
 }
 
 fn train_entries(
-    entries: Vec<loader::SoulEntry>,
+    entries: Vec<SoulEntry>,
     sample_weights: Vec<f32>,
     groups: Vec<u32>,
     dataset_label: &str,
@@ -419,18 +439,17 @@ fn train_entries(
                 eprintln!("Failed to read checkpoint: {e}");
                 std::process::exit(1);
             });
-            if let Some(s) = config.seed
-                && s != cp.rng_seed
+            if let Some(seed) = config.seed
+                && seed != cp.rng_seed
             {
-                println!("--seed {s} ignored: resume reuses the checkpoint's batch-order seed {}", cp.rng_seed);
+                println!("--seed {seed} ignored: resume reuses checkpoint batch-order seed {}", cp.rng_seed);
             }
             // The split seed replays its shuffle only over the same entries.
             if cp.dataset != dataset_fnv {
-                eprintln!(
-                    "{}[!] Warning: dataset does not match the checkpoint's fingerprint.\n\
+                alarm!(
+                    "Warning: dataset does not match the checkpoint's fingerprint.\n\
                      [!] The train/val split will differ from the original run: positions the\n\
-                     [!] checkpoint trained on may now sit in val, making its loss optimistic.{RESET}",
-                    palette::ALARM,
+                     [!] checkpoint trained on may now sit in val, making its loss optimistic."
                 );
             }
             (cp.rng_seed, cp.split_seed.unwrap_or(cp.rng_seed))
@@ -443,50 +462,48 @@ fn train_entries(
     // tenth and no two validation losses compare.
     let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &groups, split_seed);
     let total = entries.len();
+
     // One-time cost: training reads FeatureRecords straight through.
     println!("Extracting features ({} entries)...", entries.len());
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
+
     let target = (entries.len() / 10).min(config.val_max.unwrap_or(usize::MAX));
     let (mut val_count, val_groups) = holdout(&sizes, entries.len(), target);
     if val_groups < val_count {
-        println!("Holding out {val_groups} whole games, {val_count} positions");
+        println!("Holding out {val_groups} whole games ({val_count} positions)");
     }
 
     // A file of one game has none to spare, and an empty holdout is worse than a contaminated one:
-    // `val_eval` averages nothing, reports zero, and `best_val` never improves on it again. The
+    // val_eval averages nothing, reports zero, and best_val never improves on it again. The
     // position cut is the honest fallback, since it says what it costs.
     if val_count == 0 && target > 0 {
-        eprintln!(
-            "{}[!] No game can leave without taking the file with it. Falling back to a position cut,\n\
-             [!] so train and validation will share games and L_val will read low.{RESET}",
-            palette::ALARM,
+        alarm!(
+            "No game can leave without taking the file with it. Falling back to a position cut,\n\
+             [!] so train and validation will share games and L_val will read low."
         );
         val_count = target;
     }
     if val_count == 0 {
-        eprintln!(
-            "{}[!] No validation split: {} positions cannot spare a tenth (or val_max = 0 requested none).\n\
+        alarm!(
+            "No validation split: {} positions cannot spare a tenth (or val_max = 0 requested none).\n\
              [!] The run trains and reports train loss only; nothing will rank its outcome,\n\
-             [!] and K is fitted on a sample of the positions it trains on.{RESET}",
-            palette::ALARM,
+             [!] and K is fitted on a sample of the positions it trains on.",
             entries.len(),
         );
     }
+
     let train_count = total - val_count;
     // A file with a handful of long games cannot spare a tenth of itself without spending most of
-    // its independent samples, so the split keeps them and says so: `L_val` is then an estimate
-    // over that many games, and `best_val` selection is choosing on it.
+    // its independent samples, so the split keeps them and says so: L_val is then an estimate
+    // over that many games, and best_val selection is choosing on it.
     if val_count * 2 < target {
-        eprintln!(
-            "{}[!] The holdout came to {val_count} positions against a target of {target}: too few games to cut a tenth.{RESET}",
-            palette::ALARM,
-        );
+        alarm!("The holdout came to {val_count} positions against a target of {target}: too few games to cut a tenth.");
     }
 
-    // Stats need the side to move, which the record does not carry. The epoch needs
+    // Stats need the side to move, which the record does not hold. The epoch needs
     // only score and result, and the record has both.
     let (entry_train, entry_val) = entries.split_at(train_count);
-    print_dataset_stats(entry_train, entry_val, total, |e: &loader::SoulEntry| {
+    print_dataset_stats(entry_train, entry_val, total, |e: &SoulEntry| {
         let stm = if (e.stm_and_ep & 0x80) == 0 { Color::White } else { Color::Black };
         flip_wdl(f64::from(e.result) / 2.0, stm)
     });
@@ -525,8 +542,17 @@ fn train_entries(
             val_cost(&ctx, config);
             return Outcome::NotTrained;
         },
+        Task::BatchSize => {
+            batch_size_report(&ctx, config);
+            return Outcome::NotTrained;
+        },
+        Task::Momentum => {
+            momentum_report(&ctx, config);
+            return Outcome::NotTrained;
+        },
         Task::Train => {},
     }
+
     let seeds = Seeds { rng_seed, split_seed };
     train_loop(train.len(), epoch_keep, "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
 }
@@ -540,7 +566,7 @@ fn paint_head(text: &str) -> String {
     }
 }
 
-fn grad_combine((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
+fn combine_grads((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
     for (a, b) in g1.iter_mut().zip(g2) {
         *a += b;
     }
@@ -563,6 +589,7 @@ fn train_loop(
     let has_val = !ctx.val.is_empty();
     let all_params = eval_params::collect_parameters();
     let default_values = eval_params::default_values(&all_params);
+
     let resume = resume_path.map(|path| {
         println!("Resuming from checkpoint: {}{path}{RESET}", palette::VAL);
         let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
@@ -571,9 +598,9 @@ fn train_loop(
         });
         if data.fresh_params > 0 {
             println!(
-                "{}{}{RESET} parameter(s) are newer than the checkpoint, starting from code defaults",
+                "{}{}{RESET} parameters are newer than the checkpoint, starting from code defaults",
                 palette::VAL,
-                data.fresh_params,
+                data.fresh_params
             );
         }
         data
@@ -589,11 +616,14 @@ fn train_loop(
     let lr_scheduler = config.lr_schedule.clone().into_scheduler();
     let wdl_scheduler = config.wdl_schedule.clone().into_scheduler();
     let init_blend = wdl_scheduler.blend(1, config.epochs);
+
     let mut k_ctrl = KController::bootstrap(config, ctx, &values, &default_values, init_blend, resume.as_ref());
     let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
+
     println!("{LAB}K Factor:{RESET}   {VAL}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
     println!("{LAB}K Mode:{RESET}     {}", paint_head(&config.k_mode.to_string()));
+
     let seed_label = if resume.is_some() {
         " (checkpoint)"
     } else if config.seed.is_some() {
@@ -603,10 +633,13 @@ fn train_loop(
     };
     println!("{LAB}Seed:{RESET}       {VAL}{rng_seed}{RESET}{seed_label}");
     if split_seed != VAL_SPLIT_SEED {
-        println!("{LAB}Split seed:{RESET} {VAL}{split_seed}{RESET} (L_val does not compare to default-split runs)");
+        println!("{LAB}Split seed:{RESET} {VAL}{split_seed}{RESET} (L_val not comparable to default-split runs)");
     }
     if config.init != Init::Default && resume.is_none() {
-        println!("{LAB}Init:{RESET}       {VAL}{:?}{RESET} (cold start; K is meaningless until material grows)", config.init);
+        println!(
+            "{LAB}Init:{RESET}       {VAL}{:?}{RESET} (cold start; K meaningless until material scale emerges)",
+            config.init
+        );
     }
 
     let initial_values = values.clone();
@@ -616,6 +649,7 @@ fn train_loop(
     let probe: Vec<&FeatureRecord> = ctx.train.iter().step_by(stride).take(GAUGE_PROBE).collect();
     let mut gauge = Gauge::new(probe, &default_values);
     let hold_scale = gauge.holds(&values);
+
     let mut fixed_mask: Vec<bool> = all_params.iter().map(|p| p.is_fixed).collect();
     let decay_mask = build_decay_mask(all_params.len());
     let beta2_mask = build_beta2_mask(all_params.len(), config.beta2);
@@ -623,8 +657,8 @@ fn train_loop(
     let clip_mask = build_clip_mask(all_params.len());
 
     // Zero init: 0.99 EMA decay washes out any seed within a few batches.
-    let mut grad_ema_per_param = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
-    let mut stagnant_epochs = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
+    let mut grad_ema = resume.as_ref().map_or_else(|| vec![0.0_f64; values.len()], |d| d.grad_ema.clone());
+    let mut stagnant_counts = resume.as_ref().map_or_else(|| vec![0usize; values.len()], |d| d.stagnant.clone());
 
     println!("{LAB}Parameters:{RESET} {VAL}{}{RESET}", all_params.len());
     println!("{LAB}Mode:{RESET}       {VAL}{mode_label}{RESET}");
@@ -653,7 +687,11 @@ fn train_loop(
         writeln!(w, "{:>5}  {:>11}  {:>11}  {:>11}  {:>8}", "epoch", "L_train", "L_val", "L_ref", "LR").ok();
     }
 
-    let mut json_logger = JsonLogger::new(&config.log_path).ok();
+    // A sweep reads this file back for its results, so an unopenable path has to say so rather
+    // than leave the parent reading an empty log.
+    let mut json_logger = JsonLogger::new(&config.log_path)
+        .inspect_err(|e| eprintln!("{}[!] Cannot open the run log at {}: {e}{RESET}", palette::ALARM, config.log_path))
+        .ok();
     // Where a run starts. Inferring it from the epoch number going backwards is
     // wrong for a resume, which continues the count.
     if let Some(ref l) = json_logger {
@@ -684,6 +722,7 @@ fn train_loop(
     // batch loop, worth 12% of epoch time at 32.8M positions.
     let mut indices = vec![0u32; train_len];
     let mut shuffler = Shuffler::new(train_len);
+
     let epoch_sample = epoch_sample_len(train_len, epoch_keep);
     let steps_per_epoch = epoch_sample.div_ceil(config.batch_size);
     if epoch_sample < train_len {
@@ -709,10 +748,12 @@ fn train_loop(
 
     let mut best_val_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_val_params.clone());
     let mut best_train_params = resume.as_ref().map_or_else(|| vec![0.0; slots], |d| d.best_train_params.clone());
+
     // Not restored on resume: sparklines are a display artifact, not state.
     let mut val_history: Vec<f64> = Vec::new();
     let mut train_history: Vec<f64> = Vec::new();
     let mut prev_val_loss = f64::NAN;
+
     // Also not restored: the detector re-warms within a slow span, and a warning does not
     // justify more checkpoint surface.
     let mut divergence = DivergenceMonitor::default();
@@ -737,8 +778,8 @@ fn train_loop(
     let group_ranges = group_ranges(slots);
     let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
 
-    // Freeze non-psqt/mat for the first unfreeze_epoch epochs.
-    // Resume restores the saved mask. It encodes this gate plus any auto-freeze.
+    // A resume restores the saved mask instead, which already encodes this gate and any
+    // auto-freeze that ran after it.
     if let Some(d) = &resume {
         fixed_mask.copy_from_slice(&d.frozen);
     } else if config.unfreeze_epoch > 0 {
@@ -752,9 +793,9 @@ fn train_loop(
         let t0 = Instant::now();
         let blend = wdl_scheduler.blend(epoch, config.epochs);
         let mut epoch_census = [GateCensus::default(); GROUP_NAMES.len()];
+
         if let Some(new_k) = k_ctrl.on_epoch(epoch, ctx, &ema_values, blend) {
             println!("  Reoptimized K: {new_k:.6}");
-
             if let Some(ref mut w) = logger {
                 writeln!(w, "# K re-opt @ epoch {epoch}: {new_k:.6}").ok();
             }
@@ -770,9 +811,9 @@ fn train_loop(
 
         let is_restart = epoch > 1 && {
             let prev_scheduled_lr = lr_scheduler.rate(epoch - 1, config.epochs) * lr_scale;
-            // ≥50% LR jump = scheduler restart (cosine SGDR cycle boundary).
-            // Correct for cosine-with-cycles. Would false-fire on warmup.
-            // TODO: gate on scheduler type or add LrScheduler::is_restart_boundary.
+            // A 50% LR jump is a cosine SGDR cycle boundary. Correct for cosine-with-cycles,
+            // and it would false-fire on a warmup ramp, which no configured schedule pairs
+            // with cycles today.
             scheduled_lr > prev_scheduled_lr * 1.5
         };
 
@@ -785,16 +826,22 @@ fn train_loop(
         }
 
         let t_shuffle = Instant::now();
+        // The entry list was shuffled once at load, so consecutive records are already a random
+        // sample of games and whole blocks stay unbiased. Positions inside a block then travel
+        // together for the whole run, paid for by a gather the prefetcher can follow instead of
+        // one DRAM round trip per record.
         if config.shuffle_block > 0 {
             shuffler.fill_blocked(&mut indices, rng.u64(..), config.shuffle_block, epoch_sample);
         } else {
             shuffler.fill(&mut indices, rng.u64(..));
         }
         let shuffle_secs = t_shuffle.elapsed().as_secs_f32();
+
         let mut train_loss = 0.0;
         let mut train_count = 0usize;
-        let mut total_grads = vec![0.0; values.len()];
+        let mut epoch_grads = vec![0.0; values.len()];
         let t_grad = Instant::now();
+
         for batch in indices[..epoch_sample].chunks(config.batch_size) {
             batches_run += 1;
 
@@ -814,7 +861,7 @@ fn train_loop(
             let scale = if norm > threshold { threshold / norm } else { 1.0 };
             for (i, g) in grads.iter_mut().enumerate() {
                 *g = *g / n * scale;
-                total_grads[i] += *g;
+                epoch_grads[i] += *g;
             }
 
             // Before the update, while momentum still holds what the gate is about to read.
@@ -835,13 +882,12 @@ fn train_loop(
             // The |gradient| trail the auto-freeze below reads.
             for i in 0..values.len() {
                 if !fixed_mask[i] {
-                    grad_ema_per_param[i] = 0.99_f64.mul_add(grad_ema_per_param[i], 0.01 * grads[i].abs());
+                    grad_ema[i] = 0.99_f64.mul_add(grad_ema[i], 0.01 * grads[i].abs());
                 }
             }
 
-            // Skip the noisy high-LR phase; only average once LR has
-            // decayed below 30 % of its peak. Before that, snapshot
-            // the live weights directly.
+            // Skip the noisy high-LR phase; only average once LR has decayed below 30% of its
+            // peak. Before that, snapshot the live weights directly.
             if ema_active {
                 for i in 0..values.len() {
                     ema_values[i] = config.ema_decay.mul_add(ema_values[i], (1.0 - config.ema_decay) * values[i]);
@@ -853,32 +899,31 @@ fn train_loop(
 
         let grad_secs = t_grad.elapsed().as_secs_f32();
         let step_l1 = optimizer.take_step_l1();
-        // Per epoch, not per run. A run total averages the high-`lr` opening into the decayed
+
+        // Per epoch, not per run. A run total averages the high-lr opening into the decayed
         // tail, and it is the tail that says whether the floor is a preference or an artifact.
         let clipped_total: u64 = optimizer.clipped().iter().sum();
         let clipped_epoch = clipped_total - clipped_seen;
         clipped_seen = clipped_total;
 
-        // Progressive unfreeze; lift the material-only gate.
         if config.unfreeze_epoch > 0 && epoch == config.unfreeze_epoch {
             for (i, p) in all_params.iter().enumerate() {
                 fixed_mask[i] = p.is_fixed;
             }
-
             println!("  Unfrozen all remaining parameters at epoch {epoch}");
         }
 
         if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
             let mut frozen = 0;
             for i in 0..values.len() {
-                if !fixed_mask[i] && grad_ema_per_param[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
-                    stagnant_epochs[i] += 1;
-                    if stagnant_epochs[i] >= config.freeze_consecutive {
+                if !fixed_mask[i] && grad_ema[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
+                    stagnant_counts[i] += 1;
+                    if stagnant_counts[i] >= config.freeze_consecutive {
                         fixed_mask[i] = true;
                         frozen += 1;
                     }
                 } else {
-                    stagnant_epochs[i] = 0;
+                    stagnant_counts[i] = 0;
                 }
             }
             if frozen > 0 {
@@ -927,18 +972,19 @@ fn train_loop(
 
         let is_best = improved_val;
         let overfit = if has_val { divergence.update(train_loss, val_loss) } else { false };
-        // The overfit flag tests a slope, so a run that simply walks back uphill never
+        // The overfit flag tests a slope, so a run that simply climbs back uphill never
         // trips it. This tests displacement, against the only bar the run itself supplies:
         // a smoothed loss above the opening one has given back everything it ever gained.
-        let drifted = val_history.first().is_some_and(|opening| progress.val_smooth > *opening);
+        let drifted = val_history.first().is_some_and(|&opening| progress.val_smooth > opening);
+
         // Parameters that crossed an integer boundary this epoch. Zero from here on means the
         // run is still descending in f64 and shipping nothing, which is where a budget ends.
         quantize(&ema_values, &mut quantized);
         let moved = quantized.iter().zip(&prev_quantized).filter(|(q, p)| q != p).count();
         prev_quantized.copy_from_slice(&quantized);
 
-        let psqt_norm = total_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
-        let mob_norm = total_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
+        let psqt_norm = epoch_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt();
+        let mob_norm = epoch_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt();
 
         if let Some(ref mut w) = logger {
             writeln!(
@@ -978,6 +1024,7 @@ fn train_loop(
                 }),
             );
         }
+
         let elapsed = t0.elapsed().as_secs_f32();
         // Denominator is the gradient pass, not the epoch: every epoch trains the same
         // position count, so an epoch-timed rate would only restate the timer.
@@ -990,8 +1037,7 @@ fn train_loop(
         val_seconds += f64::from(val_secs);
         epoch_positions += train_count as u64;
 
-        // Loss has no absolute scale, so color the live value by its per-epoch
-        // trend; dropped from last epoch → green ▼, rose → red ▲.
+        // Loss has no absolute scale, so the live value is colored by its per-epoch trend.
         let (arrow, trend) = if !has_val || !prev_val_loss.is_finite() || (val_loss - prev_val_loss).abs() < 1e-7 {
             ('·', LAB.to_string())
         } else if val_loss < prev_val_loss {
@@ -1028,30 +1074,18 @@ fn train_loop(
         );
 
         if config.gate_census {
-            let mut all = GateCensus::default();
-            for (total, epoch) in run_census.iter_mut().zip(&epoch_census) {
-                total.absorb(*epoch);
-                all.absorb(*epoch);
+            let mut total_census = GateCensus::default();
+            for (total, epoch_stat) in run_census.iter_mut().zip(&epoch_census) {
+                total.absorb(*epoch_stat);
+                total_census.absorb(*epoch_stat);
             }
-            println!(
-                "  {LAB}gate{RESET} φ {VAL}{:.4}{RESET}  step {VAL}{step_l1:.1}{RESET}  skip {VAL}{:.1}%{RESET}  canonical {VAL}{:.1}%{RESET}  band {VAL}{:.2}%{RESET}  \
-                 c-only {VAL}{:.1}%{RESET}  waived {VAL}{:.1}%{RESET}  dead {VAL}{:.1}%{RESET}  no grad {VAL}{:.1}%{RESET}",
-                all.active_share(),
-                all.percent(all.skipped),
-                all.percent(all.canonical),
-                all.percent(all.band),
-                all.percent(all.canonical_only),
-                all.percent(all.epsilon_waived),
-                all.percent(all.dead),
-                all.percent(all.absent),
-            );
+            println!("  {LAB}gate{RESET}      {}  {DIM}step{RESET} {VAL}{step_l1:.1}{RESET}", gate_columns(&total_census));
         }
 
         if has_val {
             val_history.push(val_loss);
             prev_val_loss = val_loss;
         }
-
         train_history.push(train_loss);
 
         if epoch % 20 == 0 || epoch == config.epochs {
@@ -1082,8 +1116,8 @@ fn train_loop(
                 values: &values,
                 momentum: optimizer.momentum(),
                 ema: &ema_values,
-                grad_ema: &grad_ema_per_param,
-                stagnant: &stagnant_epochs,
+                grad_ema: &grad_ema,
+                stagnant: &stagnant_counts,
                 frozen: &fixed_mask,
                 best_val_params: &best_val_params,
                 best_train_params: &best_train_params,
@@ -1095,11 +1129,11 @@ fn train_loop(
 
     // A cold start was left to find its own scale, so its output is normalized
     // here instead: the search reads centipawns, and nothing else would put the
-    // run's eval back on the scale `search_params` was written against.
+    // run's eval back on the scale search_params was written against.
     //
     // K is the other half of that scale and takes the same correction: a report
     // pairing moved parameters with the K they moved away from reads the mismatch
-    // rather than the model. `Gauge::restore` pays it on a held run.
+    // rather than the model. Gauge::restore pays it on a held run.
     //
     // The off-scale ratio is measured before the cold-start normalization that
     // follows: it reads the scale the run actually found, and measured afterwards
@@ -1114,6 +1148,7 @@ fn train_loop(
         let factor = gauge.normalize(&mut best_val_params);
         (1.0 / factor, k_ctrl.k() / factor)
     };
+
     // The JSON log opens in append mode, so a seed sweep writes every run's final params into
     // one file for reading the spread directly. It has to sit below the normalization: a cold
     // start's vector is off the centipawn scale until then, and the spread would be read in a unit
@@ -1131,10 +1166,8 @@ fn train_loop(
                 "best_val_epoch": if has_val { serde_json::Value::from(progress.best_val_epoch) } else { serde_json::Value::Null },
                 "best_train_loss": progress.best_train_loss,
                 "best_train_epoch": progress.best_train_epoch,
-                // Named for the vector it is: the run also ships `ema_values`,
-                // and a spread measured over one of them says nothing about the other.
                 "best_val_params": quantized,
-                "sensitivity": grad_ema_per_param,
+                "sensitivity": grad_ema,
             }),
         );
     }
@@ -1144,17 +1177,15 @@ fn train_loop(
     let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
     let off_scale = off_scale_warning(off_scale_ratio);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
-    let calibration = if has_val {
-        calibration_report(ctx, &best_val_params, report_k)
-    } else {
-        // Without a split it would print an empty table under a header that claims it exists.
-        String::new()
-    };
+    // Without a split a calibration table would print empty under a header claiming it exists.
+    let calibration = if has_val { calibration_report(ctx, &best_val_params, report_k) } else { String::new() };
     let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
     let clip = clip_report(&all_params, optimizer.clipped(), batches_run);
+
     print!("{gauge_line}");
     eprint!("{off_scale}{clamped_k}");
     print!("{calibration}{census}{clip}");
+
     if let Some(ref mut w) = logger {
         for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &census, &clip] {
             write!(w, "{}", color::strip(part)).ok();
@@ -1163,7 +1194,8 @@ fn train_loop(
 
     // Flushed before the reports below, so a panic in one cannot cost the epoch history.
     drop(logger);
-    sensitivity_report(&all_params, &grad_ema_per_param, &fixed_mask);
+    sensitivity_report(&all_params, &grad_ema, &fixed_mask);
+
     let last_val = val_history.last().copied();
     let last_train = train_history.last().copied();
     print_results(
@@ -1194,6 +1226,7 @@ fn train_loop(
              {avg_mpos:.1}M pos/s"
         );
     }
+
     if has_val { Outcome::Ranked(progress.best_val_loss) } else { Outcome::Unranked }
 }
 
@@ -1203,19 +1236,13 @@ mod tests {
 
     #[test]
     fn a_holdout_takes_whole_groups_and_lands_nearest_the_target() {
-        // Tail first: 40 alone misses 100 by 60, and 40 + 80 overshoots it by 20, so both go.
         assert_eq!(holdout(&[100, 80, 40], 220, 100), (120, 2));
-        // Taking the 200 would miss by 140 where stopping misses by 60, so it stays.
         assert_eq!(holdout(&[100, 200, 40], 340, 100), (40, 1));
-        // Positions of their own hit the target exactly, as they did before groups existed.
         assert_eq!(holdout(&[1; 100], 100, 10), (10, 10));
-        // Two games, and the one that would take the whole file with it cannot leave.
         assert_eq!(holdout(&[95, 5], 100, 10), (5, 1));
-        // Equally far either way, and a holdout of six beats a holdout of nothing.
         assert_eq!(holdout(&[18, 6], 24, 3), (6, 1));
     }
 
-    /// Positions and weights are shuffled in two calls, and must walk the same swaps.
     #[test]
     fn one_seed_permutes_two_slices_alike() {
         let mut left: Vec<u32> = (0..5000).collect();
@@ -1232,7 +1259,7 @@ mod tests {
         let merged = merge_weights(Vec::new(), &sample);
         let mean = merged.iter().sum::<f64>() / merged.len() as f64;
         assert!((mean - 1.0).abs() < 1e-12, "mean {mean} is not one");
-        assert!(merged[1] / merged[0] - 3.0 < 1e-12, "the ratio between two weights moved");
+        assert!((merged[1] / merged[0] - 3.0).abs() < 1e-12, "the ratio between two weights moved");
         let phase = vec![2.0, 2.0, 1.0, 1.0];
         let both = merge_weights(phase.clone(), &sample);
         let both_mean = both.iter().sum::<f64>() / both.len() as f64;
@@ -1248,22 +1275,18 @@ mod tests {
         let off = ReplayFilter { random_fen_skipping: false, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
         assert!((epoch_keep_fraction(&config, &ninety, true) - 0.1).abs() < 1e-12);
         assert!((epoch_keep_fraction(&config, &off, true) - 1.0).abs() < 1e-12, "the flag gates the probability");
-        // The drop chance describes a replay, so an EPD or .soul dataset never sees it.
         assert!((epoch_keep_fraction(&config, &ninety, false) - 1.0).abs() < 1e-12);
         config.epoch_sample = Some(0.25);
         for replays in [true, false] {
             assert!((epoch_keep_fraction(&config, &ninety, replays) - 0.25).abs() < 1e-12, "the config knob wins");
         }
+
         assert_eq!(epoch_sample_len(32_800_000, 0.1), 3_280_000);
         assert_eq!(epoch_sample_len(32_800_000, 1.0), 32_800_000);
         assert_eq!(epoch_sample_len(4, 0.0), 1, "rounding must not empty an epoch");
         assert_eq!(epoch_sample_len(0, 0.5), 0);
     }
 
-    /// A key the struct does not have parses as nothing, since every absent field
-    /// fills from the defaults, so a rename on either side would go unnoticed until
-    /// a run quietly ignored half the file. Values are the run's to choose; names
-    /// are not.
     #[test]
     fn the_shipped_filter_file_names_only_real_fields() {
         let text = std::fs::read_to_string("replay_filter.toml").expect("replay_filter.toml must exist");
@@ -1271,13 +1294,12 @@ mod tests {
         let rendered = toml::to_string(&ReplayFilter::default()).expect("the filter must serialize");
         let known: toml::Table = toml::from_str(&rendered).expect("its own render must parse");
         let _: ReplayFilter = toml::from_str(&text).expect("replay_filter.toml must parse as a filter");
+
         for key in shipped.keys() {
             assert!(known.contains_key(key), "`{key}` is not a ReplayFilter field");
         }
     }
 
-    /// Matching viriformat's field names means its files parse here unchanged,
-    /// partial ones included.
     #[test]
     fn a_partial_filter_file_fills_from_the_defaults() {
         let filter: ReplayFilter = toml::from_str("min_ply = 24\nfilter_castling = true\n").expect("a partial filter file parses");
@@ -1287,9 +1309,6 @@ mod tests {
         assert!(filter.filter_tactical, "and so does an unnamed flag");
     }
 
-    /// The threshold scales with complexity per the config doc: dense middlegames
-    /// get the wide net, sparse endgames the tight one, and the fixed form ignores
-    /// occupancy entirely.
     #[test]
     fn the_volatility_filter_scales_with_complexity() {
         let make_ctx = |adaptive: bool| TrainerContext {
@@ -1302,21 +1321,18 @@ mod tests {
             vol_adaptive: adaptive,
         };
 
-        // Score defaults to zero, so static_eval is the whole disagreement.
         let rec = |pieces: u8, static_eval: i16| FeatureRecord { piece_count: pieces, static_eval, ..Default::default() };
+
         let ctx = make_ctx(true);
         assert!(ctx.passes_vol_filter(&rec(32, 80)), "occ 32: t = 84 accepts an 80 cp disagreement");
         assert!(!ctx.passes_vol_filter(&rec(32, 100)), "occ 32: t = 84 rejects a 100 cp disagreement");
         assert!(ctx.passes_vol_filter(&rec(8, 30)), "occ 8: t = 36 accepts a 30 cp disagreement");
         assert!(!ctx.passes_vol_filter(&rec(8, 50)), "occ 8: t = 36 rejects a 50 cp disagreement");
-        let ctx = make_ctx(false);
-        assert!(ctx.passes_vol_filter(&rec(32, 40)), "fixed: the threshold ignores occupancy");
-        assert!(!ctx.passes_vol_filter(&rec(32, 41)), "fixed: the threshold ignores occupancy");
+        let ctx_fixed = make_ctx(false);
+        assert!(ctx_fixed.passes_vol_filter(&rec(32, 40)), "fixed: the threshold ignores occupancy");
+        assert!(!ctx_fixed.passes_vol_filter(&rec(32, 41)), "fixed: the threshold ignores occupancy");
     }
 
-    /// The old formula subtracted the piece count, so a dense position pushed the
-    /// threshold negative and every position, perfect matches included, fell out.
-    /// The floor is what makes the clamp half of that impossible to reintroduce.
     #[test]
     fn the_volatility_filter_floor_never_rejects_a_whole_position_class() {
         let ctx = TrainerContext {
@@ -1330,21 +1346,14 @@ mod tests {
         };
 
         let rec = |pieces: u8, static_eval: i16| FeatureRecord { piece_count: pieces, static_eval, ..Default::default() };
-        // occ 6: (6 − 10) · 2 = −8, floored to 0. A perfect match still passes and
-        // any disagreement fails, which is the tight endgame the doc describes.
         assert!(ctx.passes_vol_filter(&rec(6, 0)), "a floored threshold passes a perfect match");
         assert!(!ctx.passes_vol_filter(&rec(6, 1)), "a floored threshold rejects any disagreement");
-        // occ 31 with t0 40 was −2 before the flip, dropping even a perfect match;
-        // the flipped arithmetic leaves 82 and the floor guarantees no revisit.
-        let ctx = TrainerContext { vol_threshold: 40, ..ctx };
-        assert!(ctx.passes_vol_filter(&rec(31, 0)), "a dense position passes a perfect match");
-        assert!(ctx.passes_vol_filter(&rec(31, 80)), "occ 31: t = 82 accepts an 80 cp disagreement");
-        assert!(!ctx.passes_vol_filter(&rec(31, 100)), "occ 31: t = 82 rejects a 100 cp disagreement");
+        let ctx_dense = TrainerContext { vol_threshold: 40, ..ctx };
+        assert!(ctx_dense.passes_vol_filter(&rec(31, 0)), "a dense position passes a perfect match");
+        assert!(ctx_dense.passes_vol_filter(&rec(31, 80)), "occ 31: t = 82 accepts an 80 cp disagreement");
+        assert!(!ctx_dense.passes_vol_filter(&rec(31, 100)), "occ 31: t = 82 rejects a 100 cp disagreement");
     }
 
-    /// A huge threshold plus the occupancy margin used to overflow the i16 add,
-    /// panicking in debug and wrapping negative in release. The saturating add
-    /// turns that into a threshold like any other.
     #[test]
     fn a_huge_volatility_threshold_saturates_instead_of_overflowing() {
         let ctx = TrainerContext {
@@ -1364,16 +1373,11 @@ mod tests {
             ..Default::default()
         };
 
-        // occ 2 once added 16 to i16::MAX and occ 32 adds 44; both saturate now.
         assert!(ctx.passes_vol_filter(&rec(2, 0, 30_000)), "a sparse position saturates the add");
         assert!(ctx.passes_vol_filter(&rec(32, 0, 30_000)), "a dense position saturates the add");
         assert!(!ctx.passes_vol_filter(&rec(32, -1, 32_767)), "32768 is past the saturated 32767");
     }
 
-    /// The batch K-gradient is the derivative of the batch loss in K, WDL target
-    /// included: a finite difference of the loss closes to the analytic value only
-    /// when `grad_target · dt_dk` rides along. The old code dropped the target
-    /// term, and at this blend the missing piece is a hundred times the tolerance.
     #[test]
     fn the_k_gradient_matches_a_finite_difference_of_the_batch_loss() {
         use super::super::engine::{Position, SoulEntry};
@@ -1399,9 +1403,10 @@ mod tests {
         let k = 0.005;
         let blend = 0.3;
         let (_, k_g, ..) = ctx.batch_grad(&[0], &values, k, blend);
+
         let loss_at = |kk: f64| {
             let (target, _) = wdl_target(&record, kk, blend);
-            let eval = loader::eval_record_full(&record, &values);
+            let eval = eval_record_full(&record, &values);
             ctx.loss_fn.loss(sigmoid(eval.score, kk), target)
         };
 
@@ -1419,10 +1424,11 @@ mod tests {
                 if p.is_fixed {
                     assert_eq!(*v, p.value, "{init:?} moved fixed slot {}", p.name);
                 } else {
-                    assert!(v.abs() <= RANDOM_INIT_SPREAD, "{init:?} left {} at {VAL}", p.name);
+                    assert!(v.abs() <= RANDOM_INIT_SPREAD, "{init:?} left {} at {v}", p.name);
                 }
             }
         }
+
         let phase = LAYOUT.phase_offset;
         let zeroed = seed_values(&params, Init::Zero, 7);
         assert!(zeroed[phase..phase + LAYOUT.phase_len].iter().any(|w| *w > 0.0), "phase taper zeroed");

@@ -1,189 +1,166 @@
-//! Uniform random permutation of `0..n`, parallel and cache-blocked.
+//! Uniform random permutation of `0..n`, parallelized and cache-blocked.
 //!
-//! A serial Fisher-Yates spends one DRAM access per swap once the array outgrows L3, and
-//! leaves every core but one idle. Bucketing first fixes both: the swaps happen inside buckets
-//! whose concurrent working set stays in cache, and every phase runs across the pool.
+//! Standard serial Fisher-Yates incurs an un-cached DRAM access per swap once
+//! the target slice exceeds L3 cache capacity. This implementation partitions elements
+//! across uniform buckets in parallel before executing in-cache Fisher-Yates shuffles
+//! within each bucket.
 //!
-//! Drawing an iid uniform bucket for each element and then ordering by bucket, ties broken
-//! uniformly at random, is the assign-keys-and-sort construction of a random permutation, so
-//! every one of the `n!` orderings stays equally likely whatever the bucket count.
-//!
-//! Bucket and task counts follow from `n`, so the permutation depends on the seed alone: a
-//! checkpoint resumed on another host draws the same batches from it.
+//! Assigning independent uniform bucket keys followed by uniform intra-bucket shuffles
+//! preserves an exact uniform distribution over all `n!` permutations. Task and bucket
+//! partitions are deterministically derived from slice length, ensuring cross-host
+//! reproducibility given identical seeds.
 
 use fastrand::Rng;
 use rayon::prelude::*;
 
-/// Elements per bucket. The sweep below finds a wide flat plateau, so this only has to land
-/// inside it; anything from a few million positions up clamps to `MAX_BUCKETS`.
 const TARGET_BUCKET: usize = 1 << 15;
-
-/// Enough buckets to keep the per-bucket phase parallel on a small dataset.
 const MIN_BUCKETS: usize = 16;
-
-/// Bucket ids are `u8`, and measurement says keep it that way: `u16` ids buy bucket counts
-/// past 256, which time no better, and the doubled side table costs 20% on its own.
 const MAX_BUCKETS: usize = 256;
-
-/// Elements per counting and scattering task.
-const TASK: usize = 1 << 16;
-
-/// Stream separator for the two generators, so the per-bucket draws cannot echo the
-/// per-task draws that decided the buckets in the first place. Any odd constant distinct from
-/// the gamma in `mix` does the job.
 const BUCKET_DOMAIN: u64 = 0xD1B5_4A32_D192_ED03;
 
-/// Scratch for one dataset's permutations, sized once and reused every epoch.
+/// Element chunk size processed per parallel task during classification and scatter passes.
+const TASK_SIZE: usize = 1 << 16;
+
+/// Reusable scratch buffers for generating cache-blocked random permutations.
 pub struct Shuffler {
-    /// The bucket each position landed in. Materialized rather than replayed, so the counting
-    /// pass and the scattering pass cannot disagree about where an element goes.
-    ids: Vec<u8>,
-    /// The block permutation [`Shuffler::fill_blocked`] draws before expanding it.
-    order: Vec<u32>,
+    /// Materialized bucket assignments per element.
+    bucket_ids: Vec<u8>,
+    /// Scratch buffer for coarse-grained block permutations.
+    block_order: Vec<u32>,
 }
 
 impl Shuffler {
-    pub fn new(len: usize) -> Self { Self { ids: vec![0; len], order: Vec::new() } }
+    #[must_use]
+    pub fn new(len: usize) -> Self { Self { bucket_ids: vec![0; len], block_order: Vec::new() } }
 
     /// Fills `out` with a uniform random permutation of `0..out.len()`.
     ///
     /// # Panics
-    /// If `out` is longer than the length this was constructed for.
+    /// Panics if `out` exceeds the capacity allocated during construction, or exceeds `u32::MAX`.
     pub fn fill(&mut self, out: &mut [u32], seed: u64) { self.fill_into(out, seed, bucket_count(out.len())); }
 
-    /// Permutes blocks of `block` consecutive indices instead of the indices themselves.
+    /// Permutes consecutive contiguous blocks of `block_size` elements.
     ///
-    /// The entry list is shuffled once at load, before features are extracted, so a run of
-    /// consecutive records is already a random sample of games and a batch drawn from whole
-    /// blocks is still unbiased. What it gives up is the fresh partition a full permutation
-    /// buys every epoch: positions inside a block travel together for the whole run, and the
-    /// blocks themselves are the same on every seed, since the load-time shuffle is seeded by
-    /// the fixed split.
-    ///
-    /// What it buys is sequential reads. The gather over `FeatureRecord`s is DRAM latency per
-    /// record, and a block turns that back into a stream the prefetcher can follow.
-    ///
-    /// `take` stops the expansion there, leaving the rest of `out` alone. The order is still
-    /// drawn over every block, so the result is a uniform sample and not the front of a shorter
-    /// draw; the last block written is cut to length.
-    pub fn fill_blocked(&mut self, out: &mut [u32], seed: u64, block: usize, take: usize) {
-        let n = out.len();
-        let take = take.min(n);
-        let blocks = n.div_ceil(block.max(1));
+    /// `take` limits output expansion to a prefix length while drawing the block
+    /// order across all blocks, yielding a uniform subsample without requiring full array expansion.
+    pub fn fill_blocked(&mut self, out: &mut [u32], seed: u64, block_size: usize, take: usize) {
+        let total_elements = out.len();
+        let target_len = take.min(total_elements);
+        let effective_block_size = block_size.max(1);
+        let num_blocks = total_elements.div_ceil(effective_block_size);
 
-        // Lifted out so the block permutation can borrow the same `ids` scratch, and put
-        // back for the next epoch: at a block of 4 this vector is most of the dataset.
-        let mut order = std::mem::take(&mut self.order);
-        order.resize(blocks, 0);
+        // Temporarily extract the order buffer to reuse self for permutation generation.
+        let mut block_order = std::mem::take(&mut self.block_order);
+        block_order.resize(num_blocks, 0);
 
-        self.fill(&mut order[..blocks], seed);
+        self.fill(&mut block_order[..num_blocks], seed);
 
-        let mut w = 0;
+        let mut written = 0;
+        'expand: for &block_idx in &block_order[..num_blocks] {
+            let start = block_idx as usize * effective_block_size;
+            let end = (start + effective_block_size).min(total_elements);
 
-        'expand: for &b in &order[..blocks] {
-            let start = b as usize * block;
-
-            for i in start..(start + block).min(n) {
-                if w == take {
+            for idx in start..end {
+                if written == target_len {
                     break 'expand;
                 }
-
-                out[w] = i as u32;
-                w += 1;
+                out[written] = idx as u32;
+                written += 1;
             }
         }
 
-        self.order = order;
+        self.block_order = block_order;
     }
 
     fn fill_into(&mut self, out: &mut [u32], seed: u64, buckets: usize) {
-        let n = out.len();
-        assert!(self.ids.len() >= n, "shuffler built for a shorter length");
-        assert!(u32::try_from(n).is_ok(), "more elements than a u32 index can name");
+        let total_len = out.len();
+        assert!(self.bucket_ids.len() >= total_len, "Shuffler capacity smaller than target slice");
+        assert!(u32::try_from(total_len).is_ok(), "Element count exceeds u32 indexing limit");
+        assert!(
+            buckets.is_power_of_two() && buckets <= MAX_BUCKETS,
+            "Bucket count ({buckets}) must be a power of two <= {MAX_BUCKETS}"
+        );
 
-        if n < 2 {
-            for (j, slot) in out.iter_mut().enumerate() {
-                *slot = j as u32;
+        if total_len < 2 {
+            for (idx, slot) in out.iter_mut().enumerate() {
+                *slot = idx as u32;
             }
-
             return;
         }
 
-        let tasks = n.div_ceil(TASK);
-        let mask = (buckets - 1) as u32;
+        let num_tasks = total_len.div_ceil(TASK_SIZE);
+        let bucket_mask = (buckets - 1) as u32;
 
-        // Draw a bucket per element, counting as we go. The counts are what let the scatter
-        // write straight into `out` instead of staging the permutation somewhere first.
-        let mut counts = vec![0u32; tasks * buckets];
+        // Compute per-task bucket histograms to determine exact disjoint partition boundaries.
+        let mut task_bucket_counts = vec![0u32; num_tasks * buckets];
 
-        self.ids[..n]
-            .par_chunks_mut(TASK)
-            .zip(counts.par_chunks_mut(buckets))
+        self.bucket_ids[..total_len]
+            .par_chunks_mut(TASK_SIZE)
+            .zip(task_bucket_counts.par_chunks_mut(buckets))
             .enumerate()
-            .for_each(|(t, (ids, row))| {
-                let mut rng = Rng::with_seed(mix(seed, t as u64));
-
-                for id in ids.iter_mut() {
-                    // Power-of-two bucket count, so masking is exactly uniform.
-                    let b = rng.u32(..) & mask;
-                    *id = b as u8;
-                    row[b as usize] += 1;
+            .for_each(|(task_idx, (task_bucket_ids, task_histogram))| {
+                let mut rng = Rng::with_seed(splitmix64(seed, task_idx as u64));
+                for slot in task_bucket_ids.iter_mut() {
+                    let bucket = rng.u32(..) & bucket_mask;
+                    *slot = bucket as u8;
+                    task_histogram[bucket as usize] += 1;
                 }
             });
 
-        // Hand every (bucket, task) pair its own piece of `out`, laid out bucket-major so a
-        // bucket ends up contiguous and can be permuted in place below. The pieces are sized
-        // from the counts, so they tile `out` exactly and no two tasks can reach the same slot.
-        let mut slots: Vec<Vec<&mut [u32]>> = (0..tasks).map(|_| Vec::with_capacity(buckets)).collect();
-        let mut rest = &mut out[..];
+        // Partition the output buffer into disjoint mutable slices per (task, bucket) pair.
+        let mut task_destinations: Vec<Vec<&mut [u32]>> = (0..num_tasks).map(|_| Vec::with_capacity(buckets)).collect();
+        let mut remaining_out = &mut out[..];
 
-        for b in 0..buckets {
-            for (t, task_slots) in slots.iter_mut().enumerate() {
-                let (head, tail) = std::mem::take(&mut rest).split_at_mut(counts[t * buckets + b] as usize);
-                task_slots.push(head);
-                rest = tail;
+        for bucket in 0..buckets {
+            for (task_idx, task_slices) in task_destinations.iter_mut().enumerate() {
+                let count = task_bucket_counts[task_idx * buckets + bucket] as usize;
+                let (head, tail) = std::mem::take(&mut remaining_out).split_at_mut(count);
+                task_slices.push(head);
+                remaining_out = tail;
             }
         }
 
-        self.ids[..n]
-            .par_chunks(TASK)
-            .zip(slots.par_iter_mut())
+        // Scatter input indices into bucket-major output segments.
+        self.bucket_ids[..total_len]
+            .par_chunks(TASK_SIZE)
+            .zip(task_destinations.par_iter_mut())
             .enumerate()
-            .for_each(|(t, (ids, task_slots))| {
-                let base = (t * TASK) as u32;
-                let mut cursor = vec![0usize; buckets];
+            .for_each(|(task_idx, (task_bucket_ids, task_slices))| {
+                let base_index = (task_idx * TASK_SIZE) as u32;
+                let mut cursors = [0usize; MAX_BUCKETS];
 
-                for (k, &id) in ids.iter().enumerate() {
-                    let b = id as usize;
-                    task_slots[b][cursor[b]] = base + k as u32;
-                    cursor[b] += 1;
+                for (offset, &bucket_id) in task_bucket_ids.iter().enumerate() {
+                    let bucket = bucket_id as usize;
+                    task_slices[bucket][cursors[bucket]] = base_index + offset as u32;
+                    cursors[bucket] += 1;
                 }
             });
 
-        drop(slots);
+        drop(task_destinations);
 
-        let mut parts: Vec<&mut [u32]> = Vec::with_capacity(buckets);
-        let mut rest = &mut out[..];
+        // Re-slice output contiguously per bucket and perform in-place Fisher-Yates shuffles in parallel.
+        let mut bucket_slices: Vec<&mut [u32]> = Vec::with_capacity(buckets);
+        let mut remaining_out = &mut out[..];
 
-        for b in 0..buckets {
-            let size = (0..tasks).map(|t| counts[t * buckets + b] as usize).sum();
-            let (head, tail) = std::mem::take(&mut rest).split_at_mut(size);
-            parts.push(head);
-            rest = tail;
+        for bucket in 0..buckets {
+            let bucket_len: usize = (0..num_tasks).map(|t| task_bucket_counts[t * buckets + bucket] as usize).sum();
+            let (head, tail) = std::mem::take(&mut remaining_out).split_at_mut(bucket_len);
+            bucket_slices.push(head);
+            remaining_out = tail;
         }
 
-        parts.par_iter_mut().enumerate().for_each(|(b, part)| {
-            let mut rng = Rng::with_seed(mix(seed ^ BUCKET_DOMAIN, b as u64));
-            rng.shuffle(&mut part[..]);
+        bucket_slices.par_iter_mut().enumerate().for_each(|(bucket_idx, slice)| {
+            let mut rng = Rng::with_seed(splitmix64(seed ^ BUCKET_DOMAIN, bucket_idx as u64));
+            rng.shuffle(&mut slice[..]);
         });
     }
 }
 
-fn bucket_count(n: usize) -> usize { n.div_ceil(TARGET_BUCKET).next_power_of_two().clamp(MIN_BUCKETS, MAX_BUCKETS) }
+fn bucket_count(len: usize) -> usize { len.div_ceil(TARGET_BUCKET).next_power_of_two().clamp(MIN_BUCKETS, MAX_BUCKETS) }
 
-/// SplitMix64 (Steele, Lea and Flood 2014), so neighboring task indices give unrelated
-/// generator states. The gamma is the golden-ratio constant, 2^64/φ forced odd.
-fn mix(seed: u64, stream: u64) -> u64 {
+/// The Weyl constant `0x9E37_79B9_7F4A_7C15` is floor(2^64/φ), odd as the additive step needs,
+/// so sequential stream indices land on unrelated generator states.
+fn splitmix64(seed: u64, stream: u64) -> u64 {
     let mut z = seed.wrapping_add(stream.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -194,21 +171,17 @@ fn mix(seed: u64, stream: u64) -> u64 {
 mod tests {
     use super::*;
 
-    /// Not a multiple of `TASK` and not a power of two, so the tail task and a ragged final
-    /// bucket both get exercised.
-    const RAGGED: usize = 1_000_003;
+    const RAGGED_LEN: usize = 1_000_003;
 
     #[test]
     fn fills_a_complete_permutation() {
-        let mut shuffler = Shuffler::new(RAGGED);
-        let mut out = vec![0u32; RAGGED];
+        let mut shuffler = Shuffler::new(RAGGED_LEN);
+        let mut out = vec![0u32; RAGGED_LEN];
         shuffler.fill(&mut out, 0x1234_5678);
-
         let mut sorted = out.clone();
         sorted.sort_unstable();
-
-        assert!(sorted.iter().copied().eq(0..RAGGED as u32), "output is not a permutation of 0..n");
-        assert!(out.iter().copied().ne(0..RAGGED as u32), "output is the identity");
+        assert!(sorted.iter().copied().eq(0..RAGGED_LEN as u32), "output is not a valid permutation of 0..n");
+        assert!(out.iter().copied().ne(0..RAGGED_LEN as u32), "output remained identity");
     }
 
     #[test]
@@ -216,11 +189,9 @@ mod tests {
         for (n, block) in [(1000usize, 64usize), (1000, 7), (64, 64), (5, 8), (1, 4)] {
             let mut out = vec![0u32; n];
             Shuffler::new(n).fill_blocked(&mut out, 0x5EED, block, n);
-
             let mut seen = out.clone();
             seen.sort_unstable();
-
-            assert!(seen.iter().copied().eq(0..n as u32), "n={n} block={block} is not a permutation");
+            assert!(seen.iter().copied().eq(0..n as u32), "blocked permutation invalid for n={n}, block={block}");
         }
     }
 
@@ -230,58 +201,44 @@ mod tests {
         const TAKE: usize = 300;
 
         let mut whole = vec![0u32; N];
-        let mut part = vec![0u32; N];
-
+        let mut part = vec![u32::MAX; N];
         Shuffler::new(N).fill_blocked(&mut whole, 0xC0FF_EE00, 8, N);
         Shuffler::new(N).fill_blocked(&mut part, 0xC0FF_EE00, 8, TAKE);
-
-        assert_eq!(part[..TAKE], whole[..TAKE], "the take diverged from the draw it is a prefix of");
-        assert!(part[TAKE..].iter().all(|&i| i == 0), "the expansion wrote past its take");
-
+        assert_eq!(part[..TAKE], whole[..TAKE], "prefix sub-sample deviated from full blocked draw");
+        assert!(part[TAKE..].iter().all(|&i| i == u32::MAX), "expansion wrote beyond requested take length");
         let mut sorted = part[..TAKE].to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-
-        assert_eq!(sorted.len(), TAKE, "the sample repeats a position");
+        assert_eq!(sorted.len(), TAKE, "sub-sample contains duplicate indices");
     }
 
     #[test]
     fn blocked_fill_keeps_each_block_in_order() {
         let mut out = vec![0u32; 512];
         Shuffler::new(512).fill_blocked(&mut out, 0x5EED, 64, 512);
-
         for run in out.chunks(64) {
-            assert!(run.windows(2).all(|w| w[1] == w[0] + 1), "a block came apart: {run:?}");
+            assert!(run.windows(2).all(|w| w[1] == w[0] + 1), "internal block order disrupted: {run:?}");
         }
     }
 
     #[test]
     fn a_seed_reproduces_its_permutation() {
-        let mut shuffler = Shuffler::new(RAGGED);
-        let mut first = vec![0u32; RAGGED];
-        let mut second = vec![0u32; RAGGED];
-        let mut other = vec![0u32; RAGGED];
-
+        let mut shuffler = Shuffler::new(RAGGED_LEN);
+        let mut first = vec![0u32; RAGGED_LEN];
+        let mut second = vec![0u32; RAGGED_LEN];
+        let mut other = vec![0u32; RAGGED_LEN];
         shuffler.fill(&mut first, 7);
         shuffler.fill(&mut second, 7);
         shuffler.fill(&mut other, 8);
-
         assert_eq!(first, second, "same seed gave a different permutation");
         assert_ne!(first, other, "different seeds gave the same permutation");
-
-        // The blocked path reuses one scratch buffer across calls, so its determinism is a
-        // property of that reuse rather than of the algorithm alone. A resume draws its
-        // batches from the seed and nothing else.
-        shuffler.fill_blocked(&mut first, 7, 4, RAGGED);
-        shuffler.fill_blocked(&mut second, 7, 4, RAGGED);
-
+        shuffler.fill_blocked(&mut first, 7, 4, RAGGED_LEN);
+        shuffler.fill_blocked(&mut second, 7, 4, RAGGED_LEN);
         assert_eq!(first, second, "same seed gave a different blocked permutation");
     }
 
     #[test]
     fn every_ordering_is_equally_likely() {
-        // Bucketing is only worth trusting if it did not bias the distribution, and n = 4 is
-        // small enough to check all 24 orderings against their expected count directly.
         const TRIALS: usize = 120_000;
         const ORDERINGS: usize = 24;
 
@@ -291,19 +248,17 @@ mod tests {
 
         for trial in 0..TRIALS {
             shuffler.fill(&mut out, trial as u64);
-            seen[rank(&out)] += 1;
+            seen[lehmer_code(&out)] += 1;
         }
 
         let expected = TRIALS as f64 / ORDERINGS as f64;
         let chi2: f64 = seen.iter().map(|&c| (f64::from(c) - expected).powi(2) / expected).sum();
-
-        // 23 degrees of freedom puts the 0.999 quantile at 49.7.
-        // The seeds are fixed, so a failure here is a real skew and never a flake.
-        assert!(chi2 < 49.7, "chi-square {chi2:.1} over {ORDERINGS} orderings, distribution is skewed");
+        // 23 degrees of freedom sets the 0.999 quantile at 49.7.
+        assert!(chi2 < 49.7, "chi-square {chi2:.1} over {ORDERINGS} orderings indicates skewed distribution");
     }
 
-    /// Lehmer code of a permutation of 0..4, giving each ordering a distinct index.
-    fn rank(perm: &[u32; 4]) -> usize {
+    /// Computes the Lehmer code index for a permutation of 0..4.
+    fn lehmer_code(perm: &[u32; 4]) -> usize {
         const FACTORIAL: [usize; 4] = [6, 2, 1, 1];
 
         (0..4)
@@ -312,20 +267,6 @@ mod tests {
     }
 }
 
-/// Where `TARGET_BUCKET` comes from, and how to move it on other hardware.
-///
-/// `cargo test -p tuner --release --lib sweep -- --ignored --nocapture`, on an idle box: a run
-/// sharing the cores moves the tail by more than the tail's own spread. Too few buckets and the
-/// swaps fall out of cache, too many and the scatter keeps more write streams open than the
-/// store buffers can track.
-///
-/// Ryzen 7 7735HS, 8 cores, 16 MB L3, ms per shuffle:
-///
-/// ```text
-///                16     32     64    128    256
-/// n = 6.39M    6.20   5.80   4.87   4.36   4.25
-/// n = 32.8M   94.65  72.16  40.44  26.73  26.67
-/// ```
 #[cfg(test)]
 mod sweep {
     use std::time::Instant;
@@ -344,12 +285,11 @@ mod sweep {
             for buckets in [16, 32, 64, 128, 256] {
                 shuffler.fill_into(&mut out, 1, buckets);
 
-                let t = Instant::now();
-
+                let start = Instant::now();
                 for r in 0..5 {
                     shuffler.fill_into(&mut out, r, buckets);
                 }
-                println!("  buckets {buckets:>4}: {:.2} ms/shuffle", t.elapsed().as_secs_f64() * 1000.0 / 5.0);
+                println!("  buckets {buckets:>4}: {:.2} ms/shuffle", start.elapsed().as_secs_f64() * 1000.0 / 5.0);
             }
         }
     }
