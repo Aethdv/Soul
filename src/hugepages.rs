@@ -8,11 +8,6 @@
 //! 1GB page another 512×, and at 1GB the page table for a 256GB region is 2KB
 //! that simply stays in cache.
 //!
-//! So the allocator asks for the largest page it can, falls back when the pool
-//! isn't there, and reports which size it got. Every tier returns zeroed memory
-//! and faults it in up front, so the first search runs hot; `clear` rewrites the
-//! pages in place rather than discarding them, keeping them resident.
-//!
 //! Huge pages are x86-64 Linux only here; other targets get a plain zeroed allocation.
 //! That path issues `mmap`/`madvise`/`munmap` as raw syscalls, so the build needs
 //! no `libc` at all.
@@ -68,7 +63,7 @@ impl<T> HugePages<T> {
     /// The pages come lazily, so the first write to each one faults it in.
     /// The TT uses this to drive first-touch from its own NUMA-bound threads,
     /// which places each page on the node that touched it. `zeroed` is this
-    /// same map with the pre-fault folded in, for the single-domain path.
+    /// same map with the pre-fault folded in.
     ///
     /// # Safety
     /// As [`zeroed`]: `T` must be valid when zero-initialized.
@@ -95,7 +90,6 @@ impl<T> HugePages<T> {
         pages
     }
 
-    /// The page size the OS actually gave us.
     pub fn kind(&self) -> PageKind { self.kind }
 
     /// Reset to an empty table, leaving the pages resident.
@@ -113,8 +107,7 @@ impl<T> HugePages<T> {
     }
 }
 
-/// Zero `bytes` from `base`, shared by the allocation pre-fault and the
-/// `ucinewgame` clear. The write is memory-bandwidth-bound, so one pass is the floor.
+/// The write is memory-bandwidth-bound, so one pass is the floor.
 ///
 /// # Safety
 /// `base` must be writable for `bytes`, and nothing may read the region concurrently.
