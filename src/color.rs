@@ -37,6 +37,7 @@ palette! {
     JADE   / JADE_PEN   = 100, 200, 120; "soft green"
     CORAL  / CORAL_PEN  = 224, 105, 100; "soft red"
     MAUVE  / MAUVE_PEN  = 151, 125, 191; "muted purple"
+    LILAC  / LILAC_PEN  = 180, 140, 255; "bright purple, for help titles"
     IVORY  / IVORY_PEN  = 246, 238, 218; "warm off-white"
     HAZE   / HAZE_PEN   = 139, 154, 171; "cool grey blue"
     TAUPE  / TAUPE_PEN  = 150, 140, 128; "muted taupe"

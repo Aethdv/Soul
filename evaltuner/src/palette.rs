@@ -10,7 +10,7 @@ use crate::engine::color;
 pub const LAB: &str = color::TAUPE_PEN;
 
 /// Config and telemetry values.
-pub const VAL: &str = color::MINT_PEN;
+pub const VAL: &str = color::STEEL_PEN;
 
 /// Dataset counts.
 pub const COUNT: &str = color::STEEL_PEN;

@@ -2,14 +2,20 @@
 
 use std::io::{IsTerminal, stdout};
 
-use crate::color::{CORAL_PEN, GOLD_PEN, GREY_PEN, OK_PEN, RESET, TEAL_PEN};
+use crate::color::{ASH_PEN, BOLD, CORAL_PEN, HAZE_PEN, IVORY_PEN, LILAC_PEN, RESET, STEEL_PEN};
 
 /// Section titles.
-pub const HEADER: &str = OK_PEN;
+pub const HEADER: &str = LILAC_PEN;
 /// Argument placeholders.
 pub const ARG: &str = CORAL_PEN;
-/// Command and flag names.
-pub const CMD: &str = GOLD_PEN;
+/// Command and flag names: neutral and bright, since this is the text you type.
+pub const CMD: &str = IVORY_PEN;
+/// Descriptions, cooled so the names carry the scan.
+pub const DESC: &str = HAZE_PEN;
+/// The dash between a name and its description.
+pub const RULE: &str = ASH_PEN;
+/// A default's value inside its parenthesis.
+pub const VALUE: &str = STEEL_PEN;
 
 pub struct Help {
     width: usize,
@@ -28,7 +34,7 @@ impl Help {
 
     pub fn header(&self, title: &str) {
         if self.use_ansi {
-            println!("{HEADER}{title}{RESET}");
+            println!("{BOLD}{HEADER}{title}{RESET}");
         } else {
             println!("{title}");
         }
@@ -64,7 +70,7 @@ impl Help {
 
     fn with_default(&self, desc: &str, default: &str) -> String {
         if self.use_ansi {
-            format!("{desc} {GREY_PEN}(default: {TEAL_PEN}{default}{GREY_PEN}){RESET}")
+            format!("{desc} {ASH_PEN}(default: {VALUE}{default}{ASH_PEN})")
         } else {
             format!("{desc} (default: {default})")
         }
@@ -89,9 +95,9 @@ impl Help {
         }
 
         if args.is_empty() {
-            println!("{spaces_indent}{CMD}{name}{spaces_pad}{RESET}- {desc}");
+            println!("{spaces_indent}{CMD}{name}{spaces_pad}{RULE}- {DESC}{desc}{RESET}");
         } else {
-            println!("{spaces_indent}{CMD}{name} {ARG}{args}{spaces_pad}{RESET}- {desc}");
+            println!("{spaces_indent}{CMD}{name} {ARG}{args}{spaces_pad}{RULE}- {DESC}{desc}{RESET}");
         }
     }
 }

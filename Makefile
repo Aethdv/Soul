@@ -64,7 +64,7 @@ endif
 
 release: avx2 avx2-bmi2 avx512 ## Build all release binaries at once
 
-avx2: ## build AVX2 + FMA (pre Zen-3)	
+avx2: ## Build AVX2 + FMA (pre Zen-3)
 	@echo "Building $(EXE_NAME)-v$(VERSION)-avx2..."
 	@RUSTFLAGS="-C target-cpu=x86-64-v2 -C target-feature=+avx2,+fma" \
 		cargo build --release --quiet --target $(RUST_HOST)
@@ -253,12 +253,13 @@ clean: ## Remove all build artifacts
 	@echo "Done"
 
 check-pgo:
-	@command -v cargo-pgo >/dev/null 2>&1 || (echo "\x1b[33mWarning: cargo-pgo is not installed. To run PGO builds, please install it via: cargo install cargo-pgo\x1b[0m" && exit 1)
+	@command -v cargo-pgo >/dev/null 2>&1 || (echo "\x1b[38;2;220;187;80mWarning: cargo-pgo is not installed. To run PGO builds, please install it via: cargo install cargo-pgo\x1b[0m" && exit 1)
 
+# Pens match src/color.rs: LILAC titles, IVORY names, CORAL placeholders, ASH rule, HAZE prose.
 help:
 	@printf '\033[1;38;2;180;140;255mSoul Chess Engine\033[0m\n\n'
-	@printf 'Usage: make \033[38;2;255;215;0m<target>\033[0m\n\n'
-	@printf 'Targets:\n'
+	@printf '\033[38;2;139;154;171mUsage:\033[0m make \033[38;2;224;105;100m<target>\033[0m\n\n'
+	@printf '\033[38;2;180;140;255mTargets\033[0m\n'
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*?##/ { \
-		printf "  \033[38;2;255;215;0m%-12s\033[0m \033[38;2;130;130;130m%s\033[0m\n", $$1, $$2 \
+		printf "  \033[38;2;246;238;218m%-14s\033[38;2;118;112;104m-\033[38;2;139;154;171m%s\033[0m\n", $$1, $$2 \
 	}' $(MAKEFILE_LIST)
