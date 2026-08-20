@@ -28,11 +28,28 @@ use crate::{
     numa::NumaTopology,
 };
 
-/// TT entry bound flags.
-pub const BOUND_NONE: u8 = 0;
-pub const BOUND_EXACT: u8 = 1;
-pub const BOUND_LOWER: u8 = 2; // Beta cutoff (fail-high)
-pub const BOUND_UPPER: u8 = 3; // Alpha cutoff (fail-low)
+/// What a stored score proves. Discriminants are the on-slot encoding, two bits of `packed`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u8)]
+pub enum Bound {
+    /// Empty slot.
+    #[default]
+    None = 0,
+    Exact = 1,
+    /// Beta cutoff (fail-high).
+    Lower = 2,
+    /// Alpha cutoff (fail-low).
+    Upper = 3,
+}
+
+impl Bound {
+    /// Total over the two bits, so a torn read decodes to a variant instead of nothing.
+    #[inline(always)]
+    const fn from_bits(bits: u16) -> Self {
+        // SAFETY: the mask leaves 0..=3, and every one of those is a declared discriminant.
+        unsafe { mem::transmute((bits & 0x3) as u8) }
+    }
+}
 
 /// No eval stored, which is what an in-check store leaves behind. Sits above MATE,
 /// so it can never be mistaken for a score, and inside i16 so it survives the slot.
@@ -53,8 +70,13 @@ const CLUSTER_SIZE: usize = 3;
 /// only proves the truth is at least this high, so it cuts only once it clears
 /// beta; an upper bound is the mirror, usable only at or below alpha.
 #[inline(always)]
-pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
-    bound == BOUND_EXACT || (bound == BOUND_LOWER && score >= beta) || (bound == BOUND_UPPER && score <= alpha)
+pub fn can_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> bool {
+    match bound {
+        Bound::Exact => true,
+        Bound::Lower => score >= beta,
+        Bound::Upper => score <= alpha,
+        Bound::None => false,
+    }
 }
 
 /// The static eval clamped into the range a searched score proves.
@@ -64,12 +86,12 @@ pub fn can_cutoff(bound: u8, score: i32, alpha: i32, beta: i32) -> bool {
 /// eval sitting below it; an upper bound is the ceiling and can only pull one down. An
 /// eval already inside the proven range stands, since the bound contradicts nothing.
 #[inline(always)]
-pub fn clamp_to_bound(bound: u8, score: i32, eval: i32) -> i32 {
+pub fn clamp_to_bound(bound: Bound, score: i32, eval: i32) -> i32 {
     match bound {
-        BOUND_EXACT => score,
-        BOUND_LOWER => eval.max(score),
-        BOUND_UPPER => eval.min(score),
-        _ => eval,
+        Bound::Exact => score,
+        Bound::Lower => eval.max(score),
+        Bound::Upper => eval.min(score),
+        Bound::None => eval,
     }
 }
 
@@ -118,7 +140,7 @@ pub struct TtHit {
     pub mv: Move,
     pub score: i32,
     pub depth: i32,
-    pub bound: u8,
+    pub bound: Bound,
     pub pv: bool,
     /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
     pub eval: i32,
@@ -131,7 +153,7 @@ struct Payload {
     score: i16,
     eval: i16,
     depth: u8,
-    bound: u8,
+    bound: Bound,
     age: u8,
     pv: u8,
 }
@@ -142,13 +164,13 @@ struct Payload {
 #[inline(always)]
 const fn verification_key(hash: u64) -> u16 { hash as u16 }
 
-const fn pack(depth: u8, bound: u8, pv: u8, age: u8) -> u16 {
+const fn pack(depth: u8, bound: Bound, pv: u8, age: u8) -> u16 {
     depth as u16 | ((bound as u16 & 0x3) << 8) | ((pv as u16 & 0x1) << 10) | ((age as u16 & 0x1F) << 11)
 }
 
 const fn packed_depth(packed: u16) -> u8 { (packed & 0xFF) as u8 }
 
-const fn packed_bound(packed: u16) -> u8 { ((packed >> 8) & 0x3) as u8 }
+const fn packed_bound(packed: u16) -> Bound { Bound::from_bits(packed >> 8) }
 
 const fn packed_pv(packed: u16) -> u8 { ((packed >> 10) & 0x1) as u8 }
 
@@ -163,7 +185,7 @@ impl TtEntry {
     fn meta(&self) -> (u16, u16) { (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed)) }
 
     #[inline(always)]
-    fn is_occupied(&self) -> bool { packed_bound(self.packed.load(Ordering::Relaxed)) != BOUND_NONE }
+    fn is_occupied(&self) -> bool { packed_bound(self.packed.load(Ordering::Relaxed)) != Bound::None }
 
     /// The probe's per-slot read. One Acquire load of `key` gates it; the rest is
     /// pulled only on a match, so a miss costs a single atomic load. The Acquire
@@ -177,7 +199,7 @@ impl TtEntry {
 
         let packed = self.packed.load(Ordering::Relaxed);
         let bound = packed_bound(packed);
-        if bound == BOUND_NONE {
+        if bound == Bound::None {
             return None;
         }
         Some(TtHit {
@@ -314,7 +336,7 @@ impl TranspositionTable {
 
     /// Insert or update this position.
     #[inline(always)]
-    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
+    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
@@ -326,7 +348,7 @@ impl TranspositionTable {
 
         for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, packed) = slot.meta();
-            if packed_bound(packed) == BOUND_NONE || key == key16 {
+            if packed_bound(packed) == Bound::None || key == key16 {
                 victim = i;
                 is_key_match = key == key16;
                 break;
@@ -368,7 +390,7 @@ impl TranspositionTable {
     /// it takes this position's own slot, an empty one, another depth-0 entry, or one
     /// whose quality has aged to nothing. A fresh deep result is never evicted for it.
     #[inline(always)]
-    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: u8, pv: bool, eval: i32) {
+    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
@@ -380,7 +402,7 @@ impl TranspositionTable {
 
         for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, packed) = slot.meta();
-            if key == key16 || packed_bound(packed) == BOUND_NONE || packed_depth(packed) == 0 {
+            if key == key16 || packed_bound(packed) == Bound::None || packed_depth(packed) == 0 {
                 victim = Some(i);
                 is_key_match = key == key16;
                 break;

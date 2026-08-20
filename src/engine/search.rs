@@ -980,7 +980,7 @@ impl Worker<'_> {
                 }
             (tt_move, hit.pv, Some(hit.eval), hit.score, hit.bound, hit.depth)
         } else {
-            (None, false, None, tt::SCORE_NONE, tt::BOUND_NONE, 0)
+            (None, false, None, tt::SCORE_NONE, tt::Bound::None, 0)
         };
 
         let checkers = self.xb_checkers();
@@ -1179,7 +1179,7 @@ impl Worker<'_> {
                 if value >= probcut_beta {
                     searcher
                         .tt
-                        .store(self.pos.hash, ply, probcut_depth, value, mv, tt::BOUND_LOWER, tt_pv, raw_static_eval);
+                        .store(self.pos.hash, ply, probcut_depth, value, mv, tt::Bound::Lower, tt_pv, raw_static_eval);
 
                     return Ok(value);
                 }
@@ -1393,7 +1393,7 @@ impl Worker<'_> {
                     && Some(mv) == tt_move
                     && depth >= sp.singext_min_depth
                     && tt_depth >= depth - sp.singext_tt_depth
-                    && tt_bound != tt::BOUND_UPPER
+                    && tt_bound != tt::Bound::Upper
                     && !is_mate(tt_score)
                 {
                     let sing_beta = (tt_score - depth * sp.singext_margin).max(-MATE_BOUND);
@@ -1528,11 +1528,11 @@ impl Worker<'_> {
         }
 
         let bound = if res.best_eval >= beta {
-            tt::BOUND_LOWER
+            tt::Bound::Lower
         } else if res.best_eval > alpha_orig {
-            tt::BOUND_EXACT
+            tt::Bound::Exact
         } else {
-            tt::BOUND_UPPER
+            tt::Bound::Upper
         };
 
         // ── TT store
@@ -1555,8 +1555,8 @@ impl Worker<'_> {
             && !res.best_move.is_null()
             && !res.best_move.is_tactical()
             && res.best_eval.abs() < MATE_BOUND
-            && !((bound == tt::BOUND_LOWER && res.best_eval <= static_eval)
-                || (bound == tt::BOUND_UPPER && res.best_eval >= static_eval))
+            && !((bound == tt::Bound::Lower && res.best_eval <= static_eval)
+                || (bound == tt::Bound::Upper && res.best_eval >= static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
 
@@ -1953,11 +1953,11 @@ impl Worker<'_> {
 
         // ── QSearch TT Store
         let bound = if best_eval >= beta {
-            tt::BOUND_LOWER
+            tt::Bound::Lower
         } else if best_eval > alpha_orig {
-            tt::BOUND_EXACT
+            tt::Bound::Exact
         } else {
-            tt::BOUND_UPPER
+            tt::Bound::Upper
         };
 
         searcher
