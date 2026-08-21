@@ -137,7 +137,7 @@ impl TtMove {
 /// What a probe hands back, already unfolded into search units.
 #[derive(Clone, Copy)]
 pub struct TtData {
-    mv: Move,
+    raw_mv: Move,
     pub pv: bool,
     /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
     pub eval: i32,
@@ -148,16 +148,17 @@ pub struct TtData {
 
 impl TtData {
     /// No slot matched.
-    pub const NONE: Self = Self { mv: Move::null(), pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
+    pub const NONE: Self =
+        Self { raw_mv: Move::null(), pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
 
     /// Bind once per node and after the cutoff test,
     /// since a probe that cuts never needs the move.
     #[inline(always)]
     pub fn mv(&self, pos: &Position) -> TtMove {
-        if self.mv.is_null() {
+        if self.raw_mv.is_null() {
             TtMove::Null
-        } else if is_pseudo_legal(pos, self.mv) {
-            TtMove::Found(self.mv)
+        } else if is_pseudo_legal(pos, self.raw_mv) {
+            TtMove::Found(self.raw_mv)
         } else {
             TtMove::Collision
         }
@@ -165,7 +166,7 @@ impl TtData {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Payload {
+struct SlotWrite {
     key: u16,
     mv: u16,
     score: i16,
@@ -193,7 +194,7 @@ impl TtEntry {
     /// The replacement scan's read. Relaxed is enough, since a scan never reads payload
     /// off this load, and a stale word costs the store path a preserved move and no more.
     #[inline(always)]
-    fn meta(&self) -> (u16, u16) { (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed)) }
+    fn scan_read(&self) -> (u16, u16) { (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed)) }
 
     #[inline(always)]
     fn is_occupied(&self) -> bool { packed_bound(self.packed.load(Ordering::Relaxed)) != Bound::None }
@@ -211,7 +212,7 @@ impl TtEntry {
             return None;
         }
         Some(TtData {
-            mv: Move::from_u16(self.mv.load(Ordering::Relaxed)),
+            raw_mv: Move::from_u16(self.mv.load(Ordering::Relaxed)),
             score: score_from_tt(i32::from(self.score.load(Ordering::Relaxed).cast_signed()), ply),
             depth: i32::from(packed_depth(packed)),
             bound,
@@ -221,7 +222,7 @@ impl TtEntry {
     }
 
     #[inline(always)]
-    fn store(&self, entry: Payload) {
+    fn store(&self, entry: SlotWrite) {
         let packed = pack(entry.depth, entry.bound, entry.pv, entry.age);
         self.mv.store(entry.mv, Ordering::Relaxed);
         self.score.store(entry.score.cast_unsigned(), Ordering::Relaxed);
@@ -241,7 +242,7 @@ impl TranspositionTable {
     }
 
     pub fn resize(&mut self, size_mb: usize, threads: usize) { self.clusters = Self::alloc(size_mb, &self.numa, threads); }
-    pub fn distributes(&self) -> bool { self.numa.num_nodes() > 1 }
+    pub fn spans_nodes(&self) -> bool { self.numa.num_nodes() > 1 }
     pub fn page_kind(&self) -> PageKind { self.clusters.kind() }
 
     /// The cluster count follows from the page-rounded byte size, so a 1GB-page
@@ -298,7 +299,7 @@ impl TranspositionTable {
         self.generation.store(0, Ordering::Relaxed);
     }
 
-    pub fn new_search(&self) { self.generation.fetch_add(1, Ordering::Relaxed); }
+    pub fn begin_search(&self) { self.generation.fetch_add(1, Ordering::Relaxed); }
 
     /// Keeps the thread's compute on its cores and the per-thread state it allocates
     /// next in a warm L3.
@@ -336,7 +337,7 @@ impl TranspositionTable {
     pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
-        let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
+        let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
         let cluster = self.cluster(idx);
 
         let mut victim = 0;
@@ -344,14 +345,14 @@ impl TranspositionTable {
         let mut is_key_match = false;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, packed) = slot.meta();
+            let (key, packed) = slot.scan_read();
             if packed_bound(packed) == Bound::None || key == key16 {
                 victim = i;
                 is_key_match = key == key16;
                 break;
             }
 
-            let quality = replacement_quality(packed, cur);
+            let quality = replacement_quality(packed, cur_age);
             if quality < worst_quality {
                 worst_quality = quality;
                 victim = i;
@@ -367,7 +368,7 @@ impl TranspositionTable {
             store_pv |= packed_pv(existing.packed.load(Ordering::Relaxed));
         }
 
-        cluster.slots[victim].store(Payload {
+        cluster.slots[victim].store(SlotWrite {
             key: key16,
             mv: store_mv,
             score: score_to_tt(score, ply) as i16,
@@ -375,7 +376,7 @@ impl TranspositionTable {
             // 8-bit field covers MAX_DEPTH (246); clamp just guards the cast.
             depth: depth.clamp(0, u8::MAX as i32) as u8,
             bound,
-            age: cur,
+            age: cur_age,
             pv: store_pv,
         });
     }
@@ -386,7 +387,7 @@ impl TranspositionTable {
     pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
-        let cur = self.generation.load(Ordering::Relaxed) & AGE_MASK;
+        let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
         let cluster = self.cluster(idx);
 
         let mut victim: Option<usize> = None;
@@ -394,14 +395,14 @@ impl TranspositionTable {
         let mut is_key_match = false;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, packed) = slot.meta();
+            let (key, packed) = slot.scan_read();
             if key == key16 || packed_bound(packed) == Bound::None || packed_depth(packed) == 0 {
                 victim = Some(i);
                 is_key_match = key == key16;
                 break;
             }
 
-            let quality = replacement_quality(packed, cur);
+            let quality = replacement_quality(packed, cur_age);
             if quality <= 0 && quality < worst_quality {
                 worst_quality = quality;
                 victim = Some(i);
@@ -416,14 +417,14 @@ impl TranspositionTable {
             } else {
                 pv as u8
             };
-            cluster.slots[victim].store(Payload {
+            cluster.slots[victim].store(SlotWrite {
                 key: key16,
                 mv: mv.inner(),
                 score: score_to_tt(score, ply) as i16,
                 eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                 depth: 0,
                 bound,
-                age: cur,
+                age: cur_age,
                 pv: store_pv,
             });
         }

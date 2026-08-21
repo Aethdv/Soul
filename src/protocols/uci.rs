@@ -526,7 +526,7 @@ where I: Iterator<Item = &'a str> {
 
     if subcmd == "startpos" {
         state.load_position(Position::from_fen(STARTPOS));
-        state.tt.new_search();
+        state.tt.begin_search();
 
         if tokens.peek() == Some(&"moves") {
             tokens.next();
@@ -536,7 +536,7 @@ where I: Iterator<Item = &'a str> {
         match Position::try_from_tokens(&mut *tokens) {
             Ok(board) => {
                 state.load_position(board);
-                state.tt.new_search();
+                state.tt.begin_search();
             },
 
             Err(e) => {
@@ -643,7 +643,7 @@ where I: Iterator<Item = &'a str> {
             if n != state.threads {
                 state.threads = n;
                 // Re-place the table for the new thread count (multi-node only).
-                if state.tt.distributes() {
+                if state.tt.spans_nodes() {
                     state.tt = Arc::new(TranspositionTable::new(state.hash_size, n));
                 }
                 state.smp_pool = LazySmpPool::new(n, state.tt.clone());

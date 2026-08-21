@@ -275,7 +275,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 Ok(board) => {
                     state.stop_search();
                     state.load_position(board);
-                    state.tt.new_search();
+                    state.tt.begin_search();
                 },
                 Err(e) => eprintln!("Error (invalid fen): {e}"),
             }
@@ -303,7 +303,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 let n = n.clamp(1, 1024);
                 if n != state.threads {
                     state.threads = n;
-                    if state.tt.distributes() {
+                    if state.tt.spans_nodes() {
                         state.tt = Arc::new(TranspositionTable::new(state.hash_size, n));
                     }
                     state.smp_pool = LazySmpPool::new(n, state.tt.clone());
@@ -359,7 +359,7 @@ fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
     state.stop_search();
     state.board.make_move(mv, &mut state.accumulator);
     state.history.push(state.board.hash);
-    state.tt.new_search();
+    state.tt.begin_search();
 
     if state.board.is_threefold_repetition(&state.history) {
         println!("1/2-1/2 {{Draw by repetition}}");
