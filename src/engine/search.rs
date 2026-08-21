@@ -1819,7 +1819,8 @@ impl Worker<'_> {
         //
         // Quiescence TT Move (~9 Elo)
         let qs_tt = searcher.tt.probe(self.pos.hash, ply);
-        if !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta) {
+        // The guard runs last so only a cutting probe pays for it.
+        if !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta) && qs_tt.mv(&self.pos) != TtMove::Collision {
             return Ok(qs_tt.score);
         }
 
