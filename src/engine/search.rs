@@ -964,10 +964,12 @@ impl Worker<'_> {
         let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { TtData::NONE };
         let tt_move = tt_probe.mv(&self.pos);
 
-        // A collision invalidates the whole slot, not just the move it stored.
+        // A collision invalidates the whole slot, not just the move it stored, so the
+        // entry reads as a miss to the cutoff, the static eval and the pv bit alike.
+        let tt_probe = if tt_move == TtMove::Collision { TtData::NONE } else { tt_probe };
+
         #[rustfmt::skip]
-        if tt_move != TtMove::Collision
-            && !N::PV
+        if !N::PV
             && tt_probe.depth >= depth
             && tt::can_cutoff(tt_probe.bound, tt_probe.score, alpha, beta)
         {
@@ -1819,8 +1821,10 @@ impl Worker<'_> {
         //
         // Quiescence TT Move (~9 Elo)
         let qs_tt = searcher.tt.probe(self.pos.hash, ply);
-        // The guard runs last so only a cutting probe pays for it.
-        if !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta) && qs_tt.mv(&self.pos) != TtMove::Collision {
+        let qs_tt_move = qs_tt.mv(&self.pos);
+        let qs_tt = if qs_tt_move == TtMove::Collision { TtData::NONE } else { qs_tt };
+
+        if !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta) {
             return Ok(qs_tt.score);
         }
 
@@ -1879,7 +1883,7 @@ impl Worker<'_> {
         let ksq = pins.king(stm);
         let pinned = pins.blockers(stm);
 
-        let mut picker = MovePicker::new_qsearch(qs_tt.mv(&self.pos).get(), searcher.cfg, pins, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt_move.get(), searcher.cfg, pins, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 
