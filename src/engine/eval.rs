@@ -255,9 +255,9 @@ pub fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchParams) -> 
         + board.piece_count(PieceType::Queen) * params.vol_queen
         + board.piece_count(PieceType::King) * params.vol_king;
 
-    let div = std::cmp::max(params.lazy_eval_divisor, 1);
+    let div = std::cmp::max(params.qs_lazy_divisor, 1);
     let scaled = (volatility * phase) / div;
-    params.lazy_eval_margin + scaled
+    params.qs_lazy_margin + scaled
 }
 
 /// Generic evaluation core. Monomorphized to `i32` for search and `DualNode` for tuning.
