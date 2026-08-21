@@ -110,7 +110,6 @@ pub struct MovePicker {
     pins: Pins,
     killers: [Move; 2],
     killer_idx: usize,
-    killers_taken: [bool; 2],
     threats: Bitboard,
     cont1: ContContext,
     cont2: ContContext,
@@ -160,7 +159,6 @@ impl MovePicker {
             pins,
             killers,
             killer_idx: 0,
-            killers_taken: [false; 2],
             threats,
             cont1,
             cont2,
@@ -193,7 +191,6 @@ impl MovePicker {
             pins,
             killers: [Move::null(); 2],
             killer_idx: 0,
-            killers_taken: [false; 2],
             threats: Bitboard(0),
             cont1: ContContext::default(),
             cont2: ContContext::default(),
@@ -274,7 +271,6 @@ impl MovePicker {
                     return Some(mv);
                 },
 
-                // ── Killer Stage
                 // Both killers outrank every history-scored quiet, so the order is unchanged;
                 // a cutoff here skips generating and scoring the node's quiets entirely.
                 Stage::Killers => {
@@ -286,11 +282,9 @@ impl MovePicker {
                         self.stage = Stage::GenQuiets;
                         continue;
                     }
-                    let i = self.killer_idx;
-                    let mv = self.killers[i];
+                    let mv = self.killers[self.killer_idx];
                     self.killer_idx += 1;
                     if !mv.is_null() && Some(mv) != self.hash_move && is_pseudo_legal(board, mv) {
-                        self.killers_taken[i] = true;
                         return Some(mv);
                     }
                 },
@@ -322,8 +316,7 @@ impl MovePicker {
                     // SAFETY: count was non-zero; index holds an initialized move.
                     let mv = unsafe { self.read_move(self.count) };
 
-                    let taken =
-                        (self.killers_taken[0] && mv == self.killers[0]) || (self.killers_taken[1] && mv == self.killers[1]);
+                    let taken = self.killer_idx == self.killers.len() && (mv == self.killers[0] || mv == self.killers[1]);
                     if Some(mv) != self.hash_move && !taken {
                         #[cfg(feature = "mvpstats")]
                         {
