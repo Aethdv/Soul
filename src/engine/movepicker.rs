@@ -101,6 +101,7 @@ pub struct MovePicker {
     pins: Pins,
     killers: [Move; 2],
     threats: Bitboard,
+    pawn_key: u64,
     cont1: ContContext,
     cont2: ContContext,
     cont4: ContContext,
@@ -131,6 +132,7 @@ impl MovePicker {
         pins: Pins,
         killers: [Move; 2],
         threats: Bitboard,
+        pawn_key: u64,
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
@@ -149,6 +151,7 @@ impl MovePicker {
             pins,
             killers,
             threats,
+            pawn_key,
             cont1,
             cont2,
             cont4,
@@ -165,7 +168,7 @@ impl MovePicker {
     // Rust lacks guaranteed copy elision; returning an explicit literal is the only
     // shape rustc reliably constructs in place within the caller's frame.
     #[inline]
-    pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
+    pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, pawn_key: u64, in_check: bool) -> Self {
         Self {
             stage: Stage::Hash,
             hash_move,
@@ -180,6 +183,7 @@ impl MovePicker {
             pins,
             killers: [Move::null(); 2],
             threats: Bitboard(0),
+            pawn_key,
             cont1: ContContext::default(),
             cont2: ContContext::default(),
             cont4: ContContext::default(),
@@ -529,7 +533,8 @@ impl MovePicker {
         } else if mv == self.killers[1] {
             KILLER_SCORES[1]
         } else {
-            let score = history.score_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.cont1, self.cont2, self.cont4);
+            let score =
+                history.order_quiet(stm, pt, mv.from(), mv.to(), self.threats, self.pawn_key, self.cont1, self.cont2, self.cont4);
             // Four tables sum here and the clamp still never fires: soft-gravity attractors
             // keep each one away from its own ±16384 cap. Measured on bench, zero saturation
             // in ~11M quiets.
@@ -712,6 +717,7 @@ mod tests {
                 Pins::new(&board),
                 [Move::null(); 2],
                 Bitboard(0),
+                0,
                 ContContext::default(),
                 ContContext::default(),
                 ContContext::default(),

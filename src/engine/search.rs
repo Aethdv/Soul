@@ -1136,7 +1136,7 @@ impl Worker<'_> {
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
-            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
+            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, self.pos.pawn_key, false);
 
             self.xb_enter(ply);
 
@@ -1229,6 +1229,7 @@ impl Worker<'_> {
             // pieces can never stand there, so the two maps are interchangeable
             // here and the node count does not move.
             let threats = self.xb_threats(opp);
+            let pawn_key = self.pos.pawn_key;
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
@@ -1241,7 +1242,8 @@ impl Worker<'_> {
             // picker incorporate recent positional context into quiet ordering.
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
-            let mut picker = MovePicker::new(tt_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+            let mut picker =
+                MovePicker::new(tt_move, searcher.cfg, pins, self.stack[ply].killers, threats, pawn_key, cont1, cont2, cont4);
 
             self.xb_enter(ply);
 
@@ -1463,7 +1465,8 @@ impl Worker<'_> {
                     if mv.is_history_quiet() {
                         let pt = self.pos.expect_piece_at(mv.from());
 
-                        self.history.update(stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4, bonus);
+                        self.history
+                            .update(stm, pt, mv.from(), mv.to(), threats, pawn_key, cont1, cont2, cont4, bonus);
 
                         // ── Killer Moves (~35 Elo)
                         // Maintain a 2-slot pseudo-Least-Recently-Used cache for tracking quiet cutoffs.
@@ -1494,7 +1497,8 @@ impl Worker<'_> {
                     for i in 0..quiet_limit {
                         let qm = self.stack[ply].quiet_moves[i];
                         let q_pt = self.pos.expect_piece_at(qm.from());
-                        self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
+                        self.history
+                            .update(stm, q_pt, qm.from(), qm.to(), threats, pawn_key, cont1, cont2, cont4, -bonus);
                     }
 
                     // ── Capture Malus
@@ -1879,7 +1883,7 @@ impl Worker<'_> {
         let ksq = pins.king(stm);
         let pinned = pins.blockers(stm);
 
-        let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, pins, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, pins, self.pos.pawn_key, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 

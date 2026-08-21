@@ -26,7 +26,10 @@ pub const CORRECTION_LIMIT: i32 = 256 * 32;
 /// Denominator for correction table blend weights: `weight / CORRECTION_WEIGHT_SCALE`.
 pub const CORRECTION_WEIGHT_SCALE: i32 = 256;
 
+const PAWN_HISTORY_SIZE: usize = 512;
+
 const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
+const _: () = assert!(PAWN_HISTORY_SIZE.is_power_of_two());
 
 /// Continuation table indices for [n-1, n-2, n-4] plies back.
 const CONT_SLOTS: [usize; 3] = [0, 1, 1];
@@ -62,6 +65,7 @@ pub struct History {
     major_correction: CorrectionHistory,
     /// Capture history: `[side][attacker][to][victim]` (~8 Elo).
     capt: CaptureHistory,
+    pawn: PawnHistory,
     /// Dynamic soft-gravity saturation caps synchronized with search parameters.
     pub caps: HistoryCaps,
 }
@@ -75,6 +79,39 @@ pub struct ContContext {
 #[derive(Clone)]
 pub struct ContinuationHistory {
     data: Box<[i16]>,
+}
+
+/// Quiet ordering history keyed by the pawn structure.
+///
+/// Indexed by `[side][pawn_key & 511][piece][to_square]`.
+#[derive(Clone)]
+pub struct PawnHistory {
+    data: Box<[i16]>,
+}
+
+impl PawnHistory {
+    pub fn new() -> Self { Self { data: vec![0; 2 * PAWN_HISTORY_SIZE * 6 * 64].into_boxed_slice() } }
+    pub fn clear(&mut self) { self.data.fill(0); }
+
+    #[inline(always)]
+    fn idx(stm: Color, pawn_key: u64, pt: PieceType, to: Square) -> usize {
+        let mut i = stm as usize;
+        i = i * PAWN_HISTORY_SIZE + (pawn_key as usize & (PAWN_HISTORY_SIZE - 1));
+        i = i * 6 + pt as usize;
+        i * 64 + to.0 as usize
+    }
+
+    #[inline(always)]
+    pub fn get(&self, stm: Color, pawn_key: u64, pt: PieceType, to: Square) -> i16 { self.data[Self::idx(stm, pawn_key, pt, to)] }
+    #[inline(always)]
+    pub fn get_mut(&mut self, stm: Color, pawn_key: u64, pt: PieceType, to: Square) -> &mut i16 {
+        let idx = Self::idx(stm, pawn_key, pt, to);
+        &mut self.data[idx]
+    }
+}
+
+impl Default for PawnHistory {
+    fn default() -> Self { Self::new() }
 }
 
 /// Capture history table tracking cutoff frequencies for tactical moves.
@@ -124,7 +161,6 @@ impl Default for ContContext {
 
 impl ContinuationHistory {
     pub fn new() -> Self { Self { data: vec![0; 2 * 6 * 64 * 6 * 64].into_boxed_slice() } }
-
     pub fn clear(&mut self) { self.data.fill(0); }
 
     #[inline(always)]
@@ -155,7 +191,6 @@ impl Default for ContinuationHistory {
 
 impl CaptureHistory {
     pub fn new() -> Self { Self { data: vec![0; 2 * 6 * 64 * 6].into_boxed_slice() } }
-
     pub fn clear(&mut self) { self.data.fill(0); }
 
     #[inline(always)]
@@ -187,7 +222,6 @@ impl Default for CaptureHistory {
 
 impl CorrectionHistory {
     pub fn new() -> Self { Self { data: vec![0; 2 * CORRECTION_SIZE].into_boxed_slice() } }
-
     pub fn clear(&mut self) { self.data.fill(0); }
 
     #[inline(always)]
@@ -226,6 +260,7 @@ impl History {
             minor_correction: CorrectionHistory::new(),
             major_correction: CorrectionHistory::new(),
             capt: CaptureHistory::new(),
+            pawn: PawnHistory::new(),
             caps: HistoryCaps::default(),
         }
     }
@@ -240,6 +275,7 @@ impl History {
         self.minor_correction.clear();
         self.major_correction.clear();
         self.capt.clear();
+        self.pawn.clear();
     }
 
     /// Aggregates quiet move ordering scores from main, butterfly, and continuation tables.
@@ -268,6 +304,22 @@ impl History {
         score
     }
 
+    #[inline(always)]
+    pub fn order_quiet(
+        &self,
+        stm: Color,
+        pt: PieceType,
+        from: Square,
+        to: Square,
+        threats: Bitboard,
+        pawn_key: u64,
+        cont1: ContContext,
+        cont2: ContContext,
+        cont4: ContContext,
+    ) -> i32 {
+        self.score_quiet(stm, pt, from, to, threats, cont1, cont2, cont4) + i32::from(self.pawn.get(stm, pawn_key, pt, to))
+    }
+
     /// Updates main, butterfly and continuation entries with soft gravity: each pulls toward
     /// its table's ±cap with strength proportional to `bonus.abs()`, positive toward +cap and
     /// negative toward −cap. That decays stale information, so a cutoff at depth 10 cannot
@@ -281,6 +333,7 @@ impl History {
         from: Square,
         to: Square,
         threats: Bitboard,
+        pawn_key: u64,
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
@@ -289,6 +342,7 @@ impl History {
         let from_atk = threats.check_bit(from) as usize;
         let to_atk = threats.check_bit(to) as usize;
         Self::update_entry(&mut self.table[stm][pt][to], bonus, self.caps.quiet);
+        Self::update_entry(self.pawn.get_mut(stm, pawn_key, pt, to), bonus, self.caps.quiet);
         Self::update_entry(&mut self.butterfly[stm][from_atk][to_atk][butterfly_idx(from, to)], bonus, self.caps.butterfly);
         self.update_conthist(stm, pt, to, cont1, cont2, cont4, bonus);
     }
@@ -396,6 +450,7 @@ impl Default for History {
             minor_correction: CorrectionHistory { data: Box::new([]) },
             major_correction: CorrectionHistory { data: Box::new([]) },
             capt: CaptureHistory { data: Box::new([]) },
+            pawn: PawnHistory { data: Box::new([]) },
             caps: HistoryCaps::default(),
         }
     }
