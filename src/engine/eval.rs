@@ -240,7 +240,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
 
 /// Accumulator-only evaluation, no spatial features. Datagen's volatility filter.
 #[inline(always)]
-pub fn evaluate_fast(board: &Position, acc: &Vi16x8, phase: i32) -> i32 {
+pub fn evaluate_psqt(board: &Position, acc: &Vi16x8, phase: i32) -> i32 {
     let score = i32::tapered(acc, phase);
     if board.stm == Color::White { score } else { -score }
 }
@@ -283,12 +283,12 @@ pub fn evaluate_generic<T: EvalMath<Scalar = T>>(
         &features_store
     };
 
-    let score = compute_macro_eval(acc, phase, features, params);
+    let score = combine_buckets(acc, phase, features, params);
     if board.stm == Color::White { score } else { -score }
 }
 
 #[inline(always)]
-fn compute_macro_eval<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &SharedFeatures, params: &EvalParams<T>) -> T {
+fn combine_buckets<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &SharedFeatures, params: &EvalParams<T>) -> T {
     let buckets = fill_accumulators::<T>(acc, phase, features, params);
     LinearCombiner::forward(&buckets, phase, &CombinerParams::from_eval(params))
 }
@@ -505,7 +505,7 @@ impl SharedFeatures {
 }
 
 /// Seeds the buckets from the SIMD accumulator, then applies every term. Its own function
-/// so `compute_macro_eval` and `detailed_eval` cannot drift apart.
+/// so `combine_buckets` and `detailed_eval` cannot drift apart.
 #[inline]
 pub fn fill_accumulators<T: EvalMath<Scalar = T>>(
     acc: &T::Vec8,

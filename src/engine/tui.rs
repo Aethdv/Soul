@@ -9,7 +9,7 @@ use crate::{
         board::Position,
         defs::{Color, MATE, PieceType, Protocol, Square, is_mate},
         moves::Move,
-        util::{format_duration, human},
+        util::{fmt_count, format_duration},
     },
     engine::{
         movegen::gen_legal_moves,
@@ -99,7 +99,7 @@ pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
         tui_fg(GOLD_BRIGHT, ansi),
         tui_fg(STEEL, ansi), data.depth, data.sel_depth,
         tui_fg(SLATE, ansi), format_duration(t),
-        tui_fg(SLATE, ansi), human(data.nodes),
+        tui_fg(SLATE, ansi), fmt_count(data.nodes),
         tui_fg(TEAL, ansi), fmt_nps(data.nps),
         tui_fg(SLATE, ansi), data.hashfull / 10,
     );
@@ -378,7 +378,7 @@ fn print_uci(data: &SearchInfoData<'_>) {
             data.sel_depth,
             fmt_score_colored(data.score, 7, data.display.use_ansi),
             wdl_str,
-            human(data.nodes),
+            fmt_count(data.nodes),
             fmt_nps(data.nps),
             format_duration(t),
             data.hashfull,

@@ -33,7 +33,7 @@ use crate::{
     core::{
         board::STARTPOS,
         defs::MAX_DEPTH,
-        util::{format_comma as format_num, format_duration, pct, safe_div},
+        util::{format_comma as format_num, format_duration, pct, ratio},
     },
     tools::dataset::{load_epd_fens, scan_viri_games, write_game},
 };
@@ -229,17 +229,17 @@ impl Snapshot {
     }
 
     /// Positions recorded per second (current session only).
-    fn rate(&self) -> f64 { safe_div(self.plies as f64, self.elapsed) }
+    fn rate(&self) -> f64 { ratio(self.plies as f64, self.elapsed) }
 
     /// Overall completion percentage.
     fn progress_pct(&self) -> f64 { pct(self.generated, self.target) }
 
     /// Average game length in plies, a useful sanity check.
     /// Typical selfplay games run 60-200 plies depending on resign threshold.
-    fn avg_ply(&self) -> f64 { safe_div(self.plies as f64, self.games as f64) }
+    fn avg_ply(&self) -> f64 { ratio(self.plies as f64, self.games as f64) }
 
     /// ETA in seconds based on current throughput.
-    fn eta_secs(&self) -> f64 { safe_div(self.target.saturating_sub(self.generated) as f64, self.rate()) }
+    fn eta_secs(&self) -> f64 { ratio(self.target.saturating_sub(self.generated) as f64, self.rate()) }
 
     fn total_terminations(&self) -> u64 {
         self.term_check + self.term_stale + self.term_d50 + self.term_drep + self.term_dmat + self.term_draw_adj + self.term_resign

@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     color::{self, BOLD, GOLD, RESET},
-    core::util::{human, pct, safe_div},
+    core::util::{fmt_count, pct, ratio},
     engine::{
         history::{CORRECTION_LIMIT, CORRECTION_SCALE, CORRECTION_WEIGHT_SCALE},
         search_params::SearchParams,
@@ -109,9 +109,9 @@ pub fn report() {
 
         let row = [
             cell(NAMES[i], 0, None, ansi),
-            cell(&human(c.reads.load(Relaxed)), 1, None, ansi),
+            cell(&fmt_count(c.reads.load(Relaxed)), 1, None, ansi),
             cell(&format!("{hit:.1}%"), 2, Some(hit_rgb), ansi),
-            cell(&human(c.updates.load(Relaxed)), 3, None, ansi),
+            cell(&fmt_count(c.updates.load(Relaxed)), 3, None, ansi),
             cell(&format!("{:.2}cp", mean_cp(i)), 4, None, ansi),
             cell(&weights[i].to_string(), 5, None, ansi),
             cell(&format!("{:.2}", eff_cp(i, weights[i])), 6, None, ansi),
@@ -128,7 +128,7 @@ fn hit_pct(i: usize) -> f64 {
 
 fn mean_cp(i: usize) -> f64 {
     let (hits, abs_sum) = (STATS[i].hits.load(Relaxed), STATS[i].abs_sum.load(Relaxed));
-    safe_div(abs_sum as f64, hits as f64) / CORRECTION_SCALE as f64
+    ratio(abs_sum as f64, hits as f64) / CORRECTION_SCALE as f64
 }
 
 fn eff_cp(i: usize, weight: i32) -> f64 { mean_cp(i) * weight as f64 / f64::from(CORRECTION_WEIGHT_SCALE) }

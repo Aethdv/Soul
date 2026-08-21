@@ -30,12 +30,14 @@ impl<T> DerefMut for Align64<T> {
 /// Division, 0.0 for an empty denominator instead of NaN or infinity.
 #[inline]
 #[must_use]
-pub fn safe_div(num: f64, den: f64) -> f64 { if den > 0.0 { num / den } else { 0.0 } }
+/// Zero when the denominator is not positive, so an empty tally reports nothing
+/// instead of a NaN.
+pub fn ratio(num: f64, den: f64) -> f64 { if den > 0.0 { num / den } else { 0.0 } }
 
 /// `part` as a percentage of `whole`, 0.0 when nothing was counted.
 #[inline]
 #[must_use]
-pub fn pct(part: u64, whole: u64) -> f64 { safe_div(part as f64, whole as f64) * 100.0 }
+pub fn pct(part: u64, whole: u64) -> f64 { ratio(part as f64, whole as f64) * 100.0 }
 
 /// Formats a number with comma separators: 1234567 -> "1,234,567".
 pub fn format_comma(n: u64) -> String {
@@ -57,7 +59,7 @@ pub fn format_comma(n: u64) -> String {
 ///
 /// SI prefixes, so nodes read the way nps already does: G rather than B past a
 /// billion.
-pub fn human(n: u64) -> String {
+pub fn fmt_count(n: u64) -> String {
     match n {
         0..1_000 => n.to_string(),
         1_000..1_000_000 => format!("{:.2}K", n as f64 / 1e3),

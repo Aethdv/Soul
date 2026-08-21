@@ -21,7 +21,7 @@ use std::{
 
 use crate::{
     color::{self, BOLD, GOLD, RESET},
-    core::util::{human, pct},
+    core::util::{fmt_count, pct},
 };
 
 /// Quiet consumption buckets: index = moves consumed; last bucket represents `N-1+`.
@@ -88,14 +88,14 @@ fn report_quiets() {
 
     let generated = QUIET_GENERATED.load(Relaxed);
     let consumed = QUIET_CONSUMED.load(Relaxed);
-    let used = scored(pct(consumed, generated), QUIET_USE_NEUTRAL);
+    let used = pct_colored(pct(consumed, generated), QUIET_USE_NEUTRAL);
 
     header("MovePicker quiet stats");
     println!(
         "  sorting nodes {}   generated {}   consumed {}   ({used} used)",
-        human(nodes),
-        human(generated),
-        human(consumed)
+        fmt_count(nodes),
+        fmt_count(generated),
+        fmt_count(consumed)
     );
 
     histogram(&QUIET_HIST, nodes, 0, "consumed");
@@ -107,10 +107,10 @@ fn report_cutoffs() {
         return;
     }
 
-    let rate = scored(pct(CUTOFF_HIST[0].load(Relaxed), nodes), FIRST_CUTOFF_NEUTRAL);
+    let rate = pct_colored(pct(CUTOFF_HIST[0].load(Relaxed), nodes), FIRST_CUTOFF_NEUTRAL);
 
     header("MovePicker cutoff ordering");
-    println!("  fail-high nodes {}   first-move cutoff {rate}", human(nodes));
+    println!("  fail-high nodes {}   first-move cutoff {rate}", fmt_count(nodes));
 
     histogram(&CUTOFF_HIST, nodes, 1, "move");
 
@@ -119,7 +119,7 @@ fn report_cutoffs() {
 
     for (name, count) in KIND_NAMES.iter().zip(&CUTOFF_KIND) {
         let count = count.load(Relaxed);
-        println!("  {name:>8}  {:>11}  {:>6.1}%", human(count), pct(count, nodes));
+        println!("  {name:>8}  {:>11}  {:>6.1}%", fmt_count(count), pct(count, nodes));
     }
 }
 
@@ -136,7 +136,7 @@ fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize, first: &str) {
         let n = base + i;
         let label = if i == buckets.len() - 1 { format!("{n}+") } else { n.to_string() };
 
-        println!("  {label:>8}  {:>11}  {:>6.1}%  {:>6.1}%", human(count), pct(count, nodes), pct(cumulative, nodes));
+        println!("  {label:>8}  {:>11}  {:>6.1}%  {:>6.1}%", fmt_count(count), pct(count, nodes), pct(cumulative, nodes));
     }
 }
 
@@ -147,7 +147,7 @@ fn header(title: &str) {
 
 /// Paints a percentage against the point where the scale reads neutral: deep red at
 /// zero, deep green at twice it.
-fn scored(pct: f64, neutral: f64) -> String { colored(&format!("{pct:.1}%"), (pct / neutral - 1.0).clamp(-1.0, 1.0)) }
+fn pct_colored(pct: f64, neutral: f64) -> String { colored(&format!("{pct:.1}%"), (pct / neutral - 1.0).clamp(-1.0, 1.0)) }
 
 /// Gold, bold and reset, or three empty strings off a terminal. `BOLD` comes through
 /// here so a piped report cannot keep an escape its reset was stripped from.

@@ -13,7 +13,7 @@ use crate::{
     },
     engine::{
         combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
-        eval::{SharedFeatures, XrayTerm, apply_all_inputs, evaluate_fast, extract_phase, scatter_all_terms},
+        eval::{SharedFeatures, XrayTerm, apply_all_inputs, evaluate_psqt, extract_phase, scatter_all_terms},
         eval_params::LAYOUT,
         mobility::{KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, compute_openness_raw},
         term::{self, TermSource},
@@ -105,7 +105,7 @@ impl FeatureRecord {
             mobility_diff,
             safety_us: pack_safety(saf_us),
             safety_them: pack_safety(saf_them),
-            static_eval: evaluate_fast(&pos, &acc, phase) as i16,
+            static_eval: evaluate_psqt(&pos, &acc, phase) as i16,
             score: entry.score,
             result: entry.result,
             ..Default::default()
