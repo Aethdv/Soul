@@ -69,14 +69,14 @@ pub fn atk_king(kings: Vu64x4) -> Vu64x4 {
 ///
 /// All four lanes per field are computed simultaneously by a single set of
 /// AVX2 `vpsllq`/`vpsrlq` instructions applied to the packed `Vu64x4`.
-pub struct SpatialTensor {
+pub struct SpatialMaps {
     pub ortho_direct: Vu64x4,
     pub ortho_xray: Vu64x4,
     pub diag_direct: Vu64x4,
     pub diag_xray: Vu64x4,
 }
 
-impl SpatialTensor {
+impl SpatialMaps {
     #[inline]
     pub fn compute(pos: &Position, pinned_w: u64, pinned_b: u64) -> Self {
         let occ = pos.occ.0;
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_phantom_xray_rook() {
         let pos = Position::from_fen("4k3/8/8/8/8/P7/8/R1N1K3 w - - 0 1");
-        let st = SpatialTensor::compute(&pos, 0, 0);
+        let st = SpatialMaps::compute(&pos, 0, 0);
         let xray = st.w_ortho_xray();
         let a4 = 1u64 << 24;
         let d1 = 1u64 << 3;
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn test_phantom_xray_bishop() {
         let pos = Position::from_fen("4k3/8/8/3p4/4P3/P7/8/R4K1B w - - 0 1");
-        let st = SpatialTensor::compute(&pos, 0, 0);
+        let st = SpatialMaps::compute(&pos, 0, 0);
         let d5 = 1u64 << (4 * 8 + 3); // 35
         let f5 = 1u64 << (4 * 8 + 5); // 37
         let diag_xray = st.w_diag_xray();
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn test_self_occlusion() {
         let pos = Position::from_fen("4k3/8/8/8/8/R7/8/R3K3 w - - 0 1");
-        let st = SpatialTensor::compute(&pos, 0, 0);
+        let st = SpatialMaps::compute(&pos, 0, 0);
         let a3 = 1u64 << 16;
         let w_ortho_direct = st.w_ortho_direct();
         assert!((w_ortho_direct & a3) != 0, "Rook at A1 should defend Rook at A3");

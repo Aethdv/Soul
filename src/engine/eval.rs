@@ -11,7 +11,7 @@
 
 use crate::{
     core::{
-        board::{Position, bitboard, spatial::SpatialTensor, xorboard::XorBoard},
+        board::{Position, bitboard, spatial::SpatialMaps, xorboard::XorBoard},
         defs::{Bitboard, Color, Direction, LANE_PHASE, PieceType, TOTAL_PHASE},
     },
     engine::{
@@ -442,7 +442,7 @@ impl SharedFeatures {
     pub fn with_pawn(board: &Position, pawn: &PawnFeatures, rows: Option<&XorBoard>) -> Self {
         let pinned_w = board.pinned_pieces(Color::White);
         let pinned_b = board.pinned_pieces(Color::Black);
-        let tensor = SpatialTensor::compute(board, pinned_w.0, pinned_b.0);
+        let tensor = SpatialMaps::compute(board, pinned_w.0, pinned_b.0);
 
         let data = Mobility::compute_all(board, &tensor, pinned_w, pinned_b, rows);
 

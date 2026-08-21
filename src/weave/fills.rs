@@ -7,7 +7,7 @@
 //! Disentangling a bulk fill back into discrete moves costs more cycles than
 //! sequential `_pext_u64` (BMI2) lookups.
 //!
-//! Instead, this mathematically complete implementation powers the `SpatialTensor`
+//! Instead, this mathematically complete implementation powers the `SpatialMaps`
 //! used during the Evaluation phase. By broadcasting a bitboard of all Rooks/Queens
 //! into a `Vu64x4`, these functions calculate the aggregate board pressure, mobility,
 //! and x-ray batteries of all sliders simultaneously in a single branchless sweep,

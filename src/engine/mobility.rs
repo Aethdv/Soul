@@ -9,7 +9,7 @@ use crate::{
         board::{
             Position,
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, line_bb},
-            spatial::SpatialTensor,
+            spatial::SpatialMaps,
             xorboard::XorBoard,
         },
         defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
@@ -163,7 +163,7 @@ impl Mobility {
     #[inline]
     pub fn compute_all(
         pos: &Position,
-        tensor: &SpatialTensor,
+        tensor: &SpatialMaps,
         pinned_w: Bitboard,
         pinned_b: Bitboard,
         rows: Option<&XorBoard>,
@@ -386,7 +386,7 @@ impl EvalCtx {
     /// Without this the threat and danger counts credit attacks that would leave the
     /// king in check.
     #[inline(always)]
-    fn build(pos: &Position, tensor: &SpatialTensor, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
+    fn build(pos: &Position, tensor: &SpatialMaps, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
         let us = pos.side_bb[Color::White];
         let them = pos.side_bb[Color::Black];
         let occ = pos.occupancy();
