@@ -1848,7 +1848,7 @@ impl Worker<'_> {
             let lazy = self.corrected_eval(evaluate_psqt(&self.pos, &self.accumulator, phase), sp);
             let lazy_floor = lazy - lazy_eval_margin(&self.pos, phase, sp);
             if lazy_floor >= beta {
-                return Ok((lazy_floor + beta) / 2);
+                return Ok((lazy + beta) / 2);
             }
             self.evaluate()
         };
