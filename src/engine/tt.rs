@@ -136,24 +136,32 @@ struct Cluster {
     slots: [TtEntry; CLUSTER_SIZE],
 }
 
-/// What a slot matched, before the collision guard runs.
-#[derive(Clone, Copy)]
-struct TtHit {
-    mv: Move,
-    score: i32,
-    depth: i32,
-    bound: Bound,
-    pv: bool,
-    /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
-    eval: i32,
+/// The three things a stored move can turn out to be.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TtMove {
+    /// The slot stored a null move, which a fail-low store does.
+    Null,
+    /// The stored move is pseudo-legal here.
+    Found(Move),
+    /// A non-null move that no piece on this board could make, so the whole slot
+    /// belongs to another position and its score proves nothing.
+    Collision,
 }
 
+impl TtMove {
+    #[inline(always)]
+    pub fn get(self) -> Option<Move> {
+        match self {
+            Self::Found(mv) => Some(mv),
+            Self::Null | Self::Collision => None,
+        }
+    }
+}
+
+/// What a probe hands back, already unfolded into search units.
 #[derive(Clone, Copy)]
 pub struct TtData {
-    /// The stored move once it survives the collision guard, None when absent or fake.
-    pub mv: Option<Move>,
-    /// Whether the entry may be trusted at all.
-    pub valid: bool,
+    mv: Move,
     pub pv: bool,
     /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
     pub eval: i32,
@@ -164,20 +172,18 @@ pub struct TtData {
 
 impl TtData {
     /// No slot matched.
-    pub const NONE: Self =
-        Self { mv: None, valid: true, pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
+    pub const NONE: Self = Self { mv: Move::null(), pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
 
+    /// Runs the collision guard, a full pseudo-legality check. Bind it once per node,
+    /// and after the cutoff test: a probe that cuts never needs the move.
     #[inline(always)]
-    fn from_hit(hit: TtHit, pos: &Position) -> Self {
-        let mv = if !hit.mv.is_null() && is_pseudo_legal(pos, hit.mv) { Some(hit.mv) } else { None };
-        Self {
-            mv,
-            valid: mv.is_some() || hit.mv.is_null(),
-            pv: hit.pv,
-            eval: hit.eval,
-            score: hit.score,
-            bound: hit.bound,
-            depth: hit.depth,
+    pub fn mv(&self, pos: &Position) -> TtMove {
+        if self.mv.is_null() {
+            TtMove::Null
+        } else if is_pseudo_legal(pos, self.mv) {
+            TtMove::Found(self.mv)
+        } else {
+            TtMove::Collision
         }
     }
 }
@@ -225,7 +231,7 @@ impl TtEntry {
     /// pairs with the store's Release on `key`, the handshake that makes a matched
     /// key imply visible payload.
     #[inline(always)]
-    fn probe_read(&self, key16: u16, ply: usize) -> Option<TtHit> {
+    fn probe_read(&self, key16: u16, ply: usize) -> Option<TtData> {
         if self.key.load(Ordering::Acquire) != key16 {
             return None;
         }
@@ -235,7 +241,7 @@ impl TtEntry {
         if bound == Bound::None {
             return None;
         }
-        Some(TtHit {
+        Some(TtData {
             mv: Move::from_u16(self.mv.load(Ordering::Relaxed)),
             score: score_from_tt(i32::from(self.score.load(Ordering::Relaxed).cast_signed()), ply),
             depth: i32::from(packed_depth(packed)),
@@ -362,17 +368,13 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub fn probe(&self, pos: &Position, ply: usize) -> TtData {
-        let key16 = verification_key(pos.hash);
-        match self
-            .cluster(self.index(pos.hash))
+    pub fn probe(&self, hash: u64, ply: usize) -> TtData {
+        let key16 = verification_key(hash);
+        self.cluster(self.index(hash))
             .slots
             .iter()
             .find_map(|slot| slot.probe_read(key16, ply))
-        {
-            Some(hit) => TtData::from_hit(hit, pos),
-            None => TtData::NONE,
-        }
+            .unwrap_or(TtData::NONE)
     }
 
     /// Insert or update this position.
