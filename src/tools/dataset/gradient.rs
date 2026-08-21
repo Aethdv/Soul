@@ -84,9 +84,13 @@ impl FeatureRecord {
         let is_black = pos.stm == Color::Black;
 
         let (mob_us, mob_them, saf_us, saf_them) = if is_black {
-            (&shared.data.metrics_them, &shared.data.metrics_us, &shared.data.safety_them, &shared.data.safety_us)
+            (
+                &shared.spatial.metrics_them, &shared.spatial.metrics_us, &shared.spatial.safety_them, &shared.spatial.safety_us,
+            )
         } else {
-            (&shared.data.metrics_us, &shared.data.metrics_them, &shared.data.safety_us, &shared.data.safety_them)
+            (
+                &shared.spatial.metrics_us, &shared.spatial.metrics_them, &shared.spatial.safety_us, &shared.spatial.safety_them,
+            )
         };
 
         let mobility_diff = [

@@ -60,7 +60,7 @@ impl XorBoard {
         total
     }
 
-    /// A pawn is left whole to match the tensor; crediting a pinned slider or
+    /// A pawn is left whole to match the maps; crediting a pinned slider or
     /// knight with more would count moves that leave the king in check.
     #[inline(always)]
     pub(super) fn pinned_row(&self, id: PieceId, square: Square, row: Bitboard, ksq: Square) -> Bitboard {

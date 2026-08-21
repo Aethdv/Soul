@@ -313,7 +313,7 @@ impl EvalMath for DualNode {
     }
 
     #[inline(always)]
-    fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
+    fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self {
         let mg = acc.0[0];
         let eg = acc.0[1];
         let p = phase;

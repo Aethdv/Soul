@@ -64,7 +64,7 @@ pub trait EvalMath:
 
     /// Tapered interpolation: (MG · phase + EG · (TOTAL_PHASE - phase)) / TOTAL_PHASE.
     /// Specialized per-type to allow SIMD `madd` in the engine hot path.
-    fn tapered(acc: &Self::Vec8, phase: Self) -> Self;
+    fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self;
 }
 
 pub trait EnvVec4: Sized + Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
@@ -164,7 +164,7 @@ impl EvalMath for i32 {
     fn math_clamp(self, min: Self, max: Self) -> Self { Ord::clamp(self, min, max) }
 
     #[inline(always)]
-    fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
+    fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self {
         let eg_p = TOTAL_PHASE - phase;
         // Both halves sit in [0, TOTAL_PHASE], so they pack into one i32 with no sign bit
         // bleeding from the low lane into the high.
@@ -249,7 +249,7 @@ impl EvalMath for f64 {
     fn math_clamp(self, min: Self, max: Self) -> Self { f64::clamp(self, min, max) }
 
     #[inline(always)]
-    fn tapered(acc: &Self::Vec8, phase: Self) -> Self {
+    fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self {
         let mg = acc.0[0];
         let eg = acc.0[1];
         let p = phase;

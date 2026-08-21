@@ -21,7 +21,7 @@ use crate::{
             self, ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
             XRAY,
         },
-        mobility::{self, Mobility, MobilityData},
+        mobility::{self, Mobility, SpatialMetrics},
         search_params::SearchParams,
         term::{self},
     },
@@ -185,7 +185,7 @@ pub struct DetailedEval {
 /// ones that mean exactly what they say.
 pub struct SharedFeatures {
     pub openness: i32,
-    pub data: MobilityData,
+    pub spatial: SpatialMetrics,
     /// Orthogonal x-rays landing in the enemy king ring, White minus Black.
     pub xray_ortho: i32,
     pub bishop_pair_diff: i32,
@@ -241,7 +241,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
 /// Accumulator-only evaluation, no spatial features. Datagen's volatility filter.
 #[inline(always)]
 pub fn evaluate_psqt(board: &Position, acc: &Vi16x8, phase: i32) -> i32 {
-    let score = i32::tapered(acc, phase);
+    let score = i32::taper_acc(acc, phase);
     if board.stm == Color::White { score } else { -score }
 }
 
@@ -442,9 +442,9 @@ impl SharedFeatures {
     pub fn with_pawn(board: &Position, pawn: &PawnFeatures, rows: Option<&XorBoard>) -> Self {
         let pinned_w = board.pinned_pieces(Color::White);
         let pinned_b = board.pinned_pieces(Color::Black);
-        let tensor = SpatialMaps::compute(board, pinned_w.0, pinned_b.0);
+        let maps = SpatialMaps::compute(board, pinned_w.0, pinned_b.0);
 
-        let data = Mobility::compute_all(board, &tensor, pinned_w, pinned_b, rows);
+        let spatial = Mobility::compute_all(board, &maps, pinned_w, pinned_b, rows);
 
         let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
         let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
@@ -452,7 +452,7 @@ impl SharedFeatures {
         let b_king_ring = bitboard::atk_king(b_ksq).0;
 
         let xray_ortho =
-            (tensor.w_ortho_xray() & b_king_ring).count_ones() as i32 - (tensor.b_ortho_xray() & w_king_ring).count_ones() as i32;
+            (maps.w_ortho_xray() & b_king_ring).count_ones() as i32 - (maps.b_ortho_xray() & w_king_ring).count_ones() as i32;
 
         let w_pair = i32::from(board.pieces(PieceType::Bishop, Color::White).more_than_one());
         let b_pair = i32::from(board.pieces(PieceType::Bishop, Color::Black).more_than_one());
@@ -487,7 +487,7 @@ impl SharedFeatures {
 
         Self {
             openness: pawn.openness,
-            data,
+            spatial,
             xray_ortho,
             bishop_pair_diff,
             rook_open_diff,
@@ -514,7 +514,7 @@ pub fn fill_accumulators<T: EvalMath<Scalar = T>>(
     params: &EvalParams<T>,
 ) -> Accumulators<T> {
     let mut buckets = Accumulators::<T> {
-        mg_eg: T::tapered(acc, phase),
+        mg_eg: T::taper_acc(acc, phase),
         mobility: T::zero(),
         bonus_mg: T::zero(),
         bonus_eg: T::zero(),

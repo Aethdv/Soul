@@ -47,7 +47,7 @@ pub struct KingSafetyTerm;
 ///
 /// `us` is White in every field; nothing here is side-to-move relative.
 #[derive(Clone, Default, Debug)]
-pub struct MobilityData {
+pub struct SpatialMetrics {
     pub metrics_us: SideMetrics,
     pub metrics_them: SideMetrics,
     pub safety_us: SafetyMetrics,
@@ -163,19 +163,19 @@ impl Mobility {
     #[inline]
     pub fn compute_all(
         pos: &Position,
-        tensor: &SpatialMaps,
+        maps: &SpatialMaps,
         pinned_w: Bitboard,
         pinned_b: Bitboard,
         rows: Option<&XorBoard>,
-    ) -> MobilityData {
-        let ctx = EvalCtx::build(pos, tensor, pinned_w, pinned_b);
+    ) -> SpatialMetrics {
+        let ctx = EvalCtx::build(pos, maps, pinned_w, pinned_b);
         let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them);
         let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us);
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
         let metrics_us = score_side(ctx.them, ctx.atk_us, mob_us, ctx.pawn_atk_them, ctx.xray_us);
         let metrics_them = score_side(ctx.us, ctx.atk_them, mob_them, ctx.pawn_atk_us, ctx.xray_them);
-        MobilityData { metrics_us, metrics_them, safety_us, safety_them }
+        SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }
     }
 
     /// Tapered, openness-interpolated score differential, `metrics_us` minus `metrics_them`.
@@ -230,7 +230,7 @@ impl LinearTerm for MobilityTerm {
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
         acc.mobility = Mobility::evaluate_score_diff::<T>(
-            &features.data.metrics_us, &features.data.metrics_them, features.openness, phase, params.mg_mob_open,
+            &features.spatial.metrics_us, &features.spatial.metrics_them, features.openness, phase, params.mg_mob_open,
             params.mg_mob_closed, params.eg_mob_open, params.eg_mob_closed,
         );
     }
@@ -296,7 +296,7 @@ impl TermSource<MobilityTerm> for SharedFeatures {
 
     #[inline(always)]
     fn extract(&self) -> MobilityInput {
-        let diff = self.data.metrics_us.diff(&self.data.metrics_them);
+        let diff = self.spatial.metrics_us.diff(&self.spatial.metrics_them);
         MobilityInput { diff: Vf64x4::from(diff.map(f64::from)), openness: self.openness }
     }
 }
@@ -309,7 +309,7 @@ impl LinearTerm for KingSafetyTerm {
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-        let (us, them) = (&features.data.safety_us, &features.data.safety_them);
+        let (us, them) = (&features.spatial.safety_us, &features.spatial.safety_them);
 
         acc.safety_us = us.shelter(params.w_shield, params.w_ortho, params.w_diag);
         acc.safety_them = them.shelter(params.w_shield, params.w_ortho, params.w_diag);
@@ -350,11 +350,10 @@ impl TermSource<KingSafetyTerm> for SharedFeatures {
     type Input = KingSafetyInput;
 
     #[inline(always)]
-    fn extract(&self) -> KingSafetyInput { KingSafetyInput { us: self.data.safety_us, them: self.data.safety_them } }
+    fn extract(&self) -> KingSafetyInput { KingSafetyInput { us: self.spatial.safety_us, them: self.spatial.safety_them } }
 }
 
-/// Pre-computed attack maps for both sides. Built once per evaluation and
-/// threaded through every sub-computation to avoid redundant slider work.
+/// Pre-computed attack maps for both sides.
 struct EvalCtx {
     us: Bitboard,
     them: Bitboard,
@@ -386,7 +385,7 @@ impl EvalCtx {
     /// Without this the threat and danger counts credit attacks that would leave the
     /// king in check.
     #[inline(always)]
-    fn build(pos: &Position, tensor: &SpatialMaps, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
+    fn build(pos: &Position, maps: &SpatialMaps, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
         let us = pos.side_bb[Color::White];
         let them = pos.side_bb[Color::Black];
         let occ = pos.occupancy();
@@ -408,14 +407,14 @@ impl EvalCtx {
         let knight_atk_us = knight_attacks(us, pinned_w);
         let knight_atk_them = knight_attacks(them, pinned_b);
 
-        // The tensor drops pinned pieces from the direct and the x-ray maps alike. Only
+        // SpatialMaps drops pinned pieces from the direct and the x-ray maps alike. Only
         // the direct maps get their pin rays back below: a pinned piece backing a battery
         // is rare enough that the second pass would cost more than it scores.
         let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = (
-            Bitboard(tensor.w_ortho_direct() | tensor.w_diag_direct()),
-            Bitboard(tensor.b_ortho_direct() | tensor.b_diag_direct()),
-            Bitboard(tensor.w_ortho_xray() | tensor.w_diag_xray()),
-            Bitboard(tensor.b_ortho_xray() | tensor.b_diag_xray()),
+            Bitboard(maps.w_ortho_direct() | maps.w_diag_direct()),
+            Bitboard(maps.b_ortho_direct() | maps.b_diag_direct()),
+            Bitboard(maps.w_ortho_xray() | maps.w_diag_xray()),
+            Bitboard(maps.b_ortho_xray() | maps.b_diag_xray()),
         );
 
         // A queen sits in both sets, and the pin ray masks off whichever half it cannot play.
@@ -468,7 +467,7 @@ impl EvalCtx {
 /// them the same sum is a probe per piece, which only an offline tuner can
 /// afford.
 ///
-/// The pin policy matches the tensor's: a pinned knight has nothing legal, a
+/// The pin policy matches SpatialMaps: a pinned knight has nothing legal, a
 /// pinned slider keeps its pin ray, a pinned pawn is left whole.
 fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
     if let Some(rows) = rows {
