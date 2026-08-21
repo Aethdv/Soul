@@ -21,12 +21,29 @@ use std::{
 
 use crate::{
     core::{
+        board::Position,
         defs::{score_from_tt, score_to_tt},
         moves::Move,
     },
+    engine::movegen::is_pseudo_legal,
     hugepages::{HugePages, PageKind},
     numa::NumaTopology,
 };
+
+/// No eval stored, which is what an in-check store leaves behind.
+/// Sits above MATE, so it can never be mistaken for a score.
+pub const SCORE_NONE: i32 = 32000;
+
+const CLUSTER_SIZE: usize = 3;
+
+/// Higher values evict stale entries faster.
+const AGE_FACTOR: i32 = 4;
+/// `age` is 5 bits; generation distance is read modulo 32.
+const AGE_MASK: u8 = 0x1F;
+
+const _: () = assert!(mem::size_of::<TtEntry>() == 10);
+const _: () = assert!(mem::size_of::<Cluster>() == 32);
+const _: () = assert!(mem::align_of::<Cluster>() == 32);
 
 /// What a stored score proves. Discriminants are the on-slot encoding, two bits of `packed`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -50,21 +67,6 @@ impl Bound {
         unsafe { mem::transmute((bits & 0x3) as u8) }
     }
 }
-
-/// No eval stored, which is what an in-check store leaves behind. Sits above MATE,
-/// so it can never be mistaken for a score, and inside i16 so it survives the slot.
-pub const SCORE_NONE: i32 = 32000;
-
-const _: () = assert!(mem::size_of::<TtEntry>() == 10);
-const _: () = assert!(mem::size_of::<Cluster>() == 32);
-const _: () = assert!(mem::align_of::<Cluster>() == 32);
-
-/// Higher values evict stale entries faster.
-const AGE_FACTOR: i32 = 4;
-/// `age` is 5 bits; generation distance is read modulo 32.
-const AGE_MASK: u8 = 0x1F;
-
-const CLUSTER_SIZE: usize = 3;
 
 /// An exact score always is. A lower bound (the position failed high when stored)
 /// only proves the truth is at least this high, so it cuts only once it clears
@@ -134,16 +136,56 @@ struct Cluster {
     slots: [TtEntry; CLUSTER_SIZE],
 }
 
+/// The three things a stored move can turn out to be.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TtMove {
+    /// The slot stored a null move, which a fail-low store does.
+    Null,
+    /// The stored move is pseudo-legal here.
+    Found(Move),
+    /// A non-null move that no piece on this board could make, so the whole slot
+    /// belongs to another position and its score proves nothing.
+    Collision,
+}
+
+impl TtMove {
+    #[inline(always)]
+    pub fn get(self) -> Option<Move> {
+        match self {
+            Self::Found(mv) => Some(mv),
+            Self::Null | Self::Collision => None,
+        }
+    }
+}
+
 /// What a probe hands back, already unfolded into search units.
 #[derive(Clone, Copy)]
-pub struct TtHit {
-    pub mv: Move,
-    pub score: i32,
-    pub depth: i32,
-    pub bound: Bound,
+pub struct TtData {
+    mv: Move,
     pub pv: bool,
     /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
     pub eval: i32,
+    pub score: i32,
+    pub bound: Bound,
+    pub depth: i32,
+}
+
+impl TtData {
+    /// No slot matched.
+    pub const NONE: Self = Self { mv: Move::null(), pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
+
+    /// Runs the collision guard, a full pseudo-legality check. Bind it once per node,
+    /// and after the cutoff test: a probe that cuts never needs the move.
+    #[inline(always)]
+    pub fn mv(&self, pos: &Position) -> TtMove {
+        if self.mv.is_null() {
+            TtMove::Null
+        } else if is_pseudo_legal(pos, self.mv) {
+            TtMove::Found(self.mv)
+        } else {
+            TtMove::Collision
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -169,11 +211,8 @@ const fn pack(depth: u8, bound: Bound, pv: u8, age: u8) -> u16 {
 }
 
 const fn packed_depth(packed: u16) -> u8 { (packed & 0xFF) as u8 }
-
 const fn packed_bound(packed: u16) -> Bound { Bound::from_bits(packed >> 8) }
-
 const fn packed_pv(packed: u16) -> u8 { ((packed >> 10) & 0x1) as u8 }
-
 const fn packed_age(packed: u16) -> u8 { ((packed >> 11) & 0x1F) as u8 }
 
 impl TtEntry {
@@ -192,7 +231,7 @@ impl TtEntry {
     /// pairs with the store's Release on `key`, the handshake that makes a matched
     /// key imply visible payload.
     #[inline(always)]
-    fn probe_read(&self, key16: u16, ply: usize) -> Option<TtHit> {
+    fn probe_read(&self, key16: u16, ply: usize) -> Option<TtData> {
         if self.key.load(Ordering::Acquire) != key16 {
             return None;
         }
@@ -202,7 +241,7 @@ impl TtEntry {
         if bound == Bound::None {
             return None;
         }
-        Some(TtHit {
+        Some(TtData {
             mv: Move::from_u16(self.mv.load(Ordering::Relaxed)),
             score: score_from_tt(i32::from(self.score.load(Ordering::Relaxed).cast_signed()), ply),
             depth: i32::from(packed_depth(packed)),
@@ -329,9 +368,13 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub fn probe(&self, hash: u64, ply: usize) -> Option<TtHit> {
+    pub fn probe(&self, hash: u64, ply: usize) -> TtData {
         let key16 = verification_key(hash);
-        self.cluster(self.index(hash)).slots.iter().find_map(|slot| slot.probe_read(key16, ply))
+        self.cluster(self.index(hash))
+            .slots
+            .iter()
+            .find_map(|slot| slot.probe_read(key16, ply))
+            .unwrap_or(TtData::NONE)
     }
 
     /// Insert or update this position.
