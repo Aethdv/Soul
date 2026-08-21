@@ -32,10 +32,18 @@ use crate::{
     debug_index, debug_index_mut,
     engine::{
         history::{ContContext, History},
+        movegen::is_pseudo_legal,
         search::SearchConfig,
         see::see_ge,
     },
 };
+
+fn promotion_outranks_killers(board: &Position) -> bool {
+    let stm = board.stm;
+    let pawns = board.role_bb[PieceType::Pawn] & board.side_bb[stm];
+    let prom_mask = if stm == Color::White { RANK_8 } else { RANK_1 };
+    (pawns.shift(stm.forward_dir()) & !board.occ & prom_mask).is_not_empty()
+}
 
 /// Where a slider's attacks come from. `nostore` has no store to read, so the argument
 /// holds nothing and every slider falls back to its probe.
@@ -76,6 +84,7 @@ enum Stage {
     Hash,
     GenCaptures,
     YieldCaptures,
+    Killers,
     GenQSearchQuiets,
     GenQuiets,
     YieldQuiets,
@@ -100,6 +109,8 @@ pub struct MovePicker {
     /// The node's pins, so the good/bad split's SEE calls don't each rescan.
     pins: Pins,
     killers: [Move; 2],
+    killer_idx: usize,
+    killers_taken: [bool; 2],
     threats: Bitboard,
     cont1: ContContext,
     cont2: ContContext,
@@ -148,6 +159,8 @@ impl MovePicker {
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             pins,
             killers,
+            killer_idx: 0,
+            killers_taken: [false; 2],
             threats,
             cont1,
             cont2,
@@ -179,6 +192,8 @@ impl MovePicker {
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             pins,
             killers: [Move::null(); 2],
+            killer_idx: 0,
+            killers_taken: [false; 2],
             threats: Bitboard(0),
             cont1: ContContext::default(),
             cont2: ContContext::default(),
@@ -219,7 +234,7 @@ impl MovePicker {
                     if self.count == 0 {
                         // Array is exhausted (count == 0), so GenQuiets reuses index 0 without clearing.
                         // Deferred bad captures sit safely at the high end (total moves <= MAX_MOVES).
-                        self.stage = if self.is_qsearch && !self.in_check { Stage::GenQSearchQuiets } else { Stage::GenQuiets };
+                        self.stage = if self.is_qsearch && !self.in_check { Stage::GenQSearchQuiets } else { Stage::Killers };
                         continue;
                     }
                     self.count -= 1;
@@ -259,6 +274,27 @@ impl MovePicker {
                     return Some(mv);
                 },
 
+                // ── Killer Stage
+                // Both killers outrank every history-scored quiet, so the order is unchanged;
+                // a cutoff here skips generating and scoring the node's quiets entirely.
+                Stage::Killers => {
+                    if self.killer_idx == 0 && promotion_outranks_killers(board) {
+                        self.stage = Stage::GenQuiets;
+                        continue;
+                    }
+                    if self.killer_idx == self.killers.len() {
+                        self.stage = Stage::GenQuiets;
+                        continue;
+                    }
+                    let i = self.killer_idx;
+                    let mv = self.killers[i];
+                    self.killer_idx += 1;
+                    if !mv.is_null() && Some(mv) != self.hash_move && is_pseudo_legal(board, mv) {
+                        self.killers_taken[i] = true;
+                        return Some(mv);
+                    }
+                },
+
                 Stage::GenQSearchQuiets => {
                     self.gen_qsearch_quiets(board, history);
                     self.sort_candidates();
@@ -286,7 +322,9 @@ impl MovePicker {
                     // SAFETY: count was non-zero; index holds an initialized move.
                     let mv = unsafe { self.read_move(self.count) };
 
-                    if Some(mv) != self.hash_move {
+                    let taken =
+                        (self.killers_taken[0] && mv == self.killers[0]) || (self.killers_taken[1] && mv == self.killers[1]);
+                    if Some(mv) != self.hash_move && !taken {
                         #[cfg(feature = "mvpstats")]
                         {
                             self.quiets_used += 1;
@@ -706,26 +744,35 @@ mod tests {
         for fen in FENS {
             let board = Position::from_fen(fen);
             let store = XorBoard::new(&board);
-            let mut picker = MovePicker::new(
-                None,
-                &cfg,
-                Pins::new(&board),
-                [Move::null(); 2],
-                Bitboard(0),
-                ContContext::default(),
-                ContContext::default(),
-                ContContext::default(),
-            );
 
-            let mut picked = Vec::new();
-            while let Some(mv) = picker.next(&board, rows(&store), &history) {
-                picked.push(mv.inner());
-            }
-
-            picked.sort_unstable();
             let mut expected: Vec<u16> = gen_pseudo_moves(&board).iter().map(|mv| mv.inner()).collect();
             expected.sort_unstable();
-            assert_eq!(picked, expected, "{fen}");
+
+            let quiets: Vec<Move> = gen_pseudo_moves(&board).iter().copied().filter(|mv| mv.is_history_quiet()).collect();
+            let first = quiets.first().copied().unwrap_or(Move::null());
+            let second = quiets.get(1).copied().unwrap_or(Move::null());
+            let last = quiets.last().copied().unwrap_or(Move::null());
+
+            for (case, killers) in [[Move::null(); 2], [first, second], [last, Move::null()]].into_iter().enumerate() {
+                let mut picker = MovePicker::new(
+                    None,
+                    &cfg,
+                    Pins::new(&board),
+                    killers,
+                    Bitboard(0),
+                    ContContext::default(),
+                    ContContext::default(),
+                    ContContext::default(),
+                );
+
+                let mut picked = Vec::new();
+                while let Some(mv) = picker.next(&board, rows(&store), &history) {
+                    picked.push(mv.inner());
+                }
+
+                picked.sort_unstable();
+                assert_eq!(picked, expected, "{fen} killer case {case}");
+            }
         }
     }
 }
