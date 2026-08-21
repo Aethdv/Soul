@@ -21,12 +21,29 @@ use std::{
 
 use crate::{
     core::{
+        board::Position,
         defs::{score_from_tt, score_to_tt},
         moves::Move,
     },
+    engine::movegen::is_pseudo_legal,
     hugepages::{HugePages, PageKind},
     numa::NumaTopology,
 };
+
+/// No eval stored, which is what an in-check store leaves behind.
+/// Sits above MATE, so it can never be mistaken for a score.
+pub const SCORE_NONE: i32 = 32000;
+
+const CLUSTER_SIZE: usize = 3;
+
+/// Higher values evict stale entries faster.
+const AGE_FACTOR: i32 = 4;
+/// `age` is 5 bits; generation distance is read modulo 32.
+const AGE_MASK: u8 = 0x1F;
+
+const _: () = assert!(mem::size_of::<TtEntry>() == 10);
+const _: () = assert!(mem::size_of::<Cluster>() == 32);
+const _: () = assert!(mem::align_of::<Cluster>() == 32);
 
 /// What a stored score proves. Discriminants are the on-slot encoding, two bits of `packed`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -50,21 +67,6 @@ impl Bound {
         unsafe { mem::transmute((bits & 0x3) as u8) }
     }
 }
-
-/// No eval stored, which is what an in-check store leaves behind. Sits above MATE,
-/// so it can never be mistaken for a score, and inside i16 so it survives the slot.
-pub const SCORE_NONE: i32 = 32000;
-
-const _: () = assert!(mem::size_of::<TtEntry>() == 10);
-const _: () = assert!(mem::size_of::<Cluster>() == 32);
-const _: () = assert!(mem::align_of::<Cluster>() == 32);
-
-/// Higher values evict stale entries faster.
-const AGE_FACTOR: i32 = 4;
-/// `age` is 5 bits; generation distance is read modulo 32.
-const AGE_MASK: u8 = 0x1F;
-
-const CLUSTER_SIZE: usize = 3;
 
 /// An exact score always is. A lower bound (the position failed high when stored)
 /// only proves the truth is at least this high, so it cuts only once it clears
@@ -134,16 +136,50 @@ struct Cluster {
     slots: [TtEntry; CLUSTER_SIZE],
 }
 
-/// What a probe hands back, already unfolded into search units.
+/// What a slot matched, before the collision guard runs.
 #[derive(Clone, Copy)]
-pub struct TtHit {
-    pub mv: Move,
-    pub score: i32,
-    pub depth: i32,
-    pub bound: Bound,
+struct TtHit {
+    mv: Move,
+    score: i32,
+    depth: i32,
+    bound: Bound,
+    pv: bool,
+    /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
+    eval: i32,
+}
+
+#[derive(Clone, Copy)]
+pub struct TtData {
+    /// The stored move once it survives the collision guard, None when absent or fake.
+    pub mv: Option<Move>,
+    /// Whether the entry may be trusted at all.
+    pub valid: bool,
     pub pv: bool,
     /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
     pub eval: i32,
+    pub score: i32,
+    pub bound: Bound,
+    pub depth: i32,
+}
+
+impl TtData {
+    /// No slot matched.
+    pub const NONE: Self =
+        Self { mv: None, valid: true, pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
+
+    #[inline(always)]
+    fn from_hit(hit: TtHit, pos: &Position) -> Self {
+        let mv = if !hit.mv.is_null() && is_pseudo_legal(pos, hit.mv) { Some(hit.mv) } else { None };
+        Self {
+            mv,
+            valid: mv.is_some() || hit.mv.is_null(),
+            pv: hit.pv,
+            eval: hit.eval,
+            score: hit.score,
+            bound: hit.bound,
+            depth: hit.depth,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -169,11 +205,8 @@ const fn pack(depth: u8, bound: Bound, pv: u8, age: u8) -> u16 {
 }
 
 const fn packed_depth(packed: u16) -> u8 { (packed & 0xFF) as u8 }
-
 const fn packed_bound(packed: u16) -> Bound { Bound::from_bits(packed >> 8) }
-
 const fn packed_pv(packed: u16) -> u8 { ((packed >> 10) & 0x1) as u8 }
-
 const fn packed_age(packed: u16) -> u8 { ((packed >> 11) & 0x1F) as u8 }
 
 impl TtEntry {
@@ -329,9 +362,17 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub fn probe(&self, hash: u64, ply: usize) -> Option<TtHit> {
-        let key16 = verification_key(hash);
-        self.cluster(self.index(hash)).slots.iter().find_map(|slot| slot.probe_read(key16, ply))
+    pub fn probe(&self, pos: &Position, ply: usize) -> TtData {
+        let key16 = verification_key(pos.hash);
+        match self
+            .cluster(self.index(pos.hash))
+            .slots
+            .iter()
+            .find_map(|slot| slot.probe_read(key16, ply))
+        {
+            Some(hit) => TtData::from_hit(hit, pos),
+            None => TtData::NONE,
+        }
     }
 
     /// Insert or update this position.

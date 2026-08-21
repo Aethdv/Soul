@@ -50,13 +50,13 @@ use crate::{
     engine::{
         eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, extract_phase},
         history::{self, ContContext, History, HistoryCaps},
-        movegen::{gen_legal_moves, is_legal, is_pseudo_legal},
+        movegen::{gen_legal_moves, is_legal},
         movepicker::MovePicker,
         search_params::*,
         see::see_ge,
         tm::TimeManager,
         tt,
-        tt::TranspositionTable,
+        tt::{TranspositionTable, TtData},
         tui,
     },
     tools::perft::perft,
@@ -961,25 +961,16 @@ impl Worker<'_> {
         //
         // No probe during a singular verification: the entry here is the excluded move
         // itself, and its score is the very cutoff the verification exists to test.
-        let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { None };
-        let (tt_move, tt_pv, tt_eval, tt_score, tt_bound, tt_depth) = if let Some(hit) = tt_probe {
-            // Guard against hash collisions: an illegal non-null move invalidates
-            // both the TT move and any cutoff. Null moves are valid, stored on fail-low.
-            let tt_move = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
-            let valid = tt_move.is_some() || hit.mv.is_null();
+        let tt_probe = if excluded.is_null() { searcher.tt.probe(&self.pos, ply) } else { TtData::NONE };
 
-            #[rustfmt::skip]
-                if valid
-                    && !N::PV
-                    && hit.depth >= depth
-                    && tt::can_cutoff(hit.bound, hit.score, alpha, beta)
-                {
-                    return Ok(hit.score);
-                }
-            (tt_move, hit.pv, Some(hit.eval), hit.score, hit.bound, hit.depth)
-        } else {
-            (None, false, None, tt::SCORE_NONE, tt::Bound::None, 0)
-        };
+        #[rustfmt::skip]
+        if tt_probe.valid
+            && !N::PV
+            && tt_probe.depth >= depth
+            && tt::can_cutoff(tt_probe.bound, tt_probe.score, alpha, beta)
+        {
+            return Ok(tt_probe.score);
+        }
 
         let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
@@ -996,8 +987,8 @@ impl Worker<'_> {
         // the full evaluation; the stored sentinel (an in-check store) falls through.
         let raw_static_eval = if in_check {
             tt::SCORE_NONE
-        } else if let Some(eval) = tt_eval.filter(|&e| e != tt::SCORE_NONE) {
-            eval
+        } else if tt_probe.eval != tt::SCORE_NONE {
+            tt_probe.eval
         } else {
             self.evaluate()
         };
@@ -1028,7 +1019,11 @@ impl Worker<'_> {
 
         // ── TT-Clamped Eval
         // A mate score is a distance, not a valuation, so it never stands in for one.
-        let tt_clamped_eval = if is_mate(tt_score) { static_eval } else { tt::clamp_to_bound(tt_bound, tt_score, static_eval) };
+        let tt_clamped_eval = if is_mate(tt_probe.score) {
+            static_eval
+        } else {
+            tt::clamp_to_bound(tt_probe.bound, tt_probe.score, static_eval)
+        };
 
         // ── Reverse Futility Pruning (~52 Elo)
         // Position is already so good that even after subtracting a generous
@@ -1177,7 +1172,7 @@ impl Worker<'_> {
                 if value >= probcut_beta {
                     searcher
                         .tt
-                        .store(self.pos.hash, ply, probcut_depth, value, mv, tt::Bound::Lower, tt_pv, raw_static_eval);
+                        .store(self.pos.hash, ply, probcut_depth, value, mv, tt::Bound::Lower, tt_probe.pv, raw_static_eval);
 
                     return Ok(value);
                 }
@@ -1188,7 +1183,7 @@ impl Worker<'_> {
         // No TT move means we are searching blind, and blind ordering does not
         // deserve full depth. The entry this search stores hands the next iteration
         // the move it was missing.
-        let depth = if depth >= sp.iir_depth && tt_move.is_none() { depth - sp.iir_reduction } else { depth };
+        let depth = if depth >= sp.iir_depth && tt_probe.mv.is_none() { depth - sp.iir_reduction } else { depth };
 
         // ──────── Move loop ────────
 
@@ -1241,7 +1236,8 @@ impl Worker<'_> {
             // picker incorporate recent positional context into quiet ordering.
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
-            let mut picker = MovePicker::new(tt_move, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+            let mut picker =
+                MovePicker::new(tt_probe.mv, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
 
             self.xb_enter(ply);
 
@@ -1388,13 +1384,13 @@ impl Worker<'_> {
                 if !N::ROOT
                     && !N::PV
                     && excluded.is_null()
-                    && Some(mv) == tt_move
+                    && Some(mv) == tt_probe.mv
                     && depth >= sp.singext_min_depth
-                    && tt_depth >= depth - sp.singext_tt_depth
-                    && tt_bound != tt::Bound::Upper
-                    && !is_mate(tt_score)
+                    && tt_probe.depth >= depth - sp.singext_tt_depth
+                    && tt_probe.bound != tt::Bound::Upper
+                    && !is_mate(tt_probe.score)
                 {
-                    let sing_beta = (tt_score - depth * sp.singext_margin).max(-MATE_BOUND);
+                    let sing_beta = (tt_probe.score - depth * sp.singext_margin).max(-MATE_BOUND);
                     let sing_depth = (depth - 1) / 2;
 
                     // The verification recurses at this same ply and stomps the quiet
@@ -1437,7 +1433,7 @@ impl Worker<'_> {
                     {
                         use crate::engine::mvpstats::{CutoffKind, record_cutoff};
 
-                        let kind = if Some(mv) == tt_move {
+                        let kind = if Some(mv) == tt_probe.mv {
                             CutoffKind::Hash
                         } else if mv.is_capture() {
                             CutoffKind::Capture
@@ -1537,9 +1533,16 @@ impl Worker<'_> {
         // The verification searched this position with a move missing, so its
         // result is a lie about the real node. Keep it out of the table.
         if excluded.is_null() {
-            searcher
-                .tt
-                .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, N::PV || tt_pv, raw_static_eval);
+            searcher.tt.store(
+                self.pos.hash,
+                ply,
+                depth,
+                res.best_eval,
+                res.best_move,
+                bound,
+                N::PV || tt_probe.pv,
+                raw_static_eval,
+            );
         }
 
         // ── Correction History Update
@@ -1813,16 +1816,10 @@ impl Worker<'_> {
         // sequence for accurate PV reporting.
         //
         // Quiescence TT Move (~9 Elo)
-        let (qs_tt_move, qs_tt_pv, qs_tt_eval) = if let Some(hit) = searcher.tt.probe(self.pos.hash, ply) {
-            if !N::PV && tt::can_cutoff(hit.bound, hit.score, alpha, beta) {
-                return Ok(hit.score);
-            }
-
-            let mv = if !hit.mv.is_null() && is_pseudo_legal(&self.pos, hit.mv) { Some(hit.mv) } else { None };
-            (mv, hit.pv, Some(hit.eval))
-        } else {
-            (None, false, None)
-        };
+        let qs_tt = searcher.tt.probe(&self.pos, ply);
+        if !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta) {
+            return Ok(qs_tt.score);
+        }
 
         let checkers = self.xb_checkers();
         let in_check = checkers.is_not_empty();
@@ -1836,8 +1833,8 @@ impl Worker<'_> {
         // sentinel (an in-check store) falls through.
         let raw_eval = if in_check {
             tt::SCORE_NONE
-        } else if let Some(eval) = qs_tt_eval.filter(|&e| e != tt::SCORE_NONE) {
-            eval
+        } else if qs_tt.eval != tt::SCORE_NONE {
+            qs_tt.eval
         } else {
             self.evaluate()
         };
@@ -1879,7 +1876,7 @@ impl Worker<'_> {
         let ksq = pins.king(stm);
         let pinned = pins.blockers(stm);
 
-        let mut picker = MovePicker::new_qsearch(qs_tt_move, searcher.cfg, pins, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt.mv, searcher.cfg, pins, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 
@@ -1960,7 +1957,7 @@ impl Worker<'_> {
 
         searcher
             .tt
-            .store_qs(self.pos.hash, ply, best_eval, best_move, bound, N::PV || qs_tt_pv, raw_eval);
+            .store_qs(self.pos.hash, ply, best_eval, best_move, bound, N::PV || qs_tt.pv, raw_eval);
 
         Ok(best_eval)
     }
