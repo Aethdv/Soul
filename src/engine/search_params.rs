@@ -143,7 +143,7 @@ search_params! {
 
         //                default   min  max  step
         NT(lazy_eval_margin,  160,  140, 300),
-        NT(lazy_eval_divisor,  32,    1,  64),
+        NT(lazy_eval_divisor,  16,    1,  64),
 
         NT(vol_pawn,     5),
         NT(vol_knight,  10),
