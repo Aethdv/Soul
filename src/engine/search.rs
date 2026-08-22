@@ -48,7 +48,7 @@ use crate::{
         moves::Move,
     },
     engine::{
-        eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, extract_phase},
+        eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, evaluate_psqt, extract_phase, lazy_eval_margin},
         history::{self, ContContext, History, HistoryCaps},
         movegen::{gen_legal_moves, is_legal},
         movepicker::MovePicker,
@@ -1843,6 +1843,13 @@ impl Worker<'_> {
         } else if qs_tt.eval != tt::SCORE_NONE {
             qs_tt.eval
         } else {
+            // ── Lazy Eval
+            let phase = extract_phase(&self.accumulator);
+            let lazy = self.corrected_eval(evaluate_psqt(&self.pos, &self.accumulator, phase), sp);
+            let lazy_floor = lazy - lazy_eval_margin(&self.pos, phase, sp);
+            if lazy_floor >= beta {
+                return Ok((lazy + beta) / 2);
+            }
             self.evaluate()
         };
 
