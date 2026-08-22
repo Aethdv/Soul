@@ -50,8 +50,7 @@ const FILE_MASKS: [u64; 8] = [
 ];
 
 // Magic Bitboard Constants (Non-BMI2 only)
-// Precomputed magic numbers, generated with seed 0xDEAD_BEEF_CAFE_BABE.
-// Only used on non-BMI2 machines for sliding piece attack generation.
+// Generated with seed 0xDEAD_BEEF_CAFE_BABE.
 
 #[rustfmt::skip]
 const ROOK_MAGICS: [u64; 64] = [
@@ -156,6 +155,42 @@ fn rustc_version() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// AMD microcodes PEXT before Zen 3, which sucks.
+fn use_pext() -> bool {
+    if !env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default().contains("bmi2") {
+        return false;
+    }
+    if env::var("SOUL_NO_PEXT").is_ok() {
+        println!("cargo:warning=SOUL_NO_PEXT set, slider lookups use magics");
+        return false;
+    }
+    let native = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default().contains("target-cpu=native");
+    if native && amd_before_zen3() {
+        println!("cargo:warning=microcoded PEXT on this CPU, slider lookups use magics");
+        return false;
+    }
+    true
+}
+
+/// Zen 1 through Zen 2 are family 23, Zen 3 onward 25. Every Zen part reports base family
+/// 0xF and carries the real number in ExtFamily, so the base read alone comes out as 9.
+#[cfg(target_arch = "x86_64")]
+fn amd_before_zen3() -> bool {
+    use std::arch::x86_64::__cpuid;
+
+    let (vendor, version) = (__cpuid(0), __cpuid(1));
+    // "AuthenticAMD", four bytes per register in ebx, edx, ecx order.
+    let is_amd = (vendor.ebx, vendor.edx, vendor.ecx) == (0x6874_7541, 0x6974_6E65, 0x444D_4163);
+
+    let base = (version.eax >> 8) & 0xF;
+    let family = if base == 0xF { base + ((version.eax >> 20) & 0xFF) } else { base };
+
+    is_amd && family < 25
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn amd_before_zen3() -> bool { false }
+
 fn main() {
     println!("cargo:rustc-env=SOUL_RUSTC={}", rustc_version());
 
@@ -163,8 +198,14 @@ fn main() {
     // the target features, so a feature change has to regenerate too.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    println!("cargo:rerun-if-env-changed=SOUL_NO_PEXT");
 
-    let is_bmi2 = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default().contains("bmi2");
+    let is_bmi2 = use_pext();
+    println!("cargo:rustc-check-cfg=cfg(use_pext)");
+    if is_bmi2 {
+        println!("cargo:rustc-cfg=use_pext");
+    }
     let out_dir = env::var("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("magics.rs");
     let mut f = File::create(&dest_path).unwrap();
