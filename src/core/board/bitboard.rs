@@ -32,14 +32,14 @@ include!(concat!(env!("OUT_DIR"), "/magics.rs"));
 ///
 /// On BMI2 targets, `_pext_u64` extracts occupancy bits directly into a dense offset.
 /// On fallback targets, magic multiplication and shifting hash the occupancy into an index.
-#[cfg(target_feature = "bmi2")]
+#[cfg(use_pext)]
 #[derive(Clone, Copy, Debug)]
 pub struct MagicEntry {
     pub mask: u64,
     pub offset: u32,
 }
 
-#[cfg(not(target_feature = "bmi2"))]
+#[cfg(not(use_pext))]
 #[derive(Clone, Copy, Debug)]
 pub struct MagicEntry {
     pub mask: u64,
@@ -53,12 +53,12 @@ macro_rules! magic_index {
     ($entries:expr, $sq:expr, $occ:expr) => {{
         let entry = debug_index!($entries, $sq);
 
-        #[cfg(target_feature = "bmi2")]
+        #[cfg(use_pext)]
         // SAFETY: a pure arithmetic intrinsic, and the target_feature gate is what
         // guarantees the hardware has it.
         let key = unsafe { core::arch::x86_64::_pext_u64($occ, entry.mask) } as usize;
 
-        #[cfg(not(target_feature = "bmi2"))]
+        #[cfg(not(use_pext))]
         let key = (($occ & entry.mask).wrapping_mul(entry.magic) >> entry.shift) as usize;
         key + entry.offset as usize
     }};
