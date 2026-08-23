@@ -91,6 +91,11 @@ fn main() {
                 tools::genfens::run(&genfens_args);
             },
             #[cfg(feature = "rigs")]
+            "votecheck" => {
+                let vote_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+                tools::votecheck::run(&vote_args);
+            },
+            #[cfg(feature = "rigs")]
             "measure" => {
                 let measure_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::measure::run(&measure_args);
