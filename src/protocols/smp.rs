@@ -94,7 +94,10 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
             let incumbent_votes = votes[&incumbent.mv.inner()];
             let candidate_votes = votes[&candidate.mv.inner()];
 
-            !is_loss(candidate.score)
+            // Two threads on one move share a tally entry and so always tie,
+            // leaving the weight test to pick between identical outcomes.
+            candidate.mv != incumbent.mv
+                && !is_loss(candidate.score)
                 && (candidate_votes > incumbent_votes
                     || (candidate_votes == incumbent_votes && weight(candidate) > weight(incumbent)))
         };
@@ -252,6 +255,13 @@ mod tests {
     fn a_helper_carries_the_pool_when_main_never_finished_a_depth() {
         let winner = vote(&slots(&[(0x0000, -INF, 0), (0xBBBB, 12, 14)]));
         assert_eq!(winner, 1, "main published nothing and still won");
+    }
+
+    /// Unguarded, 214 of 320 tallies landed off main while 19 changed the move.
+    #[test]
+    fn a_thread_naming_mains_own_move_never_takes_the_win() {
+        let winner = vote(&slots(&[(0xAAAA, 5, 12), (0xAAAA, 90, 20), (0xAAAA, 90, 20)]));
+        assert_eq!(winner, 0, "a helper won the tally without changing the move");
     }
 
     #[test]
