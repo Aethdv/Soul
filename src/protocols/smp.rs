@@ -22,7 +22,7 @@ use std::{
 use crate::{
     core::{
         board::Position,
-        defs::{INF, is_loss, is_mate, is_win},
+        defs::{INF, is_loss, is_mate},
     },
     engine::{
         history::History,
@@ -53,8 +53,13 @@ pub fn winner(cfg: &SearchConfig) -> usize {
 /// floor of 10 leaves that worst thread a vote proportional to its depth
 /// instead of none at all.
 ///
-/// Thread 0 is the incumbent and an inconclusive tally keeps its move.
+/// Thread 0 is the incumbent, and an index other than 0 means the move played
+/// changed.
 pub fn vote(result_slots: &[AtomicU64]) -> usize {
+    if result_slots.len() < 2 {
+        return 0;
+    }
+
     let results: Vec<ThreadResult> = result_slots.iter().map(|s| ThreadResult::unpack(s.load(Ordering::Acquire))).collect();
 
     // A thread that never finished a depth published -INF and has no opinion.
@@ -81,23 +86,24 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
         let incumbent = &results[best];
         let candidate = &results[cur];
 
-        let take = if is_win(incumbent.score) {
-            // A proven win only yields to a faster one.
-            candidate.score > incumbent.score
-        } else if candidate.score != -INF && incumbent.score != -INF && is_loss(incumbent.score) {
-            // Already lost: take the thread that proved the shortest path to it.
-            candidate.score < incumbent.score
-        } else if candidate.score != -INF && is_mate(candidate.score) {
-            // A proved mate outranks the tally.
+        // An aborted thread published -INF, which reads as a loss and would take
+        // the decisive path without ever having proved anything.
+        let incumbent_decisive = incumbent.score != -INF && is_mate(incumbent.score);
+        let candidate_decisive = candidate.score != -INF && is_mate(candidate.score);
+
+        let take = if incumbent_decisive {
+            // Two correct searches cannot prove opposite results, so both scores
+            // here have one sign and the larger magnitude is the shorter mate.
+            // Shortest is what we want lost as well as won: the thread that found
+            // the mate against us is the one that searched the danger.
+            candidate_decisive && candidate.score.abs() > incumbent.score.abs()
+        } else if candidate_decisive {
             true
         } else {
             let incumbent_votes = votes[&incumbent.mv.inner()];
             let candidate_votes = votes[&candidate.mv.inner()];
 
-            // Two threads on one move share a tally entry and so always tie,
-            // leaving the weight test to pick between identical outcomes.
-            candidate.mv != incumbent.mv
-                && !is_loss(candidate.score)
+            !is_loss(candidate.score)
                 && (candidate_votes > incumbent_votes
                     || (candidate_votes == incumbent_votes && weight(candidate) > weight(incumbent)))
         };
@@ -107,7 +113,9 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
         }
     }
 
-    best
+    // Threads naming one move share a tally entry, so the scan
+    // can end on a thread that agrees with main.
+    if results[best].mv == results[0].mv { 0 } else { best }
 }
 
 pub struct LazySmpPool {
@@ -198,7 +206,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        core::{board::STARTPOS, defs::mate_in, moves::Move},
+        core::{
+            board::STARTPOS,
+            defs::{mate_in, mated_in},
+            moves::Move,
+        },
         engine::{movegen::gen_legal_moves, search::Limits, search_params::SearchParams},
     };
 
@@ -226,8 +238,9 @@ mod tests {
 
     #[test]
     fn agreement_at_a_comparable_score_carries_the_pool() {
-        let winner = vote(&slots(&[(0xAAAA, 20, 12), (0xBBBB, 18, 12), (0xBBBB, 18, 12), (0xBBBB, 18, 12)]));
-        assert_eq!(winner, 1, "a move three threads agree on at nearly the same score lost the tally");
+        let picks = [(0xAAAA, 20, 12), (0xBBBB, 18, 12), (0xBBBB, 18, 12), (0xBBBB, 18, 12)];
+        let winner = vote(&slots(&picks));
+        assert_eq!(picks[winner].0, 0xBBBB, "a move three threads agree on at nearly the same score lost the tally");
     }
 
     #[test]
@@ -257,7 +270,18 @@ mod tests {
         assert_eq!(winner, 1, "main published nothing and still won");
     }
 
-    /// Unguarded, 214 of 320 tallies landed off main while 19 changed the move.
+    #[test]
+    fn a_proof_outranks_the_tally_even_when_it_is_a_loss() {
+        let winner = vote(&slots(&[(0xAAAA, 350, 20), (0xBBBB, mated_in(9), 11)]));
+        assert_eq!(winner, 1, "a proven loss lost to an unproven score");
+    }
+
+    #[test]
+    fn a_lost_pool_takes_the_shortest_mate() {
+        let winner = vote(&slots(&[(0xAAAA, mated_in(21), 18), (0xBBBB, mated_in(5), 18)]));
+        assert_eq!(winner, 1, "the pool kept a mate it had not proved");
+    }
+
     #[test]
     fn a_thread_naming_mains_own_move_never_takes_the_win() {
         let winner = vote(&slots(&[(0xAAAA, 5, 12), (0xAAAA, 90, 20), (0xAAAA, 90, 20)]));
