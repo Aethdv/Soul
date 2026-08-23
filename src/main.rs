@@ -8,7 +8,10 @@ use std::{
     fs,
     io::{self, BufRead, IsTerminal},
     process,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -19,7 +22,7 @@ use soul::{
     },
     engine::{
         history::History,
-        search::{Limits, SearchConfig, SearchDisplay, Searcher},
+        search::{Limits, SearchConfig, SearchDisplay, Searcher, ThreadResult},
         search_params::{SearchParams, spsa_table},
         tt::TranspositionTable,
     },
@@ -114,6 +117,10 @@ fn main() {
                 let mut history_table = History::new();
                 let mut searcher = Searcher::new(&cfg, &board, &[], Arc::new(TranspositionTable::new(16, 1)));
                 searcher.iterative_deepening(&mut history_table);
+
+                // The search publishes instead of printing; one thread means slot 0.
+                let result = ThreadResult::unpack(cfg.result_slots[0].load(Ordering::Relaxed));
+                println!("bestmove {}", result.mv.to_uci(board.is_frc));
             },
             _ if args[1].contains(' ') => {
                 protocols::uci::run_commands(&args[1..]);

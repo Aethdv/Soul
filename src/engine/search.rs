@@ -128,6 +128,8 @@ pub struct Searcher<'cfg> {
     pub nodes: u64,
     pub sel_depth: i32,
     pub iter_depth: i32,
+    /// The vote weight: last iteration finished, not the one running.
+    pub completed_depth: i32,
     pub last_print: u128,
     pub pv_history: VecDeque<PvSnapshot>,
     pub tt: Arc<TranspositionTable>,
@@ -198,11 +200,41 @@ pub struct SearchConfig {
     /// Each thread writes only its own slot, inside `check_signals`
     /// (every 2048 nodes), with a Relaxed store.
     pub node_slots: Arc<[AtomicU64]>,
+    /// Per-thread vote slots, one packed [`ThreadResult`] each. A thread writes
+    /// its own slot once, as its last act; the caller reads them all after the
+    /// pool joins.
+    pub result_slots: Arc<[AtomicU64]>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
     /// Reduction composes as `base + table[d] · table[m] / div`, all in LMR_SCALE units.
     pub lmr_table: Box<[i16; MAX_PLY + 1]>,
+}
+
+/// One thread's final pick, for the vote in [`crate::protocols::smp::vote`].
+///
+/// Every thread searches the same root, so the scores compare directly.
+#[derive(Clone, Copy)]
+pub struct ThreadResult {
+    pub mv: Move,
+    pub score: i32,
+    /// Deepest iteration the thread finished, not the deepest it started.
+    pub depth: i32,
+}
+
+impl ThreadResult {
+    /// `mv(16) | depth(16) | score(32)`, one atomic store.
+    #[inline]
+    pub fn pack(self) -> u64 { self.mv.inner() as u64 | (self.depth as u16 as u64) << 16 | (self.score as u32 as u64) << 32 }
+
+    #[inline]
+    pub fn unpack(word: u64) -> Self {
+        Self {
+            mv: Move::from_u16(word as u16),
+            depth: (word >> 16) as u16 as i32,
+            score: (word >> 32) as u32 as i32,
+        }
+    }
 }
 
 /// A legal move at ply 0 paired with its best known score.
@@ -293,6 +325,7 @@ impl SearchConfig {
             threads: 1,
             thread_id: 0,
             node_slots: Self::node_slots(1),
+            result_slots: Self::result_slots(1),
             mvvlva_v,
             mvvlva_a,
             lmr_table,
@@ -300,6 +333,14 @@ impl SearchConfig {
     }
 
     pub fn node_slots(threads: usize) -> Arc<[AtomicU64]> { (0..threads).map(|_| AtomicU64::new(0)).collect() }
+
+    /// Vote slots seeded with an empty result, so a thread that never finished a
+    /// depth reads as one and the tally skips it. Allocated per search: a slot
+    /// left over from the previous move would vote in this one.
+    pub fn result_slots(threads: usize) -> Arc<[AtomicU64]> {
+        let empty = ThreadResult { mv: Move::null(), score: -INF, depth: 0 }.pack();
+        (0..threads).map(|_| AtomicU64::new(empty)).collect()
+    }
 
     /// Composed LMR reduction in `LMR_SCALE` units.
     #[inline(always)]
@@ -423,9 +464,7 @@ impl<'cfg> Searcher<'cfg> {
         }
 
         if self.root_moves.is_empty() {
-            if !self.cfg.limits.silent {
-                println!("bestmove 0000");
-            }
+            self.publish();
             return;
         }
 
@@ -434,9 +473,7 @@ impl<'cfg> Searcher<'cfg> {
 
             if self.root_moves.is_empty() {
                 eprintln!("info string error: no legal moves match searchmoves");
-                if !self.cfg.limits.silent {
-                    println!("bestmove 0000");
-                }
+                self.publish();
                 return;
             }
         }
@@ -629,6 +666,7 @@ impl<'cfg> Searcher<'cfg> {
             self.tm.set_score_factor(score_factor);
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
+            self.completed_depth = depth;
             self.print_info(depth, self.prev_score, &self.prev_pv);
             let elapsed = self.tm.elapsed().as_millis().max(1);
             self.pv_history
@@ -640,15 +678,25 @@ impl<'cfg> Searcher<'cfg> {
             }
         }
 
-        if !self.cfg.limits.silent {
-            let best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
+        // ── Thread Voting
+        // No move is printed here. The caller tallies every slot once the pool
+        // has joined and prints the winner's.
+        self.publish();
+    }
 
-            match self.cfg.limits.protocol {
-                Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.is_frc)),
-                Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.is_frc)),
-            }
-            let _ = io::stdout().flush();
-        }
+    /// Hands this thread's pick to the vote.
+    ///
+    /// The move is the one this thread would play alone, and the score is that
+    /// same move's from the same completed iteration, so winning the vote plays
+    /// what the winner had already settled on.
+    fn publish(&self) {
+        let mv = self
+            .prev_pv
+            .get(0)
+            .or_else(|| self.root_moves.first().map(|rm| rm.mv))
+            .unwrap_or(Move::null());
+        let result = ThreadResult { mv, score: self.prev_score, depth: self.completed_depth };
+        self.cfg.result_slots[self.cfg.thread_id].store(result.pack(), Ordering::Release);
     }
 
     #[inline]
@@ -669,6 +717,7 @@ impl<'cfg> Searcher<'cfg> {
             nodes: 0,
             sel_depth: 0,
             iter_depth: 0,
+            completed_depth: 0,
             last_print: 0,
             tt,
         }
@@ -685,6 +734,7 @@ impl<'cfg> Searcher<'cfg> {
         self.nodes = 0;
         self.sel_depth = 0;
         self.iter_depth = 0;
+        self.completed_depth = 0;
         self.last_print = 0;
         self.pv_history.clear();
         self.prev_score = -INF;
@@ -787,7 +837,19 @@ impl<'cfg> Searcher<'cfg> {
         }
     }
 
+    /// Re-reports a voted-in result as one info line, so the last score printed
+    /// is the one behind the move printed after it.
+    ///
+    /// The PV is the single voted move. The winner's own line lives in its
+    /// thread and is gone by the time the tally runs.
     #[cold]
+    pub fn report_voted(&self, depth: i32, score: i32, mv: Move) {
+        let mut pv = Line::new();
+        pv.moves[0] = mv;
+        pv.len = 1;
+        self.print_info(depth, score, &pv);
+    }
+
     fn print_info(&self, depth: i32, score: i32, pv: &Line) {
         if self.cfg.limits.silent {
             return;

@@ -26,14 +26,14 @@ use crate::{
     engine::{
         eval::detailed_eval,
         history::History,
-        search::{Limits, SearchConfig, SearchDisplay, Searcher},
+        search::{Limits, SearchConfig, SearchDisplay, Searcher, ThreadResult},
         search_params::SearchParams,
         tt::TranspositionTable,
     },
     numa::NumaTopology,
     protocols::{
         notation::parse_uci_move,
-        smp::{LazySmpPool, table_and_pool},
+        smp::{self, LazySmpPool, table_and_pool},
     },
     tools,
     weave::Vi16x8,
@@ -123,6 +123,19 @@ impl UciState {
                         cfg.stop.store(true, Ordering::Relaxed);
                         pool.wait();
                         cfg.stop.store(false, Ordering::Relaxed);
+
+                        // ── Thread Voting
+                        if !cfg.limits.silent && cfg.limits.perft.is_none() {
+                            let winner = smp::winner(&cfg);
+                            let result = ThreadResult::unpack(cfg.result_slots[winner].load(Ordering::Acquire));
+
+                            if winner != 0 {
+                                ctx.report_voted(result.depth, result.score, result.mv);
+                            }
+
+                            println!("bestmove {}", result.mv.to_uci(board.is_frc));
+                            let _ = io::stdout().flush();
+                        }
 
                         is_searching_worker.store(false, Ordering::Relaxed);
                         let _ = result_tx.send(history_table);
@@ -256,6 +269,7 @@ fn dispatch_search(state: &UciState, limits: Limits) {
         SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, display, SearchParams::default());
     cfg.threads = state.threads;
     cfg.node_slots = SearchConfig::node_slots(state.threads);
+    cfg.result_slots = SearchConfig::result_slots(state.threads);
 
     state.is_searching.store(true, Ordering::Relaxed);
     state

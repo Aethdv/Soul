@@ -25,13 +25,13 @@ use crate::{
     },
     engine::{
         history::History,
-        search::{Limits, SearchConfig, SearchDisplay, Searcher},
+        search::{Limits, SearchConfig, SearchDisplay, Searcher, ThreadResult},
         search_params::SearchParams,
         tt::TranspositionTable,
     },
     protocols::{
         notation::parse_uci_move,
-        smp::{LazySmpPool, table_and_pool},
+        smp::{self, LazySmpPool, table_and_pool},
     },
     weave::Vi16x8,
 };
@@ -170,6 +170,7 @@ impl XBoardState {
             let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             cfg.threads = threads;
             cfg.node_slots = SearchConfig::node_slots(threads);
+            cfg.result_slots = SearchConfig::result_slots(threads);
 
             // ── Lazy SMP
             // Persistent helpers fan out across the depth ladder alongside main;
@@ -184,6 +185,19 @@ impl XBoardState {
             cfg.stop.store(true, Ordering::Relaxed);
             pool.wait();
             cfg.stop.store(false, Ordering::Relaxed);
+
+            // ── Thread Voting
+            if !cfg.limits.silent && cfg.limits.perft.is_none() {
+                let winner = smp::winner(&cfg);
+                let result = ThreadResult::unpack(cfg.result_slots[winner].load(Ordering::Acquire));
+
+                if winner != 0 {
+                    ctx.report_voted(result.depth, result.score, result.mv);
+                }
+
+                println!("move {}", result.mv.to_uci(board.is_frc));
+                let _ = io::stdout().flush();
+            }
 
             *shared_history.lock() = history_table;
         }));
