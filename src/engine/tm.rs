@@ -63,6 +63,10 @@ impl TimeManager {
     #[inline]
     pub fn hard_limit(&self) -> Duration { self.hard }
 
+    /// False for infinite, unclocked and analysis searches, where unspent time buys nothing.
+    #[inline]
+    pub fn is_finite_budget(&self) -> bool { self.hard != Duration::MAX }
+
     #[inline]
     pub fn elapsed(&self) -> Duration { self.start.elapsed() }
 

@@ -514,6 +514,14 @@ impl<'cfg> Searcher<'cfg> {
                 break;
             }
 
+            // ── Proven Mate Bailout
+            if self.cfg.thread_id == 0
+                && self.tm.is_finite_budget()
+                && (self.prev_score >= mate_in(3) || self.prev_score == mated_in(2))
+            {
+                break;
+            }
+
             if self.check_signals() {
                 break;
             }
