@@ -183,8 +183,7 @@ impl XBoardState {
             ctx.iterative_deepening(&mut history_table);
 
             cfg.stop.store(true, Ordering::Relaxed);
-            pool.wait();
-            cfg.stop.store(false, Ordering::Relaxed);
+            smp::await_results(&cfg);
 
             // ── Thread Voting
             if !cfg.limits.silent && cfg.limits.perft.is_none() {
@@ -199,6 +198,8 @@ impl XBoardState {
                 let _ = io::stdout().flush();
             }
 
+            pool.wait();
+            cfg.stop.store(false, Ordering::Relaxed);
             *shared_history.lock() = history_table;
         }));
     }

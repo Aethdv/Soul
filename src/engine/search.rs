@@ -63,6 +63,9 @@ use crate::{
     weave::{Vi16x8, Vu64x4},
 };
 
+/// A slot no thread has written yet.
+pub const RESULT_NONE: u64 = u64::MAX;
+
 const NODE_CHECK_INTERVAL: u64 = 2048;
 /// Minimum node count before printing `currmove` UCI output.
 const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
@@ -128,11 +131,10 @@ pub struct Searcher<'cfg> {
     pub nodes: u64,
     pub sel_depth: i32,
     pub iter_depth: i32,
-    /// The vote weight: last iteration finished, not the one running.
-    pub completed_depth: i32,
     pub last_print: u128,
     pub pv_history: VecDeque<PvSnapshot>,
     pub tt: Arc<TranspositionTable>,
+    pub completed_depth: i32,
 }
 
 #[repr(align(32))]
@@ -200,15 +202,13 @@ pub struct SearchConfig {
     /// Each thread writes only its own slot, inside `check_signals`
     /// (every 2048 nodes), with a Relaxed store.
     pub node_slots: Arc<[AtomicU64]>,
-    /// Per-thread vote slots, one packed [`ThreadResult`] each. A thread writes
-    /// its own slot once, as its last act; the caller reads them all after the
-    /// pool joins.
-    pub result_slots: Arc<[AtomicU64]>,
     pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
     pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
     /// Reduction composes as `base + table[d] · table[m] / div`, all in LMR_SCALE units.
     pub lmr_table: Box<[i16; MAX_PLY + 1]>,
+    /// Per-thread vote slots, one packed [`ThreadResult`] each.
+    pub result_slots: Arc<[AtomicU64]>,
 }
 
 /// One thread's final pick, for the vote in [`crate::protocols::smp::vote`].
@@ -325,10 +325,10 @@ impl SearchConfig {
             threads: 1,
             thread_id: 0,
             node_slots: Self::node_slots(1),
-            result_slots: Self::result_slots(1),
             mvvlva_v,
             mvvlva_a,
             lmr_table,
+            result_slots: Self::result_slots(1),
         }
     }
 
@@ -337,10 +337,7 @@ impl SearchConfig {
     /// Vote slots seeded with an empty result, so a thread that never finished a
     /// depth reads as one and the tally skips it. Allocated per search: a slot
     /// left over from the previous move would vote in this one.
-    pub fn result_slots(threads: usize) -> Arc<[AtomicU64]> {
-        let empty = ThreadResult { mv: Move::null(), score: -INF, depth: 0 }.pack();
-        (0..threads).map(|_| AtomicU64::new(empty)).collect()
-    }
+    pub fn result_slots(threads: usize) -> Arc<[AtomicU64]> { (0..threads).map(|_| AtomicU64::new(RESULT_NONE)).collect() }
 
     /// Composed LMR reduction in `LMR_SCALE` units.
     #[inline(always)]
@@ -717,9 +714,9 @@ impl<'cfg> Searcher<'cfg> {
             nodes: 0,
             sel_depth: 0,
             iter_depth: 0,
-            completed_depth: 0,
             last_print: 0,
             tt,
+            completed_depth: 0,
         }
     }
 

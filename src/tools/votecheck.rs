@@ -34,8 +34,24 @@ const RED: Rgb = (243, 139, 168);
 
 const FENS: &str = include_str!("../data/speedtest.fens");
 
-/// Clamps applied to `score - min_score` before the depth multiply.
-const CLAMPS: [i32; 8] = [0, 10, 20, 30, 50, 100, 200, i32::MAX];
+#[derive(Clone, Copy)]
+enum Weighting {
+    ScoreDepth,
+    Score,
+    Depth,
+}
+
+impl Weighting {
+    const ALL: [(Self, &'static str); 3] = [(Self::ScoreDepth, "score x depth"), (Self::Score, "score"), (Self::Depth, "depth")];
+
+    fn of(self, r: &ThreadResult, min_score: i32) -> i32 {
+        match self {
+            Self::ScoreDepth => (r.score - min_score + 10) * r.depth,
+            Self::Score => r.score - min_score + 14,
+            Self::Depth => r.depth,
+        }
+    }
+}
 
 struct Probe {
     results: Vec<ThreadResult>,
@@ -120,15 +136,15 @@ pub fn run(args: &[&str]) {
     );
     println!("  {}threads disagreed on the move in {split} of {} positions{}", ansi_fg(TEXT), probed.len(), RESET);
     println!();
-    println!("  {}clamp      off-main   overruled   better   worse    net cp{}", ansi_fg(DIM), RESET);
+    println!("  {}weighting        off-main   overruled   better   worse    net cp{}", ansi_fg(DIM), RESET);
 
-    for clamp in CLAMPS {
+    for (weighting, name) in Weighting::ALL {
         let (mut overruled, mut better, mut worse, mut net) = (0, 0, 0, 0i64);
         let mut off_main = 0;
 
         for p in &probed {
             let main_mv = p.results[0].mv.inner();
-            let winner = pick(&p.results, clamp);
+            let winner = pick(&p.results, weighting);
             off_main += usize::from(winner != 0);
 
             let picked = p.results[winner].mv.inner();
@@ -146,8 +162,7 @@ pub fn run(args: &[&str]) {
         }
 
         let tint = if net > 0 { GREEN } else { RED };
-        let name = if clamp == i32::MAX { "unbounded".to_string() } else { clamp.to_string() };
-        println!("  {name:<10} {off_main:>7}   {overruled:>9}   {better:>6}   {worse:>5}   {}{net:>+7}{}", ansi_fg(tint), RESET);
+        println!("  {name:<15} {off_main:>8}   {overruled:>9}   {better:>6}   {worse:>5}   {}{net:>+7}{}", ansi_fg(tint), RESET);
     }
     println!();
 }
@@ -191,10 +206,10 @@ fn settle(board: &Position, mv: Move, depth: i32, tt: &Arc<TranspositionTable>) 
     searcher.prev_score
 }
 
-/// The thread the tally lands on with `score - min_score` clamped to `clamp`.
-fn pick(results: &[ThreadResult], clamp: i32) -> usize {
+/// The thread the tally lands on under one weighting.
+fn pick(results: &[ThreadResult], weighting: Weighting) -> usize {
     let min_score = results.iter().filter(|r| r.score != -INF).map(|r| r.score).min().unwrap_or(0);
-    let weight = |r: &ThreadResult| ((r.score - min_score).min(clamp) + 10) * r.depth;
+    let weight = |r: &ThreadResult| weighting.of(r, min_score);
 
     let mut votes: HashMap<u16, i32> = HashMap::new();
     for r in results {
@@ -211,5 +226,6 @@ fn pick(results: &[ThreadResult], clamp: i32) -> usize {
             best = cur;
         }
     }
-    best
+
+    if results[best].mv == results[0].mv { 0 } else { best }
 }

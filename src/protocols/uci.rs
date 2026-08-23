@@ -121,8 +121,7 @@ impl UciState {
                         // Main is done. Signal helpers, wait for them to park,
                         // then clear the flag so the next search starts clean.
                         cfg.stop.store(true, Ordering::Relaxed);
-                        pool.wait();
-                        cfg.stop.store(false, Ordering::Relaxed);
+                        smp::await_results(&cfg);
 
                         // ── Thread Voting
                         if !cfg.limits.silent && cfg.limits.perft.is_none() {
@@ -137,6 +136,8 @@ impl UciState {
                             let _ = io::stdout().flush();
                         }
 
+                        pool.wait();
+                        cfg.stop.store(false, Ordering::Relaxed);
                         is_searching_worker.store(false, Ordering::Relaxed);
                         let _ = result_tx.send(history_table);
                     },

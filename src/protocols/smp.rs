@@ -11,7 +11,6 @@
 //! [`winner`] is where that tally happens, once the pool has joined.
 
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -23,20 +22,28 @@ use crate::{
     core::{
         board::Position,
         defs::{INF, is_loss, is_mate},
+        moves::Move,
     },
     engine::{
         history::History,
-        search::{SearchConfig, Searcher, ThreadResult},
+        search::{RESULT_NONE, SearchConfig, Searcher, ThreadResult},
         tt::TranspositionTable,
     },
     protocols::spmc,
 };
 
 /// The thread whose move the pool plays.
-///
-/// Under a fixed depth every thread finishes the same one, so the tally would
-/// turn on thread timing alone and the move printed for a position would stop
-/// being reproducible between runs. There the vote is skipped.
+pub fn await_results(cfg: &SearchConfig) {
+    const SPINS: usize = 1 << 14;
+
+    for _ in 0..SPINS {
+        if cfg.result_slots.iter().all(|slot| slot.load(Ordering::Acquire) != RESULT_NONE) {
+            return;
+        }
+        thread::yield_now();
+    }
+}
+
 pub fn winner(cfg: &SearchConfig) -> usize {
     if cfg.limits.depth > 0 || cfg.limits.mate.is_some() {
         return 0;
@@ -45,40 +52,25 @@ pub fn winner(cfg: &SearchConfig) -> usize {
 }
 
 /// Tallies the pool's picks and returns the index of the thread that won.
-///
-/// A thread votes for its own move with `(score - min_score + 10) · depth`.
-/// Depth alone would let several shallow threads agreeing on a weak move
-/// outvote one deep thread that found a better one; measuring each score
-/// against the pool's worst is what keeps the evaluation in the tally. The
-/// floor of 10 leaves that worst thread a vote proportional to its depth
-/// instead of none at all.
-///
-/// Thread 0 is the incumbent, and an index other than 0 means the move played
-/// changed.
 pub fn vote(result_slots: &[AtomicU64]) -> usize {
     if result_slots.len() < 2 {
         return 0;
     }
 
-    let results: Vec<ThreadResult> = result_slots.iter().map(|s| ThreadResult::unpack(s.load(Ordering::Acquire))).collect();
+    let results: Vec<ThreadResult> = result_slots
+        .iter()
+        .map(|slot| match slot.load(Ordering::Acquire) {
+            RESULT_NONE => ThreadResult { mv: Move::null(), score: -INF, depth: 0 },
+            packed => ThreadResult::unpack(packed),
+        })
+        .collect();
 
-    // A thread that never finished a depth published -INF and has no opinion.
-    // The minimum runs over the voters alone: let a -INF in and every real score
-    // sits about 32000 above it, so the spread between them stops separating
-    // anything and depth decides by itself.
     let Some(min_score) = results.iter().filter(|r| r.score != -INF).map(|r| r.score).min() else {
         return 0;
     };
 
     let weight = |r: &ThreadResult| (r.score - min_score + 10) * r.depth;
-
-    // Every thread is entered, so no lookup below can miss.
-    // A non-voter has depth 0 and so weight 0.
-    let mut votes: HashMap<u16, i32> = HashMap::new();
-
-    for r in &results {
-        *votes.entry(r.mv.inner()).or_default() += weight(r);
-    }
+    let votes = |mv| results.iter().filter(|r| r.mv == mv).map(weight).sum::<i32>();
 
     let mut best = 0;
 
@@ -86,8 +78,6 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
         let incumbent = &results[best];
         let candidate = &results[cur];
 
-        // An aborted thread published -INF, which reads as a loss and would take
-        // the decisive path without ever having proved anything.
         let incumbent_decisive = incumbent.score != -INF && is_mate(incumbent.score);
         let candidate_decisive = candidate.score != -INF && is_mate(candidate.score);
 
@@ -100,8 +90,8 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
         } else if candidate_decisive {
             true
         } else {
-            let incumbent_votes = votes[&incumbent.mv.inner()];
-            let candidate_votes = votes[&candidate.mv.inner()];
+            let incumbent_votes = votes(incumbent.mv);
+            let candidate_votes = votes(candidate.mv);
 
             !is_loss(candidate.score)
                 && (candidate_votes > incumbent_votes
@@ -318,7 +308,10 @@ mod tests {
         let legal: Vec<u16> = gen_legal_moves(&board).iter().map(|mv| mv.inner()).collect();
 
         for (id, slot) in cfg.result_slots.iter().enumerate() {
-            let result = ThreadResult::unpack(slot.load(Ordering::Acquire));
+            let packed = slot.load(Ordering::Acquire);
+            assert_ne!(packed, RESULT_NONE, "thread {id} parked without publishing");
+
+            let result = ThreadResult::unpack(packed);
             assert!(legal.contains(&result.mv.inner()), "thread {id} published a move that is not legal at the root");
             assert!(result.depth >= 1, "thread {id} published no completed depth");
         }
