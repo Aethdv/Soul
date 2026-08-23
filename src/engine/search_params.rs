@@ -173,6 +173,7 @@ search_params! {
         NT(bm_stab_base,   270),
         NT(bm_stab_scale,  220),
         NT(bm_stab_floor,   56),
+        T (bm_inst_scale,  220,  0),
 
         //                default  min   max  step
         NT(mvvlva_ep,         100,  60,  150),
