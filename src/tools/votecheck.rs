@@ -39,16 +39,19 @@ enum Weighting {
     ScoreDepth,
     Score,
     Depth,
+    Count,
 }
 
 impl Weighting {
-    const ALL: [(Self, &'static str); 3] = [(Self::ScoreDepth, "score x depth"), (Self::Score, "score"), (Self::Depth, "depth")];
+    const ALL: [(Self, &'static str); 4] =
+        [(Self::ScoreDepth, "score x depth"), (Self::Score, "score"), (Self::Depth, "depth"), (Self::Count, "majority")];
 
     fn of(self, r: &ThreadResult, min_score: i32) -> i32 {
         match self {
             Self::ScoreDepth => (r.score - min_score + 10) * r.depth,
             Self::Score => r.score - min_score + 14,
             Self::Depth => r.depth,
+            Self::Count => 1,
         }
     }
 }
@@ -211,16 +214,13 @@ fn pick(results: &[ThreadResult], weighting: Weighting) -> usize {
     let min_score = results.iter().filter(|r| r.score != -INF).map(|r| r.score).min().unwrap_or(0);
     let weight = |r: &ThreadResult| weighting.of(r, min_score);
 
-    let mut votes: HashMap<u16, i32> = HashMap::new();
-    for r in results {
-        *votes.entry(r.mv.inner()).or_default() += weight(r);
-    }
+    let votes = |mv| results.iter().filter(|r| r.mv == mv && r.score != -INF).map(weight).sum::<i32>();
 
     let mut best = 0;
     for cur in 1..results.len() {
         let (incumbent, candidate) = (&results[best], &results[cur]);
-        let take = votes[&candidate.mv.inner()] > votes[&incumbent.mv.inner()]
-            || (votes[&candidate.mv.inner()] == votes[&incumbent.mv.inner()] && weight(candidate) > weight(incumbent));
+        let take = votes(candidate.mv) > votes(incumbent.mv)
+            || (votes(candidate.mv) == votes(incumbent.mv) && candidate.depth > incumbent.depth);
 
         if take && candidate.score != -INF {
             best = cur;
