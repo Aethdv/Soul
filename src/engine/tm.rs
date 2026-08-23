@@ -34,6 +34,7 @@ pub struct TimeManager {
     soft: Duration,
     base_soft: Duration,
     bm_stab: f64,
+    bm_inst: f64,
     score_factor: f64,
 }
 
@@ -50,7 +51,7 @@ impl TimeManager {
         params: &SearchParams,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
-        Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, score_factor: 1.0 }
+        Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, bm_inst: 1.0, score_factor: 1.0 }
     }
 
     #[inline]
@@ -71,6 +72,14 @@ impl TimeManager {
         self.recompute_soft();
     }
 
+    /// A best move that keeps changing between iterations means the position is
+    /// still deciding itself, and the factor only ever stretches the budget.
+    #[inline]
+    pub fn set_bm_inst_factor(&mut self, factor: f64) {
+        self.bm_inst = factor;
+        self.recompute_soft();
+    }
+
     /// 1.0 is the no-op, and passing it is how a stretch from the previous
     /// iteration gets cleared.
     #[inline]
@@ -81,7 +90,7 @@ impl TimeManager {
 
     #[inline]
     fn recompute_soft(&mut self) {
-        let scaled = self.base_soft.as_millis() as f64 * self.bm_stab * self.score_factor;
+        let scaled = self.base_soft.as_millis() as f64 * self.bm_stab * self.bm_inst * self.score_factor;
         self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }
 }

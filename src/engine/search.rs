@@ -469,6 +469,7 @@ impl<'cfg> Searcher<'cfg> {
         };
 
         let mut last_iter_elapsed = 0;
+        let mut bm_changes = 0.0;
 
         // ── Singular Bailout
         // Only one legal move. Slash the budget to 5% so we exit the depth
@@ -627,6 +628,22 @@ impl<'cfg> Searcher<'cfg> {
             };
 
             self.tm.set_score_factor(score_factor);
+
+            // ── Best-Move Instability TM
+            // Node effort and score swing both read a settled position as settled.
+            // Neither sees the top two moves trading places under a steady score,
+            // which is the position worth another iteration.
+            //
+            // Halving each iteration leaves the count reading recent churn rather
+            // than everything the search ever reconsidered.
+            if self.prev_pv.get(0).is_some_and(|prev| prev != self.root_moves[0].mv) {
+                bm_changes += 1.0;
+            }
+
+            let instability = 1.0 + f64::from(sp.bm_inst_scale) / 100.0 * bm_changes / self.cfg.threads as f64;
+            self.tm.set_bm_inst_factor(instability);
+            bm_changes *= 0.5;
+
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
             self.print_info(depth, self.prev_score, &self.prev_pv);
