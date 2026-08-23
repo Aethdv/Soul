@@ -69,8 +69,8 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
         return 0;
     };
 
-    let weight = |r: &ThreadResult| (r.score - min_score + 10) * r.depth;
-    let votes = |mv| results.iter().filter(|r| r.mv == mv).map(weight).sum::<i32>();
+    let weight = |r: &ThreadResult| r.score - min_score + 14;
+    let votes = |mv| results.iter().filter(|r| r.mv == mv && r.score != -INF).map(weight).sum::<i32>();
 
     let mut best = 0;
 
@@ -94,8 +94,7 @@ pub fn vote(result_slots: &[AtomicU64]) -> usize {
             let candidate_votes = votes(candidate.mv);
 
             !is_loss(candidate.score)
-                && (candidate_votes > incumbent_votes
-                    || (candidate_votes == incumbent_votes && weight(candidate) > weight(incumbent)))
+                && (candidate_votes > incumbent_votes || (candidate_votes == incumbent_votes && candidate.depth > incumbent.depth))
         };
 
         if take {
