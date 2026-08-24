@@ -180,9 +180,9 @@ pub struct DetailedEval {
 
 /// Positional features extracted once per position.
 ///
-/// Shared between the search evaluation pass and tuner feature scattering. A field carries
-/// a doc where its encoding or its bucketing is not in the name, so the bare ones are the
-/// ones that mean exactly what they say.
+/// Shared between the search evaluation pass and tuner feature scattering. Fields are
+/// documented only where their encoding or bucketing is not in the name; bare fields
+/// mean exactly what they say.
 pub struct SharedFeatures {
     pub openness: i32,
     pub spatial: SpatialMetrics,

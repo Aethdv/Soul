@@ -10,7 +10,7 @@
 //! - continuation: a recent move at 1, 2 or 4 plies back paired with the current reply.
 //! - capture: `[side][attacker][to][victim]`, for noisy moves.
 //!
-//! Correction history is the odd one out: it orders nothing. It tracks the error between
+//! Correction history is different: it orders nothing. It tracks the error between
 //! static eval and what search found, keyed on pawn, minor and major structure, and nudges
 //! the eval toward the truth. It learns the way the others do, from search outcomes, which
 //! is why it sits here, and it is the heaviest single Elo contributor in the file.
@@ -34,8 +34,7 @@ const CONT_SLOTS: [usize; 3] = [0, 1, 1];
 /// Per-table soft-gravity saturation caps, refreshed from `SearchParams` each search.
 ///
 /// The same value bounds an entry and divides the gravity term, so the two move together.
-/// Must stay in `(0, i16::MAX]`: zero divides by zero, and past `i16::MAX` the `as i16`
-/// store overflows.
+/// Must stay in `(0, i16::MAX]`.
 #[derive(Clone, Copy)]
 pub struct HistoryCaps {
     pub quiet: i32,
@@ -268,11 +267,7 @@ impl History {
         score
     }
 
-    /// Updates main, butterfly and continuation entries with soft gravity: each pulls toward
-    /// its table's ±cap with strength proportional to `bonus.abs()`, positive toward +cap and
-    /// negative toward −cap. That decays stale information, so a cutoff at depth 10 cannot
-    /// permanently outrank the same move failing at depth 8, and it holds the table inside
-    /// `i16` without hard clipping, which would flatten the ordering of everything near the cap.
+    /// Soft gravity toward ±cap, so a deep cutoff decays instead of hard-clipping at the cap.
     #[inline(always)]
     pub fn update(
         &mut self,

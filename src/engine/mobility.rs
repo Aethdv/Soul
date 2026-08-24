@@ -103,8 +103,8 @@ pub struct KingSafetyInput {
 /// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
 ///
 /// `us_pawns` is White's, always: rams come from shifting it one rank north onto
-/// `them_pawns`, which catches every locked pair exactly once. Swapped, the shift walks
-/// Black's pawns backwards down the board and counts pairs that are not rams.
+/// `them_pawns`, which catches every locked pair exactly once. Swapped, the shift
+/// moves Black's pawns backwards down the board and counts pairs that are not rams.
 #[inline]
 pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
     let rams = (us_pawns << 8) & them_pawns;
@@ -138,7 +138,7 @@ impl SafetyMetrics {
 
     /// What the attackers are worth against this king, before the combiner curves it.
     ///
-    /// `w_atk` is indexed by attacker count, so escalation with the *number* of
+    /// `w_atk` is indexed by attacker count, so escalation with the number of
     /// attackers lives in the weight table; `weak / 10` keeps resolution high for
     /// the tuner (0.1 cp increments) while staying integer in eval. DualNode
     /// passes gradient through `.trunc()` unmodified (straight-through).
