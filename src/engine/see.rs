@@ -23,12 +23,7 @@ use crate::{
     engine::search_params::SearchParams,
 };
 
-/// SEE's own scale, deliberately not the eval's `MG_MATERIAL`. Shifting a constant
-/// from `material[pt]` into every `PSQT[pt][sq]` leaves the eval unchanged, so
-/// the tuner can move material anywhere at no cost to its loss; the thresholds
-/// callers pass are in these units and need them to hold still.
-///
-/// The king keeps its zero: a chain that reaches it has already ended.
+/// SEE's own scale, so shifting material into PSQT does not move search thresholds. King stays 0.
 const SEE_VALUE: [i32; 8] = {
     let sp = SearchParams::new();
     let mut v = [0i32; 8];
