@@ -72,12 +72,6 @@ pub fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>) {
     let _ = io::stdout().flush();
 }
 
-/// Pretty TUI output for `GoPretty` mode; status strip, eval + WDL bars,
-/// the principal variation in SAN, and a colored history of recent iterations.
-///
-/// Every frame redraws from the top of the screen, so each line clears its own
-/// tail and the last one clears the rest. With no terminal there is nothing to
-/// redraw and the escapes would print as garbage.
 pub fn print_pretty_search_info(data: &SearchInfoData<'_>) {
     let ansi = data.display.use_ansi;
     if ansi {
@@ -166,8 +160,7 @@ const fn piece_ch(pt: PieceType) -> char {
     }
 }
 
-/// Eval trajectory as a colored block sparkline: one cell per retained
-/// iteration, height by win probability, hue by the advantage gradient.
+/// Eval trajectory as colored blocks.
 fn eval_sparkline(history: &[PvSnapshot], enabled: bool) -> String {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -233,8 +226,7 @@ fn score_color(score: i32) -> Rgb {
     }
 }
 
-/// The aspiration bound as one colored column, a space when the score is exact,
-/// so the score sits in the same place either way.
+/// The aspiration bound as one colored column.
 fn bound_mark(bound: ScoreBound, enabled: bool) -> String {
     let glyph = match bound {
         ScoreBound::Exact => return " ".into(),
@@ -249,16 +241,13 @@ fn fmt_score_colored(score: i32, width: usize, enabled: bool) -> String {
     format!("{}{:>width$}{}", tui_fg(score_color(score), enabled), fmt_score_num(score), ansi_code(RESET, enabled))
 }
 
-/// One WDL row: a bar whose length and brightness both track `pct`, and the
-/// percent lit the same way. The empty track sits below `WDL_FLOOR`, so a filled
-/// cell always reads brighter than an unfilled one.
 fn wdl_row(label: &str, pct: f32, hue: Rgb, enabled: bool) -> String {
+    let mut bars = String::with_capacity(WDL_CELLS * 20);
+
     let reset = ansi_code(RESET, enabled);
     let bold = ansi_code(BOLD, enabled);
     let frac = f64::from(pct.clamp(0.0, 100.0)) / 100.0;
     let filled = (frac * WDL_CELLS as f64) as usize;
-
-    let mut bars = String::with_capacity(WDL_CELLS * 20);
     for i in 0..filled {
         let t = i as f64 / (WDL_CELLS - 1) as f64;
         write!(bars, "{}#", tui_fg(color::mix(WDL_FLOOR, hue, t), enabled)).unwrap();
@@ -274,9 +263,7 @@ fn wdl_row(label: &str, pct: f32, hue: Rgb, enabled: bool) -> String {
     format!("  {bold}{}{label:<4}{reset}    [{bars}{reset}] {pct_fg}{pct:>5.1}%{reset}", tui_fg(GOLD, enabled))
 }
 
-/// One step of a PV replay: `mv` in SAN, leaving the board and accumulator on the
-/// position after it. The check and mate marks need the move played, and `acc`
-/// advances with it because unmake does not restore the accumulator.
+/// One step of a PV replay. `mv` in SAN.
 fn san_step(board: &mut Position, acc: &mut Vi16x8, mv: Move) -> String {
     if mv.is_null() {
         return "0000".into();
@@ -287,7 +274,6 @@ fn san_step(board: &mut Position, acc: &mut Vi16x8, mv: Move) -> String {
     let mut san = String::with_capacity(6);
 
     if mv.is_castling() {
-        // Castling is encoded king-takes-rook, so the rook's file says which side.
         san.push_str(if to.file() > from.file() { "O-O" } else { "O-O-O" });
     } else {
         let pt = board.piece_at(from);
@@ -430,9 +416,7 @@ fn print_xboard(data: &SearchInfoData<'_>) {
     println!();
 }
 
-/// Render a PV as numbered SAN, replaying from `root` so each move can be
-/// disambiguated and check-marked. The count follows `root`'s side and fullmove
-/// number, so a line that opens on Black reads `29… c5 30. Nf3`.
+/// Render a PV as numbered SAN.
 fn fmt_pv(root: &Position, line: &Line, max: usize, enabled: bool) -> String {
     let reset = ansi_code(RESET, enabled);
     let mut board = *root;
