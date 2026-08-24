@@ -1883,8 +1883,7 @@ impl Worker<'_> {
         } else {
             let eval = self.corrected_eval(raw_eval, sp);
 
-            let stand_pat =
-                if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
+            let stand_pat = if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
 
             if stand_pat >= beta {
                 return Ok((stand_pat + beta) / 2);
