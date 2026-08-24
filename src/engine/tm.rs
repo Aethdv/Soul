@@ -1,17 +1,19 @@
-//! Time management and limits tracking.
+//! Search time allocation and limit management.
 //!
-//! Resolves a soft / hard millisecond budget from the protocol-supplied
-//! time control, then watches the wall clock against those bounds during
-//! search. The soft limit is what we aim to spend on this move; the
-//! hard limit is what we refuse to exceed.
+//! Allocates soft and hard time budgets derived from protocol limits and tracks
+//! wall-clock consumption during iterative deepening.
 //!
-//! Budgets are decided by the first matching rule, in this order:
+//! # Limits
+//! - Soft: Target duration for deciding whether to start a new search iteration.
+//!   Dynamically adjusted during search via move stability and score fluctuation factors.
+//! - Hard: Upper bound where ongoing search operations must immediately abort to avoid
+//!   timing out.
 //!
-//! 1. `infinite`   - search until commanded to stop.
-//! 2. `movetime`   - the wall the caller named, spent down to the overhead.
-//! 3. unclocked    - no time and no increment; treat as infinite.
-//! 4. clocked play - phase-blended budget for sudden death, or explicit
-//!    remaining moves budget for classical time controls.
+//! # Allocation Precedence
+//! 1. `infinite` or unclocked controls run unbounded (`Duration::MAX`).
+//! 2. `movetime` allocates a fixed duration minus move overhead.
+//! 3. Clocked controls allocate based on phase interpolation (sudden death) or
+//!    moves-to-go (repeating time controls), incorporating increments.
 
 use std::time::{Duration, Instant};
 
@@ -20,14 +22,7 @@ use crate::{
     engine::{search::Limits, search_params::SearchParams},
 };
 
-/// Constructed once at the start of a search; queried each iteration to
-/// decide when to stop iterating (`soft`) and when to bail mid-search
-/// regardless of progress (`hard`).
-///
-/// Soft is composable: each dynamic signal owns one multiplicative factor.
-/// `soft = base_soft · ∏ factors`, clamped to `hard`. Every setter
-/// recomputes from `base_soft`, so factors never compound across
-/// iterations; adding a new signal is one field plus one setter.
+/// Tracks elapsed search time against soft and hard limits.
 pub struct TimeManager {
     start: Instant,
     hard: Duration,
@@ -39,8 +34,6 @@ pub struct TimeManager {
 }
 
 impl TimeManager {
-    /// `phase` feeds the moves-to-go interpolation; `overhead` is shaved off every
-    /// finite budget to leave room for I/O and GUI lag, never below 1 ms.
     pub fn new(
         limits: &Limits,
         start: Instant,
@@ -63,7 +56,6 @@ impl TimeManager {
     #[inline]
     pub fn hard_limit(&self) -> Duration { self.hard }
 
-    /// False for infinite, unclocked and analysis searches, where unspent time buys nothing.
     #[inline]
     pub fn is_finite_budget(&self) -> bool { self.hard != Duration::MAX }
 
@@ -76,16 +68,12 @@ impl TimeManager {
         self.recompute_soft();
     }
 
-    /// A best move that keeps changing between iterations means the position is
-    /// still deciding itself, and the factor only ever stretches the budget.
     #[inline]
     pub fn set_bm_inst_factor(&mut self, factor: f64) {
         self.bm_inst = factor;
         self.recompute_soft();
     }
 
-    /// 1.0 is the no-op, and passing it is how a stretch from the previous
-    /// iteration gets cleared.
     #[inline]
     pub fn set_score_factor(&mut self, factor: f64) {
         self.score_factor = factor;
@@ -94,12 +82,12 @@ impl TimeManager {
 
     #[inline]
     fn recompute_soft(&mut self) {
-        let scaled = self.base_soft.as_millis() as f64 * self.bm_stab * self.bm_inst * self.score_factor;
+        let factor = self.bm_stab * self.bm_inst * self.score_factor;
+        let scaled = self.base_soft.as_millis() as f64 * factor;
         self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }
 }
 
-/// The side-to-move's view of the time control. `movestogo` is 0 when absent.
 struct Clock {
     time: u64,
     inc: u64,
@@ -117,14 +105,9 @@ impl Clock {
         Self { time, inc, movestogo: limits.movestogo, game_ply }
     }
 
-    /// What `go depth N` or analysis mode without a clock attached looks like.
     #[inline]
     fn is_unclocked(&self) -> bool { self.time == 0 && self.inc == 0 }
 
-    /// If the CLI/GUI supplied `movestogo`, we trust it (front-loading slightly
-    /// by subtracting 0.5). Otherwise, we interpolate between an opening estimate
-    /// and an endgame estimate using the current game phase: more moves expected
-    /// early, fewer late.
     fn moves_to_go(&self, phase: i32, params: &SearchParams) -> f64 {
         if self.movestogo > 0 {
             return (self.movestogo as f64 - 0.5).max(1.0);
@@ -136,14 +119,6 @@ impl Clock {
         (end + (open - end) * p / TOTAL_PHASE as f64).max(1.0)
     }
 
-    /// What a single move may spend before the search is forced to bail.
-    ///
-    /// Classical bursts to `tm_hard_mult`× the per-move share (`time / mtg`),
-    /// capped at `tm_hard_clock_cap`% of the clock. Sudden death instead spends a
-    /// fraction that ramps from `tm_sd_base`% with game ply (`tm_sd_ramp` per mille
-    /// per ply) toward the `tm_sd_cap`% ceiling, so a longer game lets one move take
-    /// a bigger slice. Either way the increment is added back, since it's regained,
-    /// capped at the full remaining time.
     fn hard_ms(&self, mtg: f64, params: &SearchParams) -> u64 {
         let hard = if self.movestogo > 0 {
             let mult = params.tm_hard_mult as f64 / 100.0;
@@ -157,7 +132,7 @@ impl Clock {
             base.min(ceiling)
         };
 
-        (hard.saturating_add(self.inc)).min(self.time)
+        hard.saturating_add(self.inc).min(self.time)
     }
 
     fn soft_ms(&self, mtg: f64, params: &SearchParams) -> u64 {
@@ -167,8 +142,6 @@ impl Clock {
     }
 }
 
-/// The precedence ladder is the one documented at the module level. Its clocked rung is the
-/// only one that consults `phase` and `params`; everything above short-circuits first.
 fn compute_budget(
     limits: &Limits,
     stm: Color,
@@ -194,9 +167,10 @@ fn compute_budget(
     let mtg = clock.moves_to_go(phase, params);
     let soft_ms = clock.soft_ms(mtg, params);
     let hard_ms = clock.hard_ms(mtg, params);
+
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }
 
-/// The 1 ms floor keeps a zero-length window off the search, which would abort on entry.
+// The 1 ms floor keeps a zero-length window off the search, which would abort on entry.
 #[inline]
 fn with_overhead(ms: u64, overhead: u64) -> Duration { Duration::from_millis(ms.saturating_sub(overhead).max(1)) }
