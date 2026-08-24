@@ -1397,7 +1397,7 @@ impl Worker<'_> {
                     r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > 2) as i32;
 
                     if !improving {
-                        r += 128;
+                        r += 384;
                     }
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
