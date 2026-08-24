@@ -253,6 +253,8 @@ pub struct Stack {
     pub is_null: bool,
     /// Beta cutoffs among this node's children.
     pub cutoff_count: i32,
+    /// Sum of ilog2(move_count) along the path to this ply.
+    pub laterality: i32,
     /// The move a singular verification skips. Null in a normal search;
     /// set to the TT move while we test whether it stands alone.
     pub excluded: Move,
@@ -392,6 +394,7 @@ impl Default for Stack {
             static_eval: tt::SCORE_NONE,
             is_null: false,
             cutoff_count: 0,
+            laterality: 0,
             excluded: Move::null(),
         }
     }
@@ -879,6 +882,9 @@ fn boxed_array<T: Clone, const N: usize>(value: T) -> Box<[T; N]> {
     vec![value; N].into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
 }
 
+#[inline(always)]
+fn laterality_increment(move_count: usize) -> i32 { if move_count == 0 { 0 } else { (move_count.ilog2() as i32 - 1).max(0) } }
+
 /// Piece-to-square contexts 1, 2, and 4 plies back, for cont-hist lookup.
 /// Empty when the ply predates the search root.
 fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, ContContext) {
@@ -1111,6 +1117,8 @@ impl Worker<'_> {
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
+            self.stack[ply].laterality = 0;
+            self.stack[ply + 1].laterality = 0;
 
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
@@ -1177,6 +1185,7 @@ impl Worker<'_> {
                 }
 
                 let saved_acc = self.accumulator;
+                self.stack[ply + 1].laterality = self.stack[ply].laterality;
                 let undo = self.pos.make_move(mv, &mut self.accumulator);
                 self.xb_make(mv);
 
@@ -1398,6 +1407,11 @@ impl Worker<'_> {
                     r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > 2) as i32;
 
                     r -= 128 * (ply as i32 - last_critical_ply as i32).min(8);
+
+                    // Low laterality stayed near the front of move lists, so reduce less.
+                    if !N::PV {
+                        r -= 128 - 32 * self.stack[ply].laterality;
+                    }
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
                     (r - hist / sp.lmr_hist_div).clamp(0, max_r) / LMR_SCALE
@@ -1706,6 +1720,7 @@ impl Worker<'_> {
         }
 
         res.move_count += 1;
+        self.stack[ply + 1].laterality = self.stack[ply].laterality + laterality_increment(res.move_count);
         searcher.zobrist_trail.push(self.pos.hash);
 
         if N::ROOT {
@@ -1956,6 +1971,7 @@ impl Worker<'_> {
             self.xb_make(mv);
 
             moves_made += 1;
+            self.stack[ply + 1].laterality = self.stack[ply].laterality + laterality_increment(moves_made as usize);
             searcher.zobrist_trail.push(self.pos.hash);
 
             let score = self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1);
