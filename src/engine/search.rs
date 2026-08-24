@@ -1882,30 +1882,28 @@ impl Worker<'_> {
             -INF
         } else {
             let eval = self.corrected_eval(raw_eval, sp);
-            if eval >= beta {
-                // Static eval is blind to quiet replies;
-                // the stand-pat verdict overstates certainty.
-                // Blend toward beta to deflate the overconfidence.
-                return Ok((eval + beta) / 2);
+
+            let stand_pat = if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
+
+            if stand_pat >= beta {
+                return Ok((stand_pat + beta) / 2);
             }
+
+            alpha = alpha.max(stand_pat);
 
             // ── Delta Pruning (~20 Elo)
             // Stand-pat already failed to beat alpha.
             // Even if we capture the opponent's most valuable piece, can we reach alpha?
             // If not, no capture in this position can raise us high enough, so bail early.
-            //
-            // best_capturable is just the highest MVV-LVA value among opponent pieces
-            // still on the board; delta_margin covers promotion/positional upside.
             let best_capturable = [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn]
                 .into_iter()
                 .find(|&pt| self.pos.pieces(pt, opp).is_not_empty())
                 .map_or(0, |pt| searcher.cfg.mvvlva_v[pt]);
 
-            if eval + best_capturable + sp.delta_margin < alpha {
+            if stand_pat + best_capturable + sp.delta_margin < alpha {
                 return Ok(alpha);
             }
-            alpha = alpha.max(eval);
-            eval
+            stand_pat
         };
 
         let mut moves_made = 0;
