@@ -1396,6 +1396,10 @@ impl Worker<'_> {
                     // unlikely to be the move, so reduce them harder.
                     r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > 2) as i32;
 
+                    if !improving {
+                        r += 128;
+                    }
+
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
                     (r - hist / sp.lmr_hist_div).clamp(0, max_r) / LMR_SCALE
                 } else {
