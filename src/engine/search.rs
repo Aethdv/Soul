@@ -883,7 +883,7 @@ fn boxed_array<T: Clone, const N: usize>(value: T) -> Box<[T; N]> {
 }
 
 #[inline(always)]
-fn laterality_increment(move_count: usize) -> i32 { if move_count == 0 { 0 } else { (move_count.ilog2() as i32 - 1).max(0) } }
+fn laterality_increment(move_count: usize) -> i32 { (move_count as u32 + 1).ilog2() as i32 }
 
 /// Piece-to-square contexts 1, 2, and 4 plies back, for cont-hist lookup.
 /// Empty when the ply predates the search root.
@@ -1117,8 +1117,8 @@ impl Worker<'_> {
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
-            self.stack[ply].laterality = 0;
-            self.stack[ply + 1].laterality = 0;
+            self.stack[ply].laterality = if ply > 0 { self.stack[ply - 1].laterality } else { 0 };
+            self.stack[ply + 1].laterality = self.stack[ply].laterality;
 
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
@@ -1408,9 +1408,9 @@ impl Worker<'_> {
 
                     r -= 128 * (ply as i32 - last_critical_ply as i32).min(8);
 
-                    // Low laterality stayed near the front of move lists, so reduce less.
-                    if !N::PV {
-                        r -= 64 - 16 * self.stack[ply].laterality;
+                    // Low average laterality stayed near the front, so reduce less.
+                    if !N::PV && ply > 0 {
+                        r -= 96 - 32 * self.stack[ply].laterality / ply as i32;
                     }
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
