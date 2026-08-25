@@ -1410,7 +1410,7 @@ impl Worker<'_> {
 
                     // Low laterality stayed near the front of move lists, so reduce less.
                     if !N::PV {
-                        r -= 128 - 32 * self.stack[ply].laterality;
+                        r -= 64 - 16 * self.stack[ply].laterality;
                     }
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
