@@ -4,12 +4,13 @@
 //! quiets eagerly wastes work. The picker yields moves in stages, best guesses first,
 //! and generates a stage only when the earlier ones are exhausted.
 //!
-//! | Stage         | Content                       | Sorting           |
-//! |---------------|-------------------------------|-------------------|
-//! | `Hash`        | PV move from prior iteration  | Exact match       |
-//! | `Captures`    | SEE-winning captures & promos | MVV-LVA           |
-//! | `Quiets`      | Non-captures                  | History heuristic |
-//! | `BadCaptures` | SEE-losing captures, deferred | MVV-LVA           |
+//! | Stage         | Content                              | Sorting           |
+//! |---------------|--------------------------------------|-------------------|
+//! | `Hash`        | PV move from prior iteration         | Exact match       |
+//! | `Captures`    | SEE-winning captures & promos        | MVV-LVA           |
+//! | `GoodQuiets`  | Non-captures with history above band | History heuristic |
+//! | `BadCaptures` | SEE-losing captures, deferred        | MVV-LVA           |
+//! | `BadQuiets`   | Non-captures with low history        | History heuristic |
 //!
 //! Moves are bitpacked with their heuristic scores into `u32` values and sorted
 //! ascending with `sort_unstable` (ipnsort). This allows popping the highest-scored
@@ -78,8 +79,9 @@ enum Stage {
     YieldCaptures,
     GenQSearchQuiets,
     GenQuiets,
-    YieldQuiets,
+    YieldGoodQuiets,
     YieldBadCaptures,
+    YieldBadQuiets,
     Done,
 }
 
@@ -88,15 +90,16 @@ pub struct MovePicker {
     hash_move: Option<Move>,
     candidates: [MaybeUninit<u32>; MAX_MOVES],
     count: usize,
-    /// SEE-losing captures parked at the array top, drained in `YieldBadCaptures`.
     bad_count: usize,
-    /// A capture orders before quiets when its SEE is at least `-good_capture_margin`;
-    /// losing more than that defers it to the bad-capture stage.
+    bad_quiet_start: usize,
     good_capture_margin: i32,
     mvvlva_v: [i32; 8],
     mvvlva_a: [i32; 8],
     mvvlva_ep: i32,
     capt_hist_divisor: i32,
+    bad_quiet_threshold: i32,
+    bad_quiet_mul: i32,
+    depth: i32,
     /// The node's pins, so the good/bad split's SEE calls don't each rescan.
     pins: Pins,
     killers: [Move; 2],
@@ -134,6 +137,7 @@ impl MovePicker {
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
+        depth: i32,
     ) -> Self {
         Self {
             stage: Stage::Hash,
@@ -141,11 +145,15 @@ impl MovePicker {
             candidates: [MaybeUninit::uninit(); MAX_MOVES],
             count: 0,
             bad_count: 0,
+            bad_quiet_start: 0,
             good_capture_margin: cfg.search_params.good_capture_margin,
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
+            bad_quiet_threshold: cfg.search_params.bad_quiet_threshold,
+            bad_quiet_mul: cfg.search_params.bad_quiet_mul,
+            depth,
             pins,
             killers,
             threats,
@@ -172,11 +180,15 @@ impl MovePicker {
             candidates: [MaybeUninit::uninit(); MAX_MOVES],
             count: 0,
             bad_count: 0,
+            bad_quiet_start: 0,
             good_capture_margin: cfg.search_params.good_capture_margin,
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
+            bad_quiet_threshold: 0,
+            bad_quiet_mul: 0,
+            depth: 0,
             pins,
             killers: [Move::null(); 2],
             threats: Bitboard(0),
@@ -262,7 +274,7 @@ impl MovePicker {
                 Stage::GenQSearchQuiets => {
                     self.gen_qsearch_quiets(board, history);
                     self.sort_candidates();
-                    self.stage = Stage::YieldQuiets;
+                    self.stage = Stage::YieldGoodQuiets;
                 },
 
                 Stage::GenQuiets => {
@@ -272,18 +284,26 @@ impl MovePicker {
                         self.quiets_gen = self.count as u32;
                     }
                     self.sort_candidates();
-                    self.stage = Stage::YieldQuiets;
+
+                    if self.depth * self.bad_quiet_mul <= self.bad_quiet_threshold {
+                        self.bad_quiet_start = 0;
+                    } else {
+                        let threshold_packed = ((SORT_BIAS - self.bad_quiet_threshold) as u32) << 16;
+                        let slice = unsafe { self.candidates[..self.count].assume_init_ref() };
+                        self.bad_quiet_start = slice.partition_point(|&v| v < threshold_packed);
+                    }
+
+                    self.stage = Stage::YieldGoodQuiets;
                 },
 
-                Stage::YieldQuiets => {
-                    if self.count == 0 {
-                        // Quiets exhausted. Reset count to MAX_MOVES to drain parked bad captures top-down.
+                Stage::YieldGoodQuiets => {
+                    if self.count == self.bad_quiet_start {
                         self.count = MAX_MOVES;
                         self.stage = Stage::YieldBadCaptures;
                         continue;
                     }
                     self.count -= 1;
-                    // SAFETY: count was non-zero; index holds an initialized move.
+                    // SAFETY: count was above bad_quiet_start; index holds an initialized move.
                     let mv = unsafe { self.read_move(self.count) };
 
                     if Some(mv) != self.hash_move {
@@ -299,7 +319,9 @@ impl MovePicker {
                     // Deferred captures occupy [MAX_MOVES - bad_count, MAX_MOVES), ordered descending.
                     // Draining downwards from MAX_MOVES yields best-first.
                     if self.count == MAX_MOVES - self.bad_count {
-                        self.stage = Stage::Done;
+                        // Bad captures exhausted. Drain bad quiets next.
+                        self.count = self.bad_quiet_start;
+                        self.stage = Stage::YieldBadQuiets;
                         continue;
                     }
                     self.count -= 1;
@@ -307,6 +329,24 @@ impl MovePicker {
                     let mv = unsafe { self.read_move(self.count) };
 
                     if Some(mv) != self.hash_move {
+                        return Some(mv);
+                    }
+                },
+
+                Stage::YieldBadQuiets => {
+                    if self.count == 0 {
+                        self.stage = Stage::Done;
+                        continue;
+                    }
+                    self.count -= 1;
+                    // SAFETY: index is within [0, bad_quiet_start), initialized in GenQuiets.
+                    let mv = unsafe { self.read_move(self.count) };
+
+                    if Some(mv) != self.hash_move {
+                        #[cfg(feature = "mvpstats")]
+                        {
+                            self.quiets_used += 1;
+                        }
                         return Some(mv);
                     }
                 },
@@ -715,6 +755,7 @@ mod tests {
                 ContContext::default(),
                 ContContext::default(),
                 ContContext::default(),
+                10,
             );
 
             let mut picked = Vec::new();

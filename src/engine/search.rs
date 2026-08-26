@@ -1267,7 +1267,7 @@ impl Worker<'_> {
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
             let mut picker =
-                MovePicker::new(tt_move.get(), searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+                MovePicker::new(tt_move.get(), searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4, depth);
 
             self.xb_enter(ply);
 

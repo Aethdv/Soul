@@ -197,8 +197,10 @@ search_params! {
         T (see_value_rook,    568),
         T (see_value_queen,  1160),
 
-        //                 default  min   max  step
-        T (good_capture_margin, 200,  0,  300),
+        //                   default   min    max   step
+        T (good_capture_margin,  200,    0,   300),
+        T (bad_quiet_threshold, 7500,    0, 15000),
+        T (bad_quiet_mul,       2500,  500,  5000),
 
         //             default  min  max  step
         T (qs_recapture_ply, 4,   2),
