@@ -199,7 +199,7 @@ search_params! {
 
         //                   default   min    max   step
         T (good_capture_margin,  200,    0,   300),
-        T (bad_quiet_threshold, 3000,    0, 15000),
+        T (bad_quiet_threshold, 5000,    0, 15000),
         T (bad_quiet_mul,       2500,  500,  5000),
 
         //             default  min  max  step
