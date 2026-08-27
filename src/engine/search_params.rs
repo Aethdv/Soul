@@ -166,9 +166,9 @@ pub(crate) fn frozen_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().
 search_params! {
     pub struct SearchParams {
         //            default  min   max  step
-        T (asp_depth,       4,   1,    6),
-        T (asp_initial,    15,   1,   32),
-        T (asp_widen_div,   3,   1,   14),
+        T (asp_depth,       5,   1,    6),
+        T (asp_initial,    14,   1,   32),
+        T (asp_widen_div,   4,   1,   14),
 
         //                default   min  max  step
         NT(qs_lazy_margin,  160,  140, 300),
@@ -221,107 +221,107 @@ search_params! {
         NT(mvvlva_a_king,       0),
 
         //                  default  min   max  step
-        T (see_value_pawn,      92,   50),
-        T (see_value_knight,   373,  250),
-        T (see_value_bishop,   372,  250),
-        T (see_value_rook,     568,  400),
-        T (see_value_queen,   1160,  800),
+        T (see_value_pawn,      91,   50),
+        T (see_value_knight,   343,  250),
+        T (see_value_bishop,   375,  250),
+        T (see_value_rook,     547,  400),
+        T (see_value_queen,   1234,  800),
 
         //                  default  min   max  step
-        T (good_capture_margin, 200,   0,  300),
+        T (good_capture_margin, 205,   0,  300),
 
         //             default  min  max  step
-        T (qs_recapture_ply, 4,   2),
+        T (qs_recapture_ply, 2,   2),
 
         //             default   min  max  step
-        T (qs_see_margin,   0,  -100, 100),
+        T (qs_see_margin,  13,  -100, 100),
 
         //            default  min  max  step
-        T (delta_margin,  200,  50),
+        T (delta_margin,  177,  50),
 
         //                 default min  max  step
-        T (see_capture_margin,  80,  1),
-        T (see_quiet_margin,    60,  1),
+        T (see_capture_margin,  76,  1),
+        T (see_quiet_margin,    55,  1),
 
         //              default  min  max  step
-        T (razoring_depth,    3,   1,    8),
-        T (razoring_margin, 300,  50),
+        T (razoring_depth,    4,   1,    8),
+        T (razoring_margin, 267,  50),
 
         //              default  min  max  step
-        T (rfp_depth,        12,   4,   20),
-        T (rfp_margin,       40,  15),
-        T (rfp_base_margin,  35),
+        T (rfp_depth,        11,   4,   20),
+        T (rfp_margin,       42,  15),
+        T (rfp_base_margin,  34),
         T (rfp_quad_margin,   3),
 
         //                  default  min  max  step
-        T (probcut_depth_min,     5,   3,   10),
-        T (probcut_margin,      200,  50),
-        T (probcut_reduction,     4,   1,    8),
+        T (probcut_depth_min,     6,   3,   10),
+        T (probcut_margin,      179,  50),
+        T (probcut_reduction,     5,   1,    8),
 
         //                  default min   max  step
-        T (nmp_base_r,            3,  1,    6),
-        T (nmp_depth_divisor,     3,  1,   14),
-        T (nmp_eval_divisor,    200,  1,  320),
-        T (nmp_eval_max,          3,  1,    6),
+        T (nmp_base_r,            5,  1,    6),
+        T (nmp_depth_divisor,     5,  1,   14),
+        T (nmp_eval_divisor,    223,  1,  320),
+        T (nmp_eval_max,          4,  1,    6),
         NT(nmp_ply_offset,        1),
-        T (nmp_verif_min_depth,  14,  6,   24),
+        T (nmp_verif_min_depth,  13,  6,   24),
 
         //                  default  min   max  step
-        T (singext_min_depth,     9,   4,   16),
+        T (singext_min_depth,    10,   4,   16),
         T (singext_margin,        2,   1),
-        T (singext_tt_depth,      3,   1,    6),
-        T (singext_depth_div,     2,   1,    4),
+        T (singext_tt_depth,      1,   1,    6),
+        T (singext_depth_div,     3,   1,    4),
 
         //           default min  max  step
-        T (iir_depth,      4,  2,  8),
-        T (iir_reduction,  1,  1,  3),
+        T (iir_depth,      5,  2,  8),
+        T (iir_reduction,  3,  1,  3),
 
         //        default min  max  step
-        T (fp_depth,    6,  2, 12),
-        T (fp_margin, 100, 25),
+        T (fp_depth,    5,  2, 12),
+        T (fp_margin, 101, 25),
 
         //        default min  max  step
-        T (lmp_depth,   5,  2, 10),
-        T (lmp_base,    2,  1,  6),
-        T (lmp_scale, 100, 25, 250),  // ·100
+        T (lmp_depth,   4,  2, 10),
+        T (lmp_base,    1,  1,  6),
+        T (lmp_scale, 111, 25, 250),  // ·100
 
         //                 default   min  max  step
-        T (hist_prune_depth,     6,    2,  12),
-        T (hist_prune_margin, 3000,  100),
+        T (hist_prune_depth,     7,    2,  12),
+        T (hist_prune_margin, 2910,  100),
 
         //                   default   min   max  step
         T (lmr_min_depth,          2,    1,    6),
-        T (lmr_base,             100,   10),
-        T (lmr_divisor,          225,    1,  350),
-        T (lmr_hist_div,           8,    1,   24),
-        T (killer_lmr_bonus,    1024,   64),
+        T (lmr_base,             103,   10),
+        T (lmr_divisor,          233,    1,  350),
+        T (lmr_hist_div,           9,    1,   24),
+        T (killer_lmr_bonus,    1083,   64),
         T (check_lmr_bonus,        1,    1,    3),
-        T (threat_lmr_bonus,    1024,    0),
-        T (fhc_lmr_malus,        512,    0),
-        T (fhc_cutoff_min,         2,    0,    6),
-        T (critical_lmr_bonus,   128,    0,  512),
-        T (critical_lmr_cap,       8,    1,   24),
+        T (threat_lmr_bonus,    1096,    0),
+        T (fhc_lmr_malus,        467,    0),
+        T (fhc_cutoff_min,         1,    0,    6),
+        T (critical_lmr_bonus,   127,    0,  512),
+        T (critical_lmr_cap,       6,    1,   24),
         NT(lmr_retained,           1),
 
         //                  default   min   max  step
-        T (capt_hist_divisor,    32,    4,   64),
-        T (hist_bonus_mult,       4,    1,   12),
-        T (hist_bonus_cap,     1600,  400, 3200),
+        T (capt_hist_divisor,    35,    4,   64),
+        T (hist_bonus_mult,       5,    1,   12),
+        T (hist_bonus_cap,     1816,  400, 3200),
 
         //                    default    min    max  step
-        T (quiet_hist_cap,      16384,  8192, 32000),
-        T (butterfly_hist_cap,  16384,  8192, 32000),
-        T (cont_hist_cap,       16384,  8192, 32000),
-        T (capt_hist_cap,       16384,  8192, 32000),
+        T (quiet_hist_cap,      15206,  8192, 32000),
+        T (butterfly_hist_cap,  15856,  8192, 32000),
+        T (cont_hist_cap,       16720,  8192, 32000),
+        T (capt_hist_cap,       15413,  8192, 32000),
 
         //              default min  max  step
-        T (tt_age_factor,     4,   0,  16),
+        T (tt_age_factor,     6,   0,  16),
 
         //                default min  max  step
-        T (minor_corr_weight, 128,  8),
-        T (major_corr_weight, 128,  8),
+        T (minor_corr_weight, 118,  8),
+        T (major_corr_weight, 147,  8),
         T (corr_weight_div,     4,  1,  16),
-        T (corr_weight_max,    32,  4, 128),  // ·256
+        T (corr_weight_max,    28,  4, 128),  // ·256
     }
 }
 
