@@ -5,8 +5,7 @@
 
 use std::{
     env::args,
-    fs,
-    io::{self, BufRead, IsTerminal},
+    io::{self, BufRead},
     process,
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
@@ -20,13 +19,11 @@ use soul::{
     engine::{
         history::History,
         search::{Limits, SearchConfig, SearchDisplay, Searcher},
-        search_params::{SearchParams, spsa_table},
+        search_params::SearchParams,
         tt::TranspositionTable,
     },
     protocols, tools,
 };
-
-const SPSA_SCREENFUL: usize = 70;
 
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -58,18 +55,8 @@ fn main() {
                 tools::perft::run(&board, depth, true);
             },
             "spsa" => {
-                let table = spsa_table();
-                if table.lines().count() > SPSA_SCREENFUL && io::stdout().is_terminal() {
-                    match fs::write("spsa.txt", &table) {
-                        Ok(()) => println!("{} params written to spsa.txt", table.lines().count()),
-                        Err(e) => {
-                            eprintln!("spsa.txt: {e}");
-                            process::exit(1);
-                        },
-                    }
-                } else {
-                    print!("{table}");
-                }
+                let spsa_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
+                tools::spsa::run(&spsa_args);
             },
             #[cfg(feature = "rigs")]
             "speedtest" => {

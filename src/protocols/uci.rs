@@ -354,6 +354,7 @@ pub fn print_help(use_ansi: bool) {
     #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
     h.command("spsa", "Print the tunable search params as an SPSA table");
+    h.command_args("spsa apply", "<REPORT> [--dry-run]", "Fold a finished tune's values into the defaults");
     #[cfg(feature = "datagen")]
     h.command("datagen", "Generate self-play training data");
     #[cfg(feature = "dataset")]

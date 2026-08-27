@@ -24,7 +24,7 @@ pub(crate) struct ParamDef {
     pub min: f64,
     pub max: f64,
     step: f64,
-    default: f64,
+    pub default: f64,
     frozen: bool,
 }
 
@@ -161,6 +161,7 @@ macro_rules! search_params {
 const SPSA_R_END: f64 = 0.002;
 
 pub(crate) fn tunable_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| !p.frozen).collect() }
+pub(crate) fn frozen_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| p.frozen).collect() }
 
 search_params! {
     pub struct SearchParams {
