@@ -23,13 +23,19 @@ use crate::{
         moves::Move,
         zobrist::ConstRng,
     },
-    engine::{mobility::Mobility, movegen::gen_legal_moves, see::see_ge},
+    engine::{
+        mobility::Mobility,
+        movegen::gen_legal_moves,
+        search_params::SearchParams,
+        see::{see_ge, see_values},
+    },
     tools::byteboard::{self, PieceId, Place, Wordboard},
     weave::Vi16x8,
 };
 
 const FENS: &str = include_str!("../data/bench.fens");
 const PLY_CAP: usize = 256;
+const SEE_VALUES: [i32; 8] = see_values(&SearchParams::new());
 
 struct Game {
     fen: String,
@@ -1312,7 +1318,7 @@ fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
         }),
         "see" => play_stream(stream, repeats, |pos, _, mv, _| {
             let pins = crate::core::board::attacks::Pins::new(pos);
-            u64::from(see_ge(pos, mv, 0, &pins))
+            u64::from(see_ge(pos, mv, 0, &pins, &SEE_VALUES))
         }),
         "king_legal" => play_stream(stream, repeats, |pos, _, mv, _| {
             let opp = pos.stm.opposite();

@@ -96,6 +96,7 @@ pub struct MovePicker {
     mvvlva_v: [i32; 8],
     mvvlva_a: [i32; 8],
     mvvlva_ep: i32,
+    see_values: [i32; 8],
     capt_hist_divisor: i32,
     /// The node's pins, so the good/bad split's SEE calls don't each rescan.
     pins: Pins,
@@ -145,6 +146,7 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            see_values: cfg.see_values,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             pins,
             killers,
@@ -176,6 +178,7 @@ impl MovePicker {
             mvvlva_v: cfg.mvvlva_v,
             mvvlva_a: cfg.mvvlva_a,
             mvvlva_ep: cfg.search_params.mvvlva_ep,
+            see_values: cfg.see_values,
             capt_hist_divisor: cfg.search_params.capt_hist_divisor,
             pins,
             killers: [Move::null(); 2],
@@ -243,7 +246,8 @@ impl MovePicker {
                         let attacker_val = *debug_index!(self.mvvlva_v, attacker as usize);
 
                         // If victim >= attacker, SEE >= 0 is guaranteed; only material-losing captures need SEE.
-                        if victim_val < attacker_val && !see_ge(board, mv, -self.good_capture_margin, &self.pins) {
+                        if victim_val < attacker_val && !see_ge(board, mv, -self.good_capture_margin, &self.pins, &self.see_values)
+                        {
                             // SAFETY: count + bad_count <= MAX_MOVES, so MAX_MOVES - 1 - bad_count >= count.
                             // The park slot never aliases active captures or subsequent quiets.
                             unsafe {

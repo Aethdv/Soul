@@ -31,16 +31,19 @@ const _: () = assert!(CORRECTION_SIZE.is_power_of_two());
 /// Continuation table indices for [n-1, n-2, n-4] plies back.
 const CONT_SLOTS: [usize; 3] = [0, 1, 1];
 
-/// Per-table soft-gravity saturation caps, refreshed from `SearchParams` each search.
+/// Per-table soft-gravity saturation caps and the correction blend weight, refreshed
+/// from `SearchParams` each search.
 ///
 /// The same value bounds an entry and divides the gravity term, so the two move together.
-/// Must stay in `(0, i16::MAX]`.
+/// A cap must stay in `(0, i16::MAX]`.
 #[derive(Clone, Copy)]
-pub struct HistoryCaps {
+pub struct HistoryParams {
     pub quiet: i32,
     pub butterfly: i32,
     pub cont: i32,
     pub capt: i32,
+    pub corr_weight_div: i32,
+    pub corr_weight_max: i32,
 }
 
 /// Combined move-ordering and evaluation-correction history tables.
@@ -61,8 +64,8 @@ pub struct History {
     major_correction: CorrectionHistory,
     /// Capture history: `[side][attacker][to][victim]` (~8 Elo).
     capt: CaptureHistory,
-    /// Dynamic soft-gravity saturation caps synchronized with search parameters.
-    pub caps: HistoryCaps,
+    /// Dynamic tuning synchronized with search parameters.
+    pub params: HistoryParams,
 }
 
 #[derive(Clone, Copy)]
@@ -102,18 +105,20 @@ pub struct CorrectionHistory {
     data: Box<[i32]>,
 }
 
-impl From<&SearchParams> for HistoryCaps {
+impl From<&SearchParams> for HistoryParams {
     fn from(sp: &SearchParams) -> Self {
         Self {
             quiet: sp.quiet_hist_cap,
             butterfly: sp.butterfly_hist_cap,
             cont: sp.cont_hist_cap,
             capt: sp.capt_hist_cap,
+            corr_weight_div: sp.corr_weight_div,
+            corr_weight_max: sp.corr_weight_max,
         }
     }
 }
 
-impl Default for HistoryCaps {
+impl Default for HistoryParams {
     fn default() -> Self { Self::from(&SearchParams::default()) }
 }
 
@@ -197,12 +202,12 @@ impl CorrectionHistory {
 
     /// Updates the moving average with a new search observation.
     ///
-    /// The update weight scales quadratically with depth up to a limit of 32/256:
-    /// `weight = min((1 + depth)^2 / 4, 32)`
+    /// The update weight scales quadratically with depth up to a limit, in 256ths:
+    /// `weight = min((1 + depth)^2 / div, max)`
     #[inline(always)]
-    pub fn update(&mut self, stm: Color, hash: u64, raw_diff: i32, depth: i32) {
+    pub fn update(&mut self, stm: Color, hash: u64, raw_diff: i32, depth: i32, params: &HistoryParams) {
         let entry = &mut self.data[Self::idx(stm, hash)];
-        let weight = ((1 + depth) * (1 + depth) / 4).min(32);
+        let weight = ((1 + depth) * (1 + depth) / params.corr_weight_div).min(params.corr_weight_max);
         let scaled = i64::from(raw_diff) * i64::from(CORRECTION_SCALE);
         let blended = (i64::from(*entry) * i64::from(256 - weight) + scaled * i64::from(weight)) / 256;
         // Re-clamped to ±CORRECTION_LIMIT, so the cast back cannot truncate.
@@ -225,7 +230,7 @@ impl History {
             minor_correction: CorrectionHistory::new(),
             major_correction: CorrectionHistory::new(),
             capt: CaptureHistory::new(),
-            caps: HistoryCaps::default(),
+            params: HistoryParams::default(),
         }
     }
 
@@ -283,8 +288,8 @@ impl History {
     ) {
         let from_atk = threats.check_bit(from) as usize;
         let to_atk = threats.check_bit(to) as usize;
-        Self::update_entry(&mut self.table[stm][pt][to], bonus, self.caps.quiet);
-        Self::update_entry(&mut self.butterfly[stm][from_atk][to_atk][butterfly_idx(from, to)], bonus, self.caps.butterfly);
+        Self::update_entry(&mut self.table[stm][pt][to], bonus, self.params.quiet);
+        Self::update_entry(&mut self.butterfly[stm][from_atk][to_atk][butterfly_idx(from, to)], bonus, self.params.butterfly);
         self.update_conthist(stm, pt, to, cont1, cont2, cont4, bonus);
     }
 
@@ -302,7 +307,7 @@ impl History {
     ) {
         for (slot, ctx) in CONT_SLOTS.into_iter().zip([cont1, cont2, cont4]) {
             if ctx.pt != PieceType::None {
-                Self::update_entry(self.cont[slot].get_mut(stm, ctx.pt, ctx.to, pt, to), bonus, self.caps.cont);
+                Self::update_entry(self.cont[slot].get_mut(stm, ctx.pt, ctx.to, pt, to), bonus, self.params.cont);
             }
         }
     }
@@ -352,9 +357,9 @@ impl History {
     /// Updates all three evaluation correction tables (pawn, minor, major) with a search delta.
     #[inline(always)]
     pub fn update_correction(&mut self, stm: Color, pawn_hash: u64, minor_hash: u64, major_hash: u64, diff: i32, depth: i32) {
-        self.correction.update(stm, pawn_hash, diff, depth);
-        self.minor_correction.update(stm, minor_hash, diff, depth);
-        self.major_correction.update(stm, major_hash, diff, depth);
+        self.correction.update(stm, pawn_hash, diff, depth, &self.params);
+        self.minor_correction.update(stm, minor_hash, diff, depth, &self.params);
+        self.major_correction.update(stm, major_hash, diff, depth, &self.params);
 
         #[cfg(feature = "corrstats")]
         {
@@ -372,7 +377,7 @@ impl History {
 
     #[inline(always)]
     pub fn update_capture(&mut self, stm: Color, attacker: PieceType, to: Square, victim: PieceType, bonus: i32) {
-        Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus, self.caps.capt);
+        Self::update_entry(self.capt.get_mut(stm, attacker, to, victim), bonus, self.params.capt);
     }
 }
 
@@ -391,7 +396,7 @@ impl Default for History {
             minor_correction: CorrectionHistory { data: Box::new([]) },
             major_correction: CorrectionHistory { data: Box::new([]) },
             capt: CaptureHistory { data: Box::new([]) },
-            caps: HistoryCaps::default(),
+            params: HistoryParams::default(),
         }
     }
 }

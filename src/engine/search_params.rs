@@ -13,15 +13,16 @@
 //!
 //! Auto-derive: `min = 0`, `max = default + default/2 + 10`, `step = max/20` (≥ 1).
 //!
-//! Search reads each value from its own [`SearchParams`]. A frozen entry stays out
-//! of the SPSA table, and its bounds are the range it would be tuned over.
+//! Search reads each value from its own [`SearchParams`]. A tunable entry is
+//! advertised as a UCI spin option and settable by name; a frozen one is neither,
+//! and its bounds are the range it would be tuned over.
 
 /// Static metadata for one tunable parameter.
 #[derive(Debug)]
-struct ParamDef {
-    name: &'static str,
-    min: f64,
-    max: f64,
+pub(crate) struct ParamDef {
+    pub name: &'static str,
+    pub min: f64,
+    pub max: f64,
     step: f64,
     default: f64,
     frozen: bool,
@@ -42,6 +43,14 @@ pub fn spsa_table() -> String {
     tunable_param_defs()
         .iter()
         .map(|p| format!("{}, int, {}, {}, {}, {}, {SPSA_R_END}\n", p.name, p.default, p.min, p.max, p.step))
+        .collect()
+}
+
+/// The tunables as UCI spin options, one a line.
+pub fn uci_options() -> String {
+    tunable_param_defs()
+        .iter()
+        .map(|p| format!("option name {} type spin default {} min {} max {}\n", p.name, p.default, p.min, p.max))
         .collect()
 }
 
@@ -105,6 +114,25 @@ macro_rules! search_params {
             pub const fn new() -> Self {
                 Self { $( $field: $def, )* }
             }
+
+            pub fn get(&self, name: &str) -> Option<i32> {
+                $(
+                    if !$frozen && name == stringify!($field) {
+                        return Some(self.$field);
+                    }
+                )*
+                None
+            }
+
+            pub fn set(&mut self, name: &str, value: i32) -> bool {
+                $(
+                    if !$frozen && name == stringify!($field) {
+                        self.$field = value.clamp($min as i32, $max as i32);
+                        return true;
+                    }
+                )*
+                false
+            }
         }
 
         impl Default for $name {
@@ -132,12 +160,12 @@ macro_rules! search_params {
 /// Terminal learning rate for the SPSA table.
 const SPSA_R_END: f64 = 0.002;
 
-fn tunable_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| !p.frozen).collect() }
+pub(crate) fn tunable_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| !p.frozen).collect() }
 
 search_params! {
     pub struct SearchParams {
         //            default  min   max  step
-        NT(asp_depth,       4,   1,    6),
+        T (asp_depth,       4,   1,    6),
         T (asp_initial,    15,   1,   32),
         T (asp_widen_div,   3,   1,   14),
 
@@ -167,13 +195,14 @@ search_params! {
 
         //                 default min  max  step
         NT(score_drop_depth,     5),
-        T (score_swing_scale,  100, 10),
+        NT(score_swing_scale,  100, 10, 160),
 
         NT(bm_stab_depth,    5),
         NT(bm_stab_base,   270),
         NT(bm_stab_scale,  220),
         NT(bm_stab_floor,   56),
-        T (bm_inst_scale,  220,  0),
+        NT(bm_inst_scale,  220,  0, 340),
+        NT(bm_inst_decay,   50,  0, 100),  // per-iteration decay, ·100
 
         //                default  min   max  step
         NT(mvvlva_ep,         100,  60,  150),
@@ -190,18 +219,21 @@ search_params! {
         NT(mvvlva_a_queen,     90,  70,  150),
         NT(mvvlva_a_king,       0),
 
+        //                  default  min   max  step
+        T (see_value_pawn,      92,   50),
+        T (see_value_knight,   373,  250),
+        T (see_value_bishop,   372,  250),
+        T (see_value_rook,     568,  400),
+        T (see_value_queen,   1160,  800),
 
-        T (see_value_pawn,     92),
-        T (see_value_knight,  373),
-        T (see_value_bishop,  372),
-        T (see_value_rook,    568),
-        T (see_value_queen,  1160),
-
-        //                 default  min   max  step
-        T (good_capture_margin, 200,  0,  300),
+        //                  default  min   max  step
+        T (good_capture_margin, 200,   0,  300),
 
         //             default  min  max  step
         T (qs_recapture_ply, 4,   2),
+
+        //             default   min  max  step
+        T (qs_see_margin,   0,  -100, 100),
 
         //            default  min  max  step
         T (delta_margin,  200,  50),
@@ -211,18 +243,19 @@ search_params! {
         T (see_quiet_margin,    60,  1),
 
         //              default  min  max  step
-        NT(razoring_depth,    3),
+        T (razoring_depth,    3,   1,    8),
         T (razoring_margin, 300,  50),
 
         //              default  min  max  step
-        NT(rfp_depth,        12),
+        T (rfp_depth,        12,   4,   20),
         T (rfp_margin,       40,  15),
         T (rfp_base_margin,  35),
         T (rfp_quad_margin,   3),
 
-        //                default  min  max  step
-        NT(probcut_depth_min,   5),
-        T (probcut_margin,    200,  50),
+        //                  default  min  max  step
+        T (probcut_depth_min,     5,   3,   10),
+        T (probcut_margin,      200,  50),
+        T (probcut_reduction,     4,   1,    8),
 
         //                  default min   max  step
         T (nmp_base_r,            3,  1,    6),
@@ -230,58 +263,70 @@ search_params! {
         T (nmp_eval_divisor,    200,  1,  320),
         T (nmp_eval_max,          3,  1,    6),
         NT(nmp_ply_offset,        1),
-        NT(nmp_verif_min_depth,  14),
+        T (nmp_verif_min_depth,  14,  6,   24),
 
-        //                 default  min   max  step
-        NT(singext_min_depth,    9),
-        T (singext_margin,       2,   1),
-        NT(singext_tt_depth,     3),
+        //                  default  min   max  step
+        T (singext_min_depth,     9,   4,   16),
+        T (singext_margin,        2,   1),
+        T (singext_tt_depth,      3,   1,    6),
+        T (singext_depth_div,     2,   1,    4),
 
         //           default min  max  step
-        NT(iir_depth,      4),
+        T (iir_depth,      4,  2,  8),
         T (iir_reduction,  1,  1,  3),
 
         //        default min  max  step
-        NT(fp_depth,    6),
+        T (fp_depth,    6,  2, 12),
         T (fp_margin, 100, 25),
 
         //        default min  max  step
-        NT(lmp_depth,   5),
+        T (lmp_depth,   5,  2, 10),
         T (lmp_base,    2,  1,  6),
+        T (lmp_scale, 100, 25, 250),  // ·100
 
         //                 default   min  max  step
-        NT(hist_prune_depth,     6),
+        T (hist_prune_depth,     6,    2,  12),
         T (hist_prune_margin, 3000,  100),
 
-        //                default   min  max  step
-        T (lmr_base,          100,  10),
-        T (lmr_divisor,       225,   1,  350),
-        T (lmr_hist_div,        8,   1,   24),
-        T (killer_lmr_bonus, 1024,  64),
-        T (check_lmr_bonus,     1,   1,    3),
-        T (threat_lmr_bonus, 1024,   0),
-        T (fhc_lmr_malus,     512,   0),
-        NT(lmr_retained,        1),
+        //                   default   min   max  step
+        T (lmr_min_depth,          2,    1,    6),
+        T (lmr_base,             100,   10),
+        T (lmr_divisor,          225,    1,  350),
+        T (lmr_hist_div,           8,    1,   24),
+        T (killer_lmr_bonus,    1024,   64),
+        T (check_lmr_bonus,        1,    1,    3),
+        T (threat_lmr_bonus,    1024,    0),
+        T (fhc_lmr_malus,        512,    0),
+        T (fhc_cutoff_min,         2,    0,    6),
+        T (critical_lmr_bonus,   128,    0,  512),
+        T (critical_lmr_cap,       8,    1,   24),
+        NT(lmr_retained,           1),
 
-        NT(capt_hist_divisor,  32),
-        NT(hist_bonus_mult,     4),
-        NT(hist_bonus_cap,   1600),
+        //                  default   min   max  step
+        T (capt_hist_divisor,    32,    4,   64),
+        T (hist_bonus_mult,       4,    1,   12),
+        T (hist_bonus_cap,     1600,  400, 3200),
 
         //                    default    min    max  step
-        NT(quiet_hist_cap,      16384,  8192, 32000),
-        NT(butterfly_hist_cap,  16384,  8192, 32000),
-        NT(cont_hist_cap,       16384,  8192, 32000),
-        NT(capt_hist_cap,       16384,  8192, 32000),
+        T (quiet_hist_cap,      16384,  8192, 32000),
+        T (butterfly_hist_cap,  16384,  8192, 32000),
+        T (cont_hist_cap,       16384,  8192, 32000),
+        T (capt_hist_cap,       16384,  8192, 32000),
+
+        //              default min  max  step
+        T (tt_age_factor,     4,   0,  16),
 
         //                default min  max  step
         T (minor_corr_weight, 128,  8),
         T (major_corr_weight, 128,  8),
+        T (corr_weight_div,     4,  1,  16),
+        T (corr_weight_max,    32,  4, 128),  // ·256
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::spsa_table;
+    use super::{PARAM_DEFS, SearchParams, spsa_table, tunable_param_defs, uci_options};
 
     #[test]
     fn spsa_table_is_well_formed() {
@@ -307,5 +352,34 @@ mod tests {
             assert!(num(r_end) >= 0.0, "{line}");
         }
         assert!(!seen.is_empty());
+    }
+
+    #[test]
+    fn every_tunable_is_advertised_and_settable() {
+        let options = uci_options();
+        let advertised: Vec<&str> = options
+            .lines()
+            .map(|line| line.split_whitespace().nth(2).expect("option name <name>"))
+            .collect();
+        let tunable: Vec<&str> = tunable_param_defs().iter().map(|p| p.name).collect();
+        assert_eq!(advertised, tunable);
+
+        let mut sp = SearchParams::default();
+        for def in tunable_param_defs() {
+            assert!(sp.set(def.name, def.max as i32), "{} refused a write", def.name);
+            assert_eq!(sp.get(def.name), Some(def.max as i32), "{} did not take it", def.name);
+            assert!(sp.set(def.name, def.min as i32 - 1_000_000), "{} refused a write", def.name);
+            assert_eq!(sp.get(def.name), Some(def.min as i32), "{} was not clamped", def.name);
+        }
+    }
+
+    #[test]
+    fn a_frozen_entry_is_neither_advertised_nor_settable() {
+        let mut sp = SearchParams::default();
+        for def in PARAM_DEFS.iter().filter(|p| p.frozen) {
+            assert!(!sp.set(def.name, def.max as i32), "{} is frozen and took a write", def.name);
+            assert_eq!(sp.get(def.name), None, "{} is frozen and read back", def.name);
+        }
+        assert!(!sp.set("no_such_param", 1));
     }
 }
