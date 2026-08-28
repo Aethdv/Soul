@@ -473,6 +473,7 @@ impl<'cfg> Searcher<'cfg> {
 
         let mut last_iter_elapsed = 0;
         let mut bm_changes = 0.0;
+        let mut failed_low: u32 = 0;
 
         // ── Singular Bailout
         // Only one legal move. Slash the budget to 5% so we exit the depth
@@ -566,6 +567,14 @@ impl<'cfg> Searcher<'cfg> {
 
                 if score <= alpha {
                     self.print_bound(depth, score, tui::ScoreBound::Upper);
+                    // ── Fail-Low Extension
+                    // A score that falls below the aspiration window is the
+                    // search admitting its previous estimate was optimistic.
+                    if depth >= sp.tm_fail_low_depth && failed_low < sp.tm_fail_low_cap as u32 {
+                        failed_low += 1;
+                        let factor = 1.0 + (failed_low * sp.tm_fail_low_bonus as u32) as f64 / 100.0;
+                        self.tm.set_fail_low_factor(factor);
+                    }
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
                     self.print_bound(depth, score, tui::ScoreBound::Lower);

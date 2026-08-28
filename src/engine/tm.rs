@@ -31,6 +31,7 @@ pub struct TimeManager {
     bm_stab: f64,
     bm_inst: f64,
     score_factor: f64,
+    fail_low: f64,
 }
 
 impl TimeManager {
@@ -44,7 +45,7 @@ impl TimeManager {
         params: &SearchParams,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
-        Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, bm_inst: 1.0, score_factor: 1.0 }
+        Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, bm_inst: 1.0, score_factor: 1.0, fail_low: 1.0 }
     }
 
     #[inline]
@@ -81,8 +82,14 @@ impl TimeManager {
     }
 
     #[inline]
+    pub fn set_fail_low_factor(&mut self, factor: f64) {
+        self.fail_low = factor;
+        self.recompute_soft();
+    }
+
+    #[inline]
     fn recompute_soft(&mut self) {
-        let factor = self.bm_stab * self.bm_inst * self.score_factor;
+        let factor = self.bm_stab * self.bm_inst * self.score_factor * self.fail_low;
         let scaled = self.base_soft.as_millis() as f64 * factor;
         self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }
