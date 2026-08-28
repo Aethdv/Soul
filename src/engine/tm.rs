@@ -165,8 +165,11 @@ fn compute_budget(
     }
 
     let mtg = clock.moves_to_go(phase, params);
-    let soft_ms = clock.soft_ms(mtg, params);
-    let hard_ms = clock.hard_ms(mtg, params);
+    let future_reserve = if clock.movestogo > 0 { overhead.saturating_mul(clock.movestogo.saturating_add(1)) } else { 0 };
+    let usable_time = clock.time.saturating_sub(future_reserve);
+    let usable_clock = Clock { time: usable_time, ..clock };
+    let soft_ms = usable_clock.soft_ms(mtg, params);
+    let hard_ms = usable_clock.hard_ms(mtg, params);
 
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }
