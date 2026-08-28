@@ -31,6 +31,7 @@ pub struct TimeManager {
     effort: f64,
     bm_inst: f64,
     score_factor: f64,
+    soft_mult: f64,
 }
 
 impl TimeManager {
@@ -44,7 +45,18 @@ impl TimeManager {
         params: &SearchParams,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
-        Self { start, soft, hard, base_soft: soft, effort: 1.0, bm_inst: 1.0, score_factor: 1.0 }
+        let mut tm = Self {
+            start,
+            soft,
+            hard,
+            base_soft: soft,
+            effort: 1.0,
+            bm_inst: 1.0,
+            score_factor: 1.0,
+            soft_mult: f64::from(params.tm_soft_mult) / 100.0,
+        };
+        tm.recompute_soft();
+        tm
     }
 
     #[inline]
@@ -88,7 +100,7 @@ impl TimeManager {
 
     #[inline]
     fn recompute_soft(&mut self) {
-        let factor = self.effort * self.bm_inst * self.score_factor;
+        let factor = self.soft_mult * self.effort * self.bm_inst * self.score_factor;
         let scaled = self.base_soft.as_millis() as f64 * factor;
         self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }

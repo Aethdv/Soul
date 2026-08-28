@@ -510,8 +510,7 @@ impl<'cfg> Searcher<'cfg> {
             if self.cfg.thread_id == 0
                 && depth > 1
                 && ((clocked
-                    && (elapsed >= self.tm.soft_limit().as_millis() as u64
-                        || elapsed + (prev_depth_time * sp.tm_iter_scale as u64 / 100) > self.tm.hard_limit().as_millis() as u64))
+                    && elapsed + prev_depth_time * sp.tm_iter_scale as u64 / 100 > self.tm.soft_limit().as_millis() as u64)
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
             {
                 break;

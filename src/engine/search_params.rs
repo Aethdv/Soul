@@ -193,6 +193,7 @@ search_params! {
         NT(tm_sd_ramp,           1),
         NT(tm_sd_cap,           80),
         NT(tm_soft_inc,         80),
+        NT(tm_soft_mult,       152),
 
         //                 default min  max  step
         NT(score_drop_depth,     5),
