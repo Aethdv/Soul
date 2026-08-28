@@ -198,10 +198,10 @@ search_params! {
         NT(score_drop_depth,     5),
         NT(score_swing_scale,  100, 10, 160),
 
-        NT(bm_stab_depth,    5),
-        NT(bm_stab_base,   270),
-        NT(bm_stab_scale,  220),
-        NT(bm_stab_floor,   56),
+        NT(effort_depth,     5),
+        NT(effort_base,    270),
+        NT(effort_scale,   220),
+        NT(effort_floor,    56),
         NT(bm_inst_scale,  220,  0, 340),
         NT(bm_inst_decay,   50,  0, 100),  // per-iteration decay, ·100
 

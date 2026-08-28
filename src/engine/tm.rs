@@ -28,7 +28,7 @@ pub struct TimeManager {
     hard: Duration,
     soft: Duration,
     base_soft: Duration,
-    bm_stab: f64,
+    effort: f64,
     bm_inst: f64,
     score_factor: f64,
 }
@@ -44,7 +44,7 @@ impl TimeManager {
         params: &SearchParams,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
-        Self { start, soft, hard, base_soft: soft, bm_stab: 1.0, bm_inst: 1.0, score_factor: 1.0 }
+        Self { start, soft, hard, base_soft: soft, effort: 1.0, bm_inst: 1.0, score_factor: 1.0 }
     }
 
     #[inline]
@@ -69,8 +69,8 @@ impl TimeManager {
     }
 
     #[inline]
-    pub fn set_bm_stab_factor(&mut self, factor: f64) {
-        self.bm_stab = factor;
+    pub fn set_effort_factor(&mut self, factor: f64) {
+        self.effort = factor;
         self.recompute_soft();
     }
 
@@ -88,7 +88,7 @@ impl TimeManager {
 
     #[inline]
     fn recompute_soft(&mut self) {
-        let factor = self.bm_stab * self.bm_inst * self.score_factor;
+        let factor = self.effort * self.bm_inst * self.score_factor;
         let scaled = self.base_soft.as_millis() as f64 * factor;
         self.soft = Duration::from_millis(scaled as u64).min(self.hard);
     }
@@ -199,7 +199,7 @@ mod tests {
         let discounted = tm.soft_limit();
         assert!(discounted < undiscounted, "{discounted:?} is not a discount on {undiscounted:?}");
 
-        tm.set_bm_stab_factor(0.56);
+        tm.set_effort_factor(0.56);
         tm.set_bm_inst_factor(1.0);
         tm.set_score_factor(1.0);
         assert!(tm.soft_limit() <= discounted, "the iteration factors restored {:?}", tm.soft_limit());

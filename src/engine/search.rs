@@ -601,7 +601,7 @@ impl<'cfg> Searcher<'cfg> {
 
             let new_score = self.root_moves[0].score;
 
-            // ── Best-Move Stability TM (~20 Elo)
+            // ── Node Effort TM (~20 Elo)
             // Scale the soft budget by the best move's share
             // of total search effort. A large share means the search keeps
             // confirming one move, so shrink the budget. A small share means
@@ -609,14 +609,14 @@ impl<'cfg> Searcher<'cfg> {
             //
             //   percent = clamp(floor, base − scale · best_nodes / total_nodes)
             //
-            // Gated below bm_stab_depth: early iterations haven't
+            // Gated below effort_depth: early iterations haven't
             // accumulated enough node signal for the ratio to be meaningful.
-            if depth >= sp.bm_stab_depth && self.root_moves.len() > 1 {
+            if depth >= sp.effort_depth && self.root_moves.len() > 1 {
                 let best_nodes = self.root_moves[0].nodes;
                 let total_nodes = self.nodes.max(1);
-                let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;
-                let percent = (sp.bm_stab_base as u64).saturating_sub(effort_discount).max(sp.bm_stab_floor as u64);
-                self.tm.set_bm_stab_factor(percent as f64 / 100.0);
+                let effort_discount = sp.effort_scale as u64 * best_nodes / total_nodes;
+                let percent = (sp.effort_base as u64).saturating_sub(effort_discount).max(sp.effort_floor as u64);
+                self.tm.set_effort_factor(percent as f64 / 100.0);
             }
 
             // ── Score Swing (~28 Elo)
