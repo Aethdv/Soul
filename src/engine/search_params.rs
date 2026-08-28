@@ -193,7 +193,7 @@ search_params! {
         NT(tm_sd_ramp,           1),
         NT(tm_sd_cap,           80),
         NT(tm_soft_inc,         80),
-        NT(tm_fail_low_depth,    5,   1,  12),
+        NT(tm_fail_low_depth,    8,   1,  12),
         NT(tm_fail_low_bonus,   34,  10,  80),  // per fail low, ·100
         NT(tm_fail_low_cap,      2,   1,   4),
 
