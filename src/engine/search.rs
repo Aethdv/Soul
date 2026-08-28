@@ -54,7 +54,7 @@ use crate::{
         movepicker::MovePicker,
         search_params::*,
         see::{self, see_ge},
-        tm::TimeManager,
+        tm::{Iteration, TimeManager},
         tt,
         tt::{TranspositionTable, TtData, TtMove},
         tui,
@@ -472,7 +472,6 @@ impl<'cfg> Searcher<'cfg> {
         };
 
         let mut last_iter_elapsed = 0;
-        let mut bm_changes = 0.0;
 
         // ── Singular Bailout
         // Only one legal move. Slash the budget to 5% so we exit the depth
@@ -497,21 +496,11 @@ impl<'cfg> Searcher<'cfg> {
             // so check_signals' hard wall is its only stop.
             let clocked = self.cfg.limits.movetime == 0;
 
-            // Between iterations:
-            // Bail if soft limits say we probably
-            // can't finish the next depth in time.
-            //
-            // prev_depth_time · 2 is a rough branching-factor proxy;
-            // each additional ply typically costs about twice the previous one,
-            // so if we can't afford that estimate we stop before starting it.
-            //
             // Helpers skip time management as their job is to fill the TT,
             // not decide when to stop. Main calls the shots.
             if self.cfg.thread_id == 0
                 && depth > 1
-                && ((clocked
-                    && (elapsed >= self.tm.soft_limit().as_millis() as u64
-                        || elapsed + (prev_depth_time * sp.tm_iter_scale as u64 / 100) > self.tm.hard_limit().as_millis() as u64))
+                && ((clocked && self.tm.should_stop(elapsed, prev_depth_time, sp))
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
             {
                 break;
@@ -601,59 +590,18 @@ impl<'cfg> Searcher<'cfg> {
 
             let new_score = self.root_moves[0].score;
 
-            // ── Node Effort TM (~20 Elo)
-            // Scale the soft budget by the best move's share
-            // of total search effort. A large share means the search keeps
-            // confirming one move, so shrink the budget. A small share means
-            // effort is scattered across candidates, so stretch it.
-            //
-            //   percent = clamp(floor, base − scale · best_nodes / total_nodes)
-            //
-            // Gated below effort_depth: early iterations haven't
-            // accumulated enough node signal for the ratio to be meaningful.
-            if depth >= sp.effort_depth && self.root_moves.len() > 1 {
-                let best_nodes = self.root_moves[0].nodes;
-                let total_nodes = self.nodes.max(1);
-                let effort_discount = sp.effort_scale as u64 * best_nodes / total_nodes;
-                let percent = (sp.effort_base as u64).saturating_sub(effort_discount).max(sp.effort_floor as u64);
-                self.tm.set_effort_factor(percent as f64 / 100.0);
-            }
-
-            // ── Score Swing (~28 Elo)
-            // Scale the soft budget by how far the score moved since last iteration.
-            // A drop means a refutation surfaced, so double the budget to buy depth
-            // and resolve it. A surge means we found something strong, so halve it
-            // and bank the time.
-            //
-            //   factor = 2 ^ (clamp(prev − new, ±scale) / scale)
-            //
-            // Clamping pins the factor to [0.5, 2.0]; the exponent makes equal-size
-            // gains and losses scale the budget by reciprocal amounts. Gated below
-            // score_drop_depth: low-depth aspiration churn is noise, not signal.
-            let score_factor = if depth >= sp.score_drop_depth {
-                let scale = sp.score_swing_scale as f64;
-                let diff = ((self.prev_score - new_score) as f64).clamp(-scale, scale);
-                2.0_f64.powf(diff / scale)
-            } else {
-                1.0
-            };
-
-            self.tm.set_score_factor(score_factor);
-
-            // ── Best-Move Instability TM
-            // Node effort and score swing both read a settled position as settled.
-            // Neither sees the top two moves trading places under a steady score,
-            // which is the position worth another iteration.
-            //
-            // Halving each iteration leaves the count reading recent churn rather
-            // than everything the search ever reconsidered.
-            if self.prev_pv.get(0).is_some_and(|prev| prev != self.root_moves[0].mv) {
-                bm_changes += 1.0;
-            }
-
-            let instability = 1.0 + f64::from(sp.bm_inst_scale) / 100.0 * bm_changes / self.cfg.threads as f64;
-            self.tm.set_bm_inst_factor(instability);
-            bm_changes *= f64::from(sp.bm_inst_decay) / 100.0;
+            self.tm.update(
+                &Iteration {
+                    depth,
+                    best_move_changed: self.prev_pv.get(0).is_some_and(|prev| prev != self.root_moves[0].mv),
+                    root_moves: self.root_moves.len(),
+                    best_nodes: self.root_moves[0].nodes,
+                    total_nodes: self.nodes,
+                    score: new_score,
+                    prev_score: self.prev_score,
+                },
+                sp,
+            );
 
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
@@ -743,7 +691,7 @@ impl<'cfg> Searcher<'cfg> {
     fn build_tm(cfg: &SearchConfig, pos: &Position) -> TimeManager {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         let game_ply = u64::from(pos.fullmove_number.saturating_sub(1)) * 2 + u64::from(pos.stm == Color::Black);
-        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, game_ply, &cfg.search_params)
+        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, game_ply, &cfg.search_params, cfg.threads)
     }
 
     /// Periodic signal check: stop flag, hard time limit, node limit.
@@ -2071,7 +2019,7 @@ impl Worker<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::board::STARTPOS;
+    use crate::core::{board::STARTPOS, defs::TOTAL_PHASE};
 
     const REACH_FENS: [&str; 2] = [
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -2106,21 +2054,45 @@ mod tests {
         total
     }
 
+    fn tm_budget(params: &SearchParams) -> Vec<u128> {
+        let mut out = Vec::new();
+        for (movestogo, forced) in [(0, false), (30, true), (2, false)] {
+            let limits = Limits { wtime: 60_000, btime: 60_000, winc: 600, binc: 600, movestogo, ..Default::default() };
+            let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE / 2, 40, params, 1);
+            if forced {
+                tm.scale_base_soft(f64::from(params.tm_single_root) / 100.0);
+            }
+            out.push(tm.hard_limit().as_millis());
+            let (soft_ms, hard_ms) = (tm.soft_limit().as_millis() as u64, tm.hard_limit().as_millis() as u64);
+            out.push(u128::from(tm.should_stop(soft_ms / 2, hard_ms / 3, params)));
+            for (depth, best_move_changed, best_nodes, score) in [(4, true, 100, 20), (8, false, 700, 15), (12, false, 950, -60)] {
+                let iter =
+                    Iteration { depth, best_move_changed, root_moves: 4, best_nodes, total_nodes: 1000, score, prev_score: 0 };
+                tm.update(&iter, params);
+                out.push(tm.soft_limit().as_millis());
+            }
+        }
+        out
+    }
+
     #[test]
     fn every_tunable_reaches_search() {
         let baselines = REACH_DEPTHS.map(|d| reach_nodes(SearchParams::default(), d));
+        let tm_baseline = tm_budget(&SearchParams::default());
 
         for def in crate::engine::search_params::tunable_param_defs() {
             if NO_WITNESS.iter().any(|(name, _)| *name == def.name) {
                 continue;
             }
 
-            let moved = REACH_DEPTHS.iter().zip(baselines).any(|(&depth, baseline)| {
-                [def.min as i32, def.max as i32].into_iter().any(|v| {
-                    let mut params = SearchParams::default();
-                    assert!(params.set(def.name, v));
-                    reach_nodes(params, depth) != baseline
-                })
+            let moved = [def.min as i32, def.max as i32].into_iter().any(|v| {
+                let mut params = SearchParams::default();
+                assert!(params.set(def.name, v));
+                tm_budget(&params) != tm_baseline
+                    || REACH_DEPTHS
+                        .iter()
+                        .zip(baselines)
+                        .any(|(&depth, baseline)| reach_nodes(params, depth) != baseline)
             });
             assert!(moved, "{} does not reach the search at either bound", def.name);
         }

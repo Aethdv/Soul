@@ -31,6 +31,18 @@ pub struct TimeManager {
     effort: f64,
     bm_inst: f64,
     score_factor: f64,
+    bm_changes: f64,
+    threads: usize,
+}
+
+pub struct Iteration {
+    pub depth: i32,
+    pub best_move_changed: bool,
+    pub root_moves: usize,
+    pub best_nodes: u64,
+    pub total_nodes: u64,
+    pub score: i32,
+    pub prev_score: i32,
 }
 
 impl TimeManager {
@@ -42,9 +54,20 @@ impl TimeManager {
         phase: i32,
         game_ply: u64,
         params: &SearchParams,
+        threads: usize,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
-        Self { start, soft, hard, base_soft: soft, effort: 1.0, bm_inst: 1.0, score_factor: 1.0 }
+        Self {
+            start,
+            soft,
+            hard,
+            base_soft: soft,
+            effort: 1.0,
+            bm_inst: 1.0,
+            score_factor: 1.0,
+            bm_changes: 0.0,
+            threads,
+        }
     }
 
     #[inline]
@@ -68,21 +91,66 @@ impl TimeManager {
         self.recompute_soft();
     }
 
+    /// prev_depth_ms · 2 is a rough branching-factor proxy; each additional ply
+    /// typically costs about twice the previous one.
     #[inline]
-    pub fn set_effort_factor(&mut self, factor: f64) {
-        self.effort = factor;
-        self.recompute_soft();
+    pub fn should_stop(&self, elapsed_ms: u64, prev_depth_ms: u64, params: &SearchParams) -> bool {
+        elapsed_ms >= self.soft.as_millis() as u64
+            || elapsed_ms + prev_depth_ms * params.tm_iter_scale as u64 / 100 > self.hard.as_millis() as u64
     }
 
-    #[inline]
-    pub fn set_bm_inst_factor(&mut self, factor: f64) {
-        self.bm_inst = factor;
-        self.recompute_soft();
-    }
+    /// Applies one completed iteration to the soft limit.
+    pub fn update(&mut self, iter: &Iteration, params: &SearchParams) {
+        // ── Node Effort TM (~20 Elo)
+        // Scale the soft budget by the best move's share
+        // of total search effort. A large share means the search keeps
+        // confirming one move, so shrink the budget. A small share means
+        // effort is scattered across candidates, so stretch it.
+        //
+        //   percent = clamp(floor, base − scale · best_nodes / total_nodes)
+        //
+        // Gated below effort_depth: early iterations haven't
+        // accumulated enough node signal for the ratio to be meaningful.
+        if iter.depth >= params.effort_depth && iter.root_moves > 1 {
+            let effort_discount = params.effort_scale as u64 * iter.best_nodes / iter.total_nodes.max(1);
+            let percent = (params.effort_base as u64)
+                .saturating_sub(effort_discount)
+                .max(params.effort_floor as u64);
+            self.effort = percent as f64 / 100.0;
+        }
 
-    #[inline]
-    pub fn set_score_factor(&mut self, factor: f64) {
-        self.score_factor = factor;
+        // ── Score Swing (~28 Elo)
+        // Scale the soft budget by how far the score moved since last iteration.
+        // A drop means a refutation surfaced, so double the budget to buy depth
+        // and resolve it. A surge means we found something strong, so halve it
+        // and bank the time.
+        //
+        //   factor = 2 ^ (clamp(prev − new, ±scale) / scale)
+        //
+        // Clamping pins the factor to [0.5, 2.0]; the exponent makes equal-size
+        // gains and losses scale the budget by reciprocal amounts. Gated below
+        // score_drop_depth: low-depth aspiration churn is noise, not signal.
+        self.score_factor = if iter.depth >= params.score_drop_depth {
+            let scale = params.score_swing_scale as f64;
+            let diff = ((iter.prev_score - iter.score) as f64).clamp(-scale, scale);
+            2.0_f64.powf(diff / scale)
+        } else {
+            1.0
+        };
+
+        // ── Best-Move Instability TM
+        // Node effort and score swing both read a settled position as settled.
+        // Neither sees the top two moves trading places under a steady score,
+        // which is the position worth another iteration.
+        //
+        // Halving each iteration leaves the count reading recent churn rather
+        // than everything the search ever reconsidered.
+        if iter.best_move_changed {
+            self.bm_changes += 1.0;
+        }
+        self.bm_inst = 1.0 + f64::from(params.bm_inst_scale) / 100.0 * self.bm_changes / self.threads as f64;
+        self.bm_changes *= f64::from(params.bm_inst_decay) / 100.0;
+
         self.recompute_soft();
     }
 
@@ -192,16 +260,23 @@ mod tests {
     fn a_forced_move_discount_outlives_the_iteration_factors() {
         let params = SearchParams::default();
         let limits = Limits { wtime: 8000, btime: 8000, winc: 80, binc: 80, ..Default::default() };
-        let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE, 0, &params);
+        let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE, 0, &params, 1);
         let undiscounted = tm.soft_limit();
 
         tm.scale_base_soft(f64::from(params.tm_single_root) / 100.0);
         let discounted = tm.soft_limit();
         assert!(discounted < undiscounted, "{discounted:?} is not a discount on {undiscounted:?}");
 
-        tm.set_effort_factor(0.56);
-        tm.set_bm_inst_factor(1.0);
-        tm.set_score_factor(1.0);
+        let settled = Iteration {
+            depth: 12,
+            best_move_changed: false,
+            root_moves: 4,
+            best_nodes: 950,
+            total_nodes: 1000,
+            score: 0,
+            prev_score: 0,
+        };
+        tm.update(&settled, &params);
         assert!(tm.soft_limit() <= discounted, "the iteration factors restored {:?}", tm.soft_limit());
     }
 }

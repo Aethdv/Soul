@@ -181,29 +181,29 @@ search_params! {
         NT(vol_queen,   13),
         NT(vol_king,     0),
 
-        NT(mtg_opening,      80),
-        NT(mtg_endgame,      40),
-        NT(tm_iter_scale,   200),
-        NT(tm_single_root,    5),
+        T (mtg_opening,      80,  20, 120),
+        T (mtg_endgame,      40,  10,  80),
+        T (tm_iter_scale,   200, 100, 400),
+        T (tm_single_root,    5,   1,  50),
 
         //  TM budget, values ·100 (tm_sd_ramp ·1000)
-        NT(tm_hard_mult,       500),
-        NT(tm_hard_clock_cap,   95),
-        NT(tm_sd_base,          50),
-        NT(tm_sd_ramp,           1),
-        NT(tm_sd_cap,           80),
-        NT(tm_soft_inc,         80),
+        T (tm_hard_mult,       500, 200, 900),
+        T (tm_hard_clock_cap,   95,  50, 100),
+        T (tm_sd_base,          50,  20,  80),
+        T (tm_sd_ramp,           1,   0,  10),
+        T (tm_sd_cap,           80,  50,  95),
+        T (tm_soft_inc,         80,  40, 100),
 
         //                 default min  max  step
-        NT(score_drop_depth,     5),
-        NT(score_swing_scale,  100, 10, 160),
+        T (score_drop_depth,     5,   2,  12),
+        T (score_swing_scale,  100,  10, 160),
 
-        NT(effort_depth,     5),
-        NT(effort_base,    270),
-        NT(effort_scale,   220),
-        NT(effort_floor,    56),
-        NT(bm_inst_scale,  220,  0, 340),
-        NT(bm_inst_decay,   50,  0, 100),  // per-iteration decay, ·100
+        T (effort_depth,     5,   2,  12),
+        T (effort_base,    270, 150, 400),
+        T (effort_scale,   220, 100, 350),
+        T (effort_floor,    56,  20, 100),
+        T (bm_inst_scale,  220,   0, 340),
+        T (bm_inst_decay,   50,   0, 100),  // per-iteration decay, ·100
 
         //                default  min   max  step
         NT(mvvlva_ep,         100,  60,  150),
