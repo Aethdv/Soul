@@ -473,6 +473,7 @@ impl<'cfg> Searcher<'cfg> {
 
         let mut last_iter_elapsed = 0;
         let mut bm_changes = 0.0;
+        let mut bm_age = 0;
 
         // ── Singular Bailout
         // Only one legal move. Slash the budget to 5% so we exit the depth
@@ -640,6 +641,15 @@ impl<'cfg> Searcher<'cfg> {
 
             self.tm.set_score_factor(score_factor);
 
+            match self.prev_pv.get(0) {
+                Some(prev) if prev != self.root_moves[0].mv => {
+                    bm_changes += 1.0;
+                    bm_age = 0;
+                },
+                Some(_) => bm_age += 1,
+                None => {},
+            }
+
             // ── Best-Move Instability TM
             // Node effort and score swing both read a settled position as settled.
             // Neither sees the top two moves trading places under a steady score,
@@ -647,13 +657,15 @@ impl<'cfg> Searcher<'cfg> {
             //
             // Halving each iteration leaves the count reading recent churn rather
             // than everything the search ever reconsidered.
-            if self.prev_pv.get(0).is_some_and(|prev| prev != self.root_moves[0].mv) {
-                bm_changes += 1.0;
-            }
-
             let instability = 1.0 + f64::from(sp.bm_inst_scale) / 100.0 * bm_changes / self.cfg.threads as f64;
             self.tm.set_bm_inst_factor(instability);
             bm_changes *= f64::from(sp.bm_inst_decay) / 100.0;
+
+            // ── Best-Move Stability TM
+            // Neither node effort nor best-move churn says how long the answer has held,
+            // and the longer it holds the less another iteration adds.
+            let percent = (sp.bm_stab_base - sp.bm_stab_scale * bm_age).max(sp.bm_stab_floor);
+            self.tm.set_bm_stab_factor(f64::from(percent) / 100.0);
 
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;

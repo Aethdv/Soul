@@ -202,6 +202,9 @@ search_params! {
         NT(effort_base,    270),
         NT(effort_scale,   220),
         NT(effort_floor,    56),
+        NT(bm_stab_base,   125),
+        NT(bm_stab_scale,    4),
+        NT(bm_stab_floor,   80),
         NT(bm_inst_scale,  220,  0, 340),
         NT(bm_inst_decay,   50,  0, 100),  // per-iteration decay, ·100
 
