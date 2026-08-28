@@ -681,7 +681,7 @@ impl<'cfg> Searcher<'cfg> {
 
     #[inline]
     pub fn new(cfg: &'cfg SearchConfig, pos: &Position, history: &[u64], tt: Arc<TranspositionTable>) -> Self {
-        let tm = Self::build_tm(cfg, pos, history);
+        let tm = Self::build_tm(cfg, pos);
         let root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
         let mut trail = Vec::with_capacity(1024);
         Self::fill_trail(&mut trail, pos, history);
@@ -707,7 +707,7 @@ impl<'cfg> Searcher<'cfg> {
     pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64]) {
         Self::fill_trail(&mut self.zobrist_trail, pos, history);
         self.cfg = cfg;
-        self.tm = Self::build_tm(cfg, pos, history);
+        self.tm = Self::build_tm(cfg, pos);
         self.root_pos = *pos;
         self.root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
         self.nodes = 0;
@@ -740,9 +740,10 @@ impl<'cfg> Searcher<'cfg> {
 
     /// Time manager for this root position, derived from the live config
     /// and the accumulator's phase lane.
-    fn build_tm(cfg: &SearchConfig, pos: &Position, history: &[u64]) -> TimeManager {
+    fn build_tm(cfg: &SearchConfig, pos: &Position) -> TimeManager {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
-        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, history.len() as u64, &cfg.search_params)
+        let game_ply = u64::from(pos.fullmove_number.saturating_sub(1)) * 2 + u64::from(pos.stm == Color::Black);
+        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, game_ply, &cfg.search_params)
     }
 
     /// Periodic signal check: stop flag, hard time limit, node limit.
@@ -2105,9 +2106,6 @@ mod tests {
         total
     }
 
-    /// Bench can't catch this: one param vector, nothing to differentiate. The tuner
-    /// ran blind for the engine's life because every searcher read one global, so
-    /// distinct candidates searched identically and scored noise.
     #[test]
     fn every_tunable_reaches_search() {
         let baselines = REACH_DEPTHS.map(|d| reach_nodes(SearchParams::default(), d));
@@ -2128,8 +2126,18 @@ mod tests {
         }
     }
 
-    /// A `stop` landing before the first iteration ends: `bestmove` still has to
-    /// name a move the search looked at, not the first one movegen listed.
+    #[test]
+    fn the_game_ply_tracks_the_position_not_the_move_list() {
+        let limits = Limits { wtime: 60_000, btime: 60_000, silent: true, protocol: Protocol::Uci, ..Default::default() };
+        let cfg = SearchConfig::new(limits, Instant::now(), Arc::new(AtomicBool::new(false)), 0, SearchParams::default());
+        let tt = Arc::new(TranspositionTable::new(1, 1));
+        let opening = Position::from_fen(STARTPOS);
+        let late = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 60");
+        let early_hard = Searcher::new(&cfg, &opening, &[opening.hash], tt.clone()).tm.hard_limit();
+        let late_hard = Searcher::new(&cfg, &late, &[late.hash], tt).tm.hard_limit();
+        assert!(late_hard > early_hard, "the ramp did not open: {early_hard:?} to {late_hard:?}");
+    }
+
     #[test]
     fn a_stop_before_the_first_iteration_still_leaves_a_line() {
         let board = Position::from_fen(STARTPOS);
