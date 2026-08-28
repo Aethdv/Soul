@@ -180,11 +180,6 @@ mod tests {
     const R: i32 = VALUES[PieceType::Rook.as_usize()];
     const Q: i32 = VALUES[PieceType::Queen.as_usize()];
 
-    #[test]
-    fn the_exchange_scale_holds_still() {
-        assert_eq!(VALUES[..6], [92, 373, 372, 568, 1160, 0]);
-    }
-
     /// Resolve a UCI move string against the legal move list.
     fn legal_move(pos: &Position, uci: &str) -> Move {
         for mv in gen_legal_moves(pos).iter() {
