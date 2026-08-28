@@ -14,7 +14,7 @@
 
 use std::{
     arch, mem, slice,
-    sync::atomic::{AtomicU8, AtomicU16, Ordering},
+    sync::atomic::{AtomicI32, AtomicU8, AtomicU16, Ordering},
     thread,
 };
 
@@ -24,7 +24,7 @@ use crate::{
         defs::{score_from_tt, score_to_tt},
         moves::Move,
     },
-    engine::movegen::is_pseudo_legal,
+    engine::{movegen::is_pseudo_legal, search_params::SearchParams},
     hugepages::{HugePages, PageKind},
     numa::NumaTopology,
 };
@@ -35,8 +35,6 @@ pub const SCORE_NONE: i32 = 32000;
 
 const CLUSTER_SIZE: usize = 3;
 
-/// Higher values evict stale entries faster.
-const AGE_FACTOR: i32 = 4;
 /// `age` is 5 bits; generation distance is read modulo 32.
 const AGE_MASK: u8 = 0x1F;
 
@@ -105,6 +103,7 @@ pub struct TranspositionTable {
     /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
     /// so `wrapping_sub` measures generation distance modulo 32.
     pub generation: AtomicU8,
+    age_factor: AtomicI32,
     /// The machine's locality, detected once.
     numa: NumaTopology,
 }
@@ -238,10 +237,17 @@ impl TranspositionTable {
     pub fn new(size_mb: usize, threads: usize) -> Self {
         let numa = NumaTopology::detect();
         let clusters = Self::alloc(size_mb, &numa, threads);
-        Self { clusters, numa, generation: AtomicU8::new(0) }
+        Self {
+            clusters,
+            numa,
+            generation: AtomicU8::new(0),
+            age_factor: AtomicI32::new(SearchParams::new().tt_age_factor),
+        }
     }
 
     pub fn resize(&mut self, size_mb: usize, threads: usize) { self.clusters = Self::alloc(size_mb, &self.numa, threads); }
+
+    pub fn set_age_factor(&self, factor: i32) { self.age_factor.store(factor, Ordering::Relaxed); }
     pub fn spans_nodes(&self) -> bool { self.numa.num_nodes() > 1 }
     pub fn page_kind(&self) -> PageKind { self.clusters.kind() }
 
@@ -338,6 +344,7 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
+        let age_factor = self.age_factor.load(Ordering::Relaxed);
         let cluster = self.cluster(idx);
 
         let mut victim = 0;
@@ -352,7 +359,7 @@ impl TranspositionTable {
                 break;
             }
 
-            let quality = replacement_quality(packed, cur_age);
+            let quality = replacement_quality(packed, cur_age, age_factor);
             if quality < worst_quality {
                 worst_quality = quality;
                 victim = i;
@@ -388,6 +395,7 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
+        let age_factor = self.age_factor.load(Ordering::Relaxed);
         let cluster = self.cluster(idx);
 
         let mut victim: Option<usize> = None;
@@ -402,7 +410,7 @@ impl TranspositionTable {
                 break;
             }
 
-            let quality = replacement_quality(packed, cur_age);
+            let quality = replacement_quality(packed, cur_age, age_factor);
             if quality <= 0 && quality < worst_quality {
                 worst_quality = quality;
                 victim = Some(i);
@@ -446,11 +454,11 @@ impl TranspositionTable {
 }
 
 /// How readily a slot gives way: its depth, discounted by how many generations
-/// old it is. `AGE_FACTOR` sets the exchange rate between the two.
+/// old it is. `age_factor` sets the exchange rate between the two.
 #[inline(always)]
-fn replacement_quality(packed: u16, current_age: u8) -> i32 {
+fn replacement_quality(packed: u16, current_age: u8, age_factor: i32) -> i32 {
     let gen_diff = (current_age.wrapping_sub(packed_age(packed)) & AGE_MASK) as i32;
-    packed_depth(packed) as i32 - gen_diff * AGE_FACTOR
+    packed_depth(packed) as i32 - gen_diff * age_factor
 }
 
 /// First-touch decides a page's home node, so zeroing each slice from a thread bound

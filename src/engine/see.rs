@@ -1,6 +1,6 @@
 //! Static Exchange Evaluation.
 //!
-//! `see_ge(pos, mv, threshold)` answers in time linear in the attacker
+//! `see_ge(pos, mv, threshold, pins, values)` answers in time linear in the attacker
 //! count: will the moving side net at least `threshold` material if both
 //! sides recapture optimally on `mv`'s destination?
 //!
@@ -24,8 +24,7 @@ use crate::{
 };
 
 /// SEE's own scale, so shifting material into PSQT does not move search thresholds. King stays 0.
-const SEE_VALUE: [i32; 8] = {
-    let sp = SearchParams::new();
+pub const fn see_values(sp: &SearchParams) -> [i32; 8] {
     let mut v = [0i32; 8];
     v[PieceType::Pawn.as_usize()] = sp.see_value_pawn;
     v[PieceType::Knight.as_usize()] = sp.see_value_knight;
@@ -33,7 +32,7 @@ const SEE_VALUE: [i32; 8] = {
     v[PieceType::Rook.as_usize()] = sp.see_value_rook;
     v[PieceType::Queen.as_usize()] = sp.see_value_queen;
     v
-};
+}
 
 /// Capture order for the exchange loop: cheapest first, the king left out because
 /// reaching it ends the chain rather than continuing it.
@@ -42,11 +41,11 @@ const LVA_ORDER: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType
 /// Is the static exchange on `mv`'s destination square at least
 /// `threshold` centipawns for the side making `mv`?
 ///
-/// The pin scan belongs to the caller, so a loop of exchanges at one position
-/// pays for it once. En passant, promotions, castling and revealed slider
-/// x-rays are all modeled.
+/// The pin scan and the value table both belong to the caller, so a loop of
+/// exchanges at one position pays for them once. En passant, promotions, castling
+/// and revealed slider x-rays are all modeled.
 #[must_use]
-pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
+pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, values: &[i32; 8]) -> bool {
     // Castling captures nothing, and its to square holds our own rook, so the
     // exchange loop would price a trade that never happens.
     if mv.is_castling() {
@@ -62,15 +61,15 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
     //   attacker - piece sitting on to after our move, whose value
     //              will be lost if the opponent recaptures
     let (gain, attacker) = if mv.is_en_passant() {
-        (val(PieceType::Pawn), PieceType::Pawn)
+        (val(values, PieceType::Pawn), PieceType::Pawn)
     } else if let Some(promo) = mv.promo() {
         // The mover becomes promo; we earn the upgrade on top of
         // whatever (if anything) was captured on to.
-        let captured = val(pos.piece_at(to));
-        let upgrade = val(promo) - val(PieceType::Pawn);
+        let captured = val(values, pos.piece_at(to));
+        let upgrade = val(values, promo) - val(values, PieceType::Pawn);
         (captured + upgrade, promo)
     } else {
-        (val(pos.piece_at(to)), pos.piece_at(from))
+        (val(values, pos.piece_at(to)), pos.piece_at(from))
     };
 
     // What the side to move still has to gain to beat the previous player's outcome.
@@ -80,7 +79,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
         return false;
     }
 
-    balance = val(attacker) - balance;
+    balance = val(values, attacker) - balance;
     if balance <= 0 {
         // Even if the attacker is lost for nothing, the move still clears
         // threshold, so no deeper search is needed.
@@ -149,7 +148,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
         // Negamax flip: the next player's running deficit is this attacker's value
         // minus the previous player's. Ties go to the caller, so once the perspective
         // has flipped, break-even no longer clears the threshold.
-        balance = val(lva) - balance;
+        balance = val(values, lva) - balance;
         if balance < i32::from(flipped) {
             return flipped;
         }
@@ -158,7 +157,7 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins) -> bool {
 }
 
 #[inline(always)]
-fn val(pt: PieceType) -> i32 { SEE_VALUE[pt.as_usize()] }
+fn val(values: &[i32; 8], pt: PieceType) -> i32 { values[pt.as_usize()] }
 
 /// Pinned attackers that can't legally recapture on `to`: a pinned piece moves
 /// only along its pin ray, so it reaches `to` only when `to` lies on that ray.
@@ -173,15 +172,13 @@ mod tests {
     use super::*;
     use crate::{core::board::Position, engine::movegen::gen_legal_moves};
 
-    const P: i32 = SEE_VALUE[PieceType::Pawn.as_usize()];
-    const N: i32 = SEE_VALUE[PieceType::Knight.as_usize()];
-    const R: i32 = SEE_VALUE[PieceType::Rook.as_usize()];
-    const Q: i32 = SEE_VALUE[PieceType::Queen.as_usize()];
+    const DEFAULTS: SearchParams = SearchParams::new();
+    const VALUES: [i32; 8] = see_values(&DEFAULTS);
 
-    #[test]
-    fn the_exchange_scale_holds_still() {
-        assert_eq!(SEE_VALUE[..6], [92, 373, 372, 568, 1160, 0]);
-    }
+    const P: i32 = VALUES[PieceType::Pawn.as_usize()];
+    const N: i32 = VALUES[PieceType::Knight.as_usize()];
+    const R: i32 = VALUES[PieceType::Rook.as_usize()];
+    const Q: i32 = VALUES[PieceType::Queen.as_usize()];
 
     /// Resolve a UCI move string against the legal move list.
     fn legal_move(pos: &Position, uci: &str) -> Move {
@@ -199,11 +196,11 @@ mod tests {
         let mv = legal_move(&pos, uci);
         let pins = Pins::new(&pos);
         assert!(
-            see_ge(&pos, mv, expected, &pins),
+            see_ge(&pos, mv, expected, &pins, &VALUES),
             "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",
         );
         assert!(
-            !see_ge(&pos, mv, expected + 1, &pins),
+            !see_ge(&pos, mv, expected + 1, &pins, &VALUES),
             "SEE({uci}) ≥ {} should fail (claimed value: {expected})\n  fen: {fen}",
             expected + 1,
         );

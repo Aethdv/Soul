@@ -49,11 +49,11 @@ use crate::{
     },
     engine::{
         eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, evaluate_psqt, extract_phase, lazy_eval_margin},
-        history::{self, ContContext, History, HistoryCaps},
+        history::{self, ContContext, History, HistoryParams},
         movegen::{gen_legal_moves, is_legal},
         movepicker::MovePicker,
         search_params::*,
-        see::see_ge,
+        see::{self, see_ge},
         tm::TimeManager,
         tt,
         tt::{TranspositionTable, TtData, TtMove},
@@ -198,8 +198,9 @@ pub struct SearchConfig {
     /// Each thread writes only its own slot, inside `check_signals`
     /// (every 2048 nodes), with a Relaxed store.
     pub node_slots: Arc<[AtomicU64]>,
-    pub mvvlva_v: [i32; 8], // victim values, indexed by PieceType
-    pub mvvlva_a: [i32; 8], // attacker penalties, indexed by PieceType
+    pub mvvlva_v: [i32; 8],   // victim values, indexed by PieceType
+    pub mvvlva_a: [i32; 8],   // attacker penalties, indexed by PieceType
+    pub see_values: [i32; 8], // exchange scale, indexed by PieceType
     /// `ln(i) · LMR_SCALE` lookup, indexed by depth or move count.
     /// Reduction composes as `base + table[d] · table[m] / div`, all in LMR_SCALE units.
     pub lmr_table: Box<[i16; MAX_PLY + 1]>,
@@ -281,6 +282,7 @@ impl SearchConfig {
         search_params: SearchParams,
     ) -> Self {
         let (mvvlva_v, mvvlva_a) = Self::build_mvvlva(&search_params);
+        let see_values = see::see_values(&search_params);
         let lmr_table = Self::build_lmr_table();
 
         Self {
@@ -295,6 +297,7 @@ impl SearchConfig {
             node_slots: Self::node_slots(1),
             mvvlva_v,
             mvvlva_a,
+            see_values,
             lmr_table,
         }
     }
@@ -407,7 +410,7 @@ impl<'cfg> Searcher<'cfg> {
     #[inline]
     pub fn iterative_deepening(&mut self, history: &mut History) {
         let sp = &self.cfg.search_params;
-        history.caps = HistoryCaps::from(sp);
+        history.params = HistoryParams::from(sp);
         self.nodes = 0;
 
         if self.cfg.display.go_pretty && self.cfg.limits.protocol == Protocol::Uci {
@@ -650,7 +653,7 @@ impl<'cfg> Searcher<'cfg> {
 
             let instability = 1.0 + f64::from(sp.bm_inst_scale) / 100.0 * bm_changes / self.cfg.threads as f64;
             self.tm.set_bm_inst_factor(instability);
-            bm_changes *= 0.5;
+            bm_changes *= f64::from(sp.bm_inst_decay) / 100.0;
 
             self.prev_pv = *self.root_moves[0].pv;
             self.prev_score = self.root_moves[0].score;
@@ -1154,7 +1157,7 @@ impl Worker<'_> {
         // qsearch as the filter, a reduced search only to confirm a pass.
         if !N::PV && !in_check && excluded.is_null() && depth >= sp.probcut_depth_min && !is_mate(beta) {
             let probcut_beta = beta + sp.probcut_margin;
-            let probcut_depth = (depth - 4).max(1);
+            let probcut_depth = (depth - sp.probcut_reduction).max(1);
 
             let stm = self.pos.stm;
             let opp = stm.opposite();
@@ -1172,7 +1175,7 @@ impl Worker<'_> {
 
                 // The capture must win enough material to plausibly reach the
                 // raised beta from here; a smaller swing can't clear it.
-                if !see_ge(&self.pos, mv, probcut_beta - static_eval, &pins) {
+                if !see_ge(&self.pos, mv, probcut_beta - static_eval, &pins, &searcher.cfg.see_values) {
                     continue;
                 }
 
@@ -1229,7 +1232,7 @@ impl Worker<'_> {
                 // Root moves are pre-sorted by the previous iteration's scores,
                 // so late moves in the list are already our worst guesses.
                 // Scout them at reduced depth; a fail-high triggers a full re-search.
-                let reduction = if depth >= 2 && i >= 1 && mv.is_quiet() && !in_check {
+                let reduction = if depth >= sp.lmr_min_depth && i >= 1 && mv.is_quiet() && !in_check {
                     searcher.cfg.lmr(depth, i + 1) / LMR_SCALE
                 } else {
                     0
@@ -1319,7 +1322,7 @@ impl Worker<'_> {
                     && mv.is_quiet()
                     && !N::PV
                     && depth <= sp.lmp_depth
-                    && res.move_count as i32 >= sp.lmp_base + depth * depth
+                    && res.move_count as i32 >= sp.lmp_base + sp.lmp_scale * depth * depth / 100
                 {
                     continue;
                 }
@@ -1371,7 +1374,7 @@ impl Worker<'_> {
                     let margin =
                         if mv.is_capture() { -sp.see_capture_margin * depth } else { -sp.see_quiet_margin * depth * depth };
 
-                    if !see_ge(&self.pos, mv, margin, &pins) {
+                    if !see_ge(&self.pos, mv, margin, &pins, &searcher.cfg.see_values) {
                         continue;
                     }
                 }
@@ -1379,7 +1382,7 @@ impl Worker<'_> {
                 // ── Late Move Reductions (~90 Elo)
                 // Moves late in the list are unlikely to beat alpha.
                 // Search them at reduced depth; re-search fully on surprise.
-                let reduction = if depth >= 2 && res.move_count >= 1 && mv.is_quiet() && !in_check {
+                let reduction = if depth >= sp.lmr_min_depth && res.move_count >= 1 && mv.is_quiet() && !in_check {
                     let mut r = searcher.cfg.lmr(depth, res.move_count + 1);
                     let pt = self.pos.expect_piece_at(mv.from());
                     let hist = self
@@ -1395,9 +1398,9 @@ impl Worker<'_> {
                     r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * sp.threat_lmr_bonus;
                     // Fail-highs are piling up at this depth; the late quiets here are
                     // unlikely to be the move, so reduce them harder.
-                    r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > 2) as i32;
+                    r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > sp.fhc_cutoff_min) as i32;
 
-                    r -= 128 * (ply as i32 - last_critical_ply as i32).min(8);
+                    r -= sp.critical_lmr_bonus * (ply as i32 - last_critical_ply as i32).min(sp.critical_lmr_cap);
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
                     (r - hist / sp.lmr_hist_div).clamp(0, max_r) / LMR_SCALE
@@ -1423,7 +1426,7 @@ impl Worker<'_> {
                     && !is_mate(tt_probe.score)
                 {
                     let sing_beta = (tt_probe.score - depth * sp.singext_margin).max(-MATE_BOUND);
-                    let sing_depth = (depth - 1) / 2;
+                    let sing_depth = (depth - 1) / sp.singext_depth_div;
 
                     // The verification recurses at this same ply and stomps the quiet
                     // and capture lists this node is still building for its own history
@@ -1947,7 +1950,7 @@ impl Worker<'_> {
             // Skip captures whose destination-square trade loses material
             // for us. Disabled in check because evasions are forced and
             // the only legal reply is often a losing defensive capture.
-            if !in_check && !see_ge(&self.pos, mv, 0, &pins) {
+            if !in_check && !see_ge(&self.pos, mv, sp.qs_see_margin, &pins, &searcher.cfg.see_values) {
                 continue;
             }
 
@@ -2069,22 +2072,60 @@ mod tests {
     use super::*;
     use crate::core::board::STARTPOS;
 
+    const REACH_FENS: [&str; 2] = [
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    ];
+    const REACH_DEPTHS: [i32; 2] = [10, 14];
+    const REACH_HASH_MB: usize = 1;
+
+    const NO_WITNESS: [(&str, &str); 2] = [
+        ("nmp_eval_max", "the cap only binds above rfp_depth, deeper than this runs"),
+        ("hist_prune_depth", "inert above depth 2 at the default margin"),
+    ];
+
+    fn reach_nodes(params: SearchParams, depth: i32) -> u64 {
+        let limits = Limits { depth, silent: true, protocol: Protocol::Uci, ..Default::default() };
+        let cfg = SearchConfig::new(limits, Instant::now(), Arc::new(AtomicBool::new(false)), 0, params);
+        let tt = Arc::new(TranspositionTable::new(REACH_HASH_MB, 1));
+        tt.set_age_factor(params.tt_age_factor);
+        let mut history = History::new();
+        let mut total = 0;
+
+        // One generation apart, or tt_age_factor has no distance to discount.
+        for fen in REACH_FENS {
+            let board = Position::from_fen(fen);
+            for _ in 0..2 {
+                tt.begin_search();
+                let mut s = Searcher::new(&cfg, &board, &[board.hash], tt.clone());
+                s.iterative_deepening(&mut history);
+                total += s.nodes;
+            }
+        }
+        total
+    }
+
     /// Bench can't catch this: one param vector, nothing to differentiate. The tuner
     /// ran blind for the engine's life because every searcher read one global, so
     /// distinct candidates searched identically and scored noise.
     #[test]
-    fn params_reach_search() {
-        let run = |params| {
-            let board = Position::from_fen(STARTPOS);
-            let limits = Limits { depth: 8, silent: true, protocol: Protocol::Uci, ..Default::default() };
-            let cfg = SearchConfig::new(limits, Instant::now(), Arc::new(AtomicBool::new(false)), 0, params);
-            let mut s = Searcher::new(&cfg, &board, &[board.hash], Arc::new(TranspositionTable::new(16, 1)));
-            s.iterative_deepening(&mut History::new());
-            s.nodes
-        };
+    fn every_tunable_reaches_search() {
+        let baselines = REACH_DEPTHS.map(|d| reach_nodes(SearchParams::default(), d));
 
-        let tweaked = SearchParams { lmr_base: 0, lmr_divisor: 350, rfp_margin: 400, ..SearchParams::default() };
-        assert_ne!(run(SearchParams::default()), run(tweaked), "params didn't reach search");
+        for def in crate::engine::search_params::tunable_param_defs() {
+            if NO_WITNESS.iter().any(|(name, _)| *name == def.name) {
+                continue;
+            }
+
+            let moved = REACH_DEPTHS.iter().zip(baselines).any(|(&depth, baseline)| {
+                [def.min as i32, def.max as i32].into_iter().any(|v| {
+                    let mut params = SearchParams::default();
+                    assert!(params.set(def.name, v));
+                    reach_nodes(params, depth) != baseline
+                })
+            });
+            assert!(moved, "{} does not reach the search at either bound", def.name);
+        }
     }
 
     /// A `stop` landing before the first iteration ends: `bestmove` still has to

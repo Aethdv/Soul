@@ -27,7 +27,7 @@ use crate::{
         eval::detailed_eval,
         history::History,
         search::{Limits, SearchConfig, SearchDisplay, Searcher},
-        search_params::SearchParams,
+        search_params::{self, SearchParams},
         tt::TranspositionTable,
     },
     numa::NumaTopology,
@@ -81,6 +81,7 @@ pub struct UciState {
     threads: usize,
     hash_size: usize,
     overhead: u64,
+    search_params: SearchParams,
     show_wdl: bool,
     go_pretty: bool,
     pretty_print: bool,
@@ -147,6 +148,7 @@ impl UciState {
             threads: 1,
             hash_size: 16,
             overhead: 10,
+            search_params: SearchParams::default(),
             show_wdl: false,
             go_pretty: false,
             pretty_print: false,
@@ -252,8 +254,8 @@ pub fn run_cli_go(args: &[String]) {
 /// Returns as soon as it is sent; waiting for the result is the caller's business.
 fn dispatch_search(state: &UciState, limits: Limits) {
     let display = state.search_display();
-    let mut cfg =
-        SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, display, SearchParams::default());
+    state.tt.set_age_factor(state.search_params.tt_age_factor);
+    let mut cfg = SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, display, state.search_params);
     cfg.threads = state.threads;
     cfg.node_slots = SearchConfig::node_slots(state.threads);
 
@@ -352,6 +354,7 @@ pub fn print_help(use_ansi: bool) {
     #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
     h.command("spsa", "Print the tunable search params as an SPSA table");
+    h.command_args("spsa apply", "<REPORT> [--dry-run]", "Fold a finished tune's values into the defaults");
     #[cfg(feature = "datagen")]
     h.command("datagen", "Generate self-play training data");
     #[cfg(feature = "dataset")]
@@ -516,6 +519,7 @@ fn print_options() {
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
     println!("option name UCI_ShowCurrMove type check default true");
+    print!("{}", search_params::uci_options());
 }
 
 fn cmd_position<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
@@ -649,7 +653,12 @@ where I: Iterator<Item = &'a str> {
                 state.smp_pool = LazySmpPool::new(n, state.tt.clone());
             }
         },
-        _ => {},
+
+        _ => {
+            if let Ok(v) = value.parse::<i32>() {
+                state.search_params.set(&name, v);
+            }
+        },
     }
 }
 

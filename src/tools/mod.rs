@@ -8,3 +8,4 @@ pub mod bench;
 #[cfg(feature = "rigs")] pub mod measure;
 pub mod perft;
 #[cfg(feature = "rigs")] pub mod speedtest;
+pub mod spsa;
