@@ -478,7 +478,7 @@ impl<'cfg> Searcher<'cfg> {
         // Only one legal move. Slash the budget to 5% so we exit the depth
         // loop almost instantly, banking the saved time.
         if self.root_moves.len() == 1 {
-            self.tm.set_bm_stab_factor(sp.tm_single_root as f64 / 100.0);
+            self.tm.scale_base_soft(f64::from(sp.tm_single_root) / 100.0);
         }
 
         // ── Lazy SMP
@@ -611,7 +611,7 @@ impl<'cfg> Searcher<'cfg> {
             //
             // Gated below bm_stab_depth: early iterations haven't
             // accumulated enough node signal for the ratio to be meaningful.
-            if depth >= sp.bm_stab_depth {
+            if depth >= sp.bm_stab_depth && self.root_moves.len() > 1 {
                 let best_nodes = self.root_moves[0].nodes;
                 let total_nodes = self.nodes.max(1);
                 let effort_discount = sp.bm_stab_scale as u64 * best_nodes / total_nodes;

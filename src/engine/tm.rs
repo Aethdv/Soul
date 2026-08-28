@@ -63,6 +63,12 @@ impl TimeManager {
     pub fn elapsed(&self) -> Duration { self.start.elapsed() }
 
     #[inline]
+    pub fn scale_base_soft(&mut self, factor: f64) {
+        self.base_soft = self.base_soft.mul_f64(factor);
+        self.recompute_soft();
+    }
+
+    #[inline]
     pub fn set_bm_stab_factor(&mut self, factor: f64) {
         self.bm_stab = factor;
         self.recompute_soft();
@@ -177,3 +183,25 @@ fn compute_budget(
 // The 1 ms floor keeps a zero-length window off the search, which would abort on entry.
 #[inline]
 fn with_overhead(ms: u64, overhead: u64) -> Duration { Duration::from_millis(ms.saturating_sub(overhead).max(1)) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_forced_move_discount_outlives_the_iteration_factors() {
+        let params = SearchParams::default();
+        let limits = Limits { wtime: 8000, btime: 8000, winc: 80, binc: 80, ..Default::default() };
+        let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE, 0, &params);
+        let undiscounted = tm.soft_limit();
+
+        tm.scale_base_soft(f64::from(params.tm_single_root) / 100.0);
+        let discounted = tm.soft_limit();
+        assert!(discounted < undiscounted, "{discounted:?} is not a discount on {undiscounted:?}");
+
+        tm.set_bm_stab_factor(0.56);
+        tm.set_bm_inst_factor(1.0);
+        tm.set_score_factor(1.0);
+        assert!(tm.soft_limit() <= discounted, "the iteration factors restored {:?}", tm.soft_limit());
+    }
+}
