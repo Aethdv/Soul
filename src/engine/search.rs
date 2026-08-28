@@ -471,7 +471,7 @@ impl<'cfg> Searcher<'cfg> {
             is_nmp_verif: false,
         };
 
-        let mut last_iter_elapsed = 0;
+        let mut last_iter_elapsed = self.tm.elapsed();
         let mut bm_changes = 0.0;
 
         // ── Singular Bailout
@@ -489,8 +489,16 @@ impl<'cfg> Searcher<'cfg> {
         // long as main is still running.
         for depth in 1..=depth_limit {
             self.iter_depth = depth;
-            let elapsed = self.tm.elapsed().as_millis() as u64;
+            let elapsed = self.tm.elapsed();
             let prev_depth_time = elapsed.saturating_sub(last_iter_elapsed);
+
+            // A geometric series approaches its terms' growth rate, so the ratio of two
+            // running totals estimates the per-iteration one.
+            let growth = (elapsed.as_secs_f64() / last_iter_elapsed.as_secs_f64())
+                .max(f64::from(sp.tm_bf_min) / 100.0)
+                .min(f64::from(sp.tm_bf_max) / 100.0);
+            let est_next = prev_depth_time.mul_f64(growth);
+
             last_iter_elapsed = elapsed;
 
             // A fixed movetime has no later move to bank unspent budget for,
@@ -501,17 +509,11 @@ impl<'cfg> Searcher<'cfg> {
             // Bail if soft limits say we probably
             // can't finish the next depth in time.
             //
-            // prev_depth_time · 2 is a rough branching-factor proxy;
-            // each additional ply typically costs about twice the previous one,
-            // so if we can't afford that estimate we stop before starting it.
-            //
             // Helpers skip time management as their job is to fill the TT,
             // not decide when to stop. Main calls the shots.
             if self.cfg.thread_id == 0
                 && depth > 1
-                && ((clocked
-                    && (elapsed >= self.tm.soft_limit().as_millis() as u64
-                        || elapsed + (prev_depth_time * sp.tm_iter_scale as u64 / 100) > self.tm.hard_limit().as_millis() as u64))
+                && ((clocked && (elapsed >= self.tm.soft_limit() || elapsed + est_next > self.tm.hard_limit()))
                     || (self.cfg.limits.softnodes > 0 && self.nodes >= self.cfg.limits.softnodes))
             {
                 break;
@@ -2079,9 +2081,11 @@ mod tests {
     const REACH_DEPTHS: [i32; 2] = [10, 14];
     const REACH_HASH_MB: usize = 1;
 
-    const NO_WITNESS: [(&str, &str); 2] = [
+    const NO_WITNESS: [(&str, &str); 4] = [
         ("nmp_eval_max", "the cap only binds above rfp_depth, deeper than this runs"),
         ("hist_prune_depth", "inert above depth 2 at the default margin"),
+        ("tm_bf_min", "the harness runs to a fixed depth off the clock, so no time guard binds"),
+        ("tm_bf_max", "the harness runs to a fixed depth off the clock, so no time guard binds"),
     ];
 
     fn reach_nodes(params: SearchParams, depth: i32) -> u64 {

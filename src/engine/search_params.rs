@@ -183,7 +183,8 @@ search_params! {
 
         NT(mtg_opening,      80),
         NT(mtg_endgame,      40),
-        NT(tm_iter_scale,   200),
+        T (tm_bf_min,       150, 100, 250),
+        T (tm_bf_max,       300, 200, 500),
         NT(tm_single_root,    5),
 
         //  TM budget, values ·100 (tm_sd_ramp ·1000)
