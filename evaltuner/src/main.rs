@@ -506,7 +506,7 @@ fn print_help() {
     h.separator();
 
     h.header("Examples");
-    h.example("evaltune material data/big3.txt data/viriformat-3419.vf");
-    h.example("evaltune score -p evaltune_checkpoint.json data/big3.txt");
-    h.example("evaltune profile --sample 400000 data/omni-wahver-0.vf");
+    h.example("./eval material <data1> <data2>");
+    h.example("./eval score -p evaltune_checkpoint.json <data>");
+    h.example("./eval profile --sample 400000 <data>");
 }
