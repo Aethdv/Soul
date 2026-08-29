@@ -369,7 +369,10 @@ impl TranspositionTable {
             }
         }
 
-        if existing.is_some_and(|packed| stored_outranks(packed, depth, pv, bound, cur_age, age_factor)) {
+        if existing.is_some_and(|packed| stored_outranks(packed, depth, pv, bound, cur_age)) {
+            if !mv.is_null() {
+                cluster.slots[victim].mv.store(mv.inner(), Ordering::Relaxed);
+            }
             return;
         }
 
@@ -377,9 +380,9 @@ impl TranspositionTable {
         let mut store_pv = pv as u8;
 
         if mv.is_null() && existing.is_some() {
-            let existing = &cluster.slots[victim];
-            store_mv = existing.mv.load(Ordering::Relaxed);
-            store_pv |= packed_pv(existing.packed.load(Ordering::Relaxed));
+            let slot = &cluster.slots[victim];
+            store_mv = slot.mv.load(Ordering::Relaxed);
+            store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
         }
 
         cluster.slots[victim].store(SlotWrite {
@@ -425,7 +428,10 @@ impl TranspositionTable {
         }
 
         if let Some(victim) = victim {
-            if existing.is_some_and(|packed| stored_outranks(packed, 0, pv, bound, cur_age, age_factor)) {
+            if existing.is_some_and(|packed| stored_outranks(packed, 0, pv, bound, cur_age)) {
+                if !mv.is_null() {
+                    cluster.slots[victim].mv.store(mv.inner(), Ordering::Relaxed);
+                }
                 return;
             }
 
@@ -467,8 +473,10 @@ impl TranspositionTable {
 /// Whether the entry already stored beats a revisit of the same position.
 /// An exact bound is the position's value rather than a window artifact.
 #[inline(always)]
-fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8, age_factor: i32) -> bool {
-    bound != Bound::Exact && replacement_quality(packed, cur_age, age_factor) >= depth + 2 * i32::from(pv) + DEPTH_SLACK
+fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8) -> bool {
+    bound != Bound::Exact
+        && packed_age(packed) == cur_age
+        && i32::from(packed_depth(packed)) >= depth + 2 * i32::from(pv) + DEPTH_SLACK
 }
 
 /// How readily a slot gives way: its depth, discounted by how many generations
