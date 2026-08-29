@@ -10,7 +10,7 @@ use crate::core::{
     defs::{Bitboard, Color, PieceType, Square},
 };
 #[cfg(not(target_feature = "avx512vpopcntdq"))]
-use crate::weave::Vu64x4;
+use crate::weave::U64x4;
 
 impl XorBoard {
     /// Every square `color` attacks. Wider than `Position::threats`, whose fill
@@ -93,7 +93,7 @@ impl XorBoard {
                 let mut acc = _mm256_setzero_si256();
                 for group in 0..4 {
                     let rows = _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast());
-                    acc = _mm256_add_epi64(acc, Vu64x4(_mm256_and_si256(rows, mask)).popcount().0);
+                    acc = _mm256_add_epi64(acc, U64x4(_mm256_and_si256(rows, mask)).popcount().0);
                 }
 
                 let folded = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));

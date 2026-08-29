@@ -36,7 +36,7 @@ use crate::{
         smp::{LazySmpPool, table_and_pool},
     },
     tools,
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 static LICENSE_NOTICE: &str = concat!(
@@ -64,7 +64,7 @@ enum SearchCommand {
 
 pub struct UciState {
     board: Position,
-    accumulator: Vi16x8,
+    accumulator: I16x8,
     history: Vec<u64>,
     /// The move-ordering heuristic tables, carried across positions within a game
     /// and reset by `ucinewgame`.

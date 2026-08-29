@@ -33,7 +33,7 @@ use crate::{
         notation::parse_uci_move,
         smp::{LazySmpPool, table_and_pool},
     },
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -45,7 +45,7 @@ enum Mode {
 
 struct XBoardState {
     board: Position,
-    accumulator: Vi16x8,
+    accumulator: I16x8,
     history: Vec<u64>,
     persistent_history: Arc<Mutex<History>>,
     tt: Arc<TranspositionTable>,

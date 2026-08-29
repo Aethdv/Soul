@@ -1,7 +1,7 @@
 //! Zobrist hashing: incremental 64-bit position signatures, invented by
 //! Albert Zobrist in 1970.
 //!
-//! Every feature a position can carry, a white pawn on e4, an en passant target
+//! Every feature of a position, a white pawn on e4, an en passant target
 //! on e6, the castling rights as a whole, gets its own random 64-bit key, drawn
 //! once at compile time. A position's hash is the XOR of the keys for every
 //! feature it currently has.

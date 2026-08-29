@@ -28,7 +28,7 @@ use crate::{
         tt::TranspositionTable,
     },
     tools::dataset::flip_score,
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 /// One finished game, in the shape viriformat stores.
@@ -47,7 +47,7 @@ pub struct Game {
 /// and applies adjudication heuristics.
 pub struct WorkerState {
     pub board: Position,
-    pub accumulator: Vi16x8,
+    pub accumulator: I16x8,
     /// Position hashes fed to the searcher (in-search repetition detection).
     pub search_history: Vec<u64>,
     /// Full game hash trail (threefold repetition detection).

@@ -18,7 +18,7 @@ use crate::{
         moves::Move,
         psqt, zobrist,
     },
-    weave::{Vi16x8, Vu64x4},
+    weave::{I16x8, U64x4},
 };
 
 pub mod attacks;
@@ -228,7 +228,7 @@ impl Position {
 
     /// Apply `mv` to the position. Returns the undo packet needed by `unmake_move`.
     #[inline]
-    pub fn make_move(&mut self, mv: Move, acc: &mut Vi16x8) -> StateInfo { make::make_move(self, mv, acc) }
+    pub fn make_move(&mut self, mv: Move, acc: &mut I16x8) -> StateInfo { make::make_move(self, mv, acc) }
 
     #[inline]
     pub fn unmake_move(&mut self, mv: Move, info: &StateInfo) { make::unmake_move(self, mv, info); }
@@ -279,13 +279,13 @@ impl Position {
     /// Must be called before the move is applied to the board:
     /// it reads the current piece layout to determine what changed.
     #[inline(always)]
-    pub fn update_accumulator(&self, acc: &mut Vi16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
+    pub fn update_accumulator(&self, acc: &mut I16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
         make::update_accumulator(self, acc, mv, pt, captured, placed);
     }
 
     /// Once at position setup; `make_move` and `unmake_move` keep it current after that.
-    pub fn initial_accumulator(&self) -> Vi16x8 {
-        let mut acc = Vi16x8::splat(0);
+    pub fn initial_accumulator(&self) -> I16x8 {
+        let mut acc = I16x8::splat(0);
         for sq in self.occ {
             // MG/EG lanes are i16 and won't overflow at realistic piece values
             acc += psqt::entry(self.piece_at(sq), sq, self.color_at(sq));
@@ -547,15 +547,15 @@ impl Position {
     #[inline]
     pub fn threats(&self, color: Color) -> Bitboard {
         let us = self.side_bb[color];
-        let empty = Vu64x4::splat(!self.occ.0);
+        let empty = U64x4::splat(!self.occ.0);
 
         let knights = (self.role_bb[PieceType::Knight] & us).0;
         let bq = ((self.role_bb[PieceType::Bishop] | self.role_bb[PieceType::Queen]) & us).0;
         let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
         let king = (self.role_bb[PieceType::King] & us).0;
 
-        let sliders = spatial::atk_rook(Vu64x4::splat(rq), empty) | spatial::atk_bishop(Vu64x4::splat(bq), empty);
-        let leapers = spatial::atk_knight(Vu64x4::splat(knights)) | spatial::atk_king(Vu64x4::splat(king));
+        let sliders = spatial::atk_rook(U64x4::splat(rq), empty) | spatial::atk_bishop(U64x4::splat(bq), empty);
+        let leapers = spatial::atk_knight(U64x4::splat(knights)) | spatial::atk_king(U64x4::splat(king));
         Bitboard((sliders | leapers).extract::<0>()) | self.pawn_attacks(color)
     }
 

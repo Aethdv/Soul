@@ -10,7 +10,7 @@ pub const HEADER: &str = LILAC_PEN;
 pub const ARG: &str = CORAL_PEN;
 /// Command and flag names: neutral and bright, since this is the text you type.
 pub const CMD: &str = IVORY_PEN;
-/// Descriptions, cooled so the names carry the scan.
+/// Descriptions, cooled so the names read first.
 pub const DESC: &str = HAZE_PEN;
 /// The dash between a name and its description.
 pub const RULE: &str = ASH_PEN;

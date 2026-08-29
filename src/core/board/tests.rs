@@ -666,7 +666,7 @@ fn perft_suite() {
     }
 }
 
-fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x8) -> u64 {
+fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::I16x8) -> u64 {
     if depth == 0 {
         return 1;
     }

@@ -18,7 +18,7 @@ use crate::{
         mobility::{KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, compute_openness_raw},
         term::{self, TermSource},
     },
-    weave::Vf64x4,
+    weave::F64x4,
 };
 
 /// Packed 104-byte training position representation.
@@ -391,7 +391,7 @@ impl TermSource<MobilityTerm> for FeatureRecord {
     #[inline(always)]
     fn extract(&self) -> MobilityInput {
         MobilityInput {
-            diff: Vf64x4::from([
+            diff: F64x4::from([
                 f64::from(self.mobility_diff[0]),
                 f64::from(self.mobility_diff[1]),
                 f64::from(self.mobility_diff[2]),

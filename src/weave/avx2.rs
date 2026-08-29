@@ -1,7 +1,7 @@
 //! AVX2 (256-bit) SIMD intrinsics wrapper.
 //!
-//! Provides safely typed wrappers around `__m256i` for parallel bitboard and
-//! accumulator operations.
+//! Provides safely typed wrappers around `__m256i` for parallel bitboard
+//! and accumulator operations.
 //!
 //! # Safety
 //! Builds without `target_feature = "avx2"` are rejected at compile time by
@@ -10,27 +10,24 @@
 
 use core::{
     arch::x86_64::*,
-    ops::{
-        Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign, Mul, MulAssign, Neg, Not,
-        Sub, SubAssign,
-    },
+    ops::{Neg, Not},
 };
 
 use super::*;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vu64x4(pub __m256i);
+pub struct U64x4(pub __m256i);
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vi16x16(pub __m256i);
+pub struct I16x16(pub __m256i);
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vi32x8(pub __m256i);
+pub struct I32x8(pub __m256i);
 
-impl Vi32x8 {
+impl I32x8 {
     #[inline(always)]
     pub fn zero() -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
@@ -41,10 +38,10 @@ impl Vi32x8 {
     pub fn from_raw(v: __m256i) -> Self { Self(v) }
 
     #[inline(always)]
-    pub fn as_u64x4(self) -> Vu64x4 { Vu64x4(self.0) }
+    pub fn as_u64x4(self) -> U64x4 { U64x4(self.0) }
 
     #[inline(always)]
-    pub fn as_i16x16(self) -> Vi16x16 { Vi16x16(self.0) }
+    pub fn as_i16x16(self) -> I16x16 { I16x16(self.0) }
 
     /// Horizontal sum to scalar i32.
     #[inline]
@@ -64,16 +61,7 @@ impl Vi32x8 {
     }
 }
 
-impl Add for Vi32x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_add_epi32(self.0, rhs.0) })
-    }
-}
-
-impl Vu64x4 {
+impl U64x4 {
     #[inline(always)]
     pub fn zero() -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
@@ -132,23 +120,23 @@ impl Vu64x4 {
     }
 
     #[inline(always)]
-    pub fn cmp_eq(self, rhs: Self) -> VMask {
+    pub fn cmp_eq(self, rhs: Self) -> Mask {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
-        VMask(unsafe { _mm256_cmpeq_epi64(self.0, rhs.0) })
+        Mask(unsafe { _mm256_cmpeq_epi64(self.0, rhs.0) })
     }
 
     #[inline(always)]
-    pub fn cmp_gt(self, rhs: Self) -> VMask {
+    pub fn cmp_gt(self, rhs: Self) -> Mask {
         // Bias both comparisons to make signed comparison behave like unsigned
         let bias = Self::splat(0x8000_0000_0000_0000);
         let a = self ^ bias;
         let b = rhs ^ bias;
         // SAFETY: AVX2 available per mod.rs compile_error gate.
-        VMask(unsafe { _mm256_cmpgt_epi64(a.0, b.0) })
+        Mask(unsafe { _mm256_cmpgt_epi64(a.0, b.0) })
     }
 
     /// Vertical popcount: PSHUFB nibble LUT + SAD trick.
-    /// Returns a Vu64x4 where each lane holds the popcount of the corresponding input lane.
+    /// Returns a U64x4 where each lane holds the popcount of the corresponding input lane.
     #[rustfmt::skip]
     #[inline]
     pub fn popcount(self) -> Self {
@@ -181,79 +169,19 @@ impl Vu64x4 {
     }
 
     #[inline(always)]
-    pub fn as_i16x16(self) -> Vi16x16 { Vi16x16(self.0) }
+    pub fn as_i16x16(self) -> I16x16 { I16x16(self.0) }
 
     #[inline(always)]
-    pub fn as_i32x8(self) -> Vi32x8 { Vi32x8(self.0) }
+    pub fn as_i32x8(self) -> I32x8 { I32x8(self.0) }
 }
 
-impl Add for Vu64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_add_epi64(self.0, rhs.0) })
-    }
-}
-
-impl Sub for Vu64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_sub_epi64(self.0, rhs.0) })
-    }
-}
-
-impl BitAnd for Vu64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
-    }
-}
-
-impl BitAndAssign for Vu64x4 {
-    #[inline(always)]
-    fn bitand_assign(&mut self, rhs: Self) { *self = *self & rhs; }
-}
-
-impl BitOr for Vu64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
-    }
-}
-
-impl BitOrAssign for Vu64x4 {
-    #[inline(always)]
-    fn bitor_assign(&mut self, rhs: Self) { *self = *self | rhs; }
-}
-
-impl BitXor for Vu64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
-    }
-}
-
-impl BitXorAssign for Vu64x4 {
-    #[inline(always)]
-    fn bitxor_assign(&mut self, rhs: Self) { *self = *self ^ rhs; }
-}
-
-impl Not for Vu64x4 {
+impl Not for U64x4 {
     type Output = Self;
     #[inline(always)]
     fn not(self) -> Self { self ^ Self::ones() }
 }
 
-impl Vi16x16 {
+impl I16x16 {
     #[inline(always)]
     pub fn zero() -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
@@ -319,9 +247,9 @@ impl Vi16x16 {
 
     /// Horizontal pairwise add of i16 products, producing i32 lanes.
     #[inline(always)]
-    pub fn madd(self, rhs: Self) -> Vi32x8 {
+    pub fn madd(self, rhs: Self) -> I32x8 {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Vi32x8(unsafe { _mm256_madd_epi16(self.0, rhs.0) })
+        I32x8(unsafe { _mm256_madd_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
@@ -331,64 +259,19 @@ impl Vi16x16 {
     }
 
     #[inline(always)]
-    pub fn blend(self, rhs: Self, mask: VMask) -> Self {
+    pub fn blend(self, rhs: Self, mask: Mask) -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         Self(unsafe { _mm256_blendv_epi8(self.0, rhs.0, mask.0) })
     }
 
     #[inline(always)]
-    pub fn as_u64x4(self) -> Vu64x4 { Vu64x4(self.0) }
+    pub fn as_u64x4(self) -> U64x4 { U64x4(self.0) }
 
     #[inline(always)]
-    pub fn as_i32x8(self) -> Vi32x8 { Vi32x8(self.0) }
+    pub fn as_i32x8(self) -> I32x8 { I32x8(self.0) }
 }
 
-impl Add for Vi16x16 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_add_epi16(self.0, rhs.0) })
-    }
-}
-
-impl Sub for Vi16x16 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_sub_epi16(self.0, rhs.0) })
-    }
-}
-
-impl BitAnd for Vi16x16 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
-    }
-}
-
-impl BitOr for Vi16x16 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
-    }
-}
-
-impl BitXor for Vi16x16 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
-    }
-}
-
-impl Not for Vi16x16 {
+impl Not for I16x16 {
     type Output = Self;
     #[inline(always)]
     fn not(self) -> Self { self ^ Self::splat(-1) }
@@ -396,9 +279,9 @@ impl Not for Vi16x16 {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vf32x8(pub __m256);
+pub struct F32x8(pub __m256);
 
-impl Vf32x8 {
+impl F32x8 {
     #[inline(always)]
     pub fn zero() -> Self { Self(unsafe { _mm256_setzero_ps() }) }
 
@@ -420,66 +303,22 @@ impl Vf32x8 {
     pub unsafe fn storeu(self, ptr: *mut f32) { unsafe { _mm256_storeu_ps(ptr, self.0) }; }
 }
 
-impl Add for Vf32x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_ps(self.0, rhs.0) }) }
-}
-
-impl AddAssign for Vf32x8 {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
-}
-
-impl Sub for Vf32x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_ps(self.0, rhs.0) }) }
-}
-
-impl SubAssign for Vf32x8 {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
-}
-
-impl Mul for Vf32x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm256_mul_ps(self.0, rhs.0) }) }
-}
-
-impl MulAssign for Vf32x8 {
-    #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
-}
-
-impl Div for Vf32x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm256_div_ps(self.0, rhs.0) }) }
-}
-
-impl DivAssign for Vf32x8 {
-    #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
-}
-
-impl Neg for Vf32x8 {
+impl Neg for F32x8 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self { Self(unsafe { _mm256_sub_ps(_mm256_setzero_ps(), self.0) }) }
 }
 
-impl From<[f32; 8]> for Vf32x8 {
+impl From<[f32; 8]> for F32x8 {
     #[inline(always)]
     fn from(arr: [f32; 8]) -> Self { unsafe { Self::loadu(arr.as_ptr()) } }
 }
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vf64x4(pub __m256d);
+pub struct F64x4(pub __m256d);
 
-impl Vf64x4 {
+impl F64x4 {
     #[inline(always)]
     pub fn zero() -> Self { Self(unsafe { _mm256_setzero_pd() }) }
 
@@ -501,66 +340,76 @@ impl Vf64x4 {
     pub unsafe fn storeu(self, ptr: *mut f64) { unsafe { _mm256_storeu_pd(ptr, self.0) }; }
 }
 
-impl Add for Vf64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm256_add_pd(self.0, rhs.0) }) }
-}
-
-impl AddAssign for Vf64x4 {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
-}
-
-impl Sub for Vf64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm256_sub_pd(self.0, rhs.0) }) }
-}
-
-impl SubAssign for Vf64x4 {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
-}
-
-impl Mul for Vf64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm256_mul_pd(self.0, rhs.0) }) }
-}
-
-impl MulAssign for Vf64x4 {
-    #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
-}
-
-impl Div for Vf64x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm256_div_pd(self.0, rhs.0) }) }
-}
-
-impl DivAssign for Vf64x4 {
-    #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
-}
-
-impl Neg for Vf64x4 {
+impl Neg for F64x4 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self { Self(unsafe { _mm256_sub_pd(_mm256_setzero_pd(), self.0) }) }
 }
 
-impl From<[f64; 4]> for Vf64x4 {
+impl From<[f64; 4]> for F64x4 {
     #[inline(always)]
     fn from(arr: [f64; 4]) -> Self { unsafe { Self::loadu(arr.as_ptr()) } }
 }
 
-impl From<Vf64x4> for [f64; 4] {
+impl From<F64x4> for [f64; 4] {
     #[inline(always)]
-    fn from(v: Vf64x4) -> Self {
+    fn from(v: F64x4) -> Self {
         let mut arr = [0.0; 4];
         unsafe { v.storeu(arr.as_mut_ptr()) };
         arr
     }
+}
+
+binops! { I32x8:
+    Add add _mm256_add_epi32,
+}
+
+binops! { U64x4:
+    Add     add     _mm256_add_epi64,
+    Sub     sub     _mm256_sub_epi64,
+    BitAnd  bitand  _mm256_and_si256,
+    BitOr   bitor   _mm256_or_si256,
+    BitXor  bitxor  _mm256_xor_si256,
+}
+
+assign_ops! { U64x4:
+    BitAndAssign bitand_assign  &,
+    BitOrAssign  bitor_assign   |,
+    BitXorAssign bitxor_assign  ^,
+}
+
+binops! { I16x16:
+    Add    add      _mm256_add_epi16,
+    Sub    sub      _mm256_sub_epi16,
+    BitAnd bitand   _mm256_and_si256,
+    BitOr  bitor    _mm256_or_si256,
+    BitXor bitxor   _mm256_xor_si256,
+}
+
+binops! { F32x8:
+    Add add   _mm256_add_ps,
+    Sub sub   _mm256_sub_ps,
+    Mul mul   _mm256_mul_ps,
+    Div div   _mm256_div_ps,
+}
+
+assign_ops! { F32x8:
+    AddAssign add_assign    +,
+    SubAssign sub_assign    -,
+    MulAssign mul_assign    *,
+    DivAssign div_assign    /,
+}
+
+binops! { F64x4:
+    Add add   _mm256_add_pd,
+    Sub sub   _mm256_sub_pd,
+    Mul mul   _mm256_mul_pd,
+    Div div   _mm256_div_pd,
+}
+
+assign_ops! { F64x4:
+    AddAssign add_assign    +,
+    SubAssign sub_assign    -,
+    MulAssign mul_assign    *,
+    DivAssign div_assign    /,
 }

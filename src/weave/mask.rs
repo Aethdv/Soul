@@ -1,17 +1,14 @@
 //! SIMD predication masks for branchless operations.
 
-use core::{
-    arch::x86_64::*,
-    ops::{BitAnd, BitOr, BitXor, Not},
-};
+use core::{arch::x86_64::*, ops::Not};
 
 use super::*;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct VMask(pub __m256i);
+pub struct Mask(pub __m256i);
 
-impl VMask {
+impl Mask {
     #[inline(always)]
     pub fn all_true() -> Self {
         // SAFETY: Pure SIMD arithmetic intrinsics. Hardware support guaranteed by target features.
@@ -43,9 +40,9 @@ impl VMask {
 
     /// Branchless select; mask ? a : b
     #[inline(always)]
-    pub fn select(self, a: Vu64x4, b: Vu64x4) -> Vu64x4 {
+    pub fn select(self, a: U64x4, b: U64x4) -> U64x4 {
         // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
-        Vu64x4(unsafe { _mm256_blendv_epi8(b.0, a.0, self.0) })
+        U64x4(unsafe { _mm256_blendv_epi8(b.0, a.0, self.0) })
     }
 
     #[inline(always)]
@@ -55,35 +52,14 @@ impl VMask {
     }
 }
 
-impl BitAnd for VMask {
-    type Output = Self;
-    #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
-        Self(unsafe { _mm256_and_si256(self.0, rhs.0) })
-    }
-}
-
-impl BitOr for VMask {
-    type Output = Self;
-    #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
-        Self(unsafe { _mm256_or_si256(self.0, rhs.0) })
-    }
-}
-
-impl Not for VMask {
+impl Not for Mask {
     type Output = Self;
     #[inline(always)]
     fn not(self) -> Self { self ^ Self::all_true() }
 }
 
-impl BitXor for VMask {
-    type Output = Self;
-    #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self {
-        // SAFETY: Pure SIMD arithmetic intrinsic. Hardware support guaranteed by target features.
-        Self(unsafe { _mm256_xor_si256(self.0, rhs.0) })
-    }
+binops! { Mask:
+    BitAnd bitand   _mm256_and_si256,
+    BitOr  bitor    _mm256_or_si256,
+    BitXor bitxor   _mm256_xor_si256,
 }

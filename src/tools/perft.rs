@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use crate::{core::board::Position, engine::movegen::gen_legal_moves, weave::Vi16x8};
+use crate::{core::board::Position, engine::movegen::gen_legal_moves, weave::I16x8};
 
 pub fn run(board: &Position, depth: u8, divide: bool) {
     // Nothing to divide at depth zero, and the loop below would step depth past it.
@@ -50,7 +50,7 @@ pub fn run(board: &Position, depth: u8, divide: bool) {
     io::stdout().flush().ok();
 }
 
-pub fn perft(board: &mut Position, depth: u8, acc: &mut Vi16x8) -> u64 {
+pub fn perft(board: &mut Position, depth: u8, acc: &mut I16x8) -> u64 {
     if depth == 0 {
         return 1;
     }

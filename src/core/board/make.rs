@@ -7,13 +7,13 @@ use crate::{
         moves::Move,
         psqt, zobrist,
     },
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 /// Applies a move to the position, incrementally maintaining the Zobrist hash
 /// and accumulator. Returns a [`StateInfo`] snapshot for perfect rollback.
 #[inline(always)]
-pub fn make_move(pos: &mut Position, mv: Move, acc: &mut Vi16x8) -> StateInfo {
+pub fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
     let stm = pos.stm;
     let opp = stm.opposite();
     let from = mv.from();
@@ -124,7 +124,7 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
 
 /// Incrementally updates the accumulator with PSQT vector deltas.
 #[inline]
-pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
+pub fn update_accumulator(pos: &Position, acc: &mut I16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
     let stm = pos.stm;
     let from = mv.from();
     let to = mv.to();

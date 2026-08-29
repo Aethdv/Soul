@@ -220,7 +220,7 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     let to = mv.to();
     // The captured pawn stands one rank behind the destination, and `^ 8` gets there
     // without knowing which way: an en passant destination is always on rank 3 or rank 6,
-    // and flipping the low rank bit walks each of those toward the pawn that just moved.
+    // and flipping the low rank bit turns each of those into the rank of the pawn that just moved.
     let cap_sq = Square(to.0 ^ 8);
 
     // An en passant capture answers a check only by taking the checker, which is then the

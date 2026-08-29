@@ -11,7 +11,7 @@ use crate::{
         EG_BISHOP, EG_KING, EG_KNIGHT, EG_MATERIAL, EG_PAWN, EG_QUEEN, EG_ROOK, MG_BISHOP, MG_KING, MG_KNIGHT, MG_MATERIAL,
         MG_PAWN, MG_QUEEN, MG_ROOK, PHASE,
     },
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 const _: () = assert!(mem::size_of::<[i16; 8]>().is_multiple_of(16), "SIMD accumulator must be 16-byte aligned");
@@ -28,7 +28,7 @@ pub struct AlignedTable(pub [[i16; 8]; 64]);
 
 /// PSQT vector for piece-square table lookup.
 #[inline(always)]
-pub fn entry(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
+pub fn entry(pt: PieceType, sq: Square, c: Color) -> I16x8 {
     let idx = usize::from(pt) + (usize::from(c) * 7);
     debug_assert!(idx < 14, "PSQT index out of bounds: {idx} >= 14");
     debug_assert!(usize::from(sq) < 64, "Square index out of bounds: {sq} >= 64");
@@ -37,7 +37,7 @@ pub fn entry(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
     // sq < 64 by the Square invariant, so both get_unchecked indices are in bounds.
     let lanes = unsafe { PSQT.get_unchecked(idx).0.get_unchecked(usize::from(sq)) };
     // SAFETY: AlignedTable's 32-byte alignment makes each [i16; 8] entry 16-byte aligned.
-    Vi16x8(unsafe { arch::x86_64::_mm_load_si128(lanes.as_ptr() as *const _) })
+    I16x8(unsafe { arch::x86_64::_mm_load_si128(lanes.as_ptr() as *const _) })
 }
 
 /// Mirror square horizontally; files E-H map to D-A

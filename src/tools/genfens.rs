@@ -51,7 +51,7 @@ struct Request {
 impl Request {
     /// `N seed S book <path|None> [extra]`, the count positional and the rest keyed.
     ///
-    /// The runner passes `extra` through unread, so it carries arguments written
+    /// The runner passes `extra` through unread, so it contains arguments written
     /// for other engines. Skipping an unknown key alone leaves its value to be
     /// skipped in turn, so a lone flag cannot swallow the key behind it.
     fn parse(args: &[&str]) -> Self {

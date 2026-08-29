@@ -30,7 +30,7 @@ use crate::{
         see::{see_ge, see_values},
     },
     tools::byteboard::{self, PieceId, Place, Wordboard},
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 const FENS: &str = include_str!("../data/bench.fens");
@@ -955,7 +955,7 @@ fn column_prefix(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 
 
 /// Every variant builds both stores, read or not, so the from-scratch cost
 /// lands in the baseline and cancels out of the deltas.
-fn setup(fen: &str) -> (Position, Vi16x8, AttackTable, XorBoard, ByteStore) {
+fn setup(fen: &str) -> (Position, I16x8, AttackTable, XorBoard, ByteStore) {
     let pos = Position::from_fen(fen);
     let acc = pos.initial_accumulator();
     let dst = black_box(AttackTable::from_scratch(&pos));
@@ -965,7 +965,7 @@ fn setup(fen: &str) -> (Position, Vi16x8, AttackTable, XorBoard, ByteStore) {
 }
 
 fn play_stream<F>(stream: &Stream, repeats: usize, mut per_ply: F) -> Outcome
-where F: FnMut(&mut Position, &mut Vi16x8, Move, PieceType) -> u64 {
+where F: FnMut(&mut Position, &mut I16x8, Move, PieceType) -> u64 {
     let mut checksum = 0u64;
     let mut iterations = 0u64;
     for _ in 0..repeats {

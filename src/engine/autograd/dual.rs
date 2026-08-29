@@ -21,7 +21,7 @@ use std::{
 };
 
 use super::traits::{EnvVec4, EnvVec8, EvalMath};
-use crate::{core::defs::TOTAL_PHASE, engine::eval_params, weave::Vf32x8};
+use crate::{core::defs::TOTAL_PHASE, engine::eval_params, weave::F32x8};
 
 /// Partials per dual number; the tunable input count rounded up to a multiple
 /// of 8 for the AVX2 chunk loop. Auto-grows when an eval term is added.
@@ -63,7 +63,7 @@ impl fmt::Debug for DualNode {
 /// Map `f` lane-wise across two gradient vectors into `out`, in `DUAL_N / 8`
 /// chunks of 8 f32. The single unsafe surface every binary operator's gradient shares.
 #[inline(always)]
-fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(Vf32x8, Vf32x8) -> Vf32x8) {
+fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(F32x8, F32x8) -> F32x8) {
     // SAFETY: a, b, out are each exactly DUAL_N f32s, and DUAL_N is a multiple
     // of 8. Each iteration's stride-8 load/store touches offsets [off, off+8),
     // and the last is [DUAL_N-8, DUAL_N), never out of bounds.
@@ -71,8 +71,8 @@ fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: i
         let (pa, pb, po) = (a.as_ptr(), b.as_ptr(), out.as_mut_ptr());
         for i in 0..DUAL_N / 8 {
             let off = i * 8;
-            let ga = Vf32x8::loadu(pa.add(off));
-            let gb = Vf32x8::loadu(pb.add(off));
+            let ga = F32x8::loadu(pa.add(off));
+            let gb = F32x8::loadu(pb.add(off));
             f(ga, gb).storeu(po.add(off));
         }
     }
@@ -80,13 +80,13 @@ fn grad_map2(a: &[f32; DUAL_N], b: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: i
 
 /// Unary counterpart of [`grad_map2`] for single-input gradients (Neg, scale).
 #[inline(always)]
-fn grad_map1(a: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(Vf32x8) -> Vf32x8) {
+fn grad_map1(a: &[f32; DUAL_N], out: &mut [f32; DUAL_N], f: impl Fn(F32x8) -> F32x8) {
     // SAFETY: a, out are each exactly DUAL_N f32s, DUAL_N a multiple of 8; see grad_map2.
     unsafe {
         let (pa, po) = (a.as_ptr(), out.as_mut_ptr());
         for i in 0..DUAL_N / 8 {
             let off = i * 8;
-            f(Vf32x8::loadu(pa.add(off))).storeu(po.add(off));
+            f(F32x8::loadu(pa.add(off))).storeu(po.add(off));
         }
     }
 }
@@ -144,7 +144,7 @@ impl Sub for DualNode {
         } else if self.active {
             grad.copy_from_slice(&self.grad);
         } else {
-            grad_map1(&rhs.grad, &mut grad, |gb| Vf32x8::zero() - gb);
+            grad_map1(&rhs.grad, &mut grad, |gb| F32x8::zero() - gb);
         }
         Self { grad, val, active }
     }
@@ -168,13 +168,13 @@ impl Mul for DualNode {
 
         let mut grad = [0.0f32; DUAL_N];
         if self.active && rhs.active {
-            let (va, vb) = (Vf32x8::splat(a), Vf32x8::splat(b));
+            let (va, vb) = (F32x8::splat(a), F32x8::splat(b));
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| vb * ga + va * gb);
         } else if self.active {
-            let vb = Vf32x8::splat(b);
+            let vb = F32x8::splat(b);
             grad_map1(&self.grad, &mut grad, |ga| vb * ga);
         } else {
-            let va = Vf32x8::splat(a);
+            let va = F32x8::splat(a);
             grad_map1(&rhs.grad, &mut grad, |gb| va * gb);
         }
         Self { grad, val, active }
@@ -200,13 +200,13 @@ impl Div for DualNode {
 
         let mut grad = [0.0f32; DUAL_N];
         if self.active && rhs.active {
-            let (va, vb, vb2) = (Vf32x8::splat(a), Vf32x8::splat(b), Vf32x8::splat(b2));
+            let (va, vb, vb2) = (F32x8::splat(a), F32x8::splat(b), F32x8::splat(b2));
             grad_map2(&self.grad, &rhs.grad, &mut grad, |ga, gb| (vb * ga - va * gb) / vb2);
         } else if self.active {
-            let vb = Vf32x8::splat(b);
+            let vb = F32x8::splat(b);
             grad_map1(&self.grad, &mut grad, |ga| ga / vb);
         } else {
-            let (va, vb2) = (Vf32x8::splat(-a), Vf32x8::splat(b2));
+            let (va, vb2) = (F32x8::splat(-a), F32x8::splat(b2));
             grad_map1(&rhs.grad, &mut grad, |gb| (va * gb) / vb2);
         }
         Self { grad, val, active }
@@ -225,7 +225,7 @@ impl Neg for DualNode {
         }
 
         let mut grad = [0.0f32; DUAL_N];
-        grad_map1(&self.grad, &mut grad, |ga| Vf32x8::zero() - ga);
+        grad_map1(&self.grad, &mut grad, |ga| F32x8::zero() - ga);
         Self { grad, val: -self.val, active: self.active }
     }
 }
@@ -323,7 +323,7 @@ impl EvalMath for DualNode {
     }
 
     #[inline(always)]
-    fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4 {
+    fn from_vi32x4(v: crate::weave::I32x4) -> Self::Vec4 {
         let arr = v.to_array();
         DualVec4([Self::from_i32(arr[0]), Self::from_i32(arr[1]), Self::from_i32(arr[2]), Self::from_i32(arr[3])])
     }

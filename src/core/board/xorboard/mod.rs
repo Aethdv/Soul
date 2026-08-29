@@ -134,7 +134,7 @@ fn slots(mask: u64) -> impl Iterator<Item = PieceId> {
 fn is_slider(piece: PieceType) -> bool { matches!(piece, PieceType::Bishop | PieceType::Rook | PieceType::Queen) }
 
 impl XorBoard {
-    /// Slots are assigned by a square walk, so two boards built from the same
+    /// Slots are assigned in square order, so two boards built from the same
     /// position agree slot for slot.
     pub fn new(pos: &Position) -> Self {
         let mut board = Self {

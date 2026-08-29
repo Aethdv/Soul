@@ -123,7 +123,7 @@ fn report_cutoffs() {
     }
 }
 
-/// The bucket column carries `first`; the other three are the same table every time.
+/// The bucket column shows `first`; the other three are the same table every time.
 fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize, first: &str) {
     let (gold, bold, reset) = style();
     println!("  {gold}{bold}{first:>8}  {:>11}  {:>7}  {:>7}{reset}", "nodes", "share", "cumul");

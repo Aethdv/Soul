@@ -13,7 +13,7 @@ use crate::{
 
 /// Rook attacks (all 4 cardinal directions).
 #[inline(always)]
-pub fn atk_rook(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
+pub fn atk_rook(generator: U64x4, empty: U64x4) -> U64x4 {
     let n = fill_north(generator, empty).shift_north();
     let s = fill_south(generator, empty).shift_south();
     let e = fill_east(generator, empty).shift_east();
@@ -23,7 +23,7 @@ pub fn atk_rook(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
 
 /// Bishop attacks (all 4 diagonal directions).
 #[inline(always)]
-pub fn atk_bishop(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
+pub fn atk_bishop(generator: U64x4, empty: U64x4) -> U64x4 {
     let ne = fill_northeast(generator, empty).shift_ne();
     let nw = fill_northwest(generator, empty).shift_nw();
     let se = fill_southeast(generator, empty).shift_se();
@@ -33,11 +33,11 @@ pub fn atk_bishop(generator: Vu64x4, empty: Vu64x4) -> Vu64x4 {
 
 /// Knight attacks.
 #[inline(always)]
-pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
-    let mask_a = Vu64x4::splat(FILE_A);
-    let mask_h = Vu64x4::splat(FILE_H);
-    let mask_ab = Vu64x4::splat(FILE_A | (FILE_A << 1));
-    let mask_gh = Vu64x4::splat(FILE_H | (FILE_H >> 1));
+pub fn atk_knight(knights: U64x4) -> U64x4 {
+    let mask_a = U64x4::splat(FILE_A);
+    let mask_h = U64x4::splat(FILE_H);
+    let mask_ab = U64x4::splat(FILE_A | (FILE_A << 1));
+    let mask_gh = U64x4::splat(FILE_H | (FILE_H >> 1));
 
     let west1 = mask_a.andnot(knights).shr::<1>();
     let east1 = mask_h.andnot(knights).shl::<1>();
@@ -51,7 +51,7 @@ pub fn atk_knight(knights: Vu64x4) -> Vu64x4 {
 
 /// King attacks: shift E/W, merge, then shift N/S.
 #[inline(always)]
-pub fn atk_king(kings: Vu64x4) -> Vu64x4 {
+pub fn atk_king(kings: U64x4) -> U64x4 {
     let attacks = kings | kings.shift_east() | kings.shift_west();
     (attacks | attacks.shift_north() | attacks.shift_south()) & !kings
 }
@@ -68,19 +68,19 @@ pub fn atk_king(kings: Vu64x4) -> Vu64x4 {
 /// - Same structure with (B+Q) generators.
 ///
 /// All four lanes per field are computed simultaneously by a single set of
-/// AVX2 `vpsllq`/`vpsrlq` instructions applied to the packed `Vu64x4`.
+/// AVX2 `vpsllq`/`vpsrlq` instructions applied to the packed `U64x4`.
 pub struct SpatialMaps {
-    pub ortho_direct: Vu64x4,
-    pub ortho_xray: Vu64x4,
-    pub diag_direct: Vu64x4,
-    pub diag_xray: Vu64x4,
+    pub ortho_direct: U64x4,
+    pub ortho_xray: U64x4,
+    pub diag_direct: U64x4,
+    pub diag_xray: U64x4,
 }
 
 impl SpatialMaps {
     #[inline]
     pub fn compute(pos: &Position, pinned_w: u64, pinned_b: u64) -> Self {
         let occ = pos.occ.0;
-        let empty = Vu64x4::splat(!occ);
+        let empty = U64x4::splat(!occ);
         let w_pcs = pos.side_bb[Color::White].0;
         let b_pcs = pos.side_bb[Color::Black].0;
 
@@ -104,8 +104,8 @@ impl SpatialMaps {
             .0
             & !pinned_b;
 
-        let gen_ortho = Vu64x4::from_lanes(w_rq, b_rq, 0, 0);
-        let us_pcs_ortho = Vu64x4::from_lanes(w_pcs, b_pcs, 0, 0);
+        let gen_ortho = U64x4::from_lanes(w_rq, b_rq, 0, 0);
+        let us_pcs_ortho = U64x4::from_lanes(w_pcs, b_pcs, 0, 0);
 
         let (gen_n, gen_s, gen_e, gen_w) = (
             fill_north(gen_ortho, empty).shift_north(),
@@ -132,8 +132,8 @@ impl SpatialMaps {
             (n | s | e | w) & !ortho_direct
         };
 
-        let gen_diag = Vu64x4::from_lanes(w_bq, b_bq, 0, 0);
-        let us_pcs_diag = Vu64x4::from_lanes(w_pcs, b_pcs, 0, 0);
+        let gen_diag = U64x4::from_lanes(w_bq, b_bq, 0, 0);
+        let us_pcs_diag = U64x4::from_lanes(w_pcs, b_pcs, 0, 0);
 
         let (gen_ne, gen_nw, gen_se, gen_sw) = (
             fill_northeast(gen_diag, empty).shift_ne(),

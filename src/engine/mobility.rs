@@ -21,7 +21,7 @@ use crate::{
         eval_params::{ATTACKER, LAYOUT},
         term::{KingSafetyUpstream, LinearTerm, TaperPair, TermSource},
     },
-    weave::Vf64x4,
+    weave::F64x4,
 };
 
 // Pawn rams (locked head-to-head) and total pawn count yield an openness scalar,
@@ -89,7 +89,7 @@ pub struct SafetyMetrics {
 
 /// Extracted mobility features for generic dispatch.
 pub struct MobilityInput {
-    pub diff: Vf64x4,
+    pub diff: F64x4,
     pub openness: i32,
 }
 
@@ -280,7 +280,7 @@ impl LinearTerm for MobilityTerm {
             // SAFETY: grads length verified by assert above and layout invariants.
             unsafe {
                 let p = grads.as_mut_ptr().add(offset);
-                (Vf64x4::loadu(p) + input.diff * Vf64x4::splat(scale)).storeu(p);
+                (F64x4::loadu(p) + input.diff * F64x4::splat(scale)).storeu(p);
             }
         };
 
@@ -297,7 +297,7 @@ impl TermSource<MobilityTerm> for SharedFeatures {
     #[inline(always)]
     fn extract(&self) -> MobilityInput {
         let diff = self.spatial.metrics_us.diff(&self.spatial.metrics_them);
-        MobilityInput { diff: Vf64x4::from(diff.map(f64::from)), openness: self.openness }
+        MobilityInput { diff: F64x4::from(diff.map(f64::from)), openness: self.openness }
     }
 }
 

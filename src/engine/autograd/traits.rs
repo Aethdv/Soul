@@ -8,10 +8,10 @@ use std::{
 
 use crate::{
     core::defs::TOTAL_PHASE,
-    weave::{Vi16x8, Vi32x4},
+    weave::{I16x8, I32x4},
 };
 
-/// The interface `evaluate` is generic over: `i32` with `Vi16x8`/`Vi32x4` for search,
+/// The interface `evaluate` is generic over: `i32` with `I16x8`/`I32x4` for search,
 /// `DualNode` for the tuner, `f64` for the oracle. The module doc has the why.
 ///
 /// `to_i32` and `to_f64` hand back a raw value to branch on, and the gradient stops
@@ -48,7 +48,7 @@ pub trait EvalMath:
     fn min(self, other: Self) -> Self;
 
     fn from_i32(val: i32) -> Self;
-    fn from_vi32x4(v: crate::weave::Vi32x4) -> Self::Vec4;
+    fn from_vi32x4(v: crate::weave::I32x4) -> Self::Vec4;
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4;
 
     fn abs(self) -> Self;
@@ -92,8 +92,8 @@ pub trait EnvVec8: Sized + Copy {
 
 impl EvalMath for i32 {
     type Scalar = i32;
-    type Vec4 = Vi32x4;
-    type Vec8 = Vi16x8;
+    type Vec4 = I32x4;
+    type Vec8 = I16x8;
     type Array4 = [i32; 4];
     type Array6 = [i32; 6];
 
@@ -149,10 +149,10 @@ impl EvalMath for i32 {
     fn to_i32(self) -> i32 { self }
 
     #[inline(always)]
-    fn from_vi32x4(v: Vi32x4) -> Self::Vec4 { v }
+    fn from_vi32x4(v: I32x4) -> Self::Vec4 { v }
 
     #[inline(always)]
-    fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 { Vi32x4::from_array(arr) }
+    fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 { I32x4::from_array(arr) }
 
     #[inline(always)]
     fn to_f64(self) -> f64 { self as f64 }
@@ -171,7 +171,7 @@ impl EvalMath for i32 {
         let packed = (phase as u32) | ((eg_p as u32) << 16);
         // SAFETY: AVX2 per the compile_error gate in weave/mod.rs; a register move with no
         // memory operand and no further precondition.
-        let weights = Vi16x8(unsafe { _mm_cvtsi32_si128(packed.cast_signed()) });
+        let weights = I16x8(unsafe { _mm_cvtsi32_si128(packed.cast_signed()) });
         // madd's pairwise dot product folds mg·phase + eg·eg_phase into one instruction.
         acc.madd(weights).extract::<0>() / TOTAL_PHASE
     }
@@ -231,7 +231,7 @@ impl EvalMath for f64 {
     fn to_i32(self) -> i32 { self as i32 }
 
     #[inline(always)]
-    fn from_vi32x4(v: Vi32x4) -> Self::Vec4 {
+    fn from_vi32x4(v: I32x4) -> Self::Vec4 {
         let arr = v.to_array();
         F64Vec4([arr[0] as f64, arr[1] as f64, arr[2] as f64, arr[3] as f64])
     }
@@ -345,9 +345,9 @@ impl EnvVec8 for F64Vec8 {
     fn extract<const N: i32>(self) -> Self::Scalar { self.0[N as usize] }
 }
 
-impl EnvVec4 for Vi32x4 {
+impl EnvVec4 for I32x4 {
     type Scalar = i32;
-    type Vec8 = Vi16x8;
+    type Vec8 = I16x8;
 
     #[inline(always)]
     fn zero() -> Self { Self::zero() }
@@ -368,9 +368,9 @@ impl EnvVec4 for Vi32x4 {
     fn pack_i16(self, hi: Self) -> Self::Vec8 { self.pack_i16(hi) }
 }
 
-impl EnvVec8 for Vi16x8 {
+impl EnvVec8 for I16x8 {
     type Scalar = i32;
-    type Vec4 = Vi32x4;
+    type Vec4 = I32x4;
 
     #[inline(always)]
     fn zero() -> Self { Self::zero() }

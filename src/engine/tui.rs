@@ -16,7 +16,7 @@ use crate::{
         search::{Line, PvSnapshot, SearchDisplay},
         wdl,
     },
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 const GOLD_BRIGHT: Rgb = color::AMBER; // branding
@@ -264,7 +264,7 @@ fn wdl_row(label: &str, pct: f32, hue: Rgb, enabled: bool) -> String {
 }
 
 /// One step of a PV replay. `mv` in SAN.
-fn san_step(board: &mut Position, acc: &mut Vi16x8, mv: Move) -> String {
+fn san_step(board: &mut Position, acc: &mut I16x8, mv: Move) -> String {
     if mv.is_null() {
         return "0000".into();
     }

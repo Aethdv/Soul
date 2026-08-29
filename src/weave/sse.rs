@@ -9,19 +9,19 @@
 
 use core::{
     arch::x86_64::*,
-    ops::{Add, AddAssign, BitAnd, BitOr, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Shr, Sub, SubAssign},
+    ops::{Neg, Shr},
 };
 use std::mem;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vi16x8(pub __m128i);
+pub struct I16x8(pub __m128i);
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vi32x4(pub __m128i);
+pub struct I32x4(pub __m128i);
 
-impl Vi16x8 {
+impl I16x8 {
     #[inline(always)]
     pub fn new(v: [i16; 8]) -> Self {
         // SAFETY: The array is passed by value and lives on the stack. The pointer is valid for 16 bytes.
@@ -110,9 +110,9 @@ impl Vi16x8 {
     }
 
     #[inline(always)]
-    pub fn madd(self, rhs: Self) -> Vi32x4 {
+    pub fn madd(self, rhs: Self) -> I32x4 {
         // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Vi32x4(unsafe { _mm_madd_epi16(self.0, rhs.0) })
+        I32x4(unsafe { _mm_madd_epi16(self.0, rhs.0) })
     }
 
     #[inline(always)]
@@ -124,76 +124,21 @@ impl Vi16x8 {
         Self(unsafe { _mm_srai_epi16::<N>(self.0) })
     }
 
-    /// Extends the first 4 signed i16 lanes to i32 and returns them as a Vi32x4.
+    /// Extends the first 4 signed i16 lanes to i32 and returns them as a I32x4.
     /// Uses `vpmovsxwd` (SSE4.1).
     #[inline(always)]
-    pub fn load_i32_4(self) -> Vi32x4 {
+    pub fn load_i32_4(self) -> I32x4 {
         // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Vi32x4(unsafe { _mm_cvtepi16_epi32(self.0) })
+        I32x4(unsafe { _mm_cvtepi16_epi32(self.0) })
     }
 }
 
-impl From<[i16; 8]> for Vi16x8 {
+impl From<[i16; 8]> for I16x8 {
     #[inline(always)]
     fn from(arr: [i16; 8]) -> Self { Self::new(arr) }
 }
 
-impl Add for Vi16x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_add_epi16(self.0, rhs.0) })
-    }
-}
-
-impl Sub for Vi16x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_sub_epi16(self.0, rhs.0) })
-    }
-}
-
-impl AddAssign for Vi16x8 {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
-}
-
-impl SubAssign for Vi16x8 {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
-}
-
-impl BitAnd for Vi16x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_and_si128(self.0, rhs.0) })
-    }
-}
-
-impl BitOr for Vi16x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_or_si128(self.0, rhs.0) })
-    }
-}
-
-impl BitXor for Vi16x8 {
-    type Output = Self;
-    #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_xor_si128(self.0, rhs.0) })
-    }
-}
-
-impl Vi32x4 {
+impl I32x4 {
     #[inline(always)]
     pub const fn new(v: [i32; 4]) -> Self {
         // SAFETY: The array is passed by value and lives on the stack. The pointer is valid for 16 bytes.
@@ -247,9 +192,9 @@ impl Vi32x4 {
     /// rather than the sequential `[A0..7, B0..7]` and wrecking the dot-product order.
     /// A port has to follow it with `_mm256_permute4x64_epi64` to restore sequential lanes.
     #[inline(always)]
-    pub fn pack_i16(self, hi: Self) -> Vi16x8 {
+    pub fn pack_i16(self, hi: Self) -> I16x8 {
         // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Vi16x8(unsafe { _mm_packs_epi32(self.0, hi.0) })
+        I16x8(unsafe { _mm_packs_epi32(self.0, hi.0) })
     }
 
     #[inline(always)]
@@ -272,44 +217,12 @@ impl Vi32x4 {
     }
 }
 
-impl From<[i32; 4]> for Vi32x4 {
+impl From<[i32; 4]> for I32x4 {
     #[inline(always)]
     fn from(arr: [i32; 4]) -> Self { Self::new(arr) }
 }
 
-impl Add for Vi32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_add_epi32(self.0, rhs.0) })
-    }
-}
-
-impl Sub for Vi32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_sub_epi32(self.0, rhs.0) })
-    }
-}
-
-impl Mul for Vi32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn mul(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 gate in mod.rs guarantees all SSE intrinsics.
-        Self(unsafe { _mm_mullo_epi32(self.0, rhs.0) })
-    }
-}
-
-impl MulAssign for Vi32x4 {
-    #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
-}
-
-impl Shr<i32> for Vi32x4 {
+impl Shr<i32> for I32x4 {
     type Output = Self;
     #[inline(always)]
     fn shr(self, rhs: i32) -> Self {
@@ -326,9 +239,9 @@ impl Shr<i32> for Vi32x4 {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vf32x4(pub __m128);
+pub struct F32x4(pub __m128);
 
-impl Vf32x4 {
+impl F32x4 {
     #[inline(always)]
     pub fn zero() -> Self { Self(unsafe { _mm_setzero_ps() }) }
 
@@ -350,51 +263,7 @@ impl Vf32x4 {
     pub unsafe fn storeu(self, ptr: *mut f32) { unsafe { _mm_storeu_ps(ptr, self.0) }; }
 }
 
-impl Add for Vf32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm_add_ps(self.0, rhs.0) }) }
-}
-
-impl AddAssign for Vf32x4 {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
-}
-
-impl Sub for Vf32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm_sub_ps(self.0, rhs.0) }) }
-}
-
-impl SubAssign for Vf32x4 {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
-}
-
-impl Mul for Vf32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm_mul_ps(self.0, rhs.0) }) }
-}
-
-impl MulAssign for Vf32x4 {
-    #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
-}
-
-impl Div for Vf32x4 {
-    type Output = Self;
-    #[inline(always)]
-    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm_div_ps(self.0, rhs.0) }) }
-}
-
-impl DivAssign for Vf32x4 {
-    #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
-}
-
-impl Neg for Vf32x4 {
+impl Neg for F32x4 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self { Self(unsafe { _mm_sub_ps(_mm_setzero_ps(), self.0) }) }
@@ -402,9 +271,9 @@ impl Neg for Vf32x4 {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Vf64x2(pub __m128d);
+pub struct F64x2(pub __m128d);
 
-impl Vf64x2 {
+impl F64x2 {
     #[inline(always)]
     pub fn zero() -> Self { Self(unsafe { _mm_setzero_pd() }) }
 
@@ -426,52 +295,59 @@ impl Vf64x2 {
     pub unsafe fn storeu(self, ptr: *mut f64) { unsafe { _mm_storeu_pd(ptr, self.0) }; }
 }
 
-impl Add for Vf64x2 {
-    type Output = Self;
-    #[inline(always)]
-    fn add(self, rhs: Self) -> Self { Self(unsafe { _mm_add_pd(self.0, rhs.0) }) }
-}
-
-impl AddAssign for Vf64x2 {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; }
-}
-
-impl Sub for Vf64x2 {
-    type Output = Self;
-    #[inline(always)]
-    fn sub(self, rhs: Self) -> Self { Self(unsafe { _mm_sub_pd(self.0, rhs.0) }) }
-}
-
-impl SubAssign for Vf64x2 {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; }
-}
-
-impl Mul for Vf64x2 {
-    type Output = Self;
-    #[inline(always)]
-    fn mul(self, rhs: Self) -> Self { Self(unsafe { _mm_mul_pd(self.0, rhs.0) }) }
-}
-
-impl MulAssign for Vf64x2 {
-    #[inline(always)]
-    fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; }
-}
-
-impl Div for Vf64x2 {
-    type Output = Self;
-    #[inline(always)]
-    fn div(self, rhs: Self) -> Self { Self(unsafe { _mm_div_pd(self.0, rhs.0) }) }
-}
-
-impl DivAssign for Vf64x2 {
-    #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
-}
-
-impl Neg for Vf64x2 {
+impl Neg for F64x2 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self { Self(unsafe { _mm_sub_pd(_mm_setzero_pd(), self.0) }) }
+}
+
+binops! { I16x8:
+    Add     add      _mm_add_epi16,
+    Sub     sub      _mm_sub_epi16,
+    BitAnd  bitand   _mm_and_si128,
+    BitOr   bitor    _mm_or_si128,
+    BitXor  bitxor   _mm_xor_si128,
+}
+
+assign_ops! { I16x8:
+    AddAssign add_assign    +,
+    SubAssign sub_assign    -,
+}
+
+binops! { I32x4:
+    Add add   _mm_add_epi32,
+    Sub sub   _mm_sub_epi32,
+    Mul mul   _mm_mullo_epi32,
+}
+
+assign_ops! { I32x4:
+    MulAssign mul_assign    *,
+}
+
+binops! { F32x4:
+    Add add   _mm_add_ps,
+    Sub sub   _mm_sub_ps,
+    Mul mul   _mm_mul_ps,
+    Div div   _mm_div_ps,
+}
+
+assign_ops! { F32x4:
+    AddAssign add_assign    +,
+    SubAssign sub_assign    -,
+    MulAssign mul_assign    *,
+    DivAssign div_assign    /,
+}
+
+binops! { F64x2:
+    Add add   _mm_add_pd,
+    Sub sub   _mm_sub_pd,
+    Mul mul   _mm_mul_pd,
+    Div div   _mm_div_pd,
+}
+
+assign_ops! { F64x2:
+    AddAssign add_assign    +,
+    SubAssign sub_assign    -,
+    MulAssign mul_assign    *,
+    DivAssign div_assign    /,
 }

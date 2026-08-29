@@ -7,7 +7,7 @@
 
 #![allow(non_snake_case)]
 
-use crate::weave::Vi32x4;
+use crate::weave::I32x4;
 
 /// Slot count each `EvalParams` field consumes in the dual-AD gradient vector.
 #[rustfmt::skip]
@@ -322,7 +322,7 @@ macro_rules! define_simd_params {
     ($($block:ident { mg = [$($mg:expr),* $(,)?], eg = [$($eg:expr),* $(,)?] $(,)? }),* $(,)?) => {
         paste::paste! {
             $(
-                pub const [<MG_ $block:upper>]: Vi32x4 = Vi32x4::new([
+                pub const [<MG_ $block:upper>]: I32x4 = I32x4::new([
                     $(
                         match $mg {
                             Param::Val(v) | Param::Const(v) => v,
@@ -331,7 +331,7 @@ macro_rules! define_simd_params {
                     ),*
                 ]);
 
-                pub const [<EG_ $block:upper>]: Vi32x4 = Vi32x4::new([
+                pub const [<EG_ $block:upper>]: I32x4 = I32x4::new([
                     $(
                         match $eg {
                             Param::Val(v) | Param::Const(v) => v,

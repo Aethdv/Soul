@@ -6,7 +6,7 @@
 //!
 //! Evaluation is generic over [`EvalMath`] (`i32` or `DualNode`):
 //! - search monomorphizes to `i32`, which compiles to plain arithmetic.
-//! - tuning runs `DualNode`, carrying each value's partials so one forward pass yields the
+//! - tuning runs `DualNode`, holding each value's partials so one forward pass yields the
 //!   gradient with no reverse tape.
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
         search_params::SearchParams,
         term::{self},
     },
-    weave::Vi16x8,
+    weave::I16x8,
 };
 
 /// Non-PSQT evaluation weights, generic over the computation type `T`.
@@ -211,14 +211,14 @@ pub struct SharedFeatures {
 
 /// The integer evaluation the search calls.
 #[inline]
-pub fn evaluate(board: &Position, acc: &Vi16x8) -> i32 {
+pub fn evaluate(board: &Position, acc: &I16x8) -> i32 {
     let phase = extract_phase(acc);
     let params = EvalParams::<i32>::from_const();
     evaluate_generic::<i32>(board, acc, phase, &params, None)
 }
 
 /// The same score, with each bucket kept separate.
-pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
+pub fn detailed_eval(board: &Position, acc: &I16x8) -> DetailedEval {
     let phase = extract_phase(acc);
     let params = EvalParams::<i32>::from_const();
     let features = SharedFeatures::compute(board);
@@ -240,7 +240,7 @@ pub fn detailed_eval(board: &Position, acc: &Vi16x8) -> DetailedEval {
 
 /// Accumulator-only evaluation, no spatial features. Datagen's volatility filter.
 #[inline(always)]
-pub fn evaluate_psqt(board: &Position, acc: &Vi16x8, phase: i32) -> i32 {
+pub fn evaluate_psqt(board: &Position, acc: &I16x8, phase: i32) -> i32 {
     let score = i32::taper_acc(acc, phase);
     if board.stm == Color::White { score } else { -score }
 }
@@ -295,7 +295,7 @@ fn combine_buckets<T: EvalMath<Scalar = T>>(acc: &T::Vec8, phase: T, features: &
 
 /// Extracts the game phase, clamped to `0..=TOTAL_PHASE`, from its accumulator lane.
 #[inline(always)]
-pub fn extract_phase(acc: &Vi16x8) -> i32 { i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE) }
+pub fn extract_phase(acc: &I16x8) -> i32 { i32::from(acc.extract::<{ LANE_PHASE as i32 }>()).clamp(0, TOTAL_PHASE) }
 
 /// Cached pawn structure features keyed on `pawn_key`.
 /// Retains passer bitboards to compute `enemy_king_dist` without re-running passed-span scans.

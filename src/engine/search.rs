@@ -60,7 +60,7 @@ use crate::{
         tui,
     },
     tools::perft::perft,
-    weave::{Vi16x8, Vu64x4},
+    weave::{I16x8, U64x4},
 };
 
 const NODE_CHECK_INTERVAL: u64 = 2048;
@@ -136,7 +136,7 @@ pub struct Searcher<'cfg> {
 #[repr(align(32))]
 pub struct Worker<'h> {
     pub pos: Position,
-    pub accumulator: Vi16x8,
+    pub accumulator: I16x8,
     pub stack: Box<[Stack; MAX_PLY + 2]>,
     /// Per-piece attack rows, carried through make and unmake beside the board.
     #[cfg(not(feature = "nostore"))]
@@ -564,8 +564,8 @@ impl<'cfg> Searcher<'cfg> {
                     //
                     // The cutoff broke the move loop, so moves before the culprit
                     // scored under beta this iteration and moves after it still hold
-                    // the previous depth's score. The culprit is the first that can carry
-                    // this score, and rotating keeps the rest in the order the last
+                    // the previous depth's score. The culprit is the first move this score
+                    // belongs to, and rotating keeps the rest in the order the last
                     // completed iteration left them, where a sort would rank this depth's
                     // scores against the previous one's.
                     if let Some(i) = self.root_moves.iter().position(|rm| rm.score == score) {
@@ -691,7 +691,7 @@ impl<'cfg> Searcher<'cfg> {
         {
             self.cfg.stop.store(true, Ordering::Relaxed);
             // The flag is stored either way, so the pool stops on time; this thread
-            // carries its first iteration to the end, so bestmove names a move the
+            // finishes its first iteration, so bestmove names a move the
             // search looked at rather than movegen's first.
             return self.iter_depth > 1;
         }
@@ -946,10 +946,8 @@ impl Worker<'_> {
         let depth = if in_check { depth + 1 } else { depth };
 
         // ── Static Eval
-        // Our best guess at how good this position is without searching deeper.
         // Meaningless when in check (we're forced to respond, not evaluate).
-        // A TT hit already carries this position's raw eval, so reuse it and skip
-        // the full evaluation; the stored sentinel (an in-check store) falls through.
+        // The stored sentinel (an in-check store) falls through.
         let raw_static_eval = if in_check {
             tt::SCORE_NONE
         } else if tt_probe.eval != tt::SCORE_NONE {
@@ -1517,7 +1515,7 @@ impl Worker<'_> {
         // about evaluator bias.
         // Skip when the bound direction contradicts the diff: a fail-high with
         // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
-        // carries no useful structural signal.
+        // shows no useful structural signal.
         if !in_check
             && excluded.is_null()
             && !res.best_move.is_null()
@@ -1802,8 +1800,7 @@ impl Worker<'_> {
         // ── QSearch Evaluations & Evasions
         // In check, static eval is meaningless; stand-pat drops to -INF
         // and the picker generates all evasions instead of just captures.
-        // A TT hit already carries this position's raw eval; the stored
-        // sentinel (an in-check store) falls through.
+        // The stored sentinel (an in-check store) falls through.
         let raw_eval = if in_check {
             tt::SCORE_NONE
         } else if qs_tt.eval != tt::SCORE_NONE {
@@ -1976,7 +1973,7 @@ impl Worker<'_> {
             return false;
         }
 
-        let needle = Vu64x4::splat(key);
+        let needle = U64x4::splat(key);
         let slice = &trail[start..=end];
         let chunks = slice.rchunks_exact(4);
         let remainder = chunks.remainder();
@@ -1985,12 +1982,12 @@ impl Worker<'_> {
         // Zobrist already encodes side-to-move, so cross-ply hashes can never match.
         // The false-check cost is zero, and contiguous SIMD loads are cheaper than strided.
         //
-        // SAFETY: Vu64x4::load uses _mm256_loadu_si256 (unaligned), which is correct
+        // SAFETY: U64x4::load uses _mm256_loadu_si256 (unaligned), which is correct
         // because Vec<u64> guarantees only 8-byte alignment, not the 32-byte alignment
         // that an aligned load would require. The chunk pointer is valid for 32 bytes
         // by Vec layout and rchunks_exact(4).
         for chunk in chunks {
-            let vec = unsafe { Vu64x4::load(chunk.as_ptr()) };
+            let vec = unsafe { U64x4::load(chunk.as_ptr()) };
             if vec.cmp_eq(needle).any() {
                 return true;
             }
