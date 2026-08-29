@@ -207,9 +207,13 @@ impl Spectrum {
             rank(1e-9)
         );
 
-        let raw_max = self.diagonal.iter().copied().fold(0.0_f64, f64::max);
-        let raw_min = self.diagonal.iter().copied().filter(|&x| x > 0.0).fold(f64::MAX, f64::min);
-        println!("  {LAB}raw diagonal{RESET}    max {VAL}{raw_max:.3e}{RESET}  min {VAL}{raw_min:.3e}{RESET}");
+        // Per position, since `add_outer` sums over the split and the other probes report means.
+        let per_position = 1.0 / positions as f64;
+        let raw_max = self.diagonal.iter().copied().fold(0.0_f64, f64::max) * per_position;
+        let raw_min = self.diagonal.iter().copied().filter(|&x| x > 0.0).fold(f64::MAX, f64::min) * per_position;
+        println!(
+            "  {LAB}raw diagonal{RESET}    max {VAL}{raw_max:.3e}{RESET}  min {VAL}{raw_min:.3e}{RESET} {DIM}per position{RESET}"
+        );
 
         if !self.untouched.is_empty() {
             let names: Vec<&str> = self.untouched.iter().take(REPORT_LIMIT).map(|&i| name(i)).collect();
