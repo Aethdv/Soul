@@ -38,16 +38,38 @@ DEBUG_EXE := debug$(EXE_EXT)
 
 .DEFAULT_GOAL := openbench
 
-.PHONY: help debug release native bench v3 v4 pgo openbench clean \
+.PHONY: help help-dev debug release native bench v3 v4 pgo openbench clean \
+        check-pgo check-tag \
         evaltune test oracle flops seefmt fmt clippy profile etprofile tools \
         datagen avx2 avx2-bmi2 avx512 corrstats movepicker storecost \
         windows win-avx2 win-avx2-bmi2 win-avx512
 
-debug: ## Build for development
-	@echo "Building debug..."
-	@RUSTFLAGS="-C target-cpu=native" cargo build $(CARGO_FEATURES)
-	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
-	@echo "Done: ./$(DEBUG_EXE)"
+# ── Build recipes
+
+# A binary named for the version and the ISA it needs, for a release.
+define release_build
+	@echo "Building $(EXE_NAME)-v$(VERSION)-$(2)$(EXE_EXT)..."
+	@RUSTFLAGS="$(1)" cargo build --release --quiet --target $(RUST_HOST)
+	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-$(2)$(EXE_EXT)
+	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-$(2)$(EXE_EXT)"
+endef
+
+# ./soul, overwritten every time. What you build to play against or test.
+define local_build
+	@echo "Building $(2)..."
+	@RUSTFLAGS="$(1)" cargo build --release --quiet --target $(RUST_HOST) $(CARGO_FEATURES)
+	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
+	@echo "Done: ./$(EXE)"
+endef
+
+# An instrumented build kept beside ./soul, benched on the spot.
+define stats_build
+	@echo "Building $(EXE_NAME)-$(2)..."
+	@RUSTFLAGS="-C target-cpu=native" cargo build --release --features $(1) --quiet
+	@cp target/release/$(EXE_NAME) $(EXE)-$(2)
+	@echo "Done: ./$(EXE)-$(2)"
+	@./$(EXE)-$(2) bench $(DEPTH)
+endef
 
 ifeq ($(and $(HAS_ZIG),$(HAS_WIN_STD)),)
 define win_build
@@ -61,40 +83,6 @@ define win_build
 	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-$(2).exe"
 endef
 endif
-
-release: avx2 avx2-bmi2 avx512 ## Build all release binaries at once
-
-avx2: ## Build AVX2 + FMA (pre Zen-3)
-	@echo "Building $(EXE_NAME)-v$(VERSION)-avx2..."
-	@RUSTFLAGS="-C target-cpu=x86-64-v2 -C target-feature=+avx2,+fma" \
-		cargo build --release --quiet --target $(RUST_HOST)
-	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx2$(EXE_EXT)
-	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx2$(EXE_EXT)"
-
-avx2-bmi2: ## Build AVX2 + BMI2 (Intel 2013+ / Zen-3+)
-	@echo "Building $(EXE_NAME)-v$(VERSION)-avx2-bmi2..."
-	@RUSTFLAGS="-C target-cpu=x86-64-v3" \
-		cargo build --release --quiet --target $(RUST_HOST)
-	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx2-bmi2$(EXE_EXT)
-	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx2-bmi2$(EXE_EXT)"
-
-windows: win-avx2 win-avx2-bmi2 win-avx512 ## Cross-build every Windows release
-
-win-avx2: ## Windows AVX2 + FMA
-	$(call win_build,-C target-cpu=x86-64-v2 -C target-feature=+avx2$(COMMA)+fma,avx2)
-
-win-avx2-bmi2: ## Windows AVX2 + BMI2
-	$(call win_build,-C target-cpu=x86-64-v3,avx2-bmi2)
-
-win-avx512: ## Windows AVX-512
-	$(call win_build,-C target-cpu=x86-64-v4,avx512)
-
-avx512: ## Build AVX-512 (Intel Rocket Lake/Server / Zen-4+)
-	@echo "Building $(EXE_NAME)-v$(VERSION)-avx512..."
-	@RUSTFLAGS="-C target-cpu=x86-64-v4" \
-		cargo build --release --quiet --target $(RUST_HOST)
-	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-avx512$(EXE_EXT)
-	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-avx512$(EXE_EXT)"
 
 define pgo_build
 	@echo "PGO Build $(1) (depth=$(DEPTH))"
@@ -113,59 +101,6 @@ define pgo_build
 	@echo "Done: ./$(EXE)"
 endef
 
-pgo: check-pgo ## PGO build (recommended)
-	@$(call pgo_build,Standard)
-
-native: ## Build optimized for your CPU
-	@echo "Building native..."
-	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release --quiet --target $(RUST_HOST) $(CARGO_FEATURES)
-	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
-	@echo "Done: ./$(EXE)"
-
-bench: ## Fast compile w/ bench
-	@RUSTFLAGS="-C target-cpu=native" cargo build --profile quick --quiet
-	@./target/quick/$(EXE_NAME) bench $(DEPTH)
-
-tools: ## Native build with datagen, dataset and the measurement rigs
-	@$(MAKE) --no-print-directory native FEATURES=datagen,rigs EXE=tools$(EXE_EXT)
-
-datagen: ## Native build with self-play generation and the dataset pipeline
-	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=datagen$(EXE_EXT)
-
-storecost: ## Price XorBoard against a build without it (RUNS=5)
-	@python3 scripts/storecost.py $(RUNS)
-
-corrstats: ## Native build with correction-history stats
-	@echo "Building $(EXE_NAME)-corrstats..."
-	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release --features corrstats --quiet
-	@cp target/release/$(EXE_NAME) $(EXE)-corrstats
-	@echo "Done: ./$(EXE)-corrstats"
-	@./$(EXE)-corrstats bench $(DEPTH)
-
-movepicker: ## Native build with move-picker quiet stats
-	@echo "Building $(EXE_NAME)-movepicker..."
-	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release --features mvpstats --quiet
-	@cp target/release/$(EXE_NAME) $(EXE)-movepicker
-	@echo "Done: ./$(EXE)-movepicker"
-	@./$(EXE)-movepicker bench $(DEPTH)
-
-v4: ## AVX512
-	@echo "Building x86-64-v4..."
-	@RUSTFLAGS="-C target-cpu=x86-64-v4" \
-		cargo build --release --quiet --target $(RUST_HOST)
-	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
-	@echo "Done: ./$(EXE)"
-
-v3: ## AVX2 + BMI2
-	@echo "Building x86-64-v3..."
-	@RUSTFLAGS="-C target-cpu=x86-64-v3" \
-		cargo build --release --quiet --target $(RUST_HOST)
-	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
-	@echo "Done: ./$(EXE)"
-
 # 2>/dev/null: HEADER_EVENT_DESC is the one section perf cannot read back from a file it wrote.
 # --no-inline: inline expansion spends --max-stack on the thread-start preamble.
 define perf_report
@@ -176,31 +111,53 @@ define perf_report
 	@perf report --stdio --no-inline --children --max-stack 32 --percent-limit 1.0 >> $(1)
 endef
 
-profile: ## Generate CPU performance profile
-	@echo "Building with debug symbols..."
-	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
-		cargo build --profile profiling --quiet --features rigs
-	@cp target/profiling/$(EXE_NAME) $(EXE)
-	@echo "Recording profile..."
-	@rm -f perf.data
-	@perf record -g --call-graph fp -F 999 ./$(EXE) speedtest
-	@echo "Generating profiling report..."
-	@$(call perf_report,profile_data.txt)
-	@printf '\nThe profiling report has been generated in profile_data.txt\n'
-	@echo "Done: profile_data.txt"
+# ── Playing binaries
 
-etprofile: ## Generate CPU performance profile for evaltune (set ET_DATA / ET_EPOCHS)
-	@echo "Building evaltune with debug symbols..."
-	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
-		cargo build --profile profiling -p evaltuner --bin evaltune --quiet
-	@cp target/profiling/evaltune eval$(EXE_EXT)
-	@echo "Recording profile ($(ET_DATA), $(ET_EPOCHS) epochs)..."
-	@rm -f perf.data
-	@perf record -g --call-graph fp -F 999 ./eval$(EXE_EXT) -d $(ET_DATA) -e $(ET_EPOCHS) --seed 1
-	@echo "Generating profiling report..."
-	@$(call perf_report,evaltune_profile_data.txt)
-	@printf '\nThe profiling report has been generated in evaltune_profile_data.txt\n'
-	@echo "Done: evaltune_profile_data.txt"
+native: ## Build optimized for your CPU
+	$(call local_build,-C target-cpu=native,native)
+
+pgo: check-pgo ## PGO build (recommended)
+	@$(call pgo_build,Standard)
+
+v3: #@ ./soul at x86-64-v3
+	$(call local_build,-C target-cpu=x86-64-v3,x86-64-v3)
+
+v4: #@ ./soul at x86-64-v4
+	$(call local_build,-C target-cpu=x86-64-v4,x86-64-v4)
+
+# ── Release artifacts
+
+release: avx2 avx2-bmi2 avx512 ## Build every Linux release binary
+
+avx2: check-tag ## AVX2 + FMA (pre Zen-3)
+	$(call release_build,-C target-cpu=x86-64-v2 -C target-feature=+avx2$(COMMA)+fma,avx2)
+
+avx2-bmi2: check-tag ## AVX2 + BMI2 (Intel 2013+ / Zen-3+)
+	$(call release_build,-C target-cpu=x86-64-v3,avx2-bmi2)
+
+avx512: check-tag ## AVX-512 (Intel Rocket Lake/Server / Zen-4+)
+	$(call release_build,-C target-cpu=x86-64-v4,avx512)
+
+windows: win-avx2 win-avx2-bmi2 win-avx512 ## Cross-build every Windows release
+
+win-avx2: check-tag ## Windows AVX2 + FMA
+	$(call win_build,-C target-cpu=x86-64-v2 -C target-feature=+avx2$(COMMA)+fma,avx2)
+
+win-avx2-bmi2: check-tag ## Windows AVX2 + BMI2
+	$(call win_build,-C target-cpu=x86-64-v3,avx2-bmi2)
+
+win-avx512: check-tag ## Windows AVX-512
+	$(call win_build,-C target-cpu=x86-64-v4,avx512)
+
+clean: ## Remove all build artifacts
+	@echo "Cleaning..."
+	@cargo clean
+	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval ./datagen ./tools $(EXE)-corrstats $(EXE)-movepicker
+	@rm -f $(EXE_NAME)-v*-avx2* $(EXE_NAME)-v*-avx512*
+	@rm -rf target/pgo-profiles
+	@echo "Done"
+
+# ── Development
 
 openbench:
 ifdef HAS_PGO
@@ -218,48 +175,105 @@ else
 	fi
 endif
 
-evaltune: ## Build the eval tuner
+debug: ## Build for development
+	@echo "Building debug..."
+	@RUSTFLAGS="-C target-cpu=native" cargo build $(CARGO_FEATURES)
+	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
+	@echo "Done: ./$(DEBUG_EXE)"
+
+bench: ## Fast compile w/ bench (DEPTH=12)
+	@RUSTFLAGS="-C target-cpu=native" cargo build --profile quick --quiet
+	@./target/quick/$(EXE_NAME) bench $(DEPTH)
+
+tools: #@ Native build with datagen, dataset and the measurement rigs
+	@$(MAKE) --no-print-directory native FEATURES=datagen,rigs EXE=tools$(EXE_EXT)
+
+datagen: #@ Native build with self-play generation and the dataset pipeline
+	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=datagen$(EXE_EXT)
+
+evaltune: #@ Build the eval tuner
 	@echo "Building evaltune..."
 	@RUSTFLAGS="-C target-cpu=native" \
 		cargo build --release -p evaltuner --bin evaltune --quiet --target $(RUST_HOST)
 	@cp target/$(RUST_HOST)/release/evaltune eval$(EXE_EXT)
 	@echo "Done: ./eval$(EXE_EXT)"
 
-test: ## Run test suite
+test: #@ Run test suite
 	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="-C target-cpu=native" cargo test --workspace -- --nocapture
 
-oracle: ## Run the eval gradient oracle tests
+oracle: #@ Run the eval gradient oracle tests
 	@RUSTFLAGS="-C target-cpu=native" cargo test --workspace --release oracle
 
-flops: ## f64 ops the gradient costs per position, differenced under perf
-	@FLOP_EVENT="$(FLOP_EVENT)" scripts/flops.sh
-
-seefmt: ## Check formatting
-	@cargo fmt --check
-
-fmt: ## Auto-format with rustfmt
-	@cargo fmt
-
-clippy: ## Lint with Clippy (-D warnings, whole workspace + features)
+clippy: #@ Lint with Clippy (-D warnings, whole workspace + features)
 	@RUSTFLAGS="-C target-cpu=native" cargo clippy --workspace --all-features --all-targets --quiet -- -D warnings
 	@RUSTFLAGS="-C target-cpu=native" cargo clippy -p soul --all-targets --quiet -- -D warnings
 
-clean: ## Remove all build artifacts
-	@echo "Cleaning..."
-	@cargo clean
-	@rm -f $(EXE) $(DEBUG_EXE) ./search ./eval ./datagen ./tools $(EXE)-corrstats $(EXE)-movepicker
-	@rm -f $(EXE_NAME)-v*-avx2* $(EXE_NAME)-v*-avx512*
-	@rm -rf target/pgo-profiles
-	@echo "Done"
+seefmt: #@ Check formatting
+	@cargo fmt --check
+
+fmt: #@ Auto-format with rustfmt
+	@cargo fmt
+
+# ── Measurement
+
+profile: #@ CPU profile of ./soul speedtest
+	@echo "Building with debug symbols..."
+	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+		cargo build --profile profiling --quiet --features rigs
+	@cp target/profiling/$(EXE_NAME) $(EXE)
+	@echo "Recording profile..."
+	@rm -f perf.data
+	@perf record -g --call-graph fp -F 999 ./$(EXE) speedtest
+	@echo "Generating profiling report..."
+	@$(call perf_report,profile_data.txt)
+	@printf '\nThe profiling report has been generated in profile_data.txt\n'
+	@echo "Done: profile_data.txt"
+
+etprofile: #@ CPU profile of evaltune (ET_DATA, ET_EPOCHS)
+	@echo "Building evaltune with debug symbols..."
+	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+		cargo build --profile profiling -p evaltuner --bin evaltune --quiet
+	@cp target/profiling/evaltune eval$(EXE_EXT)
+	@echo "Recording profile ($(ET_DATA), $(ET_EPOCHS) epochs)..."
+	@rm -f perf.data
+	@perf record -g --call-graph fp -F 999 ./eval$(EXE_EXT) -d $(ET_DATA) -e $(ET_EPOCHS) --seed 1
+	@echo "Generating profiling report..."
+	@$(call perf_report,evaltune_profile_data.txt)
+	@printf '\nThe profiling report has been generated in evaltune_profile_data.txt\n'
+	@echo "Done: evaltune_profile_data.txt"
+
+flops: #@ f64 ops the gradient costs per position, differenced under perf (FLOP_EVENT)
+	@FLOP_EVENT="$(FLOP_EVENT)" scripts/flops.sh
+
+storecost: #@ Price XorBoard against a build without it (RUNS)
+	@python3 scripts/storecost.py $(RUNS)
+
+corrstats: #@ Native build with correction-history stats
+	$(call stats_build,corrstats,corrstats)
+
+movepicker: #@ Native build with move-picker quiet stats
+	$(call stats_build,mvpstats,movepicker)
+
+# ── Guards
+
+check-tag:
+	@scripts/check-tag.sh $(VERSION)
 
 check-pgo:
 	@command -v cargo-pgo >/dev/null 2>&1 || (echo "\x1b[38;2;220;187;80mWarning: cargo-pgo is not installed. To run PGO builds, please install it via: cargo install cargo-pgo\x1b[0m" && exit 1)
 
-# Pens match src/color.rs: LILAC titles, IVORY names, CORAL placeholders, ASH rule, HAZE prose.
-help:
+# ── Help
+
+HELP_ROW := "  \033[38;2;246;238;218m%-14s\033[38;2;118;112;104m-\033[38;2;139;154;171m%s\033[0m\n"
+
+help: ## Show this help
 	@printf '\033[1;38;2;180;140;255mSoul Chess Engine\033[0m\n\n'
 	@printf '\033[38;2;139;154;171mUsage:\033[0m make \033[38;2;224;105;100m<target>\033[0m\n\n'
 	@printf '\033[38;2;180;140;255mTargets\033[0m\n'
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*?##/ { \
-		printf "  \033[38;2;246;238;218m%-14s\033[38;2;118;112;104m-\033[38;2;139;154;171m%s\033[0m\n", $$1, $$2 \
-	}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*?##/ { printf $(HELP_ROW), $$1, $$2 }' $(MAKEFILE_LIST)
+	@printf '\n\033[38;2;139;154;171mmake help-dev for the development targets.\033[0m\n'
+
+help-dev: ## Show the development targets
+	@printf '\033[1;38;2;180;140;255mSoul Chess Engine\033[0m\n\n'
+	@printf '\033[38;2;180;140;255mDevelopment\033[0m\n'
+	@awk 'BEGIN {FS = ":.*#@"} /^[a-zA-Z0-9_-]+:.*?#@/ { printf $(HELP_ROW), $$1, $$2 }' $(MAKEFILE_LIST)
