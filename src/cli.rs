@@ -17,6 +17,12 @@ pub const RULE: &str = ASH_PEN;
 /// A default's value inside its parenthesis.
 pub const VALUE: &str = STEEL_PEN;
 
+pub fn banner() {
+    if stdout().is_terminal() {
+        println!("{BOLD}{LILAC_PEN}✦ Soul v{}{RESET}", crate::VERSION);
+    }
+}
+
 pub struct Help {
     width: usize,
     use_ansi: bool,

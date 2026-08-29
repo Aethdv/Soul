@@ -1,6 +1,11 @@
 #![allow(clippy::cast_possible_wrap)]
 
-use std::{env, fs::File, io::Write, path::Path};
+use std::{
+    env,
+    fs::{self, File},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 // A build script cannot import the crate it builds, so the handful of primitives
 // the generator needs are restated here. They are the only copies outside `core`.
@@ -155,6 +160,71 @@ fn rustc_version() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn version_string() -> String {
+    if let Ok(preset) = env::var("SOUL_VERSION") {
+        return preset;
+    }
+
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let Some(git) = git_dir() else {
+        return format!("{version}-dev");
+    };
+    watch_refs(&git);
+
+    let Some(sha) = git_output(&["rev-parse", "--short=7", "HEAD"]) else {
+        return format!("{version}-dev");
+    };
+    let tag = format!("v{version}");
+    match git_output(&["tag", "--points-at", "HEAD"]) {
+        Some(tags) if tags.lines().any(|line| line == tag) => format!("{version}-{sha}"),
+        _ => format!("{version}-dev-{sha}"),
+    }
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git").args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn git_dir() -> Option<PathBuf> {
+    let dot = Path::new(".git");
+    if dot.is_dir() {
+        return Some(dot.to_path_buf());
+    }
+    let pointer = fs::read_to_string(dot).ok()?;
+    Some(PathBuf::from(pointer.strip_prefix("gitdir:")?.trim()))
+}
+
+/// Cargo reruns a build script only for the paths it names.
+fn watch_refs(git: &Path) {
+    let refs = match fs::read_to_string(git.join("commondir")) {
+        Ok(path) => git.join(path.trim()),
+        Err(_) => git.to_path_buf(),
+    };
+
+    let head = git.join("HEAD");
+    let Ok(head_text) = fs::read_to_string(&head) else {
+        return;
+    };
+
+    watch(&head);
+    watch(&refs.join("packed-refs"));
+    watch(&refs.join("refs/tags"));
+    if let Some(reference) = head_text.strip_prefix("ref:") {
+        watch(&refs.join(reference.trim()));
+    }
+}
+
+fn watch(path: &Path) {
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
 /// AMD microcodes PEXT before Zen 3, which sucks.
 fn use_pext() -> bool {
     if !env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default().contains("bmi2") {
@@ -193,6 +263,8 @@ fn amd_before_zen3() -> bool { false }
 
 fn main() {
     println!("cargo:rustc-env=SOUL_RUSTC={}", rustc_version());
+    println!("cargo:rustc-env=SOUL_VERSION={}", version_string());
+    println!("cargo:rerun-if-env-changed=SOUL_VERSION");
 
     // Only this file decides what gets emitted, and the shape of MagicEntry follows
     // the target features, so a feature change has to regenerate too.

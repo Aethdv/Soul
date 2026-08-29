@@ -37,10 +37,11 @@ fn main() {
                 protocols::uci::print_license();
             },
             "version" | "--version" | "-V" => {
-                println!("soul {}", env!("CARGO_PKG_VERSION"));
+                println!("soul v{}", soul::VERSION);
             },
             "bench" => {
-                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(12);
+                soul::cli::banner();
+                let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(tools::bench::DEFAULT_DEPTH);
                 let hash_mb = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(16);
                 tools::bench::run(depth, hash_mb);
             },
@@ -111,6 +112,7 @@ fn main() {
             },
         }
     } else {
+        soul::cli::banner();
         let first_line = {
             let stdin = io::stdin();
             let mut lines = stdin.lock().lines();

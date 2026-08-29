@@ -23,6 +23,9 @@
 // Allowed because domain acronyms
 #![allow(clippy::upper_case_acronyms)]
 
+/// `0.6.13-dev-a1b2c3d`, or `0.6.13-a1b2c3d` on a release tag.
+pub const VERSION: &str = env!("SOUL_VERSION");
+
 pub mod cli;
 pub mod color;
 pub mod core;

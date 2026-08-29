@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::{
-    color::{self, BOLD, RESET, Rgb},
+    color::{self, RESET, Rgb},
     core::{board::Position, defs::Protocol},
     engine::{
         history::History,
@@ -22,6 +22,8 @@ use crate::{
         tt::TranspositionTable,
     },
 };
+
+pub const DEFAULT_DEPTH: i32 = 12;
 
 const FENS: &str = include_str!("../data/bench.fens");
 
@@ -84,9 +86,6 @@ pub fn run(depth: i32, hash_mb: usize) {
     let done = Arc::new(AtomicUsize::new(0));
     let nodes = Arc::new(AtomicU64::new(0));
     let tty = io::stdout().is_terminal();
-    if tty {
-        println!("{}{BOLD}✦ Soul v{}{RESET}", color::ansi_fg(PURPLE), env!("CARGO_PKG_VERSION"));
-    }
 
     let progress = tty.then(|| Progress::spawn(start, total, Arc::clone(&done), Arc::clone(&nodes)));
     let limits = Limits { depth, silent: true, protocol: Protocol::Uci, ..Default::default() };
@@ -124,7 +123,7 @@ pub fn run(depth: i32, hash_mb: usize) {
     let total_nodes = nodes.load(Relaxed);
     let elapsed = search_time.as_secs_f64().max(0.000_001);
     let nps = (total_nodes as f64 / elapsed) as u64;
-    println!("Hash {hash_mb} MB · {} pages", tt.page_kind());
+    println!("Soul v{} · Hash {hash_mb} MB · {} pages", crate::VERSION, tt.page_kind());
     println!("Bench: {total_nodes} nodes {nps} nps · {elapsed:.1}s");
 
     #[cfg(feature = "mvpstats")]

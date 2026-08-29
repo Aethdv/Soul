@@ -333,8 +333,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
 // We chisel our feature list into the GUI's cave wall.
 // (Please put the pitchfork down, Lofty).
 fn print_features() {
-    let version = env!("CARGO_PKG_VERSION");
-    println!("feature myname=\"Soul {version}\"");
+    println!("feature myname=\"Soul v{}\"", crate::VERSION);
     println!("feature ping=1");
     println!("feature setboard=1");
     println!("feature memory=1");

@@ -108,7 +108,7 @@ pub fn run(positions: usize) {
     println!("\n");
     println!("{rule}");
     row("Binary", &binary_name);
-    row("Version", env!("CARGO_PKG_VERSION"));
+    row("Version", crate::VERSION);
     row("Rust", env!("SOUL_RUSTC"));
     row("Arch", arch);
     row("Features", &features);

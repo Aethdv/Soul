@@ -41,7 +41,7 @@ use crate::{
 
 static LICENSE_NOTICE: &str = concat!(
     "Soul Chess Engine v",
-    env!("CARGO_PKG_VERSION"),
+    env!("SOUL_VERSION"),
     "\nCopyright (C) 2026 Aethdv\n\n",
     "This program is free software: you can redistribute it and/or modify\n",
     "it under the terms of the GNU Affero General Public License as published\n",
@@ -476,7 +476,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             println!("Total:    {:>5}", res.total);
         },
 
-        "bench" => tools::bench::run(parse_val(&mut tokens), 16),
+        "bench" => tools::bench::run(parse_default(&mut tokens, tools::bench::DEFAULT_DEPTH), 16),
         "divide" => tools::perft::run(&state.board, parse_default(&mut tokens, 5), true),
         #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(0),
@@ -508,7 +508,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
 }
 
 fn print_id() {
-    println!("id name Soul v{}", env!("CARGO_PKG_VERSION"));
+    println!("id name Soul v{}", crate::VERSION);
     println!("id author Aethdv");
 }
 
