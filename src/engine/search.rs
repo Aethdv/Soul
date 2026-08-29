@@ -1511,11 +1511,19 @@ impl Worker<'_> {
         }
 
         // ── Correction History Update
-        // A capture or promotion settles the node on tactics, which say nothing
-        // about evaluator bias.
-        // Skip when the bound direction contradicts the diff: a fail-high with
-        // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
-        // shows no useful structural signal.
+        // Search returns a truer number than the evaluator guessed, so the gap between
+        // them is the evaluator's error at this position. Keyed by structure, that error
+        // transfers to the next position sharing the same pawn skeleton or piece
+        // placement, which starts from an eval already pulled toward what search found.
+        //
+        // Only a node whose value is the position's own teaches anything.
+        //
+        // A fail-high puts the truth at or above best_eval, so it catches an eval that
+        // sat too low and never one too high; a fail-low is the mirror.
+        //
+        // The delta is against the corrected eval, so the table takes only the error the
+        // correction missed. Against the raw eval it takes the whole error every visit,
+        // and most nodes fail low, so that drives the table further negative each pass.
         if !in_check
             && excluded.is_null()
             && !res.best_move.is_null()
@@ -1524,7 +1532,7 @@ impl Worker<'_> {
             && !((bound == tt::Bound::Lower && res.best_eval <= static_eval)
                 || (bound == tt::Bound::Upper && res.best_eval >= static_eval))
         {
-            let diff = res.best_eval - raw_static_eval;
+            let diff = res.best_eval - static_eval;
 
             self.history
                 .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, diff, depth);
