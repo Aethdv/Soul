@@ -11,6 +11,10 @@ pub trait LrScheduler: Send + Sync {
     fn rate(&self, epoch: usize, total: usize) -> f64;
     fn describe(&self) -> String;
 
+    /// First epoch of a new SGDR cycle.
+    #[must_use]
+    fn is_restart_boundary(&self, _epoch: usize, _total: usize) -> bool { false }
+
     /// Wrap this scheduler with linear warmup over the first `epochs` epochs.
     fn with_warmup(self, epochs: usize) -> Warmup<Self>
     where Self: Sized {
@@ -143,6 +147,11 @@ impl LrScheduler for CosineAnnealing {
         }
     }
 
+    fn is_restart_boundary(&self, epoch: usize, total: usize) -> bool {
+        let cycle_len = (total / self.cycles.max(1)).max(1);
+        epoch > 1 && (epoch - 1).is_multiple_of(cycle_len)
+    }
+
     fn describe(&self) -> String {
         if self.cycles > 1 {
             format!("CosineAnnealing ({} → {}, {} cycles)", self.base, self.min, self.cycles)
@@ -242,6 +251,8 @@ impl<S: LrScheduler> LrScheduler for Warmup<S> {
         let base_rate = self.inner.rate(epoch, total);
         if epoch <= self.warmup_epochs { base_rate * (epoch as f64 / self.warmup_epochs as f64) } else { base_rate }
     }
+    fn is_restart_boundary(&self, epoch: usize, total: usize) -> bool { self.inner.is_restart_boundary(epoch, total) }
+
     fn describe(&self) -> String { format!("Warmup ({} epochs, {})", self.warmup_epochs, self.inner.describe()) }
 }
 
@@ -260,6 +271,14 @@ impl<A: LrScheduler, B: LrScheduler> LrScheduler for Sequence<A, B> {
             self.first.rate(epoch, self.switch_epoch)
         } else {
             self.second.rate(epoch - self.switch_epoch, total - self.switch_epoch)
+        }
+    }
+
+    fn is_restart_boundary(&self, epoch: usize, total: usize) -> bool {
+        if epoch <= self.switch_epoch {
+            self.first.is_restart_boundary(epoch, self.switch_epoch)
+        } else {
+            self.second.is_restart_boundary(epoch - self.switch_epoch, total - self.switch_epoch)
         }
     }
 
@@ -403,6 +422,17 @@ mod tests {
     fn cosine_with_cycles() {
         let s = CosineAnnealing::new(1.0, 0.0).cycles(2);
         assert!(s.rate(51, 100) > 0.8, "cycle 2 must restart at peak learning rate");
+    }
+
+    #[test]
+    fn restart_boundary_is_the_cycle_edge_not_the_warmup_ramp() {
+        let shipped = CosineAnnealing::new(0.1, 0.0001).warmup_ratio(0.1);
+        let ramping: Vec<usize> = (2..=12).filter(|&e| shipped.is_restart_boundary(e, 100)).collect();
+        assert!(ramping.is_empty(), "warmup ramp reported restarts at {ramping:?}");
+
+        let sgdr = CosineAnnealing::new(0.1, 0.0001).warmup_ratio(0.1).cycles(2);
+        let edges: Vec<usize> = (2..=100).filter(|&e| sgdr.is_restart_boundary(e, 100)).collect();
+        assert_eq!(edges, vec![51], "two cycles over 100 epochs restart once, at 51");
     }
 
     #[test]

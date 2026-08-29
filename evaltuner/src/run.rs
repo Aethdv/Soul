@@ -733,13 +733,7 @@ fn train_loop(
             ema_active = true;
         }
 
-        let is_restart = epoch > 1 && {
-            let prev_scheduled_lr = lr_scheduler.rate(epoch - 1, config.epochs) * lr_scale;
-            // A 50% LR jump is a cosine SGDR cycle boundary. Correct for cosine-with-cycles,
-            // and it would false-fire on a warmup ramp, which no configured schedule pairs
-            // with cycles today.
-            scheduled_lr > prev_scheduled_lr * 1.5
-        };
+        let is_restart = lr_scheduler.is_restart_boundary(epoch, config.epochs);
 
         optimizer.set_lr(lr);
 
