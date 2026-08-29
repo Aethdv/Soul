@@ -38,6 +38,8 @@ use std::{
 #[cfg(not(feature = "nostore"))]
 use crate::core::board::xorboard::Undo as XbUndo;
 pub use crate::core::defs::Protocol;
+#[cfg(not(feature = "nocorr"))]
+use crate::engine::history::CORRECTION_SCALE;
 use crate::{
     core::{
         board::{Position, attacks::Pins, xorboard::XorBoard},
@@ -49,7 +51,7 @@ use crate::{
     },
     engine::{
         eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, evaluate_psqt, extract_phase, lazy_eval_margin},
-        history::{self, ContContext, History, HistoryParams},
+        history::{ContContext, History, HistoryParams},
         movegen::{gen_legal_moves, is_legal},
         movepicker::MovePicker,
         search_params::*,
@@ -838,12 +840,17 @@ impl Worker<'_> {
         evaluate_generic::<i32>(&self.pos, &self.accumulator, phase, &self.eval_params, Some(&features))
     }
 
+    #[cfg(feature = "nocorr")]
+    #[inline]
+    fn corrected_eval(&self, raw_eval: i32, _sp: &SearchParams) -> i32 { raw_eval.clamp(-MATE_BOUND, MATE_BOUND) }
+
     /// Raw eval shifted by the correction history tables, clamped to non-mate.
+    #[cfg(not(feature = "nocorr"))]
     #[inline]
     fn corrected_eval(&self, raw_eval: i32, sp: &SearchParams) -> i32 {
         let correction = self.history.correction(
             self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, sp.minor_corr_weight, sp.major_corr_weight,
-        ) / history::CORRECTION_SCALE;
+        ) / CORRECTION_SCALE;
 
         (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
     }

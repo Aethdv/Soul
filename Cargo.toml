@@ -51,6 +51,8 @@ corrstats = []
 mvpstats = []
 # Builds without XorBoard, so the store can be priced against its own absence.
 nostore = []
+# Builds without correction history, so the tables can be priced against their absence.
+nocorr = []
 
 [profile.release]
 lto = "fat"
