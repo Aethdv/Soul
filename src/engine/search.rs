@@ -1520,16 +1520,16 @@ impl Worker<'_> {
         // ── Correction History Update
         // A capture or promotion settles the node on tactics, which say nothing
         // about evaluator bias.
-        // Skip when the bound direction contradicts the diff: a fail-high with
-        // best_eval <= static_eval, or a fail-low with best_eval >= static_eval,
-        // shows no useful structural signal.
+        // A fail-low puts the truth at or below best_eval, so it can show the eval too high
+        // and never too low, and a fail-high is the mirror. Comparing against the corrected
+        // eval instead would move the threshold with the correction already stored.
         if !in_check
             && excluded.is_null()
             && !res.best_move.is_null()
             && !res.best_move.is_tactical()
             && res.best_eval.abs() < MATE_BOUND
-            && !((bound == tt::Bound::Lower && res.best_eval <= static_eval)
-                || (bound == tt::Bound::Upper && res.best_eval >= static_eval))
+            && !((bound == tt::Bound::Lower && res.best_eval <= raw_static_eval)
+                || (bound == tt::Bound::Upper && res.best_eval >= raw_static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
 
