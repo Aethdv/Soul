@@ -146,6 +146,11 @@ impl Move {
     pub const fn is_quiet(self) -> bool { !self.is_capture() }
 
     /// Non-capturing, non-castling: eligible for history heuristic.
+    ///
+    /// Castling encodes `to` as the rook's home square, and every history table keys on
+    /// the destination, so a castling update would credit h1 or a1, squares the king
+    /// never occupies. The butterfly table keys on from and to alone, where O-O and a
+    /// rook move e1h1 share one entry.
     #[inline(always)]
     pub const fn is_history_quiet(self) -> bool { self.is_quiet() && !self.is_castling() }
 
