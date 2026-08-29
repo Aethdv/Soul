@@ -1658,18 +1658,19 @@ impl Worker<'_> {
         if N::ROOT
             && let Some(i) = root_idx
         {
-            searcher.root_moves[i].score = eval;
+            // A scout window returns a bound, not a score. The stable sort keeps -INF
+            // entries in the order the last completed iteration set them.
+            if res.move_count == 1 || eval > res.alpha {
+                searcher.root_moves[i].score = eval;
+                searcher.root_moves[i].pv.compose(mv, &self.stack[ply + 1].pv);
+            } else {
+                searcher.root_moves[i].score = -INF;
+            }
         }
 
         if eval > res.best_eval {
             res.best_eval = eval;
             res.best_move = mv;
-
-            if N::ROOT
-                && let Some(i) = root_idx
-            {
-                searcher.root_moves[i].pv.compose(mv, &self.stack[ply + 1].pv);
-            }
 
             if eval > res.alpha {
                 res.alpha = eval;
