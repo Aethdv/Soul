@@ -691,7 +691,7 @@ impl<'cfg> Searcher<'cfg> {
     fn build_tm(cfg: &SearchConfig, pos: &Position) -> TimeManager {
         let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
         let game_ply = u64::from(pos.fullmove_number.saturating_sub(1)) * 2 + u64::from(pos.stm == Color::Black);
-        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, game_ply, &cfg.search_params, cfg.threads)
+        TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, game_ply, &cfg.search_params)
     }
 
     /// Periodic signal check: stop flag, hard time limit, node limit.
@@ -2058,7 +2058,7 @@ mod tests {
         let mut out = Vec::new();
         for (movestogo, forced) in [(0, false), (30, true), (2, false)] {
             let limits = Limits { wtime: 60_000, btime: 60_000, winc: 600, binc: 600, movestogo, ..Default::default() };
-            let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE / 2, 40, params, 1);
+            let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE / 2, 40, params);
             if forced {
                 tm.scale_base_soft(f64::from(params.tm_single_root) / 100.0);
             }

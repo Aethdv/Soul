@@ -32,7 +32,6 @@ pub struct TimeManager {
     bm_inst: f64,
     score_factor: f64,
     bm_changes: f64,
-    threads: usize,
 }
 
 pub struct Iteration {
@@ -54,20 +53,9 @@ impl TimeManager {
         phase: i32,
         game_ply: u64,
         params: &SearchParams,
-        threads: usize,
     ) -> Self {
         let (soft, hard) = compute_budget(limits, stm, overhead, phase, game_ply, params);
-        Self {
-            start,
-            soft,
-            hard,
-            base_soft: soft,
-            effort: 1.0,
-            bm_inst: 1.0,
-            score_factor: 1.0,
-            bm_changes: 0.0,
-            threads,
-        }
+        Self { start, soft, hard, base_soft: soft, effort: 1.0, bm_inst: 1.0, score_factor: 1.0, bm_changes: 0.0 }
     }
 
     #[inline]
@@ -148,7 +136,7 @@ impl TimeManager {
         if iter.best_move_changed {
             self.bm_changes += 1.0;
         }
-        self.bm_inst = 1.0 + f64::from(params.bm_inst_scale) / 100.0 * self.bm_changes / self.threads as f64;
+        self.bm_inst = 1.0 + f64::from(params.bm_inst_scale) / 100.0 * self.bm_changes;
         self.bm_changes *= f64::from(params.bm_inst_decay) / 100.0;
 
         self.recompute_soft();
@@ -260,7 +248,7 @@ mod tests {
     fn a_forced_move_discount_outlives_the_iteration_factors() {
         let params = SearchParams::default();
         let limits = Limits { wtime: 8000, btime: 8000, winc: 80, binc: 80, ..Default::default() };
-        let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE, 0, &params, 1);
+        let mut tm = TimeManager::new(&limits, Instant::now(), Color::White, 10, TOTAL_PHASE, 0, &params);
         let undiscounted = tm.soft_limit();
 
         tm.scale_base_soft(f64::from(params.tm_single_root) / 100.0);
