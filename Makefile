@@ -36,12 +36,12 @@ endif
 EXE := $(EXE_NAME)$(EXE_EXT)
 DEBUG_EXE := debug$(EXE_EXT)
 
-.PHONY: all help debug release native bench v3 v4 pgo openbench clean \
+.DEFAULT_GOAL := openbench
+
+.PHONY: help debug release native bench v3 v4 pgo openbench clean \
         evaltune test oracle flops seefmt fmt clippy profile etprofile tools \
         datagen avx2 avx2-bmi2 avx512 corrstats movepicker storecost \
         windows win-avx2 win-avx2-bmi2 win-avx512
-
-all: openbench
 
 debug: ## Build for development
 	@echo "Building debug..."
