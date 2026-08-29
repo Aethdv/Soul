@@ -131,24 +131,24 @@ pub fn update_accumulator(pos: &Position, acc: &mut Vi16x8, mv: Move, pt: PieceT
 
     if mv.is_castling() {
         let (king_to, rook_to) = castling_targets(from, to);
-        *acc -= psqt::get_vec(PieceType::King, from, stm);
-        *acc += psqt::get_vec(PieceType::King, king_to, stm);
-        *acc -= psqt::get_vec(PieceType::Rook, to, stm);
-        *acc += psqt::get_vec(PieceType::Rook, rook_to, stm);
+        *acc -= psqt::entry(PieceType::King, from, stm);
+        *acc += psqt::entry(PieceType::King, king_to, stm);
+        *acc -= psqt::entry(PieceType::Rook, to, stm);
+        *acc += psqt::entry(PieceType::Rook, rook_to, stm);
         return;
     }
 
     let opp = stm.opposite();
 
-    *acc -= psqt::get_vec(pt, from, stm);
-    *acc += psqt::get_vec(placed, to, stm);
+    *acc -= psqt::entry(pt, from, stm);
+    *acc += psqt::entry(placed, to, stm);
 
     if captured != PieceType::None {
-        *acc -= psqt::get_vec(captured, to, opp);
+        *acc -= psqt::entry(captured, to, opp);
     } else if mv.is_en_passant() {
         // The victim pawn sits one rank behind `to`.
         // Toggling bit 3 (±8) maps rank 5 → 4 for White and rank 2 → 3 for Black.
-        *acc -= psqt::get_vec(PieceType::Pawn, to ^ 8, opp);
+        *acc -= psqt::entry(PieceType::Pawn, to ^ 8, opp);
     }
 }
 

@@ -19,7 +19,7 @@ pub fn run(board: &Position, depth: u8, divide: bool) {
 
     let start = Instant::now();
     let mut board_clone = *board;
-    let mut acc = board_clone.get_initial_accumulator();
+    let mut acc = board_clone.initial_accumulator();
 
     if divide {
         println!("Perft Divide Depth {depth}");
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn perft_startpos_depth5() {
         let mut board = Position::from_fen(STARTPOS);
-        let mut acc = board.get_initial_accumulator();
+        let mut acc = board.initial_accumulator();
         assert_eq!(perft(&mut board, 5, &mut acc), 4_865_609);
     }
 
@@ -84,7 +84,7 @@ mod tests {
     fn perft_kiwipete_depth4() {
         let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -";
         let mut board = Position::from_fen(fen);
-        let mut acc = board.get_initial_accumulator();
+        let mut acc = board.initial_accumulator();
         assert_eq!(perft(&mut board, 4, &mut acc), 4_085_603);
     }
 
@@ -92,7 +92,7 @@ mod tests {
     fn perft_position2_depth5() {
         let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -";
         let mut board = Position::from_fen(fen);
-        let mut acc = board.get_initial_accumulator();
+        let mut acc = board.initial_accumulator();
         assert_eq!(perft(&mut board, 5, &mut acc), 674_624);
     }
 
@@ -100,7 +100,7 @@ mod tests {
     fn perft_position3_depth5() {
         let fen = "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq -";
         let mut board = Position::from_fen(fen);
-        let mut acc = board.get_initial_accumulator();
+        let mut acc = board.initial_accumulator();
         assert_eq!(perft(&mut board, 5, &mut acc), 15_833_292);
     }
 
@@ -115,7 +115,7 @@ mod tests {
 
         for (fen, expected) in tests {
             let mut board = Position::from_fen(fen);
-            let mut acc = board.get_initial_accumulator();
+            let mut acc = board.initial_accumulator();
             assert_eq!(perft(&mut board, 1, &mut acc), expected[0], "Failed depth 1 for {fen}");
             assert_eq!(perft(&mut board, 2, &mut acc), expected[1], "Failed depth 2 for {fen}");
         }

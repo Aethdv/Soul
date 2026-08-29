@@ -510,7 +510,7 @@ mod tests {
 
         for fen in FENS {
             let mut pos = Position::from_fen(fen);
-            let mut acc = pos.get_initial_accumulator();
+            let mut acc = pos.initial_accumulator();
             let mut board = XorBoard::new(&pos);
             let mut undo = Undo::new();
 

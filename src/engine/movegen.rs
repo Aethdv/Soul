@@ -52,19 +52,8 @@ pub fn gen_legal_moves(board: &Position) -> MoveList {
 pub fn gen_pseudo_moves(board: &Position) -> MoveList {
     let mut list = MoveList::new();
     match board.stm {
-        Color::White => gen_all::<{ Color::White }, false>(board, &mut list),
-        Color::Black => gen_all::<{ Color::Black }, false>(board, &mut list),
-    }
-    list
-}
-
-/// Captures and promotions only, still pseudo-legal.
-#[inline]
-pub fn gen_tactical_moves(board: &Position) -> MoveList {
-    let mut list = MoveList::new();
-    match board.stm {
-        Color::White => gen_all::<{ Color::White }, true>(board, &mut list),
-        Color::Black => gen_all::<{ Color::Black }, true>(board, &mut list),
+        Color::White => gen_all::<{ Color::White }>(board, &mut list),
+        Color::Black => gen_all::<{ Color::Black }>(board, &mut list),
     }
     list
 }
@@ -266,29 +255,27 @@ fn is_ep_legal(board: &Position, mv: Move, ksq: Square, pinned: Bitboard, checke
     (atk_bishop(ksq, ep_occ) & bq).is_empty()
 }
 
-/// Const-generic on color and `TACTICAL`, so the pawn directions and the promotion rank
-/// resolve at compile time and nothing in here branches on which way pawns move.
+/// Const-generic on color, so the pawn directions and the promotion rank resolve at
+/// compile time and nothing in here branches on which way pawns move.
 #[inline(always)]
-fn gen_all<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList) {
+fn gen_all<const US: Color>(board: &Position, acc: &mut MoveList) {
     let us = board.side_bb[US];
     let them = board.side_bb[US.opposite()];
     let occ = board.occ;
 
-    gen_pawns::<US, TACTICAL>(board, acc, them, occ);
-    gen_knights::<TACTICAL>(board, acc, us, them);
-    gen_sliders::<TACTICAL>(board, acc, occ, us, them);
-    gen_king::<TACTICAL>(board, acc, us, them);
+    gen_pawns::<US>(board, acc, them, occ);
+    gen_knights(board, acc, us, them);
+    gen_sliders(board, acc, occ, us, them);
+    gen_king(board, acc, us, them);
 
-    if !TACTICAL {
-        board.for_each_castle(US, |mv| acc.push(mv));
-    }
+    board.for_each_castle(US, |mv| acc.push(mv));
 }
 
 /// Pawns are the one irregular piece: direction depends on color, the first move may
 /// double, capture is diagonal, the last rank promotes four ways, and en passant takes
 /// a piece that never stood on the destination square.
 #[inline]
-fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut MoveList, them: Bitboard, occ: Bitboard) {
+fn gen_pawns<const US: Color>(board: &Position, acc: &mut MoveList, them: Bitboard, occ: Bitboard) {
     let empty = !occ;
     let pawns = board.role_bb[PieceType::Pawn] & board.side_bb[US];
 
@@ -306,21 +293,19 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
     // ── Single pushes (non-promoting)
     let all_pushes = pawns.shift(up) & empty;
 
-    if !TACTICAL {
-        let mut quiet_pushes = all_pushes & !promo_rank;
-        while quiet_pushes.is_not_empty() {
-            let to = quiet_pushes.pop_lsb();
-            acc.push(Move::new(to.offset_unchecked(-up_d), to, Move::QUIET));
-        }
+    let mut quiet_pushes = all_pushes & !promo_rank;
+    while quiet_pushes.is_not_empty() {
+        let to = quiet_pushes.pop_lsb();
+        acc.push(Move::new(to.offset_unchecked(-up_d), to, Move::QUIET));
+    }
 
-        // ── Double pushes
-        // A pawn cannot leap, so the second step starts only from the pushes that landed
-        // on the third rank.
-        let mut doubles = (all_pushes & third_rank).shift(up) & empty;
-        while doubles.is_not_empty() {
-            let to = doubles.pop_lsb();
-            acc.push(Move::new(to.offset_unchecked(-up_d * 2), to, Move::DOUBLE_PUSH));
-        }
+    // ── Double pushes
+    // A pawn cannot leap, so the second step starts only from the pushes that landed
+    // on the third rank.
+    let mut doubles = (all_pushes & third_rank).shift(up) & empty;
+    while doubles.is_not_empty() {
+        let to = doubles.pop_lsb();
+        acc.push(Move::new(to.offset_unchecked(-up_d * 2), to, Move::DOUBLE_PUSH));
     }
 
     // ── Diagonal captures
@@ -371,27 +356,21 @@ fn gen_pawns<const US: Color, const TACTICAL: bool>(board: &Position, acc: &mut 
 }
 
 #[inline]
-fn gen_knights<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
+fn gen_knights(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::Knight] & us {
-        let mut targets = atk_knight(from) & !us;
-        if TACTICAL {
-            targets &= them;
-        }
+        let targets = atk_knight(from) & !us;
         emit_from_mask(acc, from, targets, them);
     }
 }
 
 /// A queen appears in both loops, once for each half of its move set.
 #[inline]
-fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: Bitboard, us: Bitboard, them: Bitboard) {
+fn gen_sliders(board: &Position, acc: &mut MoveList, occ: Bitboard, us: Bitboard, them: Bitboard) {
     // Diagonal movers: bishops + queen's diagonal component.
     let mut diags = (board.role_bb[PieceType::Bishop] | board.role_bb[PieceType::Queen]) & us;
     while diags.is_not_empty() {
         let from = diags.pop_lsb();
-        let mut targets = atk_bishop(from, occ) & !us;
-        if TACTICAL {
-            targets &= them;
-        }
+        let targets = atk_bishop(from, occ) & !us;
         emit_from_mask(acc, from, targets, them);
     }
 
@@ -399,22 +378,16 @@ fn gen_sliders<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, occ: 
     let mut orthos = (board.role_bb[PieceType::Rook] | board.role_bb[PieceType::Queen]) & us;
     while orthos.is_not_empty() {
         let from = orthos.pop_lsb();
-        let mut targets = atk_rook(from, occ) & !us;
-        if TACTICAL {
-            targets &= them;
-        }
+        let targets = atk_rook(from, occ) & !us;
         emit_from_mask(acc, from, targets, them);
     }
 }
 
 /// King steps only; castling is generated separately.
 #[inline]
-fn gen_king<const TACTICAL: bool>(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
+fn gen_king(board: &Position, acc: &mut MoveList, us: Bitboard, them: Bitboard) {
     for from in board.role_bb[PieceType::King] & us {
-        let mut targets = atk_king(from) & !us;
-        if TACTICAL {
-            targets &= them;
-        }
+        let targets = atk_king(from) & !us;
         emit_from_mask(acc, from, targets, them);
     }
 }
@@ -474,7 +447,7 @@ mod tests {
     #[test]
     fn tt_castle_rejects_the_opponents_stale_rook_slot() {
         let mut pos = Position::from_fen("r3k3/1P6/8/8/8/8/8/R3K3 b Qq - 0 1");
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
         for mv in [
             Move::new(Square(60), Square(61), Move::QUIET),
             Move::new(Square(49), Square(56), Move::PROM_R_CAPTURE),
@@ -569,7 +542,7 @@ mod tests {
             }
 
             let mut child = *pos;
-            let mut acc = child.get_initial_accumulator();
+            let mut acc = child.initial_accumulator();
             child.make_move(mv, &mut acc);
             nodes += legality_perft(&child, depth - 1);
         }
@@ -582,7 +555,7 @@ mod tests {
 
         let mut rng = ConstRng::new(0x9E3779B97F4A7C15);
         let mut pos = Position::from_fen(STARTPOS);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
 
         for _ in 0..POSITIONS {
             check_every_move(&pos);
@@ -590,7 +563,7 @@ mod tests {
             let legal = gen_legal_moves(&pos);
             if legal.is_empty() {
                 pos = Position::from_fen(STARTPOS);
-                acc = pos.get_initial_accumulator();
+                acc = pos.initial_accumulator();
                 continue;
             }
 
@@ -616,11 +589,11 @@ mod tests {
             }
 
             let mut child = *pos;
-            let mut acc = child.get_initial_accumulator();
+            let mut acc = child.initial_accumulator();
             let undo = child.make_move(mv, &mut acc);
 
             assert_consistent(&child, pos, mv);
-            let fresh = child.get_initial_accumulator();
+            let fresh = child.initial_accumulator();
             assert_eq!(acc.to_array(), fresh.to_array(), "accumulator diverged {}", context(pos, mv));
             child.unmake_move(mv, &undo);
             assert!(board_eq(&child, pos), "unmake did not restore {}", context(pos, mv));

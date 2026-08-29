@@ -46,7 +46,7 @@ fn zobrist_make_unmake_identity() {
 
     for fen in positions {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
 
         let original_hash = pos.hash;
         let original_fen = pos.as_fen();
@@ -65,7 +65,7 @@ fn zobrist_make_unmake_identity() {
 #[test]
 fn zobrist_incremental_matches_full() {
     let mut pos = Position::from_fen(STARTPOS);
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"];
     for uci in moves {
@@ -79,7 +79,7 @@ fn zobrist_incremental_matches_full() {
 #[test]
 fn zobrist_long_sequence() {
     let mut pos = Position::from_fen(STARTPOS);
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     // Ruy Lopez: Exchange Variation line
     let game = [
@@ -94,7 +94,7 @@ fn zobrist_long_sequence() {
         assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after move {uci}. Position: {}", pos.as_fen());
         assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after move {uci}. Position: {}", pos.as_fen());
         assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after move {uci}. Position: {}", pos.as_fen());
-        let fresh_acc = pos.get_initial_accumulator();
+        let fresh_acc = pos.initial_accumulator();
         assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator diverged after move {uci}");
     }
 }
@@ -109,7 +109,7 @@ fn correction_keys_promotion_and_en_passant() {
 
     for (fen, uci) in cases {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
         let before = (pos.pawn_key, pos.minor_key, pos.major_key);
         let mv = find_uci_move(&pos, uci);
         let undo = pos.make_move(mv, &mut acc);
@@ -126,13 +126,13 @@ fn accumulator_incremental_matches_full() {
     let positions = [STARTPOS, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -"];
     for fen in positions {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
 
         let moves = gen_legal_moves(&pos);
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);
-            let fresh_acc = pos.get_initial_accumulator();
+            let fresh_acc = pos.initial_accumulator();
             assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator mismatch after {} in {fen}", mv.to_uci(false));
             pos.unmake_move(*mv, &undo);
             acc = saved_acc;
@@ -143,7 +143,7 @@ fn accumulator_incremental_matches_full() {
 #[test]
 fn castling_kingside_white() {
     let mut pos = Position::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq -");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let mv = Move::new(Square(4), Square(7), Move::CASTLE);
     let undo = pos.make_move(mv, &mut acc);
@@ -161,7 +161,7 @@ fn castling_kingside_white() {
 #[test]
 fn castling_queenside_black() {
     let mut pos = Position::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq -");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let mv = Move::new(Square(60), Square(56), Move::CASTLE);
     let undo = pos.make_move(mv, &mut acc);
@@ -177,7 +177,7 @@ fn castling_queenside_black() {
 #[test]
 fn en_passant_capture() {
     let mut pos = Position::from_fen("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let original_hash = pos.hash;
     let mv = Move::new(Square::from_coords(3, 4), Square::from_coords(4, 5), Move::EP_CAPTURE);
@@ -194,7 +194,7 @@ fn en_passant_capture() {
 #[test]
 fn promotion_queen() {
     let mut pos = Position::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let mv = Move::new(Square::from_coords(0, 6), Square::from_coords(0, 7), Move::PROM_Q);
     let undo = pos.make_move(mv, &mut acc);
@@ -340,7 +340,7 @@ fn eval_startpos_tempo_only() {
     use crate::engine::{eval::evaluate, eval_params::TEMPO};
 
     let pos = Position::from_fen(STARTPOS);
-    let acc = pos.get_initial_accumulator();
+    let acc = pos.initial_accumulator();
     let score = evaluate(&pos, &acc);
     assert_eq!(score, TEMPO[0], "got {score}");
 }
@@ -351,8 +351,8 @@ fn eval_stm_symmetry() {
 
     let w = Position::from_fen("rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq e6 0 1");
     let b = Position::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
-    let w_acc = w.get_initial_accumulator();
-    let b_acc = b.get_initial_accumulator();
+    let w_acc = w.initial_accumulator();
+    let b_acc = b.initial_accumulator();
     let w_score = evaluate(&w, &w_acc);
     let b_score = evaluate(&b, &b_acc);
     assert_eq!(w_score, b_score, "Mirror positions should eval identically, got w={w_score}, b={b_score}");
@@ -364,8 +364,8 @@ fn eval_strict_symmetry() {
 
     let w = Position::from_fen(STARTPOS);
     let b = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
-    let w_acc = w.get_initial_accumulator();
-    let b_acc = b.get_initial_accumulator();
+    let w_acc = w.initial_accumulator();
+    let b_acc = b.initial_accumulator();
     let w_score = evaluate(&w, &w_acc);
     let b_score = evaluate(&b, &b_acc);
     assert_eq!(w_score, b_score);
@@ -489,7 +489,7 @@ fn phase_startpos() {
     use crate::engine::eval::extract_phase;
 
     let pos = Position::from_fen(STARTPOS);
-    let acc = pos.get_initial_accumulator();
+    let acc = pos.initial_accumulator();
     let phase = extract_phase(&acc);
     assert_eq!(phase, TOTAL_PHASE, "Startpos should have full phase (24)");
 }
@@ -499,7 +499,7 @@ fn phase_endgame() {
     use crate::engine::eval::extract_phase;
 
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-    let acc = pos.get_initial_accumulator();
+    let acc = pos.initial_accumulator();
     let phase = extract_phase(&acc);
     assert_eq!(phase, 0, "Bare kings should have phase 0");
 }
@@ -577,7 +577,7 @@ fn fifty_move_draw_detection() {
 #[test]
 fn double_push_sets_en_passant() {
     let mut pos = Position::from_fen("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
     let mv = find_uci_move(&pos, "e2e4");
     pos.make_move(mv, &mut acc);
     assert_eq!(pos.en_passant, Some(Square(20)), "e2e4 double push should set EP square e3 when capture is possible");
@@ -586,7 +586,7 @@ fn double_push_sets_en_passant() {
 #[test]
 fn promotion_capture_and_undo() {
     let mut pos = Position::from_fen("2r1k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
     // b7c8=Q
     let mv = Move::new(Square::from_coords(1, 6), Square::from_coords(2, 7), Move::PROM_Q_CAPTURE);
     let original_hash = pos.hash;
@@ -630,7 +630,7 @@ fn double_check_only_king_moves() {
 #[test]
 fn knight_under_promotion_check() {
     let mut pos = Position::from_fen("8/1kP5/8/8/8/8/8/4K3 w - - 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
     let mv = Move::new(Square::from_coords(2, 6), Square::from_coords(3, 7), Move::PROM_N); // c7d8=N
     let undo = pos.make_move(mv, &mut acc);
     assert_eq!(pos.piece_at(Square::from_coords(3, 7)), PieceType::Knight);
@@ -661,7 +661,7 @@ fn perft_suite() {
 
     for (fen, depth, nodes) in cases {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
         assert_eq!(perft_recursive(&mut pos, depth, &mut acc), nodes, "Perft mismatch for {fen} at depth {depth}");
     }
 }
@@ -691,7 +691,7 @@ fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::Vi16x
 #[test]
 fn king_move_removes_castling_rights() {
     let mut pos = Position::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "e1d1");
@@ -705,7 +705,7 @@ fn king_move_removes_castling_rights() {
 #[test]
 fn rook_capture_removes_castling_rights() {
     let mut pos = Position::from_fen("r3k2r/6B1/8/8/8/8/8/R3K2R w KQkq - 0 1");
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
 
     let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "g7h8");

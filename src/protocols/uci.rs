@@ -134,7 +134,7 @@ impl UciState {
         });
 
         Self {
-            accumulator: board.get_initial_accumulator(),
+            accumulator: board.initial_accumulator(),
             board,
             history,
             persistent_history: History::new(),
@@ -174,7 +174,7 @@ impl UciState {
     fn load_position(&mut self, board: Position) {
         self.board = board;
         self.board.is_frc = self.is_frc;
-        self.accumulator = self.board.get_initial_accumulator();
+        self.accumulator = self.board.initial_accumulator();
         self.history.clear();
         self.history.push(self.board.hash);
     }

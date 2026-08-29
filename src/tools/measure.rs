@@ -216,7 +216,7 @@ fn generate(seed: u64, ply_cap: usize) -> Stream {
 
     for fen in FENS.lines() {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
         let mut moves = Vec::new();
 
         for _ in 0..ply_cap {
@@ -957,7 +957,7 @@ fn column_prefix(rows: &[u64; 32], mask: Bitboard, wg: usize, bg: usize) -> u32 
 /// lands in the baseline and cancels out of the deltas.
 fn setup(fen: &str) -> (Position, Vi16x8, AttackTable, XorBoard, ByteStore) {
     let pos = Position::from_fen(fen);
-    let acc = pos.get_initial_accumulator();
+    let acc = pos.initial_accumulator();
     let dst = black_box(AttackTable::from_scratch(&pos));
     let xb = black_box(XorBoard::from_scratch(&pos));
     let bs = black_box(ByteStore::from_scratch(&pos));
@@ -1346,7 +1346,7 @@ fn validate(stream: &Stream) -> Option<u64> {
 
     for (gi, game) in stream.games.iter().enumerate() {
         let mut pos = Position::from_fen(&game.fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
         let mut dst = AttackTable::from_scratch(&pos);
         let mut xb = XorBoard::from_scratch(&pos);
         let mut col = XorBoard::from_scratch(&pos);
@@ -1553,7 +1553,7 @@ fn count_writes(stream: &Stream) {
 
     for game in &stream.games {
         let mut pos = Position::from_fen(&game.fen);
-        let mut acc = pos.get_initial_accumulator();
+        let mut acc = pos.initial_accumulator();
         let mut dst = AttackTable::from_scratch(&pos);
         let mut xb = XorBoard::from_scratch(&pos);
         let mut undo = Undo::empty();
@@ -1637,7 +1637,7 @@ pub fn run(args: &[&str]) {
             let game = &stream.games[0];
             for (ply, &mv) in game.moves.iter().take(n).enumerate() {
                 let mut pos = Position::from_fen(&game.fen);
-                let mut acc = pos.get_initial_accumulator();
+                let mut acc = pos.initial_accumulator();
 
                 for &prior in game.moves.iter().take(ply) {
                     pos.make_move(prior, &mut acc);

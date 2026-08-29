@@ -391,7 +391,7 @@ fn print_uci(data: &SearchInfoData<'_>) {
     }
 
     // SAN needs the position each move is played from, so pretty output replays the line.
-    let mut replay = pretty.then(|| (*data.board, data.board.get_initial_accumulator()));
+    let mut replay = pretty.then(|| (*data.board, data.board.initial_accumulator()));
     let white_first = data.board.stm == Color::White;
     let reset = ansi_code(RESET, data.display.use_ansi);
 
@@ -420,7 +420,7 @@ fn print_xboard(data: &SearchInfoData<'_>) {
 fn fmt_pv(root: &Position, line: &Line, max: usize, enabled: bool) -> String {
     let reset = ansi_code(RESET, enabled);
     let mut board = *root;
-    let mut acc = board.get_initial_accumulator();
+    let mut acc = board.initial_accumulator();
     let mut num = board.fullmove_number;
     let mut white_to_move = board.stm == Color::White;
     let mut out = String::with_capacity(max * 12);

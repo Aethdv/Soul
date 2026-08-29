@@ -483,7 +483,7 @@ mod tests {
         let values = default_values(&collect_parameters());
         for fen in FENS {
             let pos = Position::from_fen(fen);
-            let engine = f64::from(evaluate(&pos, &pos.get_initial_accumulator()));
+            let engine = f64::from(evaluate(&pos, &pos.initial_accumulator()));
             let tuner = eval_f64(&pos, &values);
             assert!((engine - tuner).abs() < 1e-9, "engine {engine} vs tuner {tuner} on '{fen}'");
         }

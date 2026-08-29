@@ -102,7 +102,7 @@ impl FeatureRecord {
 
         let sign = if is_black { -1 } else { 1 };
 
-        let acc = pos.get_initial_accumulator();
+        let acc = pos.initial_accumulator();
         let phase = extract_phase(&acc);
 
         let mut record = Self {

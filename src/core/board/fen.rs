@@ -161,7 +161,7 @@ pub fn as_fen(pos: &Position) -> String { Fen(pos).to_string() }
 
 /// Prints a board diagram with evaluation and position metadata.
 pub fn pretty_print(pos: &Position) {
-    let ev = pos.get_initial_accumulator().to_array();
+    let ev = pos.initial_accumulator().to_array();
     let [mg, eg, ph] = [ev[0], ev[1], ev[2]].map(i32::from);
     let phase = ph.min(TOTAL_PHASE);
     let raw = (mg * phase + eg * (TOTAL_PHASE - phase)) / TOTAL_PHASE;

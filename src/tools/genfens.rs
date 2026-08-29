@@ -98,7 +98,7 @@ fn opening(book: &[String], rng: &mut Rng, plies: Option<usize>) -> Option<Strin
 /// `None` if it mates or stalemates on the way or on arrival.
 fn play_out(book: &[String], rng: &mut Rng, plies: usize) -> Option<String> {
     let mut pos = Position::from_fen(&book[rng.usize(..book.len())]);
-    let mut acc = pos.get_initial_accumulator();
+    let mut acc = pos.initial_accumulator();
     for _ in 0..plies {
         let moves = gen_legal_moves(&pos);
         if moves.is_empty() {

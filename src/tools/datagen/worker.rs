@@ -100,7 +100,7 @@ impl WorkerState {
     pub fn new(book: Arc<Vec<String>>, config: DatagenConfig, global: Arc<GlobalStats>) -> Self {
         let board = Position::new();
         Self {
-            accumulator: board.get_initial_accumulator(),
+            accumulator: board.initial_accumulator(),
             board,
             search_history: Vec::with_capacity(config.max_plies),
             game_history: Vec::with_capacity(300),
@@ -120,7 +120,7 @@ impl WorkerState {
     /// Wipes all mutable state and sets up the board from a new opening FEN.
     pub fn reset_for_new_game(&mut self, fen: &str) {
         self.board = Position::from_fen(fen);
-        self.accumulator = self.board.get_initial_accumulator();
+        self.accumulator = self.board.initial_accumulator();
 
         self.search_history.clear();
         self.search_history.push(self.board.hash);

@@ -98,8 +98,8 @@ pub fn run(positions: usize) {
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "Soul".to_string());
 
-    let arch = get_arch_string();
-    let features = get_feature_flags();
+    let arch = arch_string();
+    let features = feature_flags();
 
     let (dim, label, text, peach) = (color::ansi_fg(DIM), color::ansi_fg(LAVENDER), color::ansi_fg(TEXT), color::ansi_fg(PEACH));
     let rule = format!("  {dim}──────────────────────────────────────────────────{RESET}");
@@ -122,7 +122,7 @@ pub fn run(positions: usize) {
 }
 
 /// Build architecture string based on target features
-const fn get_arch_string() -> &'static str {
+const fn arch_string() -> &'static str {
     #[cfg(target_feature = "avx512f")]
     {
         "x86-64-avx512"
@@ -156,7 +156,7 @@ const fn get_arch_string() -> &'static str {
 }
 
 /// The target features this binary was built with, subsets and all.
-fn get_feature_flags() -> String {
+fn feature_flags() -> String {
     macro_rules! enabled {
         ($($feature:literal => $label:literal),* $(,)?) => {{
             #[allow(unused_mut)]

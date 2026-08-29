@@ -284,11 +284,11 @@ impl Position {
     }
 
     /// Once at position setup; `make_move` and `unmake_move` keep it current after that.
-    pub fn get_initial_accumulator(&self) -> Vi16x8 {
+    pub fn initial_accumulator(&self) -> Vi16x8 {
         let mut acc = Vi16x8::splat(0);
         for sq in self.occ {
             // MG/EG lanes are i16 and won't overflow at realistic piece values
-            acc += psqt::get_vec(self.piece_at(sq), sq, self.color_at(sq));
+            acc += psqt::entry(self.piece_at(sq), sq, self.color_at(sq));
         }
         acc
     }
@@ -520,9 +520,6 @@ impl Position {
     /// Bitboard of all enemy pieces currently giving check to the side to move.
     #[inline(always)]
     pub fn checkers(&self) -> Bitboard { attacks::checkers(self) }
-    /// All pieces of `attacker`'s color that attack `sq`.
-    #[inline(always)]
-    pub fn get_attackers_on(&self, sq: Square, attacker: Color) -> Bitboard { attacks::attackers_of(self, sq, attacker) }
 
     /// Bulk pawn attack mask: all squares attacked by any pawn of `color`.
     ///

@@ -420,7 +420,7 @@ impl<'cfg> Searcher<'cfg> {
 
         if let Some(perft_depth) = self.cfg.limits.perft {
             let mut board = self.root_pos;
-            let mut acc = board.get_initial_accumulator();
+            let mut acc = board.initial_accumulator();
             println!("Nodes searched: {}", perft(&mut board, perft_depth, &mut acc));
             return;
         }
@@ -453,7 +453,7 @@ impl<'cfg> Searcher<'cfg> {
         // The root position is fixed for the whole search, so its PSQT
         // accumulator is invariant; compute it once and restore from it on
         // every aspiration re-search rather than rescanning the board.
-        let root_acc = self.root_pos.get_initial_accumulator();
+        let root_acc = self.root_pos.initial_accumulator();
 
         // The worker is built once here, not inside the loop: a fresh one per
         // iteration would memset 287 KB of ply stack every pass, for nothing.
@@ -650,23 +650,6 @@ impl<'cfg> Searcher<'cfg> {
         }
     }
 
-    /// Per-move reset. History lives at the caller; clear it between games via `History::clear`.
-    #[inline]
-    pub fn reset(&mut self, cfg: &'cfg SearchConfig, pos: &Position, history: &[u64]) {
-        Self::fill_trail(&mut self.zobrist_trail, pos, history);
-        self.cfg = cfg;
-        self.tm = Self::build_tm(cfg, pos);
-        self.root_pos = *pos;
-        self.root_moves = gen_legal_moves(pos).iter().map(|&mv| RootMove::new(mv)).collect();
-        self.nodes = 0;
-        self.sel_depth = 0;
-        self.iter_depth = 0;
-        self.last_print = 0;
-        self.pv_history.clear();
-        self.prev_score = -INF;
-        self.prev_pv = Line::new();
-    }
-
     #[inline]
     pub fn best_move(&self) -> Option<Move> { self.root_moves.first().map(|rm| rm.mv) }
 
@@ -689,7 +672,7 @@ impl<'cfg> Searcher<'cfg> {
     /// Time manager for this root position, derived from the live config
     /// and the accumulator's phase lane.
     fn build_tm(cfg: &SearchConfig, pos: &Position) -> TimeManager {
-        let phase = i32::from(pos.get_initial_accumulator().to_array()[2]);
+        let phase = i32::from(pos.initial_accumulator().to_array()[2]);
         let game_ply = u64::from(pos.fullmove_number.saturating_sub(1)) * 2 + u64::from(pos.stm == Color::Black);
         TimeManager::new(&cfg.limits, cfg.start_time, pos.stm, cfg.overhead, phase, game_ply, &cfg.search_params)
     }

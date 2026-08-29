@@ -208,7 +208,7 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
         };
 
         // Incremental updates require initializing from the actual board state.
-        let mut acc = position.get_initial_accumulator();
+        let mut acc = position.initial_accumulator();
         let kept_before = entries.len();
 
         loop {
@@ -299,7 +299,7 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
             break;
         };
 
-        let mut acc = position.get_initial_accumulator();
+        let mut acc = position.initial_accumulator();
         let mut last_score = 0i32;
         let mut plies = 0u64;
 
@@ -813,7 +813,7 @@ mod tests {
     fn assert_round_trips(tag: &str, start_fen: &str, ucis: &[&str], result: u8) {
         let opening = Position::from_fen(start_fen);
         let mut replay = opening;
-        let mut acc = replay.get_initial_accumulator();
+        let mut acc = replay.initial_accumulator();
         let mut moves = Vec::new();
         let mut expected = Vec::new();
 

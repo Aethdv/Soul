@@ -24,7 +24,7 @@ use std::{
 
 use super::{
     config::DatagenConfig,
-    stats::{GlobalStats, get_rss_kb},
+    stats::{GlobalStats, rss_kb},
     worker::{Game, WorkerState},
 };
 use crate::{
@@ -283,7 +283,7 @@ fn render_dashboard(snap: &Snapshot, first_frame: &mut bool) {
     println!("\r\x1b[KDraw (adj):      {}", format_num(snap.term_draw_adj));
     println!("\r\x1b[KResign (adj):    {}", format_num(snap.term_resign));
     println!("\r\x1b[KBest Move fails: {}", format_num(snap.search_fail));
-    println!("\r\x1b[KRAM alloc:       {} MB", get_rss_kb() / 1024);
+    println!("\r\x1b[KRAM alloc:       {} MB", rss_kb() / 1024);
     println!("\r\x1b[KElapsed:         {}", format_duration((snap.elapsed * 1000.0) as u64));
     println!("\r\x1b[KETA:             {}", format_duration((snap.eta_secs() * 1000.0) as u64));
 

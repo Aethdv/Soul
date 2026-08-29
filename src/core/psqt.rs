@@ -28,16 +28,16 @@ pub struct AlignedTable(pub [[i16; 8]; 64]);
 
 /// PSQT vector for piece-square table lookup.
 #[inline(always)]
-pub fn get_vec(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
+pub fn entry(pt: PieceType, sq: Square, c: Color) -> Vi16x8 {
     let idx = usize::from(pt) + (usize::from(c) * 7);
     debug_assert!(idx < 14, "PSQT index out of bounds: {idx} >= 14");
     debug_assert!(usize::from(sq) < 64, "Square index out of bounds: {sq} >= 64");
 
     // SAFETY: idx = pt + color·7 ≤ 6 + 7 = 13 < 14 (PieceType ≤ 6, Color ≤ 1) and
     // sq < 64 by the Square invariant, so both get_unchecked indices are in bounds.
-    let entry = unsafe { PSQT.get_unchecked(idx).0.get_unchecked(usize::from(sq)) };
+    let lanes = unsafe { PSQT.get_unchecked(idx).0.get_unchecked(usize::from(sq)) };
     // SAFETY: AlignedTable's 32-byte alignment makes each [i16; 8] entry 16-byte aligned.
-    Vi16x8(unsafe { arch::x86_64::_mm_load_si128(entry.as_ptr() as *const _) })
+    Vi16x8(unsafe { arch::x86_64::_mm_load_si128(lanes.as_ptr() as *const _) })
 }
 
 /// Mirror square horizontally; files E-H map to D-A
@@ -63,14 +63,14 @@ const fn init_psqt() -> [AlignedTable; 14] {
         let mut sq = 0;
         while sq < 64 {
             let w_visual_idx = sq ^ 0x38;
-            let mg_val = clamp_i16(mg_w + get_raw_mg(pt, w_visual_idx));
-            let eg_val = clamp_i16(eg_w + get_raw_eg(pt, w_visual_idx));
+            let mg_val = clamp_i16(mg_w + raw_mg(pt, w_visual_idx));
+            let eg_val = clamp_i16(eg_w + raw_eg(pt, w_visual_idx));
 
             tables[pt].0[sq] = [mg_val, eg_val, ph_w as i16, 0, 0, 0, 0, 0];
 
             let b_visual_idx = sq;
-            let mg_val_b = clamp_i16(-(mg_w + get_raw_mg(pt, b_visual_idx)));
-            let eg_val_b = clamp_i16(-(eg_w + get_raw_eg(pt, b_visual_idx)));
+            let mg_val_b = clamp_i16(-(mg_w + raw_mg(pt, b_visual_idx)));
+            let eg_val_b = clamp_i16(-(eg_w + raw_eg(pt, b_visual_idx)));
 
             // PSQT values for Black are mirrored using 'sq'.
             // This allows us to use the same tables built from White's perspective,
@@ -87,7 +87,7 @@ const fn init_psqt() -> [AlignedTable; 14] {
 const fn clamp_i16(v: i32) -> i16 { v.clamp(i16::MIN as i32, i16::MAX as i32) as i16 }
 
 #[inline]
-const fn get_raw_mg(pt: usize, sq64: usize) -> i32 {
+const fn raw_mg(pt: usize, sq64: usize) -> i32 {
     let idx = mirror_sq(sq64);
     match pt {
         0 => MG_PAWN[idx],
@@ -101,7 +101,7 @@ const fn get_raw_mg(pt: usize, sq64: usize) -> i32 {
 }
 
 #[inline]
-const fn get_raw_eg(pt: usize, sq64: usize) -> i32 {
+const fn raw_eg(pt: usize, sq64: usize) -> i32 {
     let idx = mirror_sq(sq64);
     match pt {
         0 => EG_PAWN[idx],
