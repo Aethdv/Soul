@@ -38,6 +38,9 @@ const CLUSTER_SIZE: usize = 3;
 /// `age` is 5 bits; generation distance is read modulo 32.
 const AGE_MASK: u8 = 0x1F;
 
+/// How much deeper a stored result must be to outrank a revisit of the same position.
+const DEPTH_SLACK: i32 = 4;
+
 const _: () = assert!(mem::size_of::<TtEntry>() == 10);
 const _: () = assert!(mem::size_of::<Cluster>() == 32);
 const _: () = assert!(mem::align_of::<Cluster>() == 32);
@@ -349,13 +352,13 @@ impl TranspositionTable {
 
         let mut victim = 0;
         let mut worst_quality = i32::MAX;
-        let mut is_key_match = false;
+        let mut existing = None;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, packed) = slot.scan_read();
             if packed_bound(packed) == Bound::None || key == key16 {
                 victim = i;
-                is_key_match = key == key16;
+                existing = (key == key16).then_some(packed);
                 break;
             }
 
@@ -366,10 +369,14 @@ impl TranspositionTable {
             }
         }
 
+        if existing.is_some_and(|packed| stored_outranks(packed, depth, pv, bound, cur_age, age_factor)) {
+            return;
+        }
+
         let mut store_mv = mv.inner();
         let mut store_pv = pv as u8;
 
-        if mv.is_null() && is_key_match {
+        if mv.is_null() && existing.is_some() {
             let existing = &cluster.slots[victim];
             store_mv = existing.mv.load(Ordering::Relaxed);
             store_pv |= packed_pv(existing.packed.load(Ordering::Relaxed));
@@ -400,13 +407,13 @@ impl TranspositionTable {
 
         let mut victim: Option<usize> = None;
         let mut worst_quality = i32::MAX;
-        let mut is_key_match = false;
+        let mut existing = None;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, packed) = slot.scan_read();
             if key == key16 || packed_bound(packed) == Bound::None || packed_depth(packed) == 0 {
                 victim = Some(i);
-                is_key_match = key == key16;
+                existing = (key == key16).then_some(packed);
                 break;
             }
 
@@ -418,9 +425,13 @@ impl TranspositionTable {
         }
 
         if let Some(victim) = victim {
+            if existing.is_some_and(|packed| stored_outranks(packed, 0, pv, bound, cur_age, age_factor)) {
+                return;
+            }
+
             // A qsearch visit would otherwise wipe the flag a previous negamax
             // store left on this position.
-            let store_pv = if is_key_match {
+            let store_pv = if existing.is_some() {
                 pv as u8 | packed_pv(cluster.slots[victim].packed.load(Ordering::Relaxed))
             } else {
                 pv as u8
@@ -451,6 +462,13 @@ impl TranspositionTable {
         let clusters = self.clusters.len();
         (((hash as u128) * (clusters as u128)) >> 64) as usize
     }
+}
+
+/// Whether the entry already stored beats a revisit of the same position.
+/// An exact bound is the position's value rather than a window artifact.
+#[inline(always)]
+fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8, age_factor: i32) -> bool {
+    bound != Bound::Exact && replacement_quality(packed, cur_age, age_factor) >= depth + 2 * i32::from(pv) + DEPTH_SLACK
 }
 
 /// How readily a slot gives way: its depth, discounted by how many generations
