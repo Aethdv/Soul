@@ -357,18 +357,20 @@ pub fn momentum_report(ctx: &TrainerContext, config: &EvalTuneConfig) {
 
     let variance = variance / samples as f64;
     let drift = (drift_sq / samples as f64).sqrt();
-    println!("  {LAB}variance{RESET}      {VAL}{variance:.4e}{RESET}  {DIM}tr(Σ)/B, one batch against another{RESET}");
-    println!("  {LAB}drift{RESET}         {VAL}{drift:.4e}{RESET}  {DIM}gradient moved per unit of learning rate{RESET}");
+    let row = |label: &str, value: &str, note: &str| println!("  {LAB}{label:<12}{RESET}{VAL}{value:<11}{RESET}{DIM}{note}{RESET}");
+
+    let coefficient = (4.0 * drift.powi(2) / variance).cbrt();
+    row("variance", &format!("{variance:.4e}"), "tr(Σ)/B, one batch against another");
+    row("drift", &format!("{drift:.4e}"), "gradient moved per unit of learning rate");
+    row("coefficient", &format!("{coefficient:.4}"), "beta2_lr_coefficient, 1 - β₂ = c·lr^(2/3)");
 
     let scheduler = config.lr_schedule.clone().into_scheduler();
-    for (label, lr) in [
-        ("first epoch", scheduler.rate(1, config.epochs)),
-        ("last epoch", scheduler.rate(config.epochs, config.epochs)),
-    ] {
+    let (first, last) = (scheduler.rate(1, config.epochs), scheduler.rate(config.epochs, config.epochs));
+    for (label, lr) in [("β₂ first", first), ("β₂ last", last)] {
         let a = (4.0 * (drift * lr).powi(2) / variance).cbrt().clamp(1e-6, 1.0);
-        println!("  {LAB}β₂ at {label:<11}{RESET} {VAL}{:.4}{RESET}  {DIM}lr {lr:.5}{RESET}", 1.0 - a);
+        row(label, &format!("{:.4}", 1.0 - a), &format!("lr {lr:.5}"));
     }
-    println!("  {LAB}configured{RESET}    {VAL}{:.4}{RESET}", config.beta2);
+    row("configured", &format!("{:.4}", config.beta2), "");
 }
 
 /// Benchmarks gradient throughput across sequential, cache-blocked, and fully randomized access orders.

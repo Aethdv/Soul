@@ -27,7 +27,7 @@ use crate::{
         Color, FeatureRecord, LAYOUT, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record,
         eval_record_full, flip_wdl,
     },
-    groups::{GROUP_NAMES, build_masks, group_ranges},
+    groups::{self, GROUP_NAMES, build_masks, group_ranges},
     lion::{GateCensus, Lion},
     loader::{dataset_fingerprint, load_datasets, resolve_dataset_paths},
     logger::JsonLogger,
@@ -606,6 +606,7 @@ fn train_loop(
     println!("{LAB}Mode:{RESET}       {VAL}{mode_label}{RESET}");
     println!("{LAB}LR Sched:{RESET}   {}", paint_head(&lr_scheduler.describe()));
     println!("{LAB}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
+    println!("{LAB}Beta2:{RESET}      {}", paint_head(&groups::describe_beta2(config)));
     println!("{LAB}Optimizer:{RESET}  {VAL}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = fs::OpenOptions::new().create(true).append(true).open(artifact("evaltune_log.txt")).ok();
@@ -624,6 +625,7 @@ fn train_loop(
         writeln!(w, "Params:    {slots}").ok();
         writeln!(w, "LR:        {}", lr_scheduler.describe()).ok();
         writeln!(w, "WDL:       {}", wdl_scheduler.describe()).ok();
+        writeln!(w, "Beta2:     {}", groups::describe_beta2(config)).ok();
         writeln!(w, "Optimizer: Lion (batch: {}, WD: {})", config.batch_size, config.weight_decay).ok();
         writeln!(w).ok();
         writeln!(w, "{}", EpochStats::log_header()).ok();
@@ -736,6 +738,9 @@ fn train_loop(
         let is_restart = lr_scheduler.is_restart_boundary(epoch, config.epochs);
 
         optimizer.set_lr(lr);
+        if config.beta2_tracks_lr {
+            masks.beta2.fill(groups::beta2_for_lr(config.beta2_lr_coefficient, lr));
+        }
 
         if is_restart {
             progress.plateau_count = 0;
