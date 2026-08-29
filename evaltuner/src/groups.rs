@@ -71,6 +71,19 @@ pub fn group_ranges(slots: usize) -> [Range<usize>; GROUP_NAMES.len()] {
     })
 }
 
+/// What the run does with `beta2`, for the startup summary.
+pub fn describe_beta2(config: &EvalTuneConfig) -> String {
+    if config.beta2_tracks_lr {
+        format!("1 - β₂ = {:.4}·lr^(2/3), one window for every group", config.beta2_lr_coefficient)
+    } else {
+        format!("{} constant, PSQT {PSQT_BETA2}, Mobility {MOBILITY_BETA2}", config.beta2)
+    }
+}
+
+/// `1 - beta2 = coefficient · lr^(2/3)`, the point where gradient drift balances per-batch
+/// variance. `eval momentum` measures the coefficient as `cbrt(4 · drift^2 / variance)`
+pub fn beta2_for_lr(coefficient: f64, lr: f64) -> f64 { 1.0 - (coefficient * lr.powf(2.0 / 3.0)).clamp(1e-6, 1.0) }
+
 /// Every mask one run reads, derived from the parameter roster and the config.
 pub fn build_masks(params: &[Tunable], config: &EvalTuneConfig) -> Masks {
     let slots = params.len();
@@ -103,15 +116,15 @@ fn build_decay_mask(slots: usize) -> Vec<f64> {
         .collect()
 }
 
+const PSQT_BETA2: f64 = 0.995;
+const MOBILITY_BETA2: f64 = 0.95;
+
 /// The per-parameter second-moment decay (`beta2`) mask.
-///
-/// - PSQT (0.995).
-/// - Mobility (0.95).
 fn build_beta2_mask(slots: usize, default_beta2: f64) -> Vec<f64> {
     (0..slots)
         .map(|index| match param_group(index) {
-            ParamGroup::Psqt => 0.995,
-            ParamGroup::Mobility => 0.95,
+            ParamGroup::Psqt => PSQT_BETA2,
+            ParamGroup::Mobility => MOBILITY_BETA2,
             ParamGroup::Material | ParamGroup::Other => default_beta2,
         })
         .collect()
@@ -144,4 +157,20 @@ fn build_clip_mask(slots: usize) -> Vec<(f64, f64)> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::beta2_for_lr;
+
+    #[test]
+    fn beta2_window_shortens_with_the_rate() {
+        // What evaltune momentum read on Big3: 0.7161 at lr 0.03, 0.9937 at the floor.
+        assert!((beta2_for_lr(2.9403, 0.03) - 0.7161).abs() < 1e-4);
+        assert!((beta2_for_lr(2.9403, 0.0001) - 0.9937).abs() < 1e-4);
+
+        // 8^(2/3) is 4, so eight times the rate quadruples 1 - beta2.
+        let (slow, fast) = (beta2_for_lr(2.9403, 0.001), beta2_for_lr(2.9403, 0.008));
+        assert!((1.0 - fast - 4.0 * (1.0 - slow)).abs() < 1e-12, "{slow} against {fast}");
+    }
 }

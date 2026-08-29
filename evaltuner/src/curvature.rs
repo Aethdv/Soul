@@ -24,6 +24,8 @@ const MAX_SWEEPS: usize = 40;
 /// Number of top entries to display in summary reports.
 const REPORT_LIMIT: usize = 6;
 
+const LOADINGS: usize = 3;
+
 /// Relative eigenvalue threshold below which a direction is treated as unconstrained (null space).
 ///
 /// The rotation leaves −8e−16 behind on a positive semi-definite matrix, so the cutoff sits four
@@ -233,12 +235,26 @@ impl Spectrum {
         }
 
         println!("\n{LAB}Flattest determined directions{RESET} {DIM}(heaviest loadings){RESET}");
-        for eig_idx in (determined.saturating_sub(REPORT_LIMIT)..determined).rev() {
-            let mut loadings: Vec<(f64, usize)> = (0..m).map(|row| (self.vectors[row * m + eig_idx], self.live[row])).collect();
-            loadings.sort_unstable_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+        let flattest: Vec<(f64, Vec<(&str, f64)>)> = (determined.saturating_sub(REPORT_LIMIT)..determined)
+            .rev()
+            .map(|eig_idx| {
+                let mut loadings: Vec<(f64, usize)> = (0..m).map(|row| (self.vectors[row * m + eig_idx], self.live[row])).collect();
+                loadings.sort_unstable_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+                (self.values[eig_idx], loadings.iter().take(LOADINGS).map(|&(w, i)| (name(i), w)).collect())
+            })
+            .collect();
 
-            let named: Vec<String> = loadings.iter().take(3).map(|&(w, i)| format!("{} {w:+.2}", name(i))).collect();
-            println!("  {VAL}{:.3e}{RESET}  {}", self.values[eig_idx], named.join("   "));
+        // Each column is padded to its own longest name, so the signed loadings form a column.
+        let mut widths = [0usize; LOADINGS];
+        for (_, row) in &flattest {
+            for (col, (parameter, _)) in row.iter().enumerate() {
+                widths[col] = widths[col].max(parameter.len());
+            }
+        }
+
+        for (value, row) in &flattest {
+            let cells: Vec<String> = row.iter().zip(&widths).map(|((n, w), &pad)| format!("{n:<pad$} {w:+.2}")).collect();
+            println!("  {VAL}{value:.3e}{RESET}  {}", cells.join("   ").trim_end());
         }
 
         println!("\n{LAB}Least curvature{RESET} {DIM}(raw diagonal, the freeze normalizer){RESET}");

@@ -1,6 +1,7 @@
 [evaltune]
 beta1 = 0.9
 beta2 = 0.99
+beta2_tracks_lr = true
 grad_clip = 1.0
 k_min = 0.001
 k_max = 0.020

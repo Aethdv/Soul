@@ -411,6 +411,12 @@ pub struct TunerConfig {
 pub struct EvalTuneConfig {
     pub beta1: f64,
     pub beta2: f64,
+    /// Shortens the `beta2` window as the learning rate falls, instead of holding it constant.
+    #[serde(default)]
+    pub beta2_tracks_lr: bool,
+    /// `cbrt(4 · drift^2 / variance)` from `eval momentum`.
+    #[serde(default = "default_beta2_lr_coefficient")]
+    pub beta2_lr_coefficient: f64,
     pub weight_decay: f64,
     /// Polyak exponential moving average decay per batch update.
     #[serde(default = "default_ema_decay")]
@@ -525,6 +531,8 @@ impl Default for TunerConfig {
                 wdl_schedule: WdlScheduleConfig::Constant { value: 0.3 },
                 beta1: 0.9,
                 beta2: 0.99,
+                beta2_tracks_lr: false,
+                beta2_lr_coefficient: default_beta2_lr_coefficient(),
                 weight_decay: 0.00001,
                 loss: LossFn::CrossEntropy,
                 batch_size: 65536,
@@ -572,6 +580,7 @@ const fn default_freeze_cadence() -> usize { 100 }
 const fn default_freeze_threshold() -> f64 { 1e-7 }
 const fn default_freeze_consecutive() -> usize { 2 }
 const fn default_one() -> f64 { 1.0 }
+const fn default_beta2_lr_coefficient() -> f64 { 2.9403 }
 const fn default_phase_balance_cap() -> f64 { 8.0 }
 const fn default_k_sweep_interval() -> usize { DEFAULT_K_SWEEP_INTERVAL }
 const fn default_k_lr_mult() -> f64 { DEFAULT_K_LR_MULT }
