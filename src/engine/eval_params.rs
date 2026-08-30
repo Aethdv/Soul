@@ -16,6 +16,7 @@ macro_rules! slot_width {
     (Vec4)   => (4);
     (Array4) => (4);
     (Array6) => (6);
+    (Array14) => (14);
 }
 
 /// Sum the dual-AD footprint over the tunable list; 2 accumulator lanes (MG/EG)
@@ -612,5 +613,7 @@ define_weight_params! {
     passed_pawn_mg     = [V(-2), V(-15), V(-17), V(6), V(-2), V(43)], // by relative rank 2-7
     passed_pawn_eg     = [V(-52), V(-29), V(18), V(68), V(159), V(159)], // by relative rank 2-7
     enemy_king_dist_mg = [V(-112), V(17), V(-2), V(-5), V(-8), V(-11)], // enemy king→passer dist, 7 clamps to 6
-    enemy_king_dist_eg = [V(-41), V(9), V(49), V(62), V(73), V(79)]; // enemy king→passer dist, 7 clamps to 6
+    enemy_king_dist_eg = [V(-41), V(9), V(49), V(62), V(73), V(79)], // enemy king→passer dist, 7 clamps to 6
+    bishop_mobility_mg = [V(0), V(8), V(16), V(23), V(31), V(39), V(47), V(55), V(63), V(70), V(78), V(86), V(94), V(102)], // by mobility count 0-13
+    bishop_mobility_eg = [V(0), V(7), V(13), V(20), V(26), V(33), V(39), V(46), V(52), V(59), V(65), V(72), V(78), V(85)]; // by mobility count 0-13
 }

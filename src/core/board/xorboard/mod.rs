@@ -482,12 +482,14 @@ mod tests {
             through
         }
 
+        /// The rows the shared mobility sum still counts, read off `kind` so the check
+        /// stays independent of the `class` mask the fold selects with.
         fn legal_rows(&self, color: Color, pinned: Bitboard, ksq: Square) -> impl Iterator<Item = (PieceId, Bitboard)> + '_ {
             let king = self.class[class_index(PieceType::King, color)];
 
             slots(color_slots(color) & !king).filter_map(move |id| {
                 let raw = self.squares[id.index()];
-                if raw == NOWHERE {
+                if raw == NOWHERE || self.kind[id.index()] == PieceType::Bishop {
                     return None;
                 }
 

@@ -38,6 +38,9 @@ pub const PAWN_SCALE: i32 = 20; // 0.02 · 1024
 pub const OPEN_UNITY: i32 = 1024;
 const INV_OPEN_UNITY: f64 = 1.0 / OPEN_UNITY as f64;
 
+/// A bishop on an open long diagonal reaches 13, and the area only removes squares.
+pub const BISHOP_BUCKETS: usize = 14;
+
 pub struct Mobility;
 pub struct MobilityTerm;
 pub struct KingSafetyTerm;
@@ -159,6 +162,7 @@ impl SafetyMetrics {
 }
 
 impl Mobility {
+    /// The bishop buckets come back as a White-minus-Black differential.
     #[inline]
     pub fn compute_all(
         pos: &Position,
@@ -166,15 +170,18 @@ impl Mobility {
         pinned_w: Bitboard,
         pinned_b: Bitboard,
         rows: Option<&XorBoard>,
-    ) -> SpatialMetrics {
+    ) -> (SpatialMetrics, [i32; BISHOP_BUCKETS]) {
         let ctx = EvalCtx::build(pos, maps, pinned_w, pinned_b);
-        let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them);
-        let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us);
+        let mut bishops_us = [0i32; BISHOP_BUCKETS];
+        let mut bishops_them = [0i32; BISHOP_BUCKETS];
+        let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them, &mut bishops_us);
+        let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us, &mut bishops_them);
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
         let metrics_us = score_side(ctx.them, ctx.atk_us, mob_us, ctx.pawn_atk_them, ctx.xray_us);
         let metrics_them = score_side(ctx.us, ctx.atk_them, mob_them, ctx.pawn_atk_us, ctx.xray_them);
-        SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }
+        let bishop_mobility = std::array::from_fn(|i| bishops_us[i] - bishops_them[i]);
+        (SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }, bishop_mobility)
     }
 
     /// Tapered, openness-interpolated score differential, `metrics_us` minus `metrics_them`.
@@ -462,7 +469,8 @@ impl EvalCtx {
     }
 }
 
-/// What each piece of `color` reaches inside `area`, summed over the side.
+/// What each of `color`'s pieces reaches inside `area`, summed over the side, with the
+/// bishops split out into `bishops` because their own table prices them.
 ///
 /// A fill cannot produce this. ORing the sides together loses which piece got
 /// where, so a square two of our pieces attack is worth one to the union and two
@@ -472,13 +480,25 @@ impl EvalCtx {
 ///
 /// The pin policy matches SpatialMaps: a pinned knight has nothing legal,
 /// a pinned slider keeps its pin ray, a pinned pawn is left whole.
-fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
+fn piece_mobility(
+    pos: &Position,
+    rows: Option<&XorBoard>,
+    color: Color,
+    pinned: Bitboard,
+    ksq: Square,
+    area: Bitboard,
+    bishops: &mut [i32; BISHOP_BUCKETS],
+) -> i32 {
     if let Some(rows) = rows {
+        rows.bishop_buckets(color, pinned, ksq, area, bishops);
         return rows.mobility(color, pinned, ksq, area);
     }
 
     let mut total = 0;
-    for_each_piece_mobility(pos, color, pinned, ksq, area, |_, count| total += count as i32);
+    for_each_piece_mobility(pos, color, pinned, ksq, area, |piece, count| match piece {
+        PieceType::Bishop => bishops[(count as usize).min(BISHOP_BUCKETS - 1)] += 1,
+        _ => total += count as i32,
+    });
     total
 }
 
@@ -562,9 +582,15 @@ mod tests {
                 let pinned = pos.pinned_pieces(color);
                 let ksq = pos.pieces(PieceType::King, color).lsb();
                 let area = !pos.pawn_attacks(color.opposite());
-                let from_rows = piece_mobility(&pos, Some(&rows), color, pinned, ksq, area);
-                let from_probes = piece_mobility(&pos, None, color, pinned, ksq, area);
+                let mut bishops_rows = [0i32; BISHOP_BUCKETS];
+                let mut bishops_probes = [0i32; BISHOP_BUCKETS];
+                let from_rows = piece_mobility(&pos, Some(&rows), color, pinned, ksq, area, &mut bishops_rows);
+                let from_probes = piece_mobility(&pos, None, color, pinned, ksq, area, &mut bishops_probes);
+
                 assert_eq!(from_rows, from_probes, "{fen} {color:?}");
+                assert_eq!(bishops_rows, bishops_probes, "bishop buckets {fen} {color:?}");
+                let bishops = pos.pieces(PieceType::Bishop, color).popcount() as i32;
+                assert_eq!(bishops_probes.iter().sum::<i32>(), bishops, "bishop count {fen} {color:?}");
             }
         }
     }

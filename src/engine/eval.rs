@@ -104,6 +104,7 @@ macro_rules! bonus_terms {
             defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6); // ~10 Elo
             passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6); // ~15 Elo
             enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6); // ~12 Elo
+            bishop_mobility   = array(BishopMobilityTerm, bishop_mobility, bishop_mobility_mg, bishop_mobility_eg, 14);
         }
     };
 
@@ -123,12 +124,12 @@ macro_rules! bonus_terms {
     };
 
     (@rewrite [$macro:ident] [$($out:tt)*]
-        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, $n:literal); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
             @rewrite [$macro] [$($out)*
-                ($mg, Array6, [<$block _mg_offset>], 0, $crate::engine::eval_params::[<$block:upper _MG>]),
-                ($eg, Array6, [<$block _eg_offset>], 0, $crate::engine::eval_params::[<$block:upper _EG>]),
+                ($mg, [<Array $n>], [<$block _mg_offset>], 0, $crate::engine::eval_params::[<$block:upper _MG>]),
+                ($eg, [<Array $n>], [<$block _eg_offset>], 0, $crate::engine::eval_params::[<$block:upper _EG>]),
             ] $($rest)*
         }
     };
@@ -142,7 +143,7 @@ macro_rules! bonus_terms {
     };
 
     (@blocks [$macro:ident] [$($out:tt)*]
-        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, $n:literal); $($rest:tt)*
     ) => {
         $crate::bonus_terms! { @blocks [$macro] [$($out)* [<$block _mg>], [<$block _eg>],] $($rest)* }
     };
@@ -186,6 +187,8 @@ pub struct DetailedEval {
 pub struct SharedFeatures {
     pub openness: i32,
     pub spatial: SpatialMetrics,
+    /// Bishops per mobility count, White minus Black, the last bucket absorbing the rest.
+    pub bishop_mobility: [i32; mobility::BISHOP_BUCKETS],
     /// Orthogonal x-rays landing in the enemy king ring, White minus Black.
     pub xray_ortho: i32,
     pub bishop_pair_diff: i32,
@@ -444,7 +447,7 @@ impl SharedFeatures {
         let pinned_b = board.pinned_pieces(Color::Black);
         let maps = SpatialMaps::compute(board, pinned_w.0, pinned_b.0);
 
-        let spatial = Mobility::compute_all(board, &maps, pinned_w, pinned_b, rows);
+        let (spatial, bishop_mobility) = Mobility::compute_all(board, &maps, pinned_w, pinned_b, rows);
 
         let w_ksq = board.pieces(PieceType::King, Color::White).lsb();
         let b_ksq = board.pieces(PieceType::King, Color::Black).lsb();
@@ -488,6 +491,7 @@ impl SharedFeatures {
         Self {
             openness: pawn.openness,
             spatial,
+            bishop_mobility,
             xray_ortho,
             bishop_pair_diff,
             rook_open_diff,

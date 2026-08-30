@@ -236,6 +236,7 @@ impl EvalMath for DualNode {
     type Vec8 = DualVec8;
     type Array4 = [DualNode; 4];
     type Array6 = [DualNode; 6];
+    type Array14 = [DualNode; 14];
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self {
@@ -268,6 +269,16 @@ impl EvalMath for DualNode {
     fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6 {
         let mut out = [DualNode::zero(); 6];
         for i in 0..6 {
+            out[i] = DualNode::seed(values[offset + i], *slot);
+            *slot += 1;
+        }
+        out
+    }
+
+    #[inline(always)]
+    fn load_array14(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array14 {
+        let mut out = [DualNode::zero(); 14];
+        for i in 0..14 {
             out[i] = DualNode::seed(values[offset + i], *slot);
             *slot += 1;
         }

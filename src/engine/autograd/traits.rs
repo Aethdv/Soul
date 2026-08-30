@@ -35,11 +35,13 @@ pub trait EvalMath:
     type Vec8: EnvVec8<Scalar = Self::Scalar, Vec4 = Self::Vec4>;
     type Array4: ops::Index<usize, Output = Self>;
     type Array6: ops::Index<usize, Output = Self>;
+    type Array14: ops::Index<usize, Output = Self>;
 
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self;
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4;
     fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4;
     fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6;
+    fn load_array14(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array14;
 
     fn zero() -> Self;
     fn new(val: f64) -> Self;
@@ -96,6 +98,7 @@ impl EvalMath for i32 {
     type Vec8 = I16x8;
     type Array4 = [i32; 4];
     type Array6 = [i32; 6];
+    type Array14 = [i32; 14];
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, _slot: &mut usize) -> Self { values[offset] as i32 }
@@ -125,6 +128,11 @@ impl EvalMath for i32 {
             values[offset + 4] as i32,
             values[offset + 5] as i32,
         ]
+    }
+
+    #[inline(always)]
+    fn load_array14(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array14 {
+        std::array::from_fn(|i| values[offset + i] as i32)
     }
 
     #[inline(always)]
@@ -183,6 +191,7 @@ impl EvalMath for f64 {
     type Vec8 = F64Vec8;
     type Array4 = [f64; 4];
     type Array6 = [f64; 6];
+    type Array14 = [f64; 14];
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, _slot: &mut usize) -> Self { values[offset] }
@@ -207,6 +216,11 @@ impl EvalMath for f64 {
             values[offset + 4],
             values[offset + 5],
         ]
+    }
+
+    #[inline(always)]
+    fn load_array14(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array14 {
+        std::array::from_fn(|i| values[offset + i])
     }
 
     #[inline(always)]

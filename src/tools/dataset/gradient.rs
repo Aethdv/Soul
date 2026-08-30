@@ -34,6 +34,8 @@ pub struct FeatureRecord {
     pub enemy_king_dist: [i8; 6],
     pub phalanx: [i8; 6],
     pub defended_pawn: [i8; 6],
+    /// Bishops per mobility count, side-to-move relative, the last bucket absorbing the rest.
+    pub bishop_mobility: [i8; 14],
     /// Metric differentials (us - them): mobility, shadow mobility, threats, shadow
     /// threats. i16 because these pass ±127.
     pub mobility_diff: [i16; 4],
@@ -66,7 +68,7 @@ pub struct FeatureRecord {
     pub us_count: u8,
 }
 
-const _: () = assert!(size_of::<FeatureRecord>() == 104);
+const _: () = assert!(size_of::<FeatureRecord>() == 120);
 
 impl FeatureRecord {
     /// Partitions active piece slots into friendly (additive) and opponent (subtractive) slices.

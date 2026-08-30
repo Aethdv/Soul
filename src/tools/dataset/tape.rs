@@ -44,6 +44,14 @@ mod scatter {
         }
         *slot += 6;
     }
+
+    #[inline(always)]
+    pub(super) fn scatter_array14(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
+        for i in 0..14 {
+            out[offset + i] += outer * f64::from(grad[*slot + i]);
+        }
+        *slot += 14;
+    }
 }
 
 macro_rules! impl_scatter {
@@ -306,6 +314,8 @@ mod tests {
         "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
         // Bishop pair imbalance
         "r1bqkbnr/1pp2ppp/p1p5/4p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5",
+        // Bishop mobility
+        "r1bqkb1r/pp2pppp/2n2n2/2pp4/8/1P3NP1/PBPPPPBP/RN1QK2R w KQkq - 0 1",
         // Rook open-file imbalance
         "2r3k1/pp3ppp/4p3/8/8/8/PPP2PPP/3R2K1 w - - 0 1",
         // Passed pawn
