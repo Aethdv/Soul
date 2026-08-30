@@ -234,8 +234,7 @@ impl EvalMath for DualNode {
     type Scalar = DualNode;
     type Vec4 = DualVec4;
     type Vec8 = DualVec8;
-    type Array4 = [DualNode; 4];
-    type Array6 = [DualNode; 6];
+    crate::array_widths!(bind DualNode);
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self {
@@ -254,25 +253,7 @@ impl EvalMath for DualNode {
         DualVec4(out)
     }
 
-    #[inline(always)]
-    fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4 {
-        let mut out = [DualNode::zero(); 4];
-        for i in 0..4 {
-            out[i] = DualNode::seed(values[offset + i], *slot);
-            *slot += 1;
-        }
-        out
-    }
-
-    #[inline(always)]
-    fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6 {
-        let mut out = [DualNode::zero(); 6];
-        for i in 0..6 {
-            out[i] = DualNode::seed(values[offset + i], *slot);
-            *slot += 1;
-        }
-        out
-    }
+    crate::array_widths!(seed);
 
     #[inline(always)]
     fn zero() -> Self { DualNode::zero() }

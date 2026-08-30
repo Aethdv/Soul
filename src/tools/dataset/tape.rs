@@ -29,21 +29,19 @@ mod scatter {
         *slot += 1;
     }
 
-    #[inline(always)]
-    pub(super) fn scatter_vec4(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
-        for i in 0..4 {
-            out[offset + i] += outer * f64::from(grad[*slot + i]);
-        }
-        *slot += 4;
+    macro_rules! contiguous {
+        ($($name:ident = $n:literal),* $(,)?) => { $(
+            #[inline(always)]
+            pub(super) fn $name(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
+                for i in 0..$n {
+                    out[offset + i] += outer * f64::from(grad[*slot + i]);
+                }
+                *slot += $n;
+            }
+        )* };
     }
 
-    #[inline(always)]
-    pub(super) fn scatter_array6(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
-        for i in 0..6 {
-            out[offset + i] += outer * f64::from(grad[*slot + i]);
-        }
-        *slot += 6;
-    }
+    contiguous!(scatter_vec4 = 4, scatter_array6 = 6);
 }
 
 macro_rules! impl_scatter {

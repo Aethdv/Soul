@@ -2,7 +2,6 @@
 
 use std::{
     arch::x86_64::_mm_cvtsi32_si128,
-    ops,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
@@ -10,6 +9,51 @@ use crate::{
     core::defs::TOTAL_PHASE,
     weave::{I16x8, I32x4},
 };
+
+/// Every array width the tunable rows name. `slot_width!` in `eval_params` keeps its own
+/// copy for the kinds that are not arrays, so a new width is an entry in both.
+///
+/// `seed` is the dual loader, the one shape whose body advances the gradient slot.
+#[macro_export]
+macro_rules! array_widths {
+    ($shape:ident $($carried:tt)*) => {
+        $crate::array_widths! { @$shape [$($carried)*] Array4 = 4, Array6 = 6 }
+    };
+
+    (@decl [] $($name:ident = $n:literal),*) => {
+        $( type $name: core::ops::Index<usize, Output = Self>; )*
+    };
+
+    (@sig [] $($name:ident = $n:literal),*) => {
+        paste::paste! { $(
+            fn [<load_ $name:lower>](values: &[f64], offset: usize, slot: &mut usize) -> Self::$name;
+        )* }
+    };
+
+    (@bind [$t:ty] $($name:ident = $n:literal),*) => {
+        $( type $name = [$t; $n]; )*
+    };
+
+    (@load [$conv:expr] $($name:ident = $n:literal),*) => {
+        paste::paste! { $(
+            #[inline(always)]
+            fn [<load_ $name:lower>](values: &[f64], offset: usize, _slot: &mut usize) -> Self::$name {
+                core::array::from_fn(|i| ($conv)(values[offset + i]))
+            }
+        )* }
+    };
+
+    (@seed [] $($name:ident = $n:literal),*) => {
+        paste::paste! { $(
+            #[inline(always)]
+            fn [<load_ $name:lower>](values: &[f64], offset: usize, slot: &mut usize) -> Self::$name {
+                let out = core::array::from_fn(|i| DualNode::seed(values[offset + i], *slot + i));
+                *slot += $n;
+                out
+            }
+        )* }
+    };
+}
 
 /// The interface `evaluate` is generic over: `i32` with `I16x8`/`I32x4` for search,
 /// `DualNode` for the tuner, `f64` for the oracle. The module doc has the why.
@@ -33,13 +77,11 @@ pub trait EvalMath:
     type Scalar;
     type Vec4: EnvVec4<Scalar = Self::Scalar, Vec8 = Self::Vec8>;
     type Vec8: EnvVec8<Scalar = Self::Scalar, Vec4 = Self::Vec4>;
-    type Array4: ops::Index<usize, Output = Self>;
-    type Array6: ops::Index<usize, Output = Self>;
+    crate::array_widths!(decl);
 
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self;
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4;
-    fn load_array4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array4;
-    fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6;
+    crate::array_widths!(sig);
 
     fn zero() -> Self;
     fn new(val: f64) -> Self;
@@ -94,8 +136,7 @@ impl EvalMath for i32 {
     type Scalar = i32;
     type Vec4 = I32x4;
     type Vec8 = I16x8;
-    type Array4 = [i32; 4];
-    type Array6 = [i32; 6];
+    crate::array_widths!(bind i32);
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, _slot: &mut usize) -> Self { values[offset] as i32 }
@@ -110,22 +151,7 @@ impl EvalMath for i32 {
         )
     }
 
-    #[inline(always)]
-    fn load_array4(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array4 {
-        [values[offset] as i32, values[offset + 1] as i32, values[offset + 2] as i32, values[offset + 3] as i32]
-    }
-
-    #[inline(always)]
-    fn load_array6(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array6 {
-        [
-            values[offset] as i32,
-            values[offset + 1] as i32,
-            values[offset + 2] as i32,
-            values[offset + 3] as i32,
-            values[offset + 4] as i32,
-            values[offset + 5] as i32,
-        ]
-    }
+    crate::array_widths!(load |v: f64| v as i32);
 
     #[inline(always)]
     fn zero() -> Self { 0 }
@@ -181,8 +207,7 @@ impl EvalMath for f64 {
     type Scalar = f64;
     type Vec4 = F64Vec4;
     type Vec8 = F64Vec8;
-    type Array4 = [f64; 4];
-    type Array6 = [f64; 6];
+    crate::array_widths!(bind f64);
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, _slot: &mut usize) -> Self { values[offset] }
@@ -192,22 +217,7 @@ impl EvalMath for f64 {
         Self::Vec4::from_lanes(values[offset], values[offset + 1], values[offset + 2], values[offset + 3])
     }
 
-    #[inline(always)]
-    fn load_array4(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array4 {
-        [values[offset], values[offset + 1], values[offset + 2], values[offset + 3]]
-    }
-
-    #[inline(always)]
-    fn load_array6(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array6 {
-        [
-            values[offset],
-            values[offset + 1],
-            values[offset + 2],
-            values[offset + 3],
-            values[offset + 4],
-            values[offset + 5],
-        ]
-    }
+    crate::array_widths!(load |v: f64| v);
 
     #[inline(always)]
     fn zero() -> Self { 0.0 }
