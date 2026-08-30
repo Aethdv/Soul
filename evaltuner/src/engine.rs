@@ -18,6 +18,7 @@ pub use soul::{
         eval_params::{
             self, BLOCKS, Block, Group, LAYOUT, PIECE_TABLES, TABLE_SQUARES, Tunable, collect_parameters, default_values,
         },
+        mobility::{OPEN_UNITY, piece_mobility_counts},
         wdl::sigmoid,
     },
     tools::dataset::{

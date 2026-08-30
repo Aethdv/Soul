@@ -11,8 +11,8 @@ use crate::{
     alarm,
     config::{EvalTuneConfig, LossFn},
     engine::{
-        Color, DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, PieceType, QUIET_ENDING, SoulEntry, TOTAL_PHASE,
-        collect_parameters, default_values, eval_record, format_comma, pct, scan_viri_games, sigmoid,
+        Color, DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, OPEN_UNITY, PieceType, QUIET_ENDING, SoulEntry, TOTAL_PHASE,
+        collect_parameters, default_values, eval_record, format_comma, pct, piece_mobility_counts, scan_viri_games, sigmoid,
     },
     loader::{load_datasets, resolve_dataset_paths},
     palette::{ALARM, COUNT, DIM, LAB, RESET, VAL},
@@ -61,6 +61,9 @@ pub enum Assay {
     Material { shipped: String },
     /// Labels, phase, material imbalances, and how the games ended.
     Profile,
+    /// The distributions that decide how wide a table should be: per-class mobility
+    /// counts, openness, and the phase a rank-7 passer appears at.
+    Spread,
 }
 
 /// Comma-joined paths load as one mixture and report as one row, not as several sets.
@@ -99,6 +102,7 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
         Assay::Score { params, loss, shipped } => score(&sets, params, *loss, shipped),
         Assay::Material { shipped } => material(&sets, shipped),
         Assay::Profile => profile(&sets),
+        Assay::Spread => spread(&sets),
     }
 }
 
@@ -658,6 +662,240 @@ fn solve(mut a: [f64; 100], mut b: [f64; 10]) -> Option<[f64; 10]> {
         x[row] = (b[row] - known) / a[row * 10 + row];
     }
     Some(x)
+}
+
+/// Pawns are in the list because dropping them from the sum is its own experiment,
+/// and their share is what that would cost.
+const MOBILITY_CLASSES: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen];
+
+/// A queen on an open board reaches 27 squares, and the area only ever removes some.
+const MOBILITY_MAX: usize = 28;
+const OPENNESS_BINS: usize = 8;
+const PHASE_BINS: usize = 6;
+
+/// Upper bound of each bin, inclusive.
+const SHAPE_BINS: [u32; 7] = [0, 2, 4, 6, 8, 12, 16];
+
+#[derive(Clone)]
+struct Spread {
+    /// Pieces observed at each count, per class.
+    mobility: [[u64; MOBILITY_MAX]; MOBILITY_CLASSES.len()],
+    openness: [u64; OPENNESS_BINS],
+    openness_floor: u64,
+    openness_ceiling: u64,
+    openness_sum: f64,
+    phase_all: [u64; PHASE_BINS],
+    phase_rank7: [u64; PHASE_BINS],
+    phase_all_sum: f64,
+    phase_rank7_sum: f64,
+    positions: u64,
+    rank7_positions: u64,
+}
+
+impl Default for Spread {
+    fn default() -> Self {
+        Self {
+            mobility: [[0; MOBILITY_MAX]; MOBILITY_CLASSES.len()],
+            openness: [0; OPENNESS_BINS],
+            openness_floor: 0,
+            openness_ceiling: 0,
+            openness_sum: 0.0,
+            phase_all: [0; PHASE_BINS],
+            phase_rank7: [0; PHASE_BINS],
+            phase_all_sum: 0.0,
+            phase_rank7_sum: 0.0,
+            positions: 0,
+            rank7_positions: 0,
+        }
+    }
+}
+
+impl Spread {
+    fn observe(&mut self, entry: &SoulEntry, record: &FeatureRecord, phase_w: &[f64; 6]) {
+        self.positions += 1;
+
+        let board = entry.to_board();
+        for color in [Color::White, Color::Black] {
+            piece_mobility_counts(&board, color, |piece, count| {
+                if let Some(row) = MOBILITY_CLASSES.iter().position(|c| *c == piece) {
+                    self.mobility[row][(count as usize).min(MOBILITY_MAX - 1)] += 1;
+                }
+            });
+        }
+
+        let openness = record.open_raw.clamp(0, OPEN_UNITY);
+        self.openness_sum += f64::from(openness);
+        if openness == 0 {
+            self.openness_floor += 1;
+        } else if openness == OPEN_UNITY {
+            self.openness_ceiling += 1;
+        }
+        let bin = (openness as usize * OPENNESS_BINS / (OPEN_UNITY as usize + 1)).min(OPENNESS_BINS - 1);
+        self.openness[bin] += 1;
+
+        let phase = phase_of(record, phase_w);
+        let phase_bin = (phase * PHASE_BINS / (TOTAL_PHASE as usize + 1)).min(PHASE_BINS - 1);
+        self.phase_all[phase_bin] += 1;
+        self.phase_all_sum += phase as f64;
+
+        // The rank-7 entry is a differential, so nonzero is exactly when PASSED_PAWN[5] takes
+        // gradient. Whether that set concentrates in phase decides if its MG and EG halves
+        // are one parameter or two.
+        if record.passed_pawn[5] != 0 {
+            self.rank7_positions += 1;
+            self.phase_rank7[phase_bin] += 1;
+            self.phase_rank7_sum += phase as f64;
+        }
+    }
+
+    fn merged(mut self, other: Self) -> Self {
+        for (row, add) in self.mobility.iter_mut().zip(&other.mobility) {
+            for (cell, plus) in row.iter_mut().zip(add) {
+                *cell += plus;
+            }
+        }
+        for (bin, plus) in self.openness.iter_mut().zip(&other.openness) {
+            *bin += plus;
+        }
+        for (bin, plus) in self.phase_all.iter_mut().zip(&other.phase_all) {
+            *bin += plus;
+        }
+        for (bin, plus) in self.phase_rank7.iter_mut().zip(&other.phase_rank7) {
+            *bin += plus;
+        }
+        self.openness_floor += other.openness_floor;
+        self.openness_ceiling += other.openness_ceiling;
+        self.openness_sum += other.openness_sum;
+        self.phase_all_sum += other.phase_all_sum;
+        self.phase_rank7_sum += other.phase_rank7_sum;
+        self.positions += other.positions;
+        self.rank7_positions += other.rank7_positions;
+        self
+    }
+
+    /// The smallest count holding at least `fraction` of a class's pieces, which is the
+    /// table width that would lose no more than the remainder off its top.
+    fn cutoff(&self, row: usize, fraction: f64) -> usize {
+        let total: u64 = self.mobility[row].iter().sum();
+        if total == 0 {
+            return 0;
+        }
+        let target = fraction * total as f64;
+        let mut seen = 0u64;
+        for (count, pieces) in self.mobility[row].iter().enumerate() {
+            seen += pieces;
+            if seen as f64 >= target {
+                return count;
+            }
+        }
+        MOBILITY_MAX - 1
+    }
+}
+
+/// Distributions behind the table-sizing decisions.
+fn spread(sets: &[Set]) {
+    for set in sets {
+        let stats = gather_spread(set);
+        println!();
+
+        let mut summary = Table::new(&set.label, strings(&["pieces", "mean", "max", "p99", "p99.9", "at 0"]));
+        let mut shape = Table::new("share at count", shape_headings());
+
+        for (row, piece) in MOBILITY_CLASSES.iter().enumerate() {
+            let counts = &stats.mobility[row];
+            let pieces: u64 = counts.iter().sum();
+            if pieces == 0 {
+                continue;
+            }
+
+            let weighted: u64 = counts.iter().enumerate().map(|(count, n)| count as u64 * n).sum();
+            let max = counts.iter().rposition(|n| *n > 0).unwrap_or(0);
+            let label = piece.to_char(Color::White).to_lowercase().to_string();
+
+            summary.push(&label, vec![
+                format_comma(pieces),
+                format!("{:.2}", weighted as f64 / pieces as f64),
+                max.to_string(),
+                stats.cutoff(row, 0.99).to_string(),
+                stats.cutoff(row, 0.999).to_string(),
+                format!("{:.2}%", pct(counts[0], pieces)),
+            ]);
+
+            let mut cells = Vec::new();
+            let mut low = 0u32;
+            for high in SHAPE_BINS.into_iter().skip(1) {
+                let slice: u64 = counts[low as usize..=(high as usize).min(MOBILITY_MAX - 1)].iter().sum();
+                cells.push(format!("{:.1}%", pct(slice, pieces)));
+                low = high + 1;
+            }
+            let tail: u64 = counts[(low as usize).min(MOBILITY_MAX - 1)..].iter().sum();
+            cells.push(format!("{:.1}%", pct(tail, pieces)));
+            shape.push(&label, cells);
+        }
+
+        summary.print();
+        println!();
+        shape.print();
+        println!();
+
+        let n = stats.positions;
+        let mut openness = Table::new("openness", openness_headings());
+        let mut cells: Vec<String> = stats.openness.iter().map(|bin| format!("{:.1}%", pct(*bin, n))).collect();
+        cells.push(format!("{:.2}%", pct(stats.openness_floor, n)));
+        cells.push(format!("{:.2}%", pct(stats.openness_ceiling, n)));
+        cells.push(format!("{:.0}", stats.openness_sum / n as f64));
+        openness.push(&set.label, cells);
+        openness.print();
+        println!();
+
+        let mut phase = Table::new("phase", phase_headings());
+        let row = |bins: &[u64; PHASE_BINS], total: u64, sum: f64| {
+            let mut cells: Vec<String> = bins.iter().map(|bin| format!("{:.1}%", pct(*bin, total.max(1)))).collect();
+            cells.push(format_comma(total));
+            cells.push(format!("{:.2}", sum / total.max(1) as f64));
+            cells
+        };
+        phase.push_dim("every position", row(&stats.phase_all, n, stats.phase_all_sum));
+        phase.push("rank-7 passer", row(&stats.phase_rank7, stats.rank7_positions, stats.phase_rank7_sum));
+        phase.print();
+    }
+}
+
+fn shape_headings() -> Vec<String> {
+    let mut heads = Vec::new();
+    let mut low = 0u32;
+    for high in SHAPE_BINS.into_iter().skip(1) {
+        heads.push(if low == high { low.to_string() } else { format!("{low}-{high}") });
+        low = high + 1;
+    }
+    heads.push(format!("{low}+"));
+    heads
+}
+
+fn openness_headings() -> Vec<String> {
+    let step = (OPEN_UNITY as usize + 1) / OPENNESS_BINS;
+    let mut heads: Vec<String> = (0..OPENNESS_BINS).map(|bin| format!("{}", bin * step)).collect();
+    heads.extend(strings(&["closed", "open", "mean"]));
+    heads
+}
+
+fn phase_headings() -> Vec<String> {
+    let step = (TOTAL_PHASE as usize + 1) / PHASE_BINS;
+    let mut heads: Vec<String> = (0..PHASE_BINS).map(|bin| format!("{}", bin * step)).collect();
+    heads.extend(strings(&["positions", "mean"]));
+    heads
+}
+
+fn gather_spread(set: &Set) -> Spread {
+    let phase_w = phase_weights();
+    set.records
+        .par_iter()
+        .zip(&set.entries)
+        .fold(Spread::default, |mut acc, (record, entry)| {
+            acc.observe(entry, record, &phase_w);
+            acc
+        })
+        .reduce(Spread::default, Spread::merged)
 }
 
 fn count(set: &Set) -> Counts {

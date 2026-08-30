@@ -133,6 +133,15 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         datasets: Vec<String>,
     },
+    #[command(name = "spread")]
+    Spread {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(long)]
+        sample: Option<usize>,
+        #[arg(required = true, num_args = 1..)]
+        datasets: Vec<String>,
+    },
     #[command(name = "profile")]
     Profile {
         #[arg(short, long, default_value = DEFAULT_CONFIG)]
@@ -197,6 +206,9 @@ fn main() {
         },
         Some(Commands::Material { config: config_path, sample, shipped, datasets }) => {
             assay(&config_path, &datasets, Assay::Material { shipped }, sample);
+        },
+        Some(Commands::Spread { config: config_path, sample, datasets }) => {
+            assay(&config_path, &datasets, Assay::Spread, sample);
         },
         Some(Commands::Profile { config: config_path, sample, datasets }) => {
             assay(&config_path, &datasets, Assay::Profile, sample);

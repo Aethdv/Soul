@@ -477,8 +477,23 @@ fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned:
         return rows.mobility(color, pinned, ksq, area);
     }
 
-    let occ = pos.occupancy();
     let mut total = 0;
+    for_each_piece_mobility(pos, color, pinned, ksq, area, |_, count| total += count as i32);
+    total
+}
+
+/// Nothing scores these counts yet. Each reference indexes a bucketed table per piece
+/// class with exactly this number, and `evaltune spread` sizes those tables off the
+/// distribution.
+pub fn for_each_piece_mobility(
+    pos: &Position,
+    color: Color,
+    pinned: Bitboard,
+    ksq: Square,
+    area: Bitboard,
+    mut visit: impl FnMut(PieceType, u32),
+) {
+    let occ = pos.occupancy();
 
     for square in pos.side_bb[color] & !pos.role_bb[PieceType::King] {
         let piece = pos.piece_at(square);
@@ -498,9 +513,20 @@ fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned:
             _ => attacks,
         };
 
-        total += (legal & area).popcount() as i32;
+        visit(piece, (legal & area).popcount());
     }
-    total
+}
+
+/// The pin set, king square and area here are the ones [`Mobility::compute_all`] passes down.
+pub fn piece_mobility_counts(pos: &Position, color: Color, visit: impl FnMut(PieceType, u32)) {
+    for_each_piece_mobility(
+        pos,
+        color,
+        pos.pinned_pieces(color),
+        pos.pieces(PieceType::King, color).lsb(),
+        !pos.pawn_attacks(color.opposite()),
+        visit,
+    );
 }
 
 #[inline(always)]
