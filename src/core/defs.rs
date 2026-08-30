@@ -313,13 +313,13 @@ impl GameOutcome {
     }
 }
 
-/// Deterministic [-3, +4] cp jitter for draw scores, keyed by the node counter.
+/// Deterministic [-1, +1] cp jitter for draw scores, keyed by the node counter.
 ///
 /// A flat `0` leaves alpha-beta indifferent between drawing lines, so it locks onto
 /// the first one examined. Breaking that tie lets the search reach draw routes where
 /// the opponent still has a chance to stray.
 #[inline]
-pub fn draw_score(nodes: u64) -> i32 { (nodes & 0x7) as i32 - 3 }
+pub fn draw_score(nodes: u64) -> i32 { (nodes & 0x2) as i32 - 1 }
 
 /// A forced mate the side to move delivers.
 #[inline]
