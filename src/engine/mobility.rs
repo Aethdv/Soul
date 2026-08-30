@@ -74,9 +74,8 @@ pub struct SideMetrics {
 /// The engine folds them into shelter and pressure, which the combiner collapses.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SafetyMetrics {
-    /// Enemy pieces hitting the king ring, capped at `ATTACKER.len() - 1` on
-    /// construction so every consumer indexes the weight table directly.
-    pub attackers: usize,
+    /// King-zone squares they attack, capped at `ATTACKER.len() - 1`.
+    pub attacked_zone: usize,
     /// King-zone squares attacked by them but not defended by us.
     pub weak: i32,
     /// Friendly pawns adjacent to the king.
@@ -102,13 +101,13 @@ pub struct KingSafetyInput {
 
 /// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
 ///
-/// `us_pawns` is White's, always: rams come from shifting it one rank north onto
-/// `them_pawns`, which catches every locked pair exactly once. Swapped, the shift
-/// moves Black's pawns backwards down the board and counts pairs that are not rams.
+/// Rams come from shifting White's pawns one rank north onto Black's, which catches
+/// every locked pair exactly once. Side-relative bitboards instead shift Black's pawns
+/// backwards down the board and count pairs that are not rams.
 #[inline]
-pub fn compute_openness_raw(us_pawns: u64, them_pawns: u64) -> i32 {
-    let rams = (us_pawns << 8) & them_pawns;
-    (OPEN_UNITY - RAM_SCALE * rams.count_ones() as i32 - PAWN_SCALE * (us_pawns | them_pawns).count_ones() as i32)
+pub fn compute_openness_raw(white_pawns: u64, black_pawns: u64) -> i32 {
+    let rams = (white_pawns << 8) & black_pawns;
+    (OPEN_UNITY - RAM_SCALE * rams.count_ones() as i32 - PAWN_SCALE * (white_pawns | black_pawns).count_ones() as i32)
         .clamp(0, OPEN_UNITY)
 }
 
@@ -138,10 +137,10 @@ impl SafetyMetrics {
 
     /// What the attackers are worth against this king, before the combiner curves it.
     ///
-    /// `w_atk` is indexed by attacker count, so escalation with the number of
-    /// attackers lives in the weight table; `weak / 10` keeps resolution high for
-    /// the tuner (0.1 cp increments) while staying integer in eval. DualNode
-    /// passes gradient through `.trunc()` unmodified (straight-through).
+    /// `w_atk` is indexed by the attacked-square count, so escalation with pressure
+    /// lives in the weight table; `weak / 10` keeps resolution high for the tuner
+    /// (0.1 cp increments) while staying integer in eval. DualNode passes gradient
+    /// through `.trunc()` unmodified (straight-through).
     #[inline]
     pub fn pressure<T: EvalMath<Scalar = T>>(&self, w_atk: T) -> T { ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc() }
 
@@ -149,8 +148,8 @@ impl SafetyMetrics {
     fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
         let zone = atk_king(ksq);
         Self {
-            // Five or more attackers all take the maximum danger entry.
-            attackers: ((zone & atk_them).popcount() as usize).min(ATTACKER.len() - 1),
+            // Five or more attacked squares all take the maximum danger entry.
+            attacked_zone: ((zone & atk_them).popcount() as usize).min(ATTACKER.len() - 1),
             weak: (zone & atk_them & !atk_us).popcount() as i32,
             shield: (zone & our_pawns).popcount() as i32,
             ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
@@ -196,9 +195,11 @@ impl Mobility {
         let o = T::Vec4::splat(openness);
         let c = T::Vec4::splat(OPEN_UNITY - openness);
         let half = T::Vec4::splat(OPEN_UNITY / 2); // rounding bias
+
         // Interpolate the open/closed weight vectors by openness.
         let w_mg = (w_mg_o * o + w_mg_c * c + half).srai::<10>();
         let w_eg = (w_eg_o * o + w_eg_c * c + half).srai::<10>();
+
         // SIMD dot-product diff against the MG and EG weights.
         let w_packed = w_mg.pack_i16(w_eg);
         let diff_packed = diff.pack_i16(diff);
@@ -239,28 +240,30 @@ impl LinearTerm for MobilityTerm {
     /// centipawns per lane, before the taper.
     #[inline(always)]
     fn apply_input(input: MobilityInput, values: &[f64], phase: f64, acc: &mut Accumulators<f64>) {
-        let lo = LAYOUT.mobility_open_offset;
-        let lc = LAYOUT.mobility_closed_offset;
+        let open_base = LAYOUT.mobility_open_offset;
+        let closed_base = LAYOUT.mobility_closed_offset;
         let unity = f64::from(OPEN_UNITY);
-        let o = f64::from(input.openness);
-        let c = unity - o;
+        let open_raw = f64::from(input.openness);
+        let closed_raw = unity - open_raw;
 
         let mut diff = [0.0f64; 4];
         // SAFETY: `diff` is exactly the 4 lanes `storeu` writes.
         unsafe { input.diff.storeu(diff.as_mut_ptr()) };
 
-        let blend = |open: usize, closed: usize| ((values[open] * o + values[closed] * c + unity / 2.0) / unity).floor();
+        let blend = |lane: usize| {
+            ((values[open_base + lane] * open_raw + values[closed_base + lane] * closed_raw + unity / 2.0) / unity).floor()
+        };
 
         let mut mg_sum = 0.0;
         let mut eg_sum = 0.0;
         for (i, d) in diff.iter().enumerate() {
-            mg_sum += d * blend(lo + i, lc + i);
-            eg_sum += d * blend(lo + 4 + i, lc + 4 + i);
+            mg_sum += d * blend(i);
+            eg_sum += d * blend(4 + i);
         }
 
         // Both halves sum before the taper, exactly as the madd above does.
-        let total = f64::from(TOTAL_PHASE);
-        acc.mobility = ((mg_sum * phase + eg_sum * (total - phase)) / total).trunc();
+        let total_phase = f64::from(TOTAL_PHASE);
+        acc.mobility = ((mg_sum * phase + eg_sum * (total_phase - phase)) / total_phase).trunc();
     }
 
     ///   `∂score/∂mg_mob_open[j]   = d_mg · diff[j] · (openness / 1024)`
@@ -269,14 +272,14 @@ impl LinearTerm for MobilityTerm {
     /// The combiner pre-multiplies `d_mg = d · t_mg`, `d_eg = d · t_eg` so scatter skips the taper split.
     #[inline(always)]
     fn scatter(input: MobilityInput, upstream: TaperPair, grads: &mut [f64]) {
-        let lo = LAYOUT.mobility_open_offset;
-        let lc = LAYOUT.mobility_closed_offset;
-        assert!(grads.len() >= lo.max(lc) + 8, "MobilityTerm::scatter: grads too short");
+        let open_base = LAYOUT.mobility_open_offset;
+        let closed_base = LAYOUT.mobility_closed_offset;
+        assert!(grads.len() >= open_base.max(closed_base) + 8, "MobilityTerm::scatter: grads too short");
 
-        let o_frac = f64::from(input.openness) * INV_OPEN_UNITY;
-        let c_frac = 1.0 - o_frac;
+        let open_frac = f64::from(input.openness) * INV_OPEN_UNITY;
+        let closed_frac = 1.0 - open_frac;
 
-        let mut do_scatter = |offset: usize, scale: f64| {
+        let mut scatter_lanes = |offset: usize, scale: f64| {
             // SAFETY: grads length verified by assert above and layout invariants.
             unsafe {
                 let p = grads.as_mut_ptr().add(offset);
@@ -284,10 +287,10 @@ impl LinearTerm for MobilityTerm {
             }
         };
 
-        do_scatter(lo, upstream.d_mg * o_frac);
-        do_scatter(lo + 4, upstream.d_eg * o_frac);
-        do_scatter(lc, upstream.d_mg * c_frac);
-        do_scatter(lc + 4, upstream.d_eg * c_frac);
+        scatter_lanes(open_base, upstream.d_mg * open_frac);
+        scatter_lanes(open_base + 4, upstream.d_eg * open_frac);
+        scatter_lanes(closed_base, upstream.d_mg * closed_frac);
+        scatter_lanes(closed_base + 4, upstream.d_eg * closed_frac);
     }
 }
 
@@ -313,8 +316,8 @@ impl LinearTerm for KingSafetyTerm {
 
         acc.safety_us = us.shelter(params.w_shield, params.w_ortho, params.w_diag);
         acc.safety_them = them.shelter(params.w_shield, params.w_ortho, params.w_diag);
-        acc.danger_us = us.pressure(params.atk_weights[us.attackers]);
-        acc.danger_them = them.pressure(params.atk_weights[them.attackers]);
+        acc.danger_us = us.pressure(params.atk_weights[us.attacked_zone]);
+        acc.danger_them = them.pressure(params.atk_weights[them.attacked_zone]);
     }
 
     #[inline(always)]
@@ -323,8 +326,8 @@ impl LinearTerm for KingSafetyTerm {
         let ao = LAYOUT.attacker_offset;
         acc.safety_us = input.us.shelter(values[ks], values[ks + 1], values[ks + 2]);
         acc.safety_them = input.them.shelter(values[ks], values[ks + 1], values[ks + 2]);
-        acc.danger_us = input.us.pressure(values[ao + input.us.attackers]);
-        acc.danger_them = input.them.pressure(values[ao + input.them.attackers]);
+        acc.danger_us = input.us.pressure(values[ao + input.us.attacked_zone]);
+        acc.danger_them = input.them.pressure(values[ao + input.them.attacked_zone]);
     }
 
     ///   `∂score/∂w_shield  =  upstream · (shield_us − shield_them)`
@@ -341,8 +344,8 @@ impl LinearTerm for KingSafetyTerm {
         grads[ks + 1] -= upstream.shelter * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
         grads[ks + 2] -= upstream.shelter * f64::from(input.us.diag_exposure - input.them.diag_exposure);
 
-        grads[ao + input.us.attackers] += upstream.danger_us * (f64::from(input.us.weak) / 10.0);
-        grads[ao + input.them.attackers] += upstream.danger_them * (f64::from(input.them.weak) / 10.0);
+        grads[ao + input.us.attacked_zone] += upstream.danger_us * (f64::from(input.us.weak) / 10.0);
+        grads[ao + input.them.attacked_zone] += upstream.danger_them * (f64::from(input.them.weak) / 10.0);
     }
 }
 
@@ -467,8 +470,8 @@ impl EvalCtx {
 /// them the same sum is a probe per piece, which only an offline tuner can
 /// afford.
 ///
-/// The pin policy matches SpatialMaps: a pinned knight has nothing legal, a
-/// pinned slider keeps its pin ray, a pinned pawn is left whole.
+/// The pin policy matches SpatialMaps: a pinned knight has nothing legal,
+/// a pinned slider keeps its pin ray, a pinned pawn is left whole.
 fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
     if let Some(rows) = rows {
         return rows.mobility(color, pinned, ksq, area);

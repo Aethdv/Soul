@@ -36,7 +36,7 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ("mobility_open",      "[mobility, battery, threats, xray threats]"),
     ("phase",              "[P, N, B, R, Q, K]"),
     ("king_safety",        "[Pawn Shield, Ortho Exp, Diag Exp]"),
-    ("attacker",           "[0, 1, 2, 3, 4, 5] attackers × weak"),
+    ("attacker",           "[0..5] attacked king-zone squares × weak"),
     ("xray",               "[Ortho King]"),
     ("king_danger",        "pressure curvature, over DANGER_SCALE; the floor at 0 holds the curvature where the data pulls negative"),
     ("tempo",              "[MG, EG], side-to-move initiative"),

@@ -593,7 +593,7 @@ define_weight_params! {
     phase = [CV(0), CV(1), CV(1), CV(2), CV(4), CV(0)]; // [P, N, B, R, Q, K]
 
     king_safety = [V(23), V(9), V(10)], // [Pawn Shield, Ortho Exp, Diag Exp]
-    attacker    = [CV(0), V(147), V(250), V(441), V(530), V(546)], // [0, 1, 2, 3, 4, 5] attackers × weak
+    attacker    = [CV(0), V(147), V(250), V(441), V(530), V(546)], // [0..5] attacked king-zone squares × weak
     xray        = [V(10)], // [Ortho King]
     king_danger = [V(0)]; // pressure curvature, over DANGER_SCALE; the floor at 0 holds the curvature where the data pulls negative
 

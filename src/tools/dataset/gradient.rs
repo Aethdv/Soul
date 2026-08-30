@@ -37,7 +37,7 @@ pub struct FeatureRecord {
     /// Metric differentials (us - them): mobility, shadow mobility, threats, shadow
     /// threats. i16 because these pass ±127.
     pub mobility_diff: [i16; 4],
-    /// Packed king safety metrics: `[attackers, weak, shield, (ortho << 4) | diag]`.
+    /// Packed king safety metrics: `[attacked_zone, weak, shield, (ortho << 4) | diag]`.
     pub safety_us: [u8; 4],
     pub safety_them: [u8; 4],
     /// Piece count differential per type (us - them).
@@ -326,13 +326,13 @@ impl FeatureRecord {
 /// - Byte 3: `(ortho_exposure << 4) | diag_exposure` (each 4 bits, 0..=15)
 #[inline]
 fn pack_safety(m: &SafetyMetrics) -> [u8; 4] {
-    [m.attackers as u8, m.weak as u8, m.shield as u8, ((m.ortho_exposure as u8) << 4) | m.diag_exposure as u8]
+    [m.attacked_zone as u8, m.weak as u8, m.shield as u8, ((m.ortho_exposure as u8) << 4) | m.diag_exposure as u8]
 }
 
 #[inline]
 fn unpack_safety(raw: [u8; 4]) -> SafetyMetrics {
     SafetyMetrics {
-        attackers: raw[0] as usize,
+        attacked_zone: raw[0] as usize,
         weak: raw[1] as i8 as i32,
         shield: raw[2] as i8 as i32,
         ortho_exposure: (raw[3] >> 4) as i32,
