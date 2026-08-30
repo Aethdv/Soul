@@ -71,7 +71,7 @@ impl XorBoard {
     /// A vacant slot keeps its class bit, so skipping it is what stops a captured bishop
     /// scoring as an immobile one.
     #[inline(always)]
-    pub fn bishop_buckets(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard, out: &mut [i32]) {
+    pub fn for_each_bishop(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard, mut visit: impl FnMut(u32)) {
         for id in slots(self.class[class_index(PieceType::Bishop, color)]) {
             let raw = self.squares[id.index()];
             if raw == NOWHERE {
@@ -81,7 +81,7 @@ impl XorBoard {
             let square = Square(raw);
             let row = self.row(id);
             let legal = if pinned.check_bit(square) { self.pinned_row(id, square, row, ksq) } else { row };
-            out[((legal & area).popcount() as usize).min(out.len() - 1)] += 1;
+            visit((legal & area).popcount());
         }
     }
 

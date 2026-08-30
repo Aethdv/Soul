@@ -407,6 +407,8 @@ macro_rules! define_tunables {
             (atk_weights,   Array6, attacker_offset,        0, ATTACKER),
             (w_xray_ortho,  Scalar, xray_offset,            0, XRAY[0]),
             (w_king_danger, Scalar, king_danger_offset,     0, KING_DANGER[0]),
+            (bishop_mob_mg, Array14, bishop_mobility_mg_offset, 0, BISHOP_MOBILITY_MG),
+            (bishop_mob_eg, Array14, bishop_mobility_eg_offset, 0, BISHOP_MOBILITY_EG),
         }
     };
 }
@@ -465,6 +467,8 @@ crate::bonus_terms! { @blocks define_layout,
     attacker,
     xray,
     king_danger,
+    bishop_mobility_mg,
+    bishop_mobility_eg,
 }
 
 /// Concatenates the groups into the parameter vector `LAYOUT` describes. A
@@ -596,7 +600,9 @@ define_weight_params! {
     king_safety = [V(23), V(10), V(9)], // [Pawn Shield, Ortho Exp, Diag Exp]
     attacker    = [CV(0), V(146), V(248), V(444), V(530), V(549)], // [0..5] attacked king-zone squares × weak
     xray        = [V(10)], // [Ortho King]
-    king_danger = [V(0)]; // pressure curvature, over DANGER_SCALE; the floor at 0 holds the curvature where the data pulls negative
+    king_danger = [V(0)], // pressure curvature, over DANGER_SCALE; the floor at 0 holds the curvature where the data pulls negative
+    bishop_mobility_mg = [V(-26), V(-45), V(-2), V(15), V(36), V(47), V(59), V(67), V(73), V(83), V(86), V(104), V(103), V(105)], // by mobility count 0-13
+    bishop_mobility_eg = [V(57), V(-13), V(54), V(87), V(102), V(112), V(123), V(125), V(131), V(125), V(125), V(110), V(108), V(93)]; // by mobility count 0-13
 
     tempo             = [V(32), V(36)], // [MG, EG], side-to-move initiative
     bishop_pair       = [V(33), V(87)], // [MG, EG]
@@ -613,7 +619,5 @@ define_weight_params! {
     passed_pawn_mg     = [V(7), V(-7), V(-9), V(14), V(6), V(55)], // by relative rank 2-7
     passed_pawn_eg     = [V(-43), V(-19), V(29), V(79), V(172), V(209)], // by relative rank 2-7
     enemy_king_dist_mg = [V(-121), V(8), V(-10), V(-14), V(-16), V(-19)], // enemy king→passer dist, 7 clamps to 6
-    enemy_king_dist_eg = [V(-51), V(-1), V(39), V(53), V(64), V(70)], // enemy king→passer dist, 7 clamps to 6
-    bishop_mobility_mg = [V(-26), V(-45), V(-2), V(15), V(36), V(47), V(59), V(67), V(73), V(83), V(86), V(104), V(103), V(105)],
-    bishop_mobility_eg = [V(57), V(-13), V(54), V(87), V(102), V(112), V(123), V(125), V(131), V(125), V(125), V(110), V(108), V(93)];
+    enemy_king_dist_eg = [V(-51), V(-1), V(39), V(53), V(64), V(70)]; // enemy king→passer dist, 7 clamps to 6
 }

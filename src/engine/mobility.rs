@@ -41,6 +41,47 @@ const INV_OPEN_UNITY: f64 = 1.0 / OPEN_UNITY as f64;
 /// A bishop on an open long diagonal reaches 13, and the area only removes squares.
 pub const BISHOP_BUCKETS: usize = 14;
 
+/// Each bishop's mobility count, White in `..us` and Black in `us..total`.
+/// Promotions cap a side at ten bishops.
+#[derive(Clone, Copy, Debug)]
+pub struct BishopMobility {
+    counts: [u8; 20],
+    us: u8,
+    total: u8,
+}
+
+impl Default for BishopMobility {
+    fn default() -> Self { Self { counts: [0; 20], us: 0, total: 0 } }
+}
+
+impl BishopMobility {
+    #[inline(always)]
+    fn push(&mut self, count: u32) {
+        if usize::from(self.total) < self.counts.len() {
+            self.counts[usize::from(self.total)] = (count as usize).min(BISHOP_BUCKETS - 1) as u8;
+            self.total += 1;
+        }
+    }
+
+    #[inline(always)]
+    pub fn ours(&self) -> &[u8] { &self.counts[..usize::from(self.us)] }
+
+    #[inline(always)]
+    pub fn theirs(&self) -> &[u8] { &self.counts[usize::from(self.us)..usize::from(self.total)] }
+
+    /// Bishops per bucket, White minus Black.
+    pub fn differential(&self) -> [i32; BISHOP_BUCKETS] {
+        let mut out = [0i32; BISHOP_BUCKETS];
+        for &count in self.ours() {
+            out[usize::from(count)] += 1;
+        }
+        for &count in self.theirs() {
+            out[usize::from(count)] -= 1;
+        }
+        out
+    }
+}
+
 pub struct Mobility;
 pub struct MobilityTerm;
 pub struct KingSafetyTerm;
@@ -162,7 +203,7 @@ impl SafetyMetrics {
 }
 
 impl Mobility {
-    /// The bishop buckets come back as a White-minus-Black differential.
+    /// The bishop counts come back per piece, White's first.
     #[inline]
     pub fn compute_all(
         pos: &Position,
@@ -170,18 +211,17 @@ impl Mobility {
         pinned_w: Bitboard,
         pinned_b: Bitboard,
         rows: Option<&XorBoard>,
-    ) -> (SpatialMetrics, [i32; BISHOP_BUCKETS]) {
+    ) -> (SpatialMetrics, BishopMobility) {
         let ctx = EvalCtx::build(pos, maps, pinned_w, pinned_b);
-        let mut bishops_us = [0i32; BISHOP_BUCKETS];
-        let mut bishops_them = [0i32; BISHOP_BUCKETS];
-        let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them, &mut bishops_us);
-        let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us, &mut bishops_them);
+        let mut bishops = BishopMobility::default();
+        let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them, &mut bishops);
+        bishops.us = bishops.total;
+        let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us, &mut bishops);
         let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
         let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
         let metrics_us = score_side(ctx.them, ctx.atk_us, mob_us, ctx.pawn_atk_them, ctx.xray_us);
         let metrics_them = score_side(ctx.us, ctx.atk_them, mob_them, ctx.pawn_atk_us, ctx.xray_them);
-        let bishop_mobility = std::array::from_fn(|i| bishops_us[i] - bishops_them[i]);
-        (SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }, bishop_mobility)
+        (SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }, bishops)
     }
 
     /// Tapered, openness-interpolated score differential, `metrics_us` minus `metrics_them`.
@@ -487,16 +527,16 @@ fn piece_mobility(
     pinned: Bitboard,
     ksq: Square,
     area: Bitboard,
-    bishops: &mut [i32; BISHOP_BUCKETS],
+    bishops: &mut BishopMobility,
 ) -> i32 {
     if let Some(rows) = rows {
-        rows.bishop_buckets(color, pinned, ksq, area, bishops);
+        rows.for_each_bishop(color, pinned, ksq, area, |count| bishops.push(count));
         return rows.mobility(color, pinned, ksq, area);
     }
 
     let mut total = 0;
     for_each_piece_mobility(pos, color, pinned, ksq, area, |piece, count| match piece {
-        PieceType::Bishop => bishops[(count as usize).min(BISHOP_BUCKETS - 1)] += 1,
+        PieceType::Bishop => bishops.push(count),
         _ => total += count as i32,
     });
     total
@@ -582,15 +622,17 @@ mod tests {
                 let pinned = pos.pinned_pieces(color);
                 let ksq = pos.pieces(PieceType::King, color).lsb();
                 let area = !pos.pawn_attacks(color.opposite());
-                let mut bishops_rows = [0i32; BISHOP_BUCKETS];
-                let mut bishops_probes = [0i32; BISHOP_BUCKETS];
+                let mut bishops_rows = BishopMobility::default();
+                let mut bishops_probes = BishopMobility::default();
                 let from_rows = piece_mobility(&pos, Some(&rows), color, pinned, ksq, area, &mut bishops_rows);
                 let from_probes = piece_mobility(&pos, None, color, pinned, ksq, area, &mut bishops_probes);
+                bishops_rows.us = bishops_rows.total;
+                bishops_probes.us = bishops_probes.total;
 
                 assert_eq!(from_rows, from_probes, "{fen} {color:?}");
-                assert_eq!(bishops_rows, bishops_probes, "bishop buckets {fen} {color:?}");
-                let bishops = pos.pieces(PieceType::Bishop, color).popcount() as i32;
-                assert_eq!(bishops_probes.iter().sum::<i32>(), bishops, "bishop count {fen} {color:?}");
+                assert_eq!(bishops_rows.differential(), bishops_probes.differential(), "bishop buckets {fen} {color:?}");
+                let bishops = pos.pieces(PieceType::Bishop, color).popcount() as usize;
+                assert_eq!(bishops_probes.ours().len(), bishops, "bishop count {fen} {color:?}");
             }
         }
     }

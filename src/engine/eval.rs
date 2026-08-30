@@ -18,8 +18,8 @@ use crate::{
         autograd::EvalMath,
         combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, safety_block, taper},
         eval_params::{
-            self, ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
-            XRAY,
+            self, ATTACKER, BISHOP_MOBILITY_EG, BISHOP_MOBILITY_MG, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY,
+            MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, XRAY,
         },
         mobility::{self, Mobility, SpatialMetrics},
         search_params::SearchParams,
@@ -104,7 +104,6 @@ macro_rules! bonus_terms {
             defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6); // ~10 Elo
             passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6); // ~15 Elo
             enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6); // ~12 Elo
-            bishop_mobility   = array(BishopMobilityTerm, bishop_mobility, bishop_mobility_mg, bishop_mobility_eg, 14);
         }
     };
 
@@ -161,6 +160,7 @@ macro_rules! register_bonus {
             mobility::MobilityTerm   => mobility,
             mobility::KingSafetyTerm => king_safety,
             XrayTerm                 => xray,
+            BishopMobilityTerm       => bonus,
             $( $term                 => bonus, )*
         }
     };
@@ -169,6 +169,7 @@ macro_rules! register_bonus {
 bonus_terms!(register_bonus);
 
 pub struct XrayTerm;
+pub struct BishopMobilityTerm;
 
 /// The score split per bucket, for the UCI `eval` command.
 pub struct DetailedEval {
@@ -188,7 +189,7 @@ pub struct SharedFeatures {
     pub openness: i32,
     pub spatial: SpatialMetrics,
     /// Bishops per mobility count, White minus Black, the last bucket absorbing the rest.
-    pub bishop_mobility: [i32; mobility::BISHOP_BUCKETS],
+    pub bishop_mobility: mobility::BishopMobility,
     /// Orthogonal x-rays landing in the enemy king ring, White minus Black.
     pub xray_ortho: i32,
     pub bishop_pair_diff: i32,
@@ -654,6 +655,50 @@ macro_rules! tapered_bonus_term {
             }
         }
     };
+}
+
+impl term::LinearTerm for BishopMobilityTerm {
+    type Upstream = term::TaperPair;
+    type Input = [f64; mobility::BISHOP_BUCKETS];
+
+    #[inline(always)]
+    fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
+        for &count in features.bishop_mobility.ours() {
+            acc.bonus_mg = acc.bonus_mg + params.bishop_mob_mg[usize::from(count)];
+            acc.bonus_eg = acc.bonus_eg + params.bishop_mob_eg[usize::from(count)];
+        }
+        for &count in features.bishop_mobility.theirs() {
+            acc.bonus_mg = acc.bonus_mg - params.bishop_mob_mg[usize::from(count)];
+            acc.bonus_eg = acc.bonus_eg - params.bishop_mob_eg[usize::from(count)];
+        }
+    }
+
+    #[inline(always)]
+    fn apply_input(features: Self::Input, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+        let mg = eval_params::LAYOUT.bishop_mobility_mg_offset;
+        let eg = eval_params::LAYOUT.bishop_mobility_eg_offset;
+        for (i, feature) in features.into_iter().enumerate() {
+            acc.bonus_mg += values[mg + i] * feature;
+            acc.bonus_eg += values[eg + i] * feature;
+        }
+    }
+
+    #[inline(always)]
+    fn scatter(features: Self::Input, upstream: term::TaperPair, grads: &mut [f64]) {
+        let mg = eval_params::LAYOUT.bishop_mobility_mg_offset;
+        let eg = eval_params::LAYOUT.bishop_mobility_eg_offset;
+        for (i, feature) in features.into_iter().enumerate() {
+            grads[mg + i] += upstream.d_mg * feature;
+            grads[eg + i] += upstream.d_eg * feature;
+        }
+    }
+}
+
+impl term::TermSource<BishopMobilityTerm> for SharedFeatures {
+    type Input = [f64; mobility::BISHOP_BUCKETS];
+
+    #[inline(always)]
+    fn extract(&self) -> Self::Input { self.bishop_mobility.differential().map(f64::from) }
 }
 
 bonus_terms!(tapered_bonus_term);

@@ -342,11 +342,21 @@ fn unpack_safety(raw: [u8; 4]) -> SafetyMetrics {
     }
 }
 
+impl term::TermSource<crate::engine::eval::BishopMobilityTerm> for FeatureRecord {
+    type Input = [f64; crate::engine::mobility::BISHOP_BUCKETS];
+
+    #[inline(always)]
+    fn extract(&self) -> Self::Input { self.bishop_mobility.map(f64::from) }
+}
+
 macro_rules! record_bonus {
     ( [] $( $block:ident = $kind:ident ( $term:ident, $($spec:tt)* ) ; )* ) => {
         impl FeatureRecord {
             fn pack_terms(&mut self, shared: &SharedFeatures, sign: i32) {
                 self.xray_ortho = (shared.xray_ortho * sign) as i8;
+                for (out, raw) in self.bishop_mobility.iter_mut().zip(shared.bishop_mobility.differential()) {
+                    *out = (raw * sign) as i8;
+                }
                 $( record_bonus!(@pack $kind self, shared, sign, $($spec)*); )*
             }
         }
