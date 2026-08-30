@@ -462,7 +462,7 @@ impl EvalCtx {
     }
 }
 
-/// What each piece of `color` reaches inside `area`, summed over the side.
+/// What each non-pawn piece of `color` reaches inside `area`, summed over the side.
 ///
 /// A fill cannot produce this. ORing the sides together loses which piece got
 /// where, so a square two of our pieces attack is worth one to the union and two
@@ -470,15 +470,19 @@ impl EvalCtx {
 /// them the same sum is a probe per piece, which only an offline tuner can
 /// afford.
 ///
-/// The pin policy matches SpatialMaps: a pinned knight has nothing legal,
-/// a pinned slider keeps its pin ray, a pinned pawn is left whole.
+/// The pin policy matches SpatialMaps: a pinned knight has nothing legal
+/// and a pinned slider keeps its pin ray.
 fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
     if let Some(rows) = rows {
         return rows.mobility(color, pinned, ksq, area);
     }
 
     let mut total = 0;
-    for_each_piece_mobility(pos, color, pinned, ksq, area, |_, count| total += count as i32);
+    for_each_piece_mobility(pos, color, pinned, ksq, area, |piece, count| {
+        if piece != PieceType::Pawn {
+            total += count as i32;
+        }
+    });
     total
 }
 

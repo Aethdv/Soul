@@ -487,7 +487,7 @@ mod tests {
 
             slots(color_slots(color) & !king).filter_map(move |id| {
                 let raw = self.squares[id.index()];
-                if raw == NOWHERE {
+                if raw == NOWHERE || self.kind[id.index()] == PieceType::Pawn {
                     return None;
                 }
 

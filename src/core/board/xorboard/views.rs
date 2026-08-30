@@ -39,13 +39,12 @@ impl XorBoard {
     }
 
     /// Per piece, so a square two pieces attack counts twice.
+    /// Pawns and the king sit outside the sum.
     #[inline(always)]
     pub fn mobility(&self, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
         let base = usize::from(color) * 16;
-        let mut total = self.count_rows(base, area);
-        if let Some(king) = self.id_at(ksq) {
-            total -= (self.row(king) & area).popcount() as i32;
-        }
+        let skipped = self.class[class_index(PieceType::Pawn, color)] | self.class[class_index(PieceType::King, color)];
+        let mut total = self.count_rows(base, area, !skipped);
 
         for square in pinned {
             let Some(id) = self.id_at(square) else { continue };
@@ -71,8 +70,10 @@ impl XorBoard {
         }
     }
 
+    /// Only bits `base..base + 16` of `counted` are read, so a caller may pass a mask
+    /// spanning both colors.
     #[inline(always)]
-    fn count_rows(&self, base: usize, area: Bitboard) -> i32 {
+    fn count_rows(&self, base: usize, area: Bitboard, counted: u64) -> i32 {
         // SAFETY: AVX2 per the weave/mod.rs gate; `base` is 0 or 16, so the four
         // loads cover slots base..base+16 of a 32-element array.
         unsafe {
@@ -82,7 +83,8 @@ impl XorBoard {
                 let mut acc = _mm512_setzero_si512();
                 for group in 0..2 {
                     let rows = _mm512_loadu_si512(self.rows.as_ptr().add(base + group * 8).cast());
-                    acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(_mm512_and_si512(rows, mask)));
+                    let keep = ((counted >> (base + group * 8)) & 0xFF) as u8;
+                    acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(_mm512_maskz_and_epi64(keep, rows, mask)));
                 }
                 _mm512_reduce_add_epi64(acc) as i32
             }
@@ -90,10 +92,15 @@ impl XorBoard {
             #[cfg(not(target_feature = "avx512vpopcntdq"))]
             {
                 let mask = _mm256_set1_epi64x(area.0.cast_signed());
+                // Lane j of a group holds slot base + group * 4 + j, so bit 1 << j selects it.
+                let lanes = _mm256_set_epi64x(8, 4, 2, 1);
                 let mut acc = _mm256_setzero_si256();
                 for group in 0..4 {
                     let rows = _mm256_loadu_si256(self.rows.as_ptr().add(base + group * 4).cast());
-                    acc = _mm256_add_epi64(acc, U64x4(_mm256_and_si256(rows, mask)).popcount().0);
+                    let nibble = _mm256_set1_epi64x(i64::from((counted >> (base + group * 4)) as u8 & 0xF));
+                    let keep = _mm256_cmpeq_epi64(_mm256_and_si256(nibble, lanes), lanes);
+                    let selected = _mm256_and_si256(_mm256_and_si256(rows, mask), keep);
+                    acc = _mm256_add_epi64(acc, U64x4(selected).popcount().0);
                 }
 
                 let folded = _mm_add_epi64(_mm256_castsi256_si128(acc), _mm256_extracti128_si256::<1>(acc));
