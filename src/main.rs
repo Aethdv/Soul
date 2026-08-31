@@ -47,13 +47,15 @@ fn main() {
             },
             "perft" => {
                 let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+                let bulk = args.iter().any(|a| a.eq_ignore_ascii_case("bulk"));
                 let board = Position::from_fen(STARTPOS);
-                tools::perft::run(&board, depth, false);
+                tools::perft::run(&board, depth, false, bulk);
             },
             "divide" => {
                 let depth = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+                let bulk = args.iter().any(|a| a.eq_ignore_ascii_case("bulk"));
                 let board = Position::from_fen(STARTPOS);
-                tools::perft::run(&board, depth, true);
+                tools::perft::run(&board, depth, true, bulk);
             },
             "spsa" => {
                 let spsa_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();

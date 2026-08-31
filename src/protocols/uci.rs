@@ -292,7 +292,13 @@ where I: Iterator<Item = &'a str> {
             "movetime" => limits.movetime = parse_val(tokens),
             "infinite" => limits.infinite = true,
             "mate" => limits.mate = Some(parse_val(tokens)),
-            "perft" => limits.perft = Some(parse_val(tokens)),
+            "perft" => {
+                limits.perft = Some(parse_val(tokens));
+                if matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk")) {
+                    tokens.next();
+                    limits.perft_bulk = true;
+                }
+            },
             "searchmoves" => {
                 // Peek before consuming;
                 // tokens like depth must not be swallowed
@@ -325,7 +331,7 @@ pub fn print_help(use_ansi: bool) {
     h.subcommand("nodes", "<N>", "Search limit N nodes");
     h.subcommand("movetime", "<ms>", "Search for exact time");
     h.subcommand("infinite", "", "Search until stopped");
-    h.subcommand("perft", "<N>", "Perft test to depth N");
+    h.subcommand("perft", "<N> [bulk]", "Perft test to depth N");
     h.subcommand("mate", "<N>", "Search for mate in N moves");
     h.subcommand("searchmoves", "", "Restrict search to specific moves");
 
@@ -350,7 +356,7 @@ pub fn print_help(use_ansi: bool) {
     h.command("flip", "Switch side to move");
     h.command("key", "Print Zobrist hash");
     h.command_args("bench", "<N>", "Benchmark to depth N");
-    h.command_args("divide", "<N>", "Perft divide test");
+    h.command_args("divide", "<N> [bulk]", "Perft divide test");
     #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
     h.command("spsa", "Print the tunable search params as an SPSA table");
@@ -477,7 +483,16 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "bench" => tools::bench::run(parse_default(&mut tokens, tools::bench::DEFAULT_DEPTH), 16),
-        "divide" => tools::perft::run(&state.board, parse_default(&mut tokens, 5), true),
+        "perft" => {
+            let depth = parse_default(&mut tokens, 5);
+            let bulk = matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk"));
+            tools::perft::run(&state.board, depth, false, bulk);
+        },
+        "divide" => {
+            let depth = parse_default(&mut tokens, 5);
+            let bulk = matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk"));
+            tools::perft::run(&state.board, depth, true, bulk);
+        },
         #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(0),
         #[cfg(feature = "datagen")]

@@ -61,7 +61,6 @@ use crate::{
         tt::{TranspositionTable, TtData, TtMove},
         tui,
     },
-    tools::perft::perft,
     weave::{I16x8, U64x4},
 };
 
@@ -173,6 +172,7 @@ pub struct Limits {
     pub protocol: Protocol,
     pub mate: Option<i32>,
     pub perft: Option<u8>,
+    pub perft_bulk: bool,
     pub searchmoves: Vec<Move>,
 }
 
@@ -423,7 +423,9 @@ impl<'cfg> Searcher<'cfg> {
         if let Some(perft_depth) = self.cfg.limits.perft {
             let mut board = self.root_pos;
             let mut acc = board.initial_accumulator();
-            println!("Nodes searched: {}", perft(&mut board, perft_depth, &mut acc));
+            let bulk = self.cfg.limits.perft_bulk;
+            let nodes = crate::tools::perft::perft_with(&mut board, perft_depth, &mut acc, bulk);
+            println!("Nodes searched: {nodes}");
             return;
         }
 
