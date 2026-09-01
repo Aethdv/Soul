@@ -1086,6 +1086,25 @@ impl Worker<'_> {
             }
         }
 
+        // ── Small ProbCut
+        // The TT already proves a Lower bound above a raised beta at near depth.
+        // Unlike the move-loop ProbCut below, no search is needed: the table
+        // did the work, so a single probe can cut the node.
+        if !N::PV
+            && !in_check
+            && excluded.is_null()
+            && depth >= sp.small_probcut_depth_min
+            && !is_mate(beta)
+            && !is_mate(tt_probe.score)
+            && (tt_probe.bound == tt::Bound::Lower || tt_probe.bound == tt::Bound::Exact)
+            && tt_probe.depth >= depth - sp.small_probcut_tt_depth
+        {
+            let small_probcut_beta = beta + sp.small_probcut_margin;
+            if !is_mate(small_probcut_beta) && tt_probe.score >= small_probcut_beta {
+                return Ok(small_probcut_beta);
+            }
+        }
+
         // One pin scan for the whole node: legality and every SEE read it.
         let pins = Pins::new(&self.pos);
 
