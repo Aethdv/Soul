@@ -271,7 +271,7 @@ search_params! {
         T (singext_margin,         1,   1),
         T (singext_tt_depth,       3,   1,    6),
         T (singext_depth_div,      4,   1,    4),
-        T (singext_double_margin, 40,   0,  100),
+        T (singext_double_margin, 65,   0,  100),
 
         //           default min  max  step
         T (iir_depth,      5,  2,  8),
