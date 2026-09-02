@@ -535,8 +535,9 @@ impl<'cfg> Searcher<'cfg> {
             // one in a narrow window instead of searching (-INF, INF). Tighter
             // bounds prune far more, and most iterations land inside for free.
             // When the score escapes, the bound that broke says which way we
-            // were wrong: a fail-low drops alpha, a fail-high lifts beta. Each
-            // retry widens the window so a score that truly moved doesn't thrash.
+            // were wrong: a fail-low drops alpha and tightens beta, a fail-high
+            // lifts beta. Each retry widens the window so a score that truly
+            // moved doesn't thrash.
             let mut delta = sp.asp_initial;
             let mut alpha = if depth >= sp.asp_depth { (self.prev_score - delta).max(-INF) } else { -INF };
             let mut beta = if depth >= sp.asp_depth { (self.prev_score + delta).min(INF) } else { INF };
@@ -559,6 +560,7 @@ impl<'cfg> Searcher<'cfg> {
 
                 if score <= alpha {
                     self.print_bound(depth, score, tui::ScoreBound::Upper);
+                    beta = (alpha + beta) / 2;
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
                     self.print_bound(depth, score, tui::ScoreBound::Lower);
