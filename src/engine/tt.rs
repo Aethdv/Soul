@@ -470,21 +470,36 @@ impl TranspositionTable {
     }
 }
 
-/// Whether the entry already stored beats a revisit of the same position.
-/// An exact bound is the position's value rather than a window artifact.
 #[inline(always)]
-fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8) -> bool {
-    bound != Bound::Exact
-        && packed_age(packed) == cur_age
-        && i32::from(packed_depth(packed)) >= depth + 2 * i32::from(pv) + DEPTH_SLACK
+fn flag_bonus(bound: Bound) -> i32 {
+    match bound {
+        Bound::Exact => 3,
+        Bound::Lower => 2,
+        Bound::Upper => 1,
+        Bound::None => 0,
+    }
 }
 
-/// How readily a slot gives way: its depth, discounted by how many generations
-/// old it is. `age_factor` sets the exchange rate between the two.
+/// Whether the stored entry outranks the new one.
+#[inline(always)]
+fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8) -> bool {
+    if bound == Bound::Exact && packed_bound(packed) != Bound::Exact {
+        return false;
+    }
+    if packed_age(packed) != cur_age {
+        return false;
+    }
+    let old_priority = i32::from(packed_depth(packed)) + flag_bonus(packed_bound(packed));
+    let new_priority = depth + flag_bonus(bound) + 2 * i32::from(pv);
+    old_priority >= new_priority + DEPTH_SLACK
+}
+
+/// Replacement quality: depth plus flag and pv bonuses, discounted by age.
 #[inline(always)]
 fn replacement_quality(packed: u16, current_age: u8, age_factor: i32) -> i32 {
     let gen_diff = (current_age.wrapping_sub(packed_age(packed)) & AGE_MASK) as i32;
-    packed_depth(packed) as i32 - gen_diff * age_factor
+    let depth = i32::from(packed_depth(packed)) + flag_bonus(packed_bound(packed)) + i32::from(packed_pv(packed));
+    depth - gen_diff * age_factor
 }
 
 /// First-touch decides a page's home node, so zeroing each slice from a thread bound
