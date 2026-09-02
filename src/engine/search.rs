@@ -1385,6 +1385,9 @@ impl Worker<'_> {
                     let sing_score = sing_score?;
                     if sing_score < sing_beta {
                         extension = 1;
+                        if sing_score < sing_beta - sp.singext_double_margin {
+                            extension = 2;
+                        }
                     } else if sing_score >= beta {
                         // ── Multicut (~15 Elo)
                         // The TT bound already reads the TT move as a fail-high, and with it
