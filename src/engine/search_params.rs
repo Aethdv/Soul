@@ -266,11 +266,12 @@ search_params! {
         NT(nmp_ply_offset,        1),
         T (nmp_verif_min_depth,  16,  6,   24),
 
-        //                  default  min   max  step
-        T (singext_min_depth,     5,   4,   16),
-        T (singext_margin,        1,   1),
-        T (singext_tt_depth,      3,   1,    6),
-        T (singext_depth_div,     4,   1,    4),
+        //                   default  min   max  step
+        T (singext_min_depth,      5,   4,   16),
+        T (singext_margin,         1,   1),
+        T (singext_tt_depth,       3,   1,    6),
+        T (singext_depth_div,      4,   1,    4),
+        T (singext_double_margin, 20,   0,  100),
 
         //           default min  max  step
         T (iir_depth,      5,  2,  8),
