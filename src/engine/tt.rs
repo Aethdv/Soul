@@ -38,9 +38,6 @@ const CLUSTER_SIZE: usize = 3;
 /// `age` is 5 bits; generation distance is read modulo 32.
 const AGE_MASK: u8 = 0x1F;
 
-/// How much deeper a stored result must be to outrank a revisit of the same position.
-const DEPTH_SLACK: i32 = 4;
-
 const _: () = assert!(mem::size_of::<TtEntry>() == 10);
 const _: () = assert!(mem::size_of::<Cluster>() == 32);
 const _: () = assert!(mem::align_of::<Cluster>() == 32);
@@ -347,7 +344,6 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
-        let age_factor = self.age_factor.load(Ordering::Relaxed);
         let cluster = self.cluster(idx);
 
         let mut victim = 0;
@@ -362,7 +358,7 @@ impl TranspositionTable {
                 break;
             }
 
-            let quality = replacement_quality(packed, cur_age, age_factor);
+            let quality = replacement_quality(packed, cur_age);
             if quality < worst_quality {
                 worst_quality = quality;
                 victim = i;
@@ -405,7 +401,6 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let key16 = verification_key(hash);
         let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
-        let age_factor = self.age_factor.load(Ordering::Relaxed);
         let cluster = self.cluster(idx);
 
         let mut victim: Option<usize> = None;
@@ -420,7 +415,7 @@ impl TranspositionTable {
                 break;
             }
 
-            let quality = replacement_quality(packed, cur_age, age_factor);
+            let quality = replacement_quality(packed, cur_age);
             if quality <= 0 && quality < worst_quality {
                 worst_quality = quality;
                 victim = Some(i);
@@ -470,21 +465,38 @@ impl TranspositionTable {
     }
 }
 
-/// Whether the entry already stored beats a revisit of the same position.
-/// An exact bound is the position's value rather than a window artifact.
 #[inline(always)]
-fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8) -> bool {
-    bound != Bound::Exact
-        && packed_age(packed) == cur_age
-        && i32::from(packed_depth(packed)) >= depth + 2 * i32::from(pv) + DEPTH_SLACK
+fn flag_bonus(bound: Bound) -> i32 {
+    match bound {
+        Bound::Exact => 3,
+        Bound::Lower => 2,
+        Bound::Upper => 1,
+        Bound::None => 0,
+    }
 }
 
-/// How readily a slot gives way: its depth, discounted by how many generations
-/// old it is. `age_factor` sets the exchange rate between the two.
+/// Whether the stored entry outranks the new one.
 #[inline(always)]
-fn replacement_quality(packed: u16, current_age: u8, age_factor: i32) -> i32 {
+fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8) -> bool {
+    if bound == Bound::Exact && packed_bound(packed) != Bound::Exact {
+        return false;
+    }
+    let old_depth = i32::from(packed_depth(packed));
+    let old_bonus = flag_bonus(packed_bound(packed));
+    let new_bonus = flag_bonus(bound);
+    let age_diff = (cur_age.wrapping_sub(packed_age(packed)) & AGE_MASK) as i32;
+    let insert_priority = depth + new_bonus + (age_diff * age_diff) / 4 + i32::from(pv);
+    let record_priority = old_depth + old_bonus;
+    insert_priority * 3 < record_priority * 2
+}
+
+/// Replacement quality: depth plus flag and pv bonuses, discounted by age.
+#[inline(always)]
+fn replacement_quality(packed: u16, current_age: u8) -> i32 {
     let gen_diff = (current_age.wrapping_sub(packed_age(packed)) & AGE_MASK) as i32;
-    packed_depth(packed) as i32 - gen_diff * age_factor
+    let depth = i32::from(packed_depth(packed));
+    let bonus = flag_bonus(packed_bound(packed)) + i32::from(packed_pv(packed));
+    depth + bonus - (gen_diff * gen_diff) / 4
 }
 
 /// First-touch decides a page's home node, so zeroing each slice from a thread bound

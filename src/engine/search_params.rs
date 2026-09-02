@@ -230,11 +230,9 @@ search_params! {
         //                  default  min   max
         T (good_capture_margin, 182,   0,  300),
 
-        //             default  min  max
-        T (qs_recapture_ply, 4,   2),
-
-        //          default   min  max
-        T (qs_see_margin, 4, -100, 100),
+        //             default   min  max
+        T (qs_recapture_ply, 4,    2),
+        T (qs_see_margin,    4, -100, 100),
 
         //           default  min  max
         T (delta_margin, 279,  50),
