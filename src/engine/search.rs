@@ -1351,7 +1351,7 @@ impl Worker<'_> {
 
                 let mut extension = 0i32;
 
-                // ── Singular Extensions (~7 Elo)
+                // ── Singular Extensions (~10 Elo)
                 // The TT move already came back strong from a deep search, and the question
                 // here is whether it stands alone. Re-search every other move in a window
                 // pinned just under its score; if they all fall short, nothing rivals it.
@@ -1396,6 +1396,11 @@ impl Worker<'_> {
                         // Mate scores return plain beta instead, since a verification missing the
                         // best move cannot be trusted on the distance.
                         return Ok(if is_mate(sing_score) { beta } else { sing_score });
+                    } else if tt_probe.score >= beta {
+                        // ── Negative Extension
+                        // A sibling move also cleared the singular window. With multiple
+                        // refutations available, reduce depth on the TT move to save work.
+                        extension = -sp.singext_negext;
                     }
                 }
 

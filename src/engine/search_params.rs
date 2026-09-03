@@ -272,6 +272,7 @@ search_params! {
         T (singext_tt_depth,       3,   1,    6),
         T (singext_depth_div,      4,   1,    4),
         T (singext_double_margin, 65,   0,  100),
+        T (singext_negext,         3,   1),
 
         //           default  min  max
         T (iir_depth,      5,   2,  8),
