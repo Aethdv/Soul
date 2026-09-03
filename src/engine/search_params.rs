@@ -285,7 +285,7 @@ search_params! {
         T (lmp_depth,   5,   2, 10),
         T (lmp_base,    2,   1,  6),
         T (lmp_scale, 128,  25, 250),  // ·100
-        T (lmp_imp,    32,   0, 128),  // ·100, symmetric improving split
+        T (lmp_imp,    64,   0, 128),  // ·100, symmetric improving split
 
         //                 default   min  max
         T (hist_prune_depth,     8,    2,  12),
