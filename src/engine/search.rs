@@ -1105,7 +1105,7 @@ impl Worker<'_> {
             let ksq = pins.king(stm);
             let pinned = pins.blockers(stm);
 
-            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
+            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, None, false);
 
             self.xb_enter(ply);
 
@@ -1210,8 +1210,17 @@ impl Worker<'_> {
             // picker incorporate recent positional context into quiet ordering.
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
-            let mut picker =
-                MovePicker::new(tt_move.get(), searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+            let mut picker = MovePicker::new(
+                tt_move.get(),
+                searcher.cfg,
+                pins,
+                self.stack[ply].killers,
+                threats,
+                (cont1.pt != PieceType::None).then_some(cont1.to),
+                cont1,
+                cont2,
+                cont4,
+            );
 
             self.xb_enter(ply);
 
@@ -1868,7 +1877,7 @@ impl Worker<'_> {
         let ksq = pins.king(stm);
         let pinned = pins.blockers(stm);
 
-        let mut picker = MovePicker::new_qsearch(qs_tt_move.get(), searcher.cfg, pins, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt_move.get(), searcher.cfg, pins, prev_to, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 

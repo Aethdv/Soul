@@ -229,6 +229,7 @@ search_params! {
 
         //                  default  min   max
         T (good_capture_margin, 182,   0,  300),
+        T (recapture_bonus,     256,   0, 1024),
 
         //             default  min  max
         T (qs_recapture_ply, 4,   2),

@@ -102,6 +102,8 @@ pub struct MovePicker {
     pins: Pins,
     killers: [Move; 2],
     threats: Bitboard,
+    recapture_to: Option<Square>,
+    recapture_bonus: i32,
     cont1: ContContext,
     cont2: ContContext,
     cont4: ContContext,
@@ -132,6 +134,7 @@ impl MovePicker {
         pins: Pins,
         killers: [Move; 2],
         threats: Bitboard,
+        recapture_to: Option<Square>,
         cont1: ContContext,
         cont2: ContContext,
         cont4: ContContext,
@@ -151,6 +154,8 @@ impl MovePicker {
             pins,
             killers,
             threats,
+            recapture_to,
+            recapture_bonus: cfg.search_params.recapture_bonus,
             cont1,
             cont2,
             cont4,
@@ -167,7 +172,13 @@ impl MovePicker {
     // Rust lacks guaranteed copy elision; returning an explicit literal is the only
     // shape rustc reliably constructs in place within the caller's frame.
     #[inline]
-    pub fn new_qsearch(hash_move: Option<Move>, cfg: &SearchConfig, pins: Pins, in_check: bool) -> Self {
+    pub fn new_qsearch(
+        hash_move: Option<Move>,
+        cfg: &SearchConfig,
+        pins: Pins,
+        recapture_to: Option<Square>,
+        in_check: bool,
+    ) -> Self {
         Self {
             stage: Stage::Hash,
             hash_move,
@@ -183,6 +194,8 @@ impl MovePicker {
             pins,
             killers: [Move::null(); 2],
             threats: Bitboard(0),
+            recapture_to,
+            recapture_bonus: cfg.search_params.recapture_bonus,
             cont1: ContContext::default(),
             cont2: ContContext::default(),
             cont4: ContContext::default(),
@@ -388,7 +401,9 @@ impl MovePicker {
     /// Blends MVV-LVA with capture history into one sort score.
     /// Both capture paths score through here, so the formula has one home.
     #[inline(always)]
-    fn cap_score(&self, mvv: i32, chist: i32) -> i32 { mvv + chist / self.capt_hist_divisor }
+    fn cap_score(&self, mvv: i32, chist: i32, to: Square) -> i32 {
+        mvv + chist / self.capt_hist_divisor + (self.recapture_to == Some(to)) as i32 * self.recapture_bonus
+    }
 
     /// Monomorphized by `PT` for dispatch-free attack lookups.
     #[inline]
@@ -409,7 +424,7 @@ impl MovePicker {
                 let victim = board.piece_at(to);
                 let v_val = *debug_index!(self.mvvlva_v, victim as usize);
                 let chist = history.score_capture(stm, PT, to, victim);
-                let score = self.cap_score(v_val - a_pen, chist);
+                let score = self.cap_score(v_val - a_pen, chist, to);
                 self.add_move_packed(Move::new(from, to, Move::CAPTURE), score as MoveScore);
             }
         }
@@ -432,7 +447,7 @@ impl MovePicker {
         let victim = if mv.is_en_passant() { PieceType::Pawn } else { board.piece_at(mv.to()) };
         let mvv = self.mvv_lva(mv, attacker, victim);
         let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
-        self.add_move_packed(mv, self.cap_score(mvv as i32, chist) as MoveScore);
+        self.add_move_packed(mv, self.cap_score(mvv as i32, chist, mv.to()) as MoveScore);
     }
 
     /// Emit all four promotion-captures for one pawn diagonal.
@@ -716,6 +731,7 @@ mod tests {
                 Pins::new(&board),
                 [Move::null(); 2],
                 Bitboard(0),
+                None,
                 ContContext::default(),
                 ContContext::default(),
                 ContContext::default(),
