@@ -1215,6 +1215,8 @@ impl Worker<'_> {
 
             self.xb_enter(ply);
 
+            let lmp_scale = (sp.lmp_scale + if improving { sp.lmp_imp } else { -sp.lmp_imp }).max(0);
+
             while let Some(mv) = picker.next(&self.pos, self.xb_rows(), self.history) {
                 if !is_legal(&self.pos, mv, ksq, pinned, checkers, opp) {
                     continue;
@@ -1263,7 +1265,7 @@ impl Worker<'_> {
                     && mv.is_quiet()
                     && !N::PV
                     && depth <= sp.lmp_depth
-                    && res.move_count as i32 >= sp.lmp_base + sp.lmp_scale * depth * depth / 100
+                    && res.move_count as i32 >= sp.lmp_base + lmp_scale * depth * depth / 100
                 {
                     continue;
                 }
