@@ -291,6 +291,23 @@ fn move_flag_predicates() {
 }
 
 #[test]
+fn gives_check_direct_and_discovered() {
+    let rook = Position::from_fen("4k2r/5ppp/8/8/8/8/PPPP1PPP/R5K1 w - - 0 1");
+    assert!(
+        super::attacks::gives_check(&rook, Move::new(Square(0), Square(4), Move::QUIET)),
+        "Ra1-e1 checks down the file"
+    );
+    assert!(!super::attacks::gives_check(&rook, Move::new(Square(0), Square(1), Move::QUIET)), "Ra1-b1 checks nothing");
+
+    let knight = Position::from_fen("6rk/5p1p/8/8/8/2N5/1B3PPP/6K1 w - - 0 1");
+    assert!(super::attacks::gives_check(&knight, Move::new(Square(18), Square(12), Move::QUIET)), "Nc3-e2 uncovers Bb2");
+    assert!(!super::attacks::gives_check(&knight, Move::new(Square(15), Square(23), Move::QUIET)), "h2-h3 checks nothing");
+
+    let castle = Position::from_fen("5k2/6pp/8/8/8/8/PPPPP2P/4K2R w K - 0 1");
+    assert!(super::attacks::gives_check(&castle, Move::new(Square(4), Square(7), Move::CASTLE)), "O-O checks Kf8 up the file");
+}
+
+#[test]
 fn move_promotion_piece_types() {
     let n = Move::new(Square(0), Square(8), Move::PROM_N);
     let b = Move::new(Square(0), Square(8), Move::PROM_B);

@@ -3,9 +3,12 @@
 use crate::core::{
     board::{
         Position,
-        bitboard::{PSEUDO_BISHOP_ATTACKS, PSEUDO_ROOK_ATTACKS, atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb},
+        bitboard::{
+            PSEUDO_BISHOP_ATTACKS, PSEUDO_ROOK_ATTACKS, atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb,
+        },
     },
     defs::{Bitboard, Color, PieceType, Square},
+    moves::Move,
 };
 
 /// Returns whether `sq` is attacked by any piece of `attacker`.
@@ -113,6 +116,54 @@ pub fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
         }
     }
     pinned
+}
+
+/// True when `mv` leaves the enemy king in check.
+///
+/// Leapers test direct in one lookup; sliders test once from the king's side,
+/// which catches the mover and every discovery together. Exact on legal
+/// positions, where the enemy starts out of check.
+#[inline(always)]
+pub fn gives_check(pos: &Position, mv: Move) -> bool {
+    let stm = pos.stm;
+    let ksq = pos.pieces(PieceType::King, stm.opposite()).lsb();
+    let (from, to) = (mv.from(), mv.to());
+
+    // Direct non-slider checks, before occupancy exists to compute.
+    let piece = mv.promo().unwrap_or(pos.piece_at(from));
+    if piece == PieceType::Knight && atk_knight(to).check_bit(ksq) {
+        return true;
+    }
+    if piece == PieceType::Pawn && atk_pawn(to, stm).check_bit(ksq) {
+        return true;
+    }
+
+    // Post-move occupancy and slider sets. The mover leaves `from`; castling
+    // additionally relocates its rook, which can check directly or uncover.
+    let mut occ = (pos.occ ^ Bitboard::from(from)) | Bitboard::from(to);
+    if mv.is_en_passant() {
+        let cap = Square((to.0.cast_signed() - stm.forward_dir().delta()).cast_unsigned());
+        occ ^= Bitboard::from(cap);
+    }
+
+    let us = pos.side_bb[stm] ^ Bitboard::from(from);
+    let mut rooks = (pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen]) & us;
+    let mut bishops = (pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen]) & us;
+    if mv.is_castling() {
+        let (king_to, rook_to) = super::castling_targets(from, to);
+        occ ^= Bitboard::from(to) ^ Bitboard::from(king_to) ^ Bitboard::from(rook_to);
+        rooks ^= Bitboard::from(to) ^ Bitboard::from(rook_to);
+    }
+    if matches!(piece, PieceType::Rook | PieceType::Queen) {
+        rooks |= Bitboard::from(to);
+    }
+    if matches!(piece, PieceType::Bishop | PieceType::Queen) {
+        bishops |= Bitboard::from(to);
+    }
+
+    // One raycast per slider class from the king's side, skipped when absent.
+    (!rooks.is_empty() && !(atk_rook(ksq, occ) & rooks).is_empty())
+        || (!bishops.is_empty() && !(atk_bishop(ksq, occ) & bishops).is_empty())
 }
 
 /// Both colors' king-pinned pieces and their king squares.

@@ -23,7 +23,7 @@ use crate::{
     core::{
         board::{
             Position,
-            attacks::Pins,
+            attacks::{Pins, gives_check},
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook},
         },
         defs::{Bitboard, Color, MAX_MOVES, MoveScore, NOT_A, NOT_H, PieceType, RANK_1, RANK_3, RANK_6, RANK_8, Square},
@@ -102,6 +102,7 @@ pub struct MovePicker {
     pins: Pins,
     killers: [Move; 2],
     threats: Bitboard,
+    check_bonus: i32,
     cont1: ContContext,
     cont2: ContContext,
     cont4: ContContext,
@@ -151,6 +152,7 @@ impl MovePicker {
             pins,
             killers,
             threats,
+            check_bonus: cfg.search_params.check_bonus,
             cont1,
             cont2,
             cont4,
@@ -183,6 +185,7 @@ impl MovePicker {
             pins,
             killers: [Move::null(); 2],
             threats: Bitboard(0),
+            check_bonus: cfg.search_params.check_bonus,
             cont1: ContContext::default(),
             cont2: ContContext::default(),
             cont4: ContContext::default(),
@@ -490,7 +493,7 @@ impl MovePicker {
 
         for to in promo_pushes {
             let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
-            self.add_quiet_node(Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
+            self.add_quiet_node(board, Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
         }
     }
 
@@ -512,11 +515,11 @@ impl MovePicker {
     #[inline]
     fn add_quiet(&mut self, board: &Position, mv: Move, history: &History) {
         let pt = board.expect_piece_at(mv.from());
-        self.add_quiet_node(mv, pt, board.stm, history);
+        self.add_quiet_node(board, mv, pt, board.stm, history);
     }
 
     #[inline(always)]
-    fn add_quiet_node(&mut self, mv: Move, pt: PieceType, stm: Color, history: &History) {
+    fn add_quiet_node(&mut self, board: &Position, mv: Move, pt: PieceType, stm: Color, history: &History) {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
 
         // A promotion or a killer outranks any history score, so it takes a fixed band. The
@@ -537,7 +540,8 @@ impl MovePicker {
             // Four tables sum here and the clamp still never fires: soft-gravity attractors
             // keep each one away from its own ±16384 cap. Measured on bench, zero saturation
             // in ~11M quiets.
-            (score + SORT_BIAS).clamp(0, QUIET_SCORE_MAX) as u32
+            (score + SORT_BIAS + (self.check_bonus != 0 && gives_check(board, mv)) as i32 * self.check_bonus)
+                .clamp(0, QUIET_SCORE_MAX) as u32
         };
 
         self.write_packed(pack(sort_score, mv));
@@ -545,11 +549,11 @@ impl MovePicker {
 
     /// Emit all four quiet promotions for a single pawn push.
     #[inline]
-    fn add_promo_quiets(&mut self, from: Square, to: Square, stm: Color, history: &History) {
-        self.add_quiet_node(Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
-        self.add_quiet_node(Move::new(from, to, Move::PROM_R), PieceType::Pawn, stm, history);
-        self.add_quiet_node(Move::new(from, to, Move::PROM_B), PieceType::Pawn, stm, history);
-        self.add_quiet_node(Move::new(from, to, Move::PROM_N), PieceType::Pawn, stm, history);
+    fn add_promo_quiets(&mut self, board: &Position, from: Square, to: Square, stm: Color, history: &History) {
+        self.add_quiet_node(board, Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
+        self.add_quiet_node(board, Move::new(from, to, Move::PROM_R), PieceType::Pawn, stm, history);
+        self.add_quiet_node(board, Move::new(from, to, Move::PROM_B), PieceType::Pawn, stm, history);
+        self.add_quiet_node(board, Move::new(from, to, Move::PROM_N), PieceType::Pawn, stm, history);
     }
 
     /// Generates pawn pushes: single steps, double steps from the starting rank,
@@ -571,17 +575,17 @@ impl MovePicker {
 
         for to in promo_pushes {
             let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
-            self.add_promo_quiets(from, to, stm, history);
+            self.add_promo_quiets(board, from, to, stm, history);
         }
         for to in quiet_pushes {
             let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
-            self.add_quiet_node(Move::new(from, to, Move::QUIET), PieceType::Pawn, stm, history);
+            self.add_quiet_node(board, Move::new(from, to, Move::QUIET), PieceType::Pawn, stm, history);
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
         for to in doubles {
             let from = Square((to.0.cast_signed() - up_d * 2).cast_unsigned());
-            self.add_quiet_node(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
+            self.add_quiet_node(board, Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
         }
     }
 
@@ -598,7 +602,7 @@ impl MovePicker {
     ) {
         for from in board.role_bb[PT as usize] & us {
             for to in Self::attacks::<PT>(rows, from, occ) & empty {
-                self.add_quiet_node(Move::new(from, to, Move::QUIET), PT, board.stm, history);
+                self.add_quiet_node(board, Move::new(from, to, Move::QUIET), PT, board.stm, history);
             }
         }
     }

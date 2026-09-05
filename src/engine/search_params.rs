@@ -227,8 +227,9 @@ search_params! {
         T (see_value_rook,   541,  400),
         T (see_value_queen,  1119, 800),
 
-        //                  default  min   max
-        T (good_capture_margin, 182,   0,  300),
+        //                   default  min   max
+        T (good_capture_margin,  182,   0,  300),
+        T (check_bonus,         4096,   0, 16384),
 
         //             default  min  max
         T (qs_recapture_ply, 4,   2),
