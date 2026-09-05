@@ -1366,8 +1366,12 @@ impl Worker<'_> {
 
                     r -= sp.critical_lmr_bonus * (ply as i32 - last_critical_ply as i32).min(sp.critical_lmr_cap);
 
-                    // A cut node needs one refutation, and it is early or nowhere.
-                    r += sp.cutnode_lmr_malus * cut_node as i32;
+                    if cut_node {
+                        // A cut node needs one refutation, and it is early or nowhere.
+                        r += sp.cutnode_lmr_malus;
+                        // Reaching here with an entry this deep means its bound missed the window.
+                        r -= sp.cutnode_tt_lmr_bonus * (tt_probe.depth >= depth) as i32;
+                    }
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
                     (r - hist / sp.lmr_hist_div).clamp(0, max_r) / LMR_SCALE
