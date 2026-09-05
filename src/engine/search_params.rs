@@ -303,6 +303,7 @@ search_params! {
         T (fhc_cutoff_min,         1,    0,    6),
         T (critical_lmr_bonus,   165,    0,  512),
         T (critical_lmr_cap,       3,    1,   24),
+        T (cutnode_lmr_malus,    512,    0, 2048),
         NT(lmr_retained,           1),
 
         //                  default   min   max
