@@ -1718,7 +1718,8 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
 
         // Only the singular move arrives with an extension; the rest pass 0.
-        let search_depth = depth - 1 + extension;
+        // A chain of double extensions climbs past MAX_DEPTH and off the end of the LMR table.
+        let search_depth = (depth - 1 + extension).min(MAX_DEPTH);
 
         if is_first {
             // No bound yet; search wide open.
