@@ -1166,7 +1166,11 @@ impl Worker<'_> {
         // No TT move means we are searching blind, and blind ordering does not
         // deserve full depth. The entry this search stores hands the next iteration
         // the move it was missing.
-        let depth = if depth >= sp.iir_depth && tt_move.get().is_none() { depth - sp.iir_reduction } else { depth };
+        let depth = if (N::PV || cut_node) && depth >= sp.iir_depth && tt_move.get().is_none() {
+            depth - sp.iir_reduction
+        } else {
+            depth
+        };
 
         // ──────── Move loop ────────
 
