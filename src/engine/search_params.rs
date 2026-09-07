@@ -273,9 +273,11 @@ search_params! {
         T (singext_depth_div,      4,   1,    4),
         T (singext_double_margin, 65,   0,  100),
 
-        //           default  min  max
-        T (iir_depth,      5,   2,  8),
-        T (iir_reduction,  1,   1,  3),
+        //                   default  min  max
+        T (iir_depth,              5,   2,   8),
+        T (iir_reduction,          1,   1,   3),
+        T (cutnode_iir_depth,      7,   4,  12),
+        T (cutnode_iir_reduction,  1,   1,   3),
 
         //        default  min  max
         T (fp_depth,    6,   2, 12),

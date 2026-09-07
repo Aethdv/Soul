@@ -1168,6 +1168,16 @@ impl Worker<'_> {
         // the move it was missing.
         let depth = if depth >= sp.iir_depth && tt_move.get().is_none() { depth - sp.iir_reduction } else { depth };
 
+        // ── Cutnode IIR
+        // An upper bound means nothing there beat alpha, so the move it stored
+        // leads the ordering here on no evidence.
+        let unproven_tt_move = tt_move.get().is_some() && tt_probe.bound == tt::Bound::Upper;
+        let depth = if cut_node && depth >= sp.cutnode_iir_depth && unproven_tt_move {
+            depth - sp.cutnode_iir_reduction
+        } else {
+            depth
+        };
+
         // ──────── Move loop ────────
 
         let mut res = MoveResult { move_count: 0, best_eval: -INF, alpha, best_move: Move::null() };
