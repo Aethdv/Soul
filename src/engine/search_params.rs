@@ -276,7 +276,7 @@ search_params! {
         //                   default  min  max
         T (iir_depth,              5,   2,   8),
         T (iir_reduction,          1,   1,   3),
-        T (cutnode_iir_depth,      7,   4,  12),
+        T (cutnode_iir_depth,      9,   4,  14),
         T (cutnode_iir_reduction,  1,   1,   3),
 
         //        default  min  max
