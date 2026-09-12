@@ -1044,6 +1044,7 @@ impl Worker<'_> {
         // never allow this line. Skip it. The "null move" is the pass.
         if !in_check
             && !N::PV
+            && cut_node
             && excluded.is_null()
             && !self.stack[ply].is_null
             && !self.is_nmp_verif
