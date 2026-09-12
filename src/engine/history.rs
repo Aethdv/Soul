@@ -313,7 +313,7 @@ impl History {
     }
 
     /// Applies a soft-gravity update step:
-    /// `entry = entry + bonus - entry * |bonus| / cap`
+    /// `entry = entry + bonus - entry · |bonus| / cap`
     ///
     /// Drives values toward `±cap` while decaying older entries without hard clipping.
     #[inline(always)]
