@@ -1047,6 +1047,7 @@ impl Worker<'_> {
             && excluded.is_null()
             && !self.stack[ply].is_null
             && !self.is_nmp_verif
+            && depth >= sp.nmp_min_depth
             && tt_clamped_eval >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
