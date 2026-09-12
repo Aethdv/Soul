@@ -260,6 +260,8 @@ search_params! {
 
         //                  default  min   max
         T (nmp_min_depth,         3,   2,    6),
+        T (nmp_base_margin,     250,  50,  400),
+        T (nmp_margin,           20,   5,   40),
         T (nmp_base_r,            4,   1,    6),
         T (nmp_depth_divisor,     5,   1,   14),
         T (nmp_eval_divisor,    237,   1,  320),

@@ -1042,13 +1042,14 @@ impl Worker<'_> {
         // If our position is so good that we can pass the turn (do nothing)
         // and still beat beta after a reduced search, the opponent would
         // never allow this line. Skip it. The "null move" is the pass.
+        let margin = (sp.nmp_base_margin - sp.nmp_margin * depth).max(0);
         if !in_check
             && !N::PV
             && excluded.is_null()
             && !self.stack[ply].is_null
             && !self.is_nmp_verif
             && depth >= sp.nmp_min_depth
-            && tt_clamped_eval >= beta
+            && tt_clamped_eval - margin >= beta
             && self.pos.has_non_pawn_material(self.pos.stm)
         {
             let eval_r = ((tt_clamped_eval - beta) / sp.nmp_eval_divisor).min(sp.nmp_eval_max);
