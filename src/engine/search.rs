@@ -1481,6 +1481,16 @@ impl Worker<'_> {
                             self.stack[ply].killers[1] = self.stack[ply].killers[0];
                             self.stack[ply].killers[0] = mv;
                         }
+
+                        // ── Quiet Malus (~25 Elo)
+                        // A bonus alone can only lift entries, so a move that cut once
+                        // and keeps failing never comes back down.
+                        let quiet_limit = self.stack[ply].quiet_count - appended_quiet as usize;
+                        for i in 0..quiet_limit {
+                            let qm = self.stack[ply].quiet_moves[i];
+                            let q_pt = self.pos.expect_piece_at(qm.from());
+                            self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
+                        }
                     } else if mv.is_capture() && !mv.is_promotion() {
                         // ── Capture History Update
                         // Promotion-captures are excluded: the picker scores them outside the
@@ -1493,16 +1503,6 @@ impl Worker<'_> {
                         let attacker = self.pos.expect_piece_at(mv.from());
                         let victim = if mv.is_en_passant() { PieceType::Pawn } else { self.pos.piece_at(mv.to()) };
                         self.history.update_capture(stm, attacker, mv.to(), victim, bonus);
-                    }
-
-                    // ── Quiet Malus (~25 Elo)
-                    // A bonus alone can only lift entries, so a move that cut once
-                    // and keeps failing never comes back down.
-                    let quiet_limit = self.stack[ply].quiet_count - appended_quiet as usize;
-                    for i in 0..quiet_limit {
-                        let qm = self.stack[ply].quiet_moves[i];
-                        let q_pt = self.pos.expect_piece_at(qm.from());
-                        self.history.update(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                     }
 
                     // ── Capture Malus
