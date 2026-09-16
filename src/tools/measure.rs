@@ -1,7 +1,7 @@
 //! Instruction-level cost measurement for the XorBoard design.
 //!
 //! Usage:
-//!     soul measure gen <path> [ply_cap]
+//!     soul measure gen <path> [ply_cap] [passes]
 //!     soul measure export <path> <out>
 //!     soul measure validate <path>
 //!     soul measure count <path>
@@ -211,11 +211,11 @@ fn color(id: usize) -> Color { if id < 16 { Color::White } else { Color::Black }
 /// A global id's slot within its own side.
 fn slot(id: usize) -> PieceId { PieceId::new((id & 15) as u8) }
 
-fn generate(seed: u64, ply_cap: usize) -> Stream {
+fn generate(seed: u64, ply_cap: usize, passes: usize) -> Stream {
     let mut rng = ConstRng::new(seed);
     let mut games = Vec::new();
 
-    for fen in FENS.lines() {
+    for fen in FENS.lines().cycle().take(FENS.lines().count() * passes) {
         let mut pos = Position::from_fen(fen);
         let mut acc = pos.initial_accumulator();
         let mut moves = Vec::new();
@@ -1862,9 +1862,10 @@ pub fn run(args: &[&str]) {
             count_writes(&deserialize(&fs::read(path).expect("read stream")));
         },
         Some("gen") => {
-            let path = args.get(1).copied().expect("measure gen <path> [ply_cap]");
+            let path = args.get(1).copied().expect("measure gen <path> [ply_cap] [passes]");
             let cap = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(PLY_CAP);
-            let stream = generate(0xC0FFEE, cap);
+            let passes = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+            let stream = generate(0xC0FFEE, cap, passes);
             fs::write(path, serialize(&stream)).expect("write stream");
             let plies: usize = stream.games.iter().map(|g| g.moves.len()).sum();
             println!("measure gen {} games, {plies} plies -> {path}", stream.games.len());
