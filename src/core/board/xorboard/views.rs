@@ -4,7 +4,7 @@
 
 use core::arch::x86_64::*;
 
-use super::{PieceId, XorBoard, class_index, slots};
+use super::{BLACK_GROUPS, PieceId, WHITE_GROUPS, XorBoard, class_index, slots};
 use crate::core::{
     board::bitboard::line_bb,
     defs::{Bitboard, Color, PieceType, Square},
@@ -33,27 +33,25 @@ impl XorBoard {
         }
     }
 
+    #[inline(always)]
+    pub fn attackers(&self, square: Square, color: Color) -> u16 {
+        match color {
+            Color::White => self.column::<WHITE_GROUPS>(square.bitboard()) as u16,
+            Color::Black => (self.column::<BLACK_GROUPS>(square.bitboard()) >> 16) as u16,
+        }
+    }
 
-    /// The square-major view of one color's rows, built on demand and dropped
-    /// with the caller: `out[sq]` holds the slots of `color` attacking `sq`.
-    ///
-    /// The store keeps the piece-major orientation because a move rewrites whole
-    /// rows there. A consumer that asks about many destinations at once wants the
-    /// other one, and a bulk transpose is how it gets it without anything being
-    /// maintained.
     pub fn columns(&self, color: Color) -> [u16; 64] {
         let base = usize::from(color) * 16;
         let mut out = [0u16; 64];
 
-        // SAFETY: AVX2 per the weave/mod.rs gate. `base` is 0 or 16 and every
-        // read is one of the sixteen rows starting there.
+        // SAFETY: AVX2 per the weave/mod.rs gate.
         unsafe {
             let p = self.rows.as_ptr().add(base);
             let pair = |a: usize, b: usize| _mm_set_epi64x(*p.add(b) as i64, *p.add(a) as i64);
 
-            // The ladder below emits rows in the order 0,2,4,6,1,3,5,7 within
-            // each half, so the pairs going in are its inverse and the bits come
-            // out slot-ordered.
+            // The ladder emits rows in the order 0,2,4,6,1,3,5,7 within each
+            // half, so the pairs going in are its inverse.
             let (v0, v1) = (pair(0, 4), pair(1, 5));
             let (v2, v3) = (pair(2, 6), pair(3, 7));
             let (v4, v5) = (pair(8, 12), pair(9, 13));
@@ -86,44 +84,30 @@ impl XorBoard {
             let c6 = _mm_unpacklo_epi32(b5, b7);
             let c7 = _mm_unpackhi_epi32(b5, b7);
 
-            // d[k] now holds byte k of all sixteen rows, one row per byte.
-            let d0 = _mm_unpacklo_epi64(c0, c4);
-            let d1 = _mm_unpackhi_epi64(c0, c4);
-            let d2 = _mm_unpacklo_epi64(c1, c5);
-            let d3 = _mm_unpackhi_epi64(c1, c5);
-            let d4 = _mm_unpacklo_epi64(c2, c6);
-            let d5 = _mm_unpackhi_epi64(c2, c6);
-            let d6 = _mm_unpacklo_epi64(c3, c7);
-            let d7 = _mm_unpackhi_epi64(c3, c7);
+            let byte0 = _mm_unpacklo_epi64(c0, c4);
+            let byte1 = _mm_unpackhi_epi64(c0, c4);
+            let byte2 = _mm_unpacklo_epi64(c1, c5);
+            let byte3 = _mm_unpackhi_epi64(c1, c5);
+            let byte4 = _mm_unpacklo_epi64(c2, c6);
+            let byte5 = _mm_unpackhi_epi64(c2, c6);
+            let byte6 = _mm_unpacklo_epi64(c3, c7);
+            let byte7 = _mm_unpackhi_epi64(c3, c7);
 
             let join = |lo, hi| _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(lo), hi);
-            let g = [join(d0, d1), join(d2, d3), join(d4, d5), join(d6, d7)];
+            let g = [join(byte0, byte1), join(byte2, byte3), join(byte4, byte5), join(byte6, byte7)];
 
-            // One movemask reads bit 7 of every byte, so shifting bit j of each
-            // byte up to bit 7 extracts a whole bit plane: two squares' worth of
-            // slots per register, eight registers' worth per plane.
-            macro_rules! plane {
-                ($j:expr) => {
-                    for (t, &rows) in g.iter().enumerate() {
-                        let m = _mm256_movemask_epi8(_mm256_slli_epi64::<{ 7 - $j }>(rows)).cast_unsigned();
-                        out[16 * t + $j] = m as u16;
-                        out[16 * t + 8 + $j] = (m >> 16) as u16;
-                    }
-                };
-            }
-            plane!(0);
-            plane!(1);
-            plane!(2);
-            plane!(3);
-            plane!(4);
-            plane!(5);
-            plane!(6);
-            plane!(7);
+            plane::<7>(&g, &mut out);
+            plane::<6>(&g, &mut out);
+            plane::<5>(&g, &mut out);
+            plane::<4>(&g, &mut out);
+            plane::<3>(&g, &mut out);
+            plane::<2>(&g, &mut out);
+            plane::<1>(&g, &mut out);
+            plane::<0>(&g, &mut out);
         }
         out
     }
 
-    /// The definition `columns` answers to.
     #[cfg(test)]
     pub(super) fn columns_scalar(&self, color: Color) -> [u16; 64] {
         let base = usize::from(color) * 16;
@@ -203,5 +187,18 @@ impl XorBoard {
                 (_mm_extract_epi64::<0>(folded) + _mm_extract_epi64::<1>(folded)) as i32
             }
         }
+    }
+}
+
+fn plane<const SHIFT: i32>(g: &[__m256i; 4], out: &mut [u16; 64]) {
+    let j = 7 - SHIFT as usize;
+
+    for (t, &rows) in g.iter().enumerate() {
+        // SAFETY: AVX2 per the weave/mod.rs gate. The shift drags bits across
+        // byte boundaries and only bit 7 of each byte reaches the mask, which
+        // took it from bit j of that same byte.
+        let m = unsafe { _mm256_movemask_epi8(_mm256_slli_epi64::<SHIFT>(rows)) }.cast_unsigned();
+        out[16 * t + j] = m as u16;
+        out[16 * t + 8 + j] = (m >> 16) as u16;
     }
 }

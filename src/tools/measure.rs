@@ -18,6 +18,7 @@ use crate::{
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, between_bb},
             castling_targets,
             spatial::SpatialMaps,
+            xorboard::{Undo as StoreUndo, XorBoard as Store},
         },
         defs::{Bitboard, Color, PieceType, Square},
         moves::Move,
@@ -1255,8 +1256,71 @@ fn variant_byteboard(stream: &Stream, repeats: usize) -> Outcome {
     Outcome { variant: "byteboard", iterations, checksum }
 }
 
+/// One destination query at a time against one bulk transpose, over the same
+/// squares. Q of 0 without the transpose is the floor both arms subtract.
+fn variant_columns<const Q: usize, const BULK: bool>(stream: &Stream, repeats: usize, name: &'static str) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, ..) = setup(&game.fen);
+            let mut store = Store::new(&pos);
+            let mut undo = StoreUndo::new();
+
+            for &mv in &game.moves {
+                pos.make_move(mv, &mut acc);
+                store.snapshot(&mut undo);
+                store.make(&pos, mv);
+                black_box(&store);
+
+                let color = pos.stm;
+                let seed = iterations as u8;
+                let square = |i: usize| Square(seed.wrapping_add((i as u8).wrapping_mul(7)) & 63);
+
+                if BULK {
+                    let cols = black_box(store.columns(color));
+                    for i in 0..Q {
+                        checksum ^= u64::from(cols[usize::from(square(i).0)]);
+                    }
+                } else {
+                    for i in 0..Q {
+                        checksum ^= u64::from(store.attackers(square(i), color));
+                    }
+                }
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: name, iterations, checksum }
+}
+
 fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
     match name {
+        "col_q0" => variant_columns::<0, false>(stream, repeats, "col_q0"),
+        "col_q1" => variant_columns::<1, false>(stream, repeats, "col_q1"),
+        "col_q2" => variant_columns::<2, false>(stream, repeats, "col_q2"),
+        "col_q4" => variant_columns::<4, false>(stream, repeats, "col_q4"),
+        "col_q8" => variant_columns::<8, false>(stream, repeats, "col_q8"),
+        "col_q10" => variant_columns::<10, false>(stream, repeats, "col_q10"),
+        "cols_q10" => variant_columns::<10, true>(stream, repeats, "cols_q10"),
+        "col_q11" => variant_columns::<11, false>(stream, repeats, "col_q11"),
+        "cols_q11" => variant_columns::<11, true>(stream, repeats, "cols_q11"),
+        "col_q12" => variant_columns::<12, false>(stream, repeats, "col_q12"),
+        "cols_q12" => variant_columns::<12, true>(stream, repeats, "cols_q12"),
+        "col_q13" => variant_columns::<13, false>(stream, repeats, "col_q13"),
+        "cols_q13" => variant_columns::<13, true>(stream, repeats, "cols_q13"),
+        "col_q16" => variant_columns::<16, false>(stream, repeats, "col_q16"),
+        "col_q32" => variant_columns::<32, false>(stream, repeats, "col_q32"),
+        "col_q64" => variant_columns::<64, false>(stream, repeats, "col_q64"),
+        "cols_q0" => variant_columns::<0, true>(stream, repeats, "cols_q0"),
+        "cols_q1" => variant_columns::<1, true>(stream, repeats, "cols_q1"),
+        "cols_q2" => variant_columns::<2, true>(stream, repeats, "cols_q2"),
+        "cols_q4" => variant_columns::<4, true>(stream, repeats, "cols_q4"),
+        "cols_q8" => variant_columns::<8, true>(stream, repeats, "cols_q8"),
+        "cols_q16" => variant_columns::<16, true>(stream, repeats, "cols_q16"),
+        "cols_q32" => variant_columns::<32, true>(stream, repeats, "cols_q32"),
+        "cols_q64" => variant_columns::<64, true>(stream, repeats, "cols_q64"),
         "baseline" => variant_baseline(stream, repeats),
         "dest" => variant_dest(stream, repeats),
         "byteboard" => variant_byteboard(stream, repeats),
