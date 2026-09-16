@@ -41,14 +41,19 @@ impl XorBoard {
         }
     }
 
-    pub fn columns(&self, color: Color) -> [u16; 64] {
-        let base = usize::from(color) * 16;
+    pub fn columns(&self, color: Color) -> [u16; 64] { self.transpose16::<false>(usize::from(color) * 16) }
+
+    #[cfg(feature = "rigs")]
+    pub fn slider_columns(&self) -> [u16; 64] { self.transpose16::<true>(0) }
+
+    fn transpose16<const WINDOW: bool>(&self, base: usize) -> [u16; 64] {
+        let row = |p: usize| base + if WINDOW && p >= 8 { p + 8 } else { p };
         let mut out = [0u16; 64];
 
         // SAFETY: AVX2 per the weave/mod.rs gate.
         unsafe {
-            let p = self.rows.as_ptr().add(base);
-            let pair = |a: usize, b: usize| _mm_set_epi64x(*p.add(b) as i64, *p.add(a) as i64);
+            let p = self.rows.as_ptr();
+            let pair = |a: usize, b: usize| _mm_set_epi64x(*p.add(row(b)) as i64, *p.add(row(a)) as i64);
 
             // The ladder emits rows in the order 0,2,4,6,1,3,5,7 within each
             // half, so the pairs going in are its inverse.

@@ -1452,8 +1452,42 @@ fn variant_transpose<const ACTIVE: u8>(stream: &Stream, repeats: usize, name: &'
     Outcome { variant: name, iterations, checksum }
 }
 
+/// Split so the decode and the lookup that replaces the scan price separately.
+fn variant_decode<const MODE: u8>(stream: &Stream, repeats: usize, name: &'static str) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, ..) = setup(&game.fen);
+            let mut store = Store::new(&pos);
+            let mut undo = StoreUndo::new();
+
+            for &mv in &game.moves {
+                pos.make_move(mv, &mut acc);
+
+                if MODE > 0 {
+                    let cols = black_box(store.slider_columns());
+                    if MODE == 2 {
+                        checksum ^= black_box(store.candidates_decoded(mv, &cols));
+                    }
+                }
+
+                store.snapshot(&mut undo);
+                store.make(&pos, mv);
+                black_box(&store);
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: name, iterations, checksum }
+}
+
 fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
     match name {
+        "dec_off" => variant_decode::<0>(stream, repeats, "dec_off"),
+        "dec_build" => variant_decode::<1>(stream, repeats, "dec_build"),
+        "dec_use" => variant_decode::<2>(stream, repeats, "dec_use"),
         "tr_off" => variant_transpose::<0>(stream, repeats, "tr_off"),
         "tr_scan" => variant_transpose::<1>(stream, repeats, "tr_scan"),
         "tr_on" => variant_transpose::<2>(stream, repeats, "tr_on"),

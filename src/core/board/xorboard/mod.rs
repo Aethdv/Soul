@@ -387,6 +387,23 @@ impl XorBoard {
         set & !(1 << first.id.index()) & !(1 << second.id.index())
     }
 
+    #[cfg(feature = "rigs")]
+    pub fn candidates_decoded(&self, mv: Move, cols: &[u16; 64]) -> u64 {
+        let (plan, changed) = self.decode(mv);
+        let (first, second) = (plan.movers[0], plan.movers[1]);
+
+        let set = if self.slider_slots & !SLIDER_WINDOW == 0 {
+            let mut seen = 0u16;
+            for square in changed {
+                seen |= cols[usize::from(square.0)];
+            }
+            (u64::from(seen & 0xFF) | u64::from(seen >> 8) << 16) & self.slider_slots
+        } else {
+            self.slider_attackers_of(changed)
+        };
+        set & !(1 << first.id.index()) & !(1 << second.id.index())
+    }
+
     /// `make` truncated after stage `N`, so the stages price by subtraction.
     /// Past stage 2 it leaves the store wrong and the caller restores it. The
     /// return value exists to keep each stage from being optimized away.
