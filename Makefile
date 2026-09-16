@@ -188,6 +188,13 @@ bench: ## Fast compile w/ bench (DEPTH=12)
 tools: #@ Native build with datagen, dataset and the measurement rigs
 	@$(MAKE) --no-print-directory native FEATURES=datagen,rigs EXE=tools$(EXE_EXT)
 
+toolsym: #@ Tools build with debug symbols, for perf and toplev
+	@echo "Building tools with debug symbols..."
+	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+		cargo build --profile profiling --quiet --features datagen,rigs
+	@cp target/profiling/$(EXE_NAME) tools$(EXE_EXT)
+	@echo "Done: ./tools$(EXE_EXT)"
+
 datagen: #@ Native build with self-play generation and the dataset pipeline
 	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=datagen$(EXE_EXT)
 
