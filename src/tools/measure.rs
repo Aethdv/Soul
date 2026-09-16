@@ -1295,8 +1295,180 @@ fn variant_columns<const Q: usize, const BULK: bool>(stream: &Stream, repeats: u
     Outcome { variant: name, iterations, checksum }
 }
 
+/// What of the shipped store's upkeep a variant performs, so the total splits
+/// by subtraction.
+#[derive(PartialEq, Eq, ConstParamTy, Clone, Copy)]
+enum Upkeep {
+    /// The position's own make, and nothing of the store.
+    None,
+    /// The per-node snapshot alone, leaving the rows stale.
+    Snapshot,
+    /// Snapshot and make, which is what the search pays.
+    Make,
+    /// Both, plus the unmake and a second make, which is what a node pays per
+    /// move it tries.
+    Remake,
+}
+
+fn variant_upkeep<const U: Upkeep>(stream: &Stream, repeats: usize, name: &'static str) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, ..) = setup(&game.fen);
+            let mut store = Store::new(&pos);
+            let mut undo = StoreUndo::new();
+
+            for &mv in &game.moves {
+                pos.make_move(mv, &mut acc);
+
+                if U != Upkeep::None {
+                    store.snapshot(&mut undo);
+                }
+                if U == Upkeep::Make || U == Upkeep::Remake {
+                    store.make(&pos, mv);
+                }
+                if U == Upkeep::Remake {
+                    store.unmake(mv, &undo);
+                    store.make(&pos, mv);
+                }
+
+                black_box(&store);
+                black_box(&undo);
+                checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: name, iterations, checksum }
+}
+
+/// Prices one prefix of `make` by running it, restoring the store, then making
+/// the move the store keeps. Every arm pays the same snapshot, unmake and make,
+/// so the difference between arms is the prefix alone.
+fn variant_stage<const N: u8>(stream: &Stream, repeats: usize, name: &'static str) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, ..) = setup(&game.fen);
+            let mut store = Store::new(&pos);
+            let mut undo = StoreUndo::new();
+
+            for &mv in &game.moves {
+                pos.make_move(mv, &mut acc);
+                store.snapshot(&mut undo);
+                checksum ^= black_box(store.make_stage::<N>(&pos, mv));
+                black_box(&store);
+                store.unmake(mv, &undo);
+                store.make(&pos, mv);
+                black_box(&store);
+                checksum ^= pos.hash.rotate_left((iterations % 64) as u32);
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: name, iterations, checksum }
+}
+
+/// The candidate query by row scan against the same query by attack symmetry,
+/// both on the shipped store. The arms share everything but the derivation.
+fn variant_gather<const PROBE: bool, const ACTIVE: bool>(stream: &Stream, repeats: usize, name: &'static str) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, ..) = setup(&game.fen);
+            let mut store = Store::new(&pos);
+            let mut undo = StoreUndo::new();
+
+            for &mv in &game.moves {
+                let occ = pos.occ;
+                let rq = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
+                let bq = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
+                pos.make_move(mv, &mut acc);
+
+                if ACTIVE {
+                    checksum ^= black_box(store.candidates::<PROBE>(mv, occ, rq, bq));
+                } else {
+                    checksum ^= black_box(occ.0 ^ rq.0 ^ bq.0);
+                }
+
+                store.snapshot(&mut undo);
+                store.make(&pos, mv);
+                black_box(&store);
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: name, iterations, checksum }
+}
+
+/// Every geometric edge a move toggles is one read-modify-write into a
+/// maintained square-major transpose, which is what keeping one costs.
+fn variant_transpose<const ACTIVE: u8>(stream: &Stream, repeats: usize, name: &'static str) -> Outcome {
+    let mut checksum = 0u64;
+    let mut iterations = 0u64;
+
+    for _ in 0..repeats {
+        for game in &stream.games {
+            let (mut pos, mut acc, ..) = setup(&game.fen);
+            let mut store = Store::new(&pos);
+            let mut undo = StoreUndo::new();
+            let mut to = [0u32; 64];
+
+            for &mv in &game.moves {
+                let before = *store.rows_raw();
+                pos.make_move(mv, &mut acc);
+                store.snapshot(&mut undo);
+                store.make(&pos, mv);
+
+                if ACTIVE > 0 {
+                    let after = store.rows_raw();
+                    for slot in 0..32 {
+                        let mut delta = before[slot] ^ after[slot];
+                        if ACTIVE == 1 {
+                            checksum ^= u64::from(delta.count_ones());
+                            continue;
+                        }
+                        while delta != 0 {
+                            let sq = delta.trailing_zeros() as usize;
+                            delta &= delta - 1;
+                            to[sq] ^= 1 << slot;
+                        }
+                    }
+                }
+
+                black_box(&store);
+                black_box(&to);
+                checksum ^= u64::from(to[usize::from(mv.to().0)]);
+                iterations += 1;
+            }
+        }
+    }
+    Outcome { variant: name, iterations, checksum }
+}
+
 fn run_variant(name: &str, stream: &Stream, repeats: usize) -> Outcome {
     match name {
+        "tr_off" => variant_transpose::<0>(stream, repeats, "tr_off"),
+        "tr_scan" => variant_transpose::<1>(stream, repeats, "tr_scan"),
+        "tr_on" => variant_transpose::<2>(stream, repeats, "tr_on"),
+        "gather_off" => variant_gather::<false, false>(stream, repeats, "gather_off"),
+        "gather_col" => variant_gather::<false, true>(stream, repeats, "gather_col"),
+        "gather_probe" => variant_gather::<true, true>(stream, repeats, "gather_probe"),
+        "stage0" => variant_stage::<0>(stream, repeats, "stage0"),
+        "stage1" => variant_stage::<1>(stream, repeats, "stage1"),
+        "stage2" => variant_stage::<2>(stream, repeats, "stage2"),
+        "stage3" => variant_stage::<3>(stream, repeats, "stage3"),
+        "stage4" => variant_stage::<4>(stream, repeats, "stage4"),
+        "up_none" => variant_upkeep::<{ Upkeep::None }>(stream, repeats, "up_none"),
+        "up_snap" => variant_upkeep::<{ Upkeep::Snapshot }>(stream, repeats, "up_snap"),
+        "up_make" => variant_upkeep::<{ Upkeep::Make }>(stream, repeats, "up_make"),
+        "up_remake" => variant_upkeep::<{ Upkeep::Remake }>(stream, repeats, "up_remake"),
         "col_q0" => variant_columns::<0, false>(stream, repeats, "col_q0"),
         "col_q1" => variant_columns::<1, false>(stream, repeats, "col_q1"),
         "col_q2" => variant_columns::<2, false>(stream, repeats, "col_q2"),

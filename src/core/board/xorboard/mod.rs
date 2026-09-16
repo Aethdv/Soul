@@ -359,6 +359,75 @@ impl XorBoard {
         }
     }
 
+    /// A slider sees a changed square exactly when it stands where a superpiece
+    /// on that square would strike, which derives the affected set without
+    /// reading a row. `occ`, `rq` and `bq` are as they stood before the move.
+    #[cfg(feature = "rigs")]
+    pub fn slider_candidates_probe(&self, changed: Bitboard, occ: Bitboard, rq: Bitboard, bq: Bitboard) -> u64 {
+        let mut set = 0u64;
+        for square in changed {
+            for hit in (atk_rook(square, occ) & rq) | (atk_bishop(square, occ) & bq) {
+                debug_assert!(self.slot_at(hit) != 0, "a pre-move slider square holds no piece");
+                set |= 1u64 << (self.slot_at(hit) - 1);
+            }
+        }
+        set & self.slider_slots
+    }
+
+    #[cfg(feature = "rigs")]
+    pub fn rows_raw(&self) -> &[u64; SLOTS] { &self.rows }
+
+    /// The affected set on its own, by either derivation, with the movers
+    /// masked out as `make` masks them.
+    #[cfg(feature = "rigs")]
+    pub fn candidates<const PROBE: bool>(&self, mv: Move, occ: Bitboard, rq: Bitboard, bq: Bitboard) -> u64 {
+        let (plan, changed) = self.decode(mv);
+        let (first, second) = (plan.movers[0], plan.movers[1]);
+        let set = if PROBE { self.slider_candidates_probe(changed, occ, rq, bq) } else { self.slider_attackers_of(changed) };
+        set & !(1 << first.id.index()) & !(1 << second.id.index())
+    }
+
+    /// `make` truncated after stage `N`, so the stages price by subtraction.
+    /// Past stage 2 it leaves the store wrong and the caller restores it. The
+    /// return value exists to keep each stage from being optimized away.
+    #[cfg(feature = "rigs")]
+    pub fn make_stage<const N: u8>(&mut self, pos: &Position, mv: Move) -> u64 {
+        if N == 0 {
+            return 0;
+        }
+
+        let (plan, changed) = self.decode(mv);
+        let (first, second) = (plan.movers[0], plan.movers[1]);
+        if N == 1 {
+            return changed.0 ^ first.id.index() as u64;
+        }
+
+        let mut affected = self.slider_attackers_of(changed) & !(1 << first.id.index()) & !(1 << second.id.index());
+        if N == 2 {
+            return affected;
+        }
+
+        if let Some((victim, square)) = plan.victim {
+            affected &= !(1 << victim.index());
+            self.rows[victim.index()] = 0;
+            self.set_slot_at(square, 0);
+            self.squares[victim.index()] = NOWHERE;
+        }
+        self.relocate(mv, &plan);
+        if N == 3 {
+            return affected;
+        }
+
+        for id in slots(affected) {
+            self.rows[id.index()] = self.attacks(id, Square(self.squares[id.index()]), pos.occ).0;
+        }
+        self.rows[first.id.index()] = self.attacks(first.id, first.to, pos.occ).0;
+        if plan.castling {
+            self.rows[second.id.index()] = self.attacks(second.id, second.to, pos.occ).0;
+        }
+        affected
+    }
+
     #[inline(always)]
     pub fn snapshot(&self, undo: &mut Undo) {
         undo.rows = self.rows;
