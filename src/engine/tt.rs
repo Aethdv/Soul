@@ -435,16 +435,22 @@ impl TranspositionTable {
                 return;
             }
 
-            // A qsearch visit would otherwise wipe the flag a previous negamax
-            // store left on this position.
-            let store_pv = if existing.is_some() {
-                pv as u8 | packed_pv(cluster.slots[victim].packed.load(Ordering::Relaxed))
-            } else {
-                pv as u8
-            };
+            // A qsearch visit would otherwise wipe the move and the flag a previous
+            // negamax store left on this position.
+            let mut store_mv = mv.inner();
+            let mut store_pv = pv as u8;
+
+            if existing.is_some() {
+                let slot = &cluster.slots[victim];
+                store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
+                if mv.is_null() {
+                    store_mv = slot.mv.load(Ordering::Relaxed);
+                }
+            }
+
             cluster.slots[victim].store(SlotWrite {
                 key: key16,
-                mv: mv.inner(),
+                mv: store_mv,
                 score: score_to_tt(score, ply) as i16,
                 eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                 depth: 0,
