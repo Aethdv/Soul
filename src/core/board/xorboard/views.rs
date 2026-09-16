@@ -33,6 +33,109 @@ impl XorBoard {
         }
     }
 
+
+    /// The square-major view of one color's rows, built on demand and dropped
+    /// with the caller: `out[sq]` holds the slots of `color` attacking `sq`.
+    ///
+    /// The store keeps the piece-major orientation because a move rewrites whole
+    /// rows there. A consumer that asks about many destinations at once wants the
+    /// other one, and a bulk transpose is how it gets it without anything being
+    /// maintained.
+    pub fn columns(&self, color: Color) -> [u16; 64] {
+        let base = usize::from(color) * 16;
+        let mut out = [0u16; 64];
+
+        // SAFETY: AVX2 per the weave/mod.rs gate. `base` is 0 or 16 and every
+        // read is one of the sixteen rows starting there.
+        unsafe {
+            let p = self.rows.as_ptr().add(base);
+            let pair = |a: usize, b: usize| _mm_set_epi64x(*p.add(b) as i64, *p.add(a) as i64);
+
+            // The ladder below emits rows in the order 0,2,4,6,1,3,5,7 within
+            // each half, so the pairs going in are its inverse and the bits come
+            // out slot-ordered.
+            let (v0, v1) = (pair(0, 4), pair(1, 5));
+            let (v2, v3) = (pair(2, 6), pair(3, 7));
+            let (v4, v5) = (pair(8, 12), pair(9, 13));
+            let (v6, v7) = (pair(10, 14), pair(11, 15));
+
+            let a0 = _mm_unpacklo_epi8(v0, v1);
+            let a1 = _mm_unpackhi_epi8(v0, v1);
+            let a2 = _mm_unpacklo_epi8(v2, v3);
+            let a3 = _mm_unpackhi_epi8(v2, v3);
+            let a4 = _mm_unpacklo_epi8(v4, v5);
+            let a5 = _mm_unpackhi_epi8(v4, v5);
+            let a6 = _mm_unpacklo_epi8(v6, v7);
+            let a7 = _mm_unpackhi_epi8(v6, v7);
+
+            let b0 = _mm_unpacklo_epi16(a0, a2);
+            let b1 = _mm_unpackhi_epi16(a0, a2);
+            let b2 = _mm_unpacklo_epi16(a1, a3);
+            let b3 = _mm_unpackhi_epi16(a1, a3);
+            let b4 = _mm_unpacklo_epi16(a4, a6);
+            let b5 = _mm_unpackhi_epi16(a4, a6);
+            let b6 = _mm_unpacklo_epi16(a5, a7);
+            let b7 = _mm_unpackhi_epi16(a5, a7);
+
+            let c0 = _mm_unpacklo_epi32(b0, b2);
+            let c1 = _mm_unpackhi_epi32(b0, b2);
+            let c2 = _mm_unpacklo_epi32(b1, b3);
+            let c3 = _mm_unpackhi_epi32(b1, b3);
+            let c4 = _mm_unpacklo_epi32(b4, b6);
+            let c5 = _mm_unpackhi_epi32(b4, b6);
+            let c6 = _mm_unpacklo_epi32(b5, b7);
+            let c7 = _mm_unpackhi_epi32(b5, b7);
+
+            // d[k] now holds byte k of all sixteen rows, one row per byte.
+            let d0 = _mm_unpacklo_epi64(c0, c4);
+            let d1 = _mm_unpackhi_epi64(c0, c4);
+            let d2 = _mm_unpacklo_epi64(c1, c5);
+            let d3 = _mm_unpackhi_epi64(c1, c5);
+            let d4 = _mm_unpacklo_epi64(c2, c6);
+            let d5 = _mm_unpackhi_epi64(c2, c6);
+            let d6 = _mm_unpacklo_epi64(c3, c7);
+            let d7 = _mm_unpackhi_epi64(c3, c7);
+
+            let join = |lo, hi| _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(lo), hi);
+            let g = [join(d0, d1), join(d2, d3), join(d4, d5), join(d6, d7)];
+
+            // One movemask reads bit 7 of every byte, so shifting bit j of each
+            // byte up to bit 7 extracts a whole bit plane: two squares' worth of
+            // slots per register, eight registers' worth per plane.
+            macro_rules! plane {
+                ($j:expr) => {
+                    for (t, &rows) in g.iter().enumerate() {
+                        let m = _mm256_movemask_epi8(_mm256_slli_epi64::<{ 7 - $j }>(rows)).cast_unsigned();
+                        out[16 * t + $j] = m as u16;
+                        out[16 * t + 8 + $j] = (m >> 16) as u16;
+                    }
+                };
+            }
+            plane!(0);
+            plane!(1);
+            plane!(2);
+            plane!(3);
+            plane!(4);
+            plane!(5);
+            plane!(6);
+            plane!(7);
+        }
+        out
+    }
+
+    /// The definition `columns` answers to.
+    #[cfg(test)]
+    pub(super) fn columns_scalar(&self, color: Color) -> [u16; 64] {
+        let base = usize::from(color) * 16;
+        let mut out = [0u16; 64];
+        for slot in 0..16 {
+            for sq in Bitboard(self.rows[base + slot]) {
+                out[usize::from(sq.0)] |= 1 << slot;
+            }
+        }
+        out
+    }
+
     /// Scalar: the only caller is the debug-assert oracle.
     pub(super) fn class_attacks(&self, piece: PieceType, color: Color) -> Bitboard {
         slots(self.class[class_index(piece, color)]).fold(Bitboard(0), |acc, id| acc | self.row(id))

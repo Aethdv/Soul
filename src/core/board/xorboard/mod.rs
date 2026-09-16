@@ -502,8 +502,43 @@ mod tests {
         }
     }
 
-    /// Rows against a from-scratch rebuild, the danger view against the engine's
-    /// own fill, and the record replayed, at every ply.
+    #[test]
+    fn columns_transpose_the_rows() {
+        let mut rng = ConstRng::new(0xC0FFEE);
+
+        for fen in include_str!("../../../data/bench.fens").lines().filter(|l| !l.trim().is_empty()) {
+            let mut pos = Position::from_fen(fen.trim());
+            let mut acc = pos.initial_accumulator();
+            let mut board = XorBoard::new(&pos);
+            let mut undo = Undo::new();
+
+            for ply in 0..40 {
+                for color in [Color::White, Color::Black] {
+                    let fast = board.columns(color);
+                    assert_eq!(fast, board.columns_scalar(color), "{fen} ply {ply} {color:?}");
+
+                    for raw in 0..64u8 {
+                        let mask = Square(raw).bitboard();
+                        let want = match color {
+                            Color::White => board.column::<WHITE_GROUPS>(mask) as u16,
+                            Color::Black => (board.column::<BLACK_GROUPS>(mask) >> 16) as u16,
+                        };
+                        assert_eq!(fast[usize::from(raw)], want, "{fen} ply {ply} {color:?} sq {raw}");
+                    }
+                }
+
+                let legal = gen_legal_moves(&pos);
+                if legal.is_empty() {
+                    break;
+                }
+                let mv = legal[(rng.next() % legal.len() as u64) as usize];
+                pos.make_move(mv, &mut acc);
+                board.snapshot(&mut undo);
+                board.make(&pos, mv);
+            }
+        }
+    }
+
     #[test]
     fn tracks_the_position() {
         let mut rng = ConstRng::new(0xC0FFEE);
