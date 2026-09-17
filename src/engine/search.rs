@@ -560,7 +560,7 @@ impl<'cfg> Searcher<'cfg> {
 
                 if score <= alpha {
                     self.print_bound(depth, score, tui::ScoreBound::Upper);
-                    beta = (alpha + beta) / 2;
+                    beta = lerp(beta, alpha, sp.asp_narrow);
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
                     self.print_bound(depth, score, tui::ScoreBound::Lower);
@@ -820,6 +820,8 @@ fn boxed_array<T: Clone, const N: usize>(value: T) -> Box<[T; N]> {
     vec![value; N].into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
 }
 
+fn lerp(from: i32, to: i32, pct: i32) -> i32 { (from * (100 - pct) + to * pct) / 100 }
+
 /// Piece-to-square contexts 1, 2, and 4 plies back, for cont-hist lookup.
 /// Empty when the ply predates the search root.
 fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, ContContext) {
@@ -1005,8 +1007,7 @@ impl Worker<'_> {
         // margin, we're still above beta. The opponent wouldn't have let us
         // get here, so cut the node without searching it.
         //
-        // The eval is an unsearched guess and beta is the least this node
-        // proved, so the score handed back splits the difference.
+        // The eval is an unsearched guess and beta is the least this node proved.
         #[rustfmt::skip]
         if !in_check
             && !N::PV
@@ -1019,7 +1020,7 @@ impl Worker<'_> {
                 + sp.rfp_quad_margin * depth * depth;
 
             if tt_clamped_eval - margin >= beta {
-                return Ok((tt_clamped_eval + beta) / 2);
+                return Ok(lerp(tt_clamped_eval, beta, sp.rfp_blend));
             }
         }
 
@@ -1158,7 +1159,7 @@ impl Worker<'_> {
                         .tt
                         .store(self.pos.hash, ply, probcut_depth, value, mv, tt::Bound::Lower, tt_probe.pv, raw_static_eval);
 
-                    return Ok(value);
+                    return Ok(lerp(value, beta, sp.probcut_blend));
                 }
             }
         }
@@ -1355,23 +1356,23 @@ impl Worker<'_> {
                         .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4);
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
-                        r -= sp.killer_lmr_bonus;
+                        r -= sp.lmr_killer_bonus;
                     }
 
                     // A quiet that newly attacks a bigger piece is forcing the way a check is:
                     // answer it or lose the material.
-                    r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * sp.threat_lmr_bonus;
+                    r -= self.pos.new_threats(pt, mv.from(), mv.to()).popcount() as i32 * sp.lmr_threat_bonus;
                     // Fail-highs are piling up at this depth; the late quiets here are
                     // unlikely to be the move, so reduce them harder.
-                    r += sp.fhc_lmr_malus * (self.stack[ply + 1].cutoff_count > sp.fhc_cutoff_min) as i32;
+                    r += sp.lmr_fhc_malus * (self.stack[ply + 1].cutoff_count > sp.lmr_fhc_cutoff) as i32;
 
-                    r -= sp.critical_lmr_bonus * (ply as i32 - last_critical_ply as i32).min(sp.critical_lmr_cap);
+                    r -= sp.lmr_critical_bonus * (ply as i32 - last_critical_ply as i32).min(sp.lmr_critical_cap);
 
                     if cut_node {
                         // A cut node needs one refutation, and it is early or nowhere.
-                        r += sp.cutnode_lmr_malus;
+                        r += sp.lmr_cutnode_malus;
                         // Reaching here with an entry this deep means its bound missed the window.
-                        r -= sp.cutnode_tt_lmr_bonus * (tt_probe.depth >= depth) as i32;
+                        r -= sp.lmr_tt_cutnode_bonus * (tt_probe.depth >= depth) as i32;
                     }
 
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
@@ -1572,7 +1573,6 @@ impl Worker<'_> {
                 || (bound == tt::Bound::Upper && res.best_eval >= raw_static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
-
             self.history
                 .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, diff, depth);
         }
@@ -1683,7 +1683,7 @@ impl Worker<'_> {
         // Reduce it less; a reduction here drops the horizon inside
         // the forced sequence, which is the worst place to stop.
         if self.xb_checkers().is_not_empty() {
-            reduction = (reduction - sp.check_lmr_bonus).max(0);
+            reduction = (reduction - sp.lmr_check_bonus).max(0);
         }
 
         res.move_count += 1;
@@ -1884,7 +1884,7 @@ impl Worker<'_> {
             let lazy = self.corrected_eval(evaluate_psqt(&self.pos, &self.accumulator, phase), sp);
             let lazy_floor = lazy - lazy_eval_margin(&self.pos, phase, sp);
             if lazy_floor >= beta {
-                return Ok((lazy + beta) / 2);
+                return Ok(lerp(lazy, beta, sp.qs_lazy_blend));
             }
             self.evaluate()
         };
@@ -1897,7 +1897,7 @@ impl Worker<'_> {
             let stand_pat = if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
 
             if stand_pat >= beta {
-                return Ok((stand_pat + beta) / 2);
+                return Ok(lerp(stand_pat, beta, sp.qs_standpat_blend));
             }
 
             alpha = alpha.max(stand_pat);

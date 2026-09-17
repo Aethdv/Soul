@@ -165,15 +165,6 @@ pub(crate) fn frozen_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().
 
 search_params! {
     pub struct SearchParams {
-        //            default  min   max
-        T (asp_depth,       5,   1,    6),
-        T (asp_initial,    18,   1,   32),
-        T (asp_widen_div,   4,   1,   14),
-
-        //              default   min  max
-        NT(qs_lazy_margin,  160,  140, 300),
-        NT(qs_lazy_divisor,  16,    1,  64),
-
         NT(vol_pawn,     5),
         NT(vol_knight,  10),
         NT(vol_bishop,   9),
@@ -220,28 +211,34 @@ search_params! {
         NT(mvvlva_a_queen,     90,  70,  150),
         NT(mvvlva_a_king,       0),
 
-        //              default    min   max
-        T (see_value_pawn,   93,    50),
-        T (see_value_knight, 381,  250),
-        T (see_value_bishop, 431,  250),
-        T (see_value_rook,   541,  400),
-        T (see_value_queen,  1119, 800),
+        //                  default   min
+        T (see_value_pawn,       93,   50),
+        T (see_value_knight,    381,  250),
+        T (see_value_bishop,    431,  250),
+        T (see_value_rook,      541,  400),
+        T (see_value_queen,    1119,  800),
+        T (see_capture_margin,   50,    1),
+        T (see_quiet_margin,     37,    1),
 
         //                  default  min   max
         T (good_capture_margin, 182,   0,  300),
 
-        //             default  min  max
-        T (qs_recapture_ply, 4,   2),
+        //            default  min   max
+        T (asp_depth,       5,   1,    6),
+        T (asp_initial,    18,   1,   32),
+        T (asp_widen_div,   4,   1,   14),
+        T (asp_narrow,     50,   0,  100),
 
-        //          default   min  max
-        T (qs_see_margin, 4, -100, 100),
+        //               default   min   max
+        T (qs_recapture_ply,   4,    2),
+        T (qs_see_margin,      4, -100,  100),
+        NT(qs_lazy_margin,   160,   80,  300),
+        NT(qs_lazy_divisor,   16,    1,   64),
+        T (qs_lazy_blend,     50,    0,  100),
+        T (qs_standpat_blend, 50,    0,  100),
 
-        //           default  min  max
+        //           default  min
         T (delta_margin, 279,  50),
-
-        //                 default min  max
-        T (see_capture_margin,  50,  1),
-        T (see_quiet_margin,    37,  1),
 
         //              default  min  max
         T (razoring_depth,    1,   1,   8),
@@ -252,11 +249,13 @@ search_params! {
         T (rfp_margin,       45,  15),
         T (rfp_base_margin,  32),
         T (rfp_quad_margin,   2),
+        T (rfp_blend,        50,   0, 100),
 
         //                  default  min  max
         T (probcut_depth_min,    10,   3,  10),
         T (probcut_margin,      227,  50),
         T (probcut_reduction,     5,   1,   8),
+        T (probcut_blend,         0,   0, 100),
 
         //                  default  min   max
         T (nmp_min_depth,         3,   2,    6),
@@ -297,15 +296,15 @@ search_params! {
         T (lmr_base,              87,   10),
         T (lmr_divisor,          215,    1,  350),
         T (lmr_hist_div,           9,    1,   24),
-        T (killer_lmr_bonus,    1197,   64),
-        T (check_lmr_bonus,        1,    1,    3),
-        T (threat_lmr_bonus,    1158,    0),
-        T (fhc_lmr_malus,        604,    0),
-        T (fhc_cutoff_min,         1,    0,    6),
-        T (critical_lmr_bonus,   165,    0,  512),
-        T (critical_lmr_cap,       3,    1,   24),
-        T (cutnode_lmr_malus,   1024,    0, 2048),
-        T (cutnode_tt_lmr_bonus, 256,    0, 1024),
+        T (lmr_killer_bonus,    1197,   64),
+        T (lmr_check_bonus,        1,    1,    3),
+        T (lmr_threat_bonus,    1158,    0),
+        T (lmr_fhc_malus,        604,    0),
+        T (lmr_fhc_cutoff,         1,    0,    6),
+        T (lmr_critical_bonus,   165,    0,  512),
+        T (lmr_critical_cap,       3,    1,   24),
+        T (lmr_cutnode_malus,   1024,    0, 2048),
+        T (lmr_tt_cutnode_bonus, 256,    0, 1024),
         NT(lmr_retained,           1),
 
         //                  default   min   max
