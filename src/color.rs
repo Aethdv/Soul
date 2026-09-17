@@ -65,7 +65,7 @@ const LOSS_ORANGE: (f64, f64, f64) = (0.72, 0.16, 35.0);
 const LOSS_DEEP: (f64, f64, f64) = (0.64, 0.17, 22.0);
 
 /// Canonical advantage gradient. `t` in `[-1, 1]`: −1 deep loss → +1 deep win.
-/// Zero sits at the gold/peach seam; callers paint exact-level states themselves.
+/// Zero sits where gold meets peach; callers paint exact-level states themselves.
 #[must_use]
 pub fn advantage(t: f64) -> Rgb {
     let m = t.abs().min(1.0);

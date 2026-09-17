@@ -27,11 +27,10 @@ impl<T> DerefMut for Align64<T> {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
-/// Division, 0.0 for an empty denominator instead of NaN or infinity.
-#[inline]
-#[must_use]
 /// Zero when the denominator is not positive, so an empty tally reports nothing
 /// instead of a NaN.
+#[inline]
+#[must_use]
 pub fn ratio(num: f64, den: f64) -> f64 { if den > 0.0 { num / den } else { 0.0 } }
 
 /// `part` as a percentage of `whole`, 0.0 when nothing was counted.

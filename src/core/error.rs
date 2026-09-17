@@ -35,8 +35,6 @@ pub enum FenError {
 /// Move parsing/application errors.
 #[derive(Debug, Error, Clone, Copy)]
 pub enum MoveError {
-    #[error("Illegal move from {from} to {to}")]
-    IllegalMove { from: u8, to: u8 },
     #[error("Move not found in legal list")]
     NotFound,
     #[error("Invalid move format")]
@@ -48,10 +46,6 @@ pub enum MoveError {
 pub enum EngineError {
     #[error("Search thread panicked: {0}")]
     SearchPanic(String),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Timeout after {ms}ms")]
-    Timeout { ms: u64 },
 }
 
 impl EngineError {

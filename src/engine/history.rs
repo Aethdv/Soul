@@ -382,23 +382,7 @@ impl History {
 }
 
 impl Default for History {
-    /// Returns an unallocated sentinel `History` instance.
-    ///
-    /// # Panics
-    /// Accessing table entries on a default instance will panic because heap buffers are empty.
-    /// Use [`History::new()`] for active search instances.
-    fn default() -> Self {
-        Self {
-            table: [[[0; 64]; 6]; 2],
-            butterfly: [[[[0; 4096]; 2]; 2]; 2],
-            cont: [ContinuationHistory { data: Box::new([]) }, ContinuationHistory { data: Box::new([]) }],
-            correction: CorrectionHistory { data: Box::new([]) },
-            minor_correction: CorrectionHistory { data: Box::new([]) },
-            major_correction: CorrectionHistory { data: Box::new([]) },
-            capt: CaptureHistory { data: Box::new([]) },
-            params: HistoryParams::default(),
-        }
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[inline(always)]
