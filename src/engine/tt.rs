@@ -344,20 +344,32 @@ impl TranspositionTable {
 
     #[inline(always)]
     pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
-        let idx = self.index(hash);
+        self.store_in::<false>(hash, ply, depth, score, mv, bound, pv, eval);
+    }
+
+    /// Qsearch floods the table with shallow entries, so its replacement is timid:
+    /// a fresh deep result is never evicted for one.
+    #[inline(always)]
+    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
+        self.store_in::<true>(hash, ply, 0, score, mv, bound, pv, eval);
+    }
+
+    #[inline(always)]
+    fn store_in<const QS: bool>(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         let key16 = verification_key(hash);
         let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
         let age_factor = self.age_factor.load(Ordering::Relaxed);
-        let cluster = self.cluster(idx);
+        let cluster = self.cluster(self.index(hash));
 
-        let mut victim = 0;
-        let mut worst_quality = i32::MAX;
+        let mut victim = (!QS).then_some(0);
+        // Qsearch evicts only at quality zero or below, so its bar sits one above it.
+        let mut worst_quality = if QS { 1 } else { i32::MAX };
         let mut existing = None;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
             let (key, packed) = slot.scan_read();
-            if packed_bound(packed) == Bound::None || key == key16 {
-                victim = i;
+            if key == key16 || packed_bound(packed) == Bound::None || (QS && packed_depth(packed) == 0) {
+                victim = Some(i);
                 existing = (key == key16).then_some(packed);
                 break;
             }
@@ -365,13 +377,16 @@ impl TranspositionTable {
             let quality = replacement_quality(packed, cur_age, age_factor);
             if quality < worst_quality {
                 worst_quality = quality;
-                victim = i;
+                victim = Some(i);
             }
         }
 
+        let Some(victim) = victim else { return };
+        let slot = &cluster.slots[victim];
+
         if existing.is_some_and(|packed| stored_outranks(packed, depth, pv, bound, cur_age)) {
             if !mv.is_null() {
-                cluster.slots[victim].mv.store(mv.inner(), Ordering::Relaxed);
+                slot.mv.store(mv.inner(), Ordering::Relaxed);
             }
             return;
         }
@@ -379,13 +394,18 @@ impl TranspositionTable {
         let mut store_mv = mv.inner();
         let mut store_pv = pv as u8;
 
-        if mv.is_null() && existing.is_some() {
-            let slot = &cluster.slots[victim];
-            store_mv = slot.mv.load(Ordering::Relaxed);
-            store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
+        if existing.is_some() {
+            if mv.is_null() && !QS {
+                store_mv = slot.mv.load(Ordering::Relaxed);
+            }
+            // A qsearch visit would otherwise wipe the flag a previous negamax
+            // store left on this position.
+            if QS || mv.is_null() {
+                store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
+            }
         }
 
-        cluster.slots[victim].store(SlotWrite {
+        slot.store(SlotWrite {
             key: key16,
             mv: store_mv,
             score: score_to_tt(score, ply) as i16,
@@ -396,63 +416,6 @@ impl TranspositionTable {
             age: cur_age,
             pv: store_pv,
         });
-    }
-
-    /// Qsearch floods the table with shallow entries, so its replacement is timid:
-    /// a fresh deep result is never evicted for one.
-    #[inline(always)]
-    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
-        let idx = self.index(hash);
-        let key16 = verification_key(hash);
-        let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
-        let age_factor = self.age_factor.load(Ordering::Relaxed);
-        let cluster = self.cluster(idx);
-
-        let mut victim: Option<usize> = None;
-        let mut worst_quality = i32::MAX;
-        let mut existing = None;
-
-        for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, packed) = slot.scan_read();
-            if key == key16 || packed_bound(packed) == Bound::None || packed_depth(packed) == 0 {
-                victim = Some(i);
-                existing = (key == key16).then_some(packed);
-                break;
-            }
-
-            let quality = replacement_quality(packed, cur_age, age_factor);
-            if quality <= 0 && quality < worst_quality {
-                worst_quality = quality;
-                victim = Some(i);
-            }
-        }
-
-        if let Some(victim) = victim {
-            if existing.is_some_and(|packed| stored_outranks(packed, 0, pv, bound, cur_age)) {
-                if !mv.is_null() {
-                    cluster.slots[victim].mv.store(mv.inner(), Ordering::Relaxed);
-                }
-                return;
-            }
-
-            // A qsearch visit would otherwise wipe the flag a previous negamax
-            // store left on this position.
-            let store_pv = if existing.is_some() {
-                pv as u8 | packed_pv(cluster.slots[victim].packed.load(Ordering::Relaxed))
-            } else {
-                pv as u8
-            };
-            cluster.slots[victim].store(SlotWrite {
-                key: key16,
-                mv: mv.inner(),
-                score: score_to_tt(score, ply) as i16,
-                eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                depth: 0,
-                bound,
-                age: cur_age,
-                pv: store_pv,
-            });
-        }
     }
 
     #[inline(always)]
