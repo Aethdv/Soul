@@ -543,6 +543,12 @@ impl<'cfg> Searcher<'cfg> {
             let mut beta = if depth >= sp.asp_depth { (self.prev_score + delta).min(INF) } else { INF };
             let mut aborted = false;
 
+            // ── Aspiration Fail-High Reduction
+            // Every root retry is a full-tree search, and a window that keeps breaking
+            // upward is re-proving a position the search already likes, so each retry
+            // confirms it a ply shallower.
+            let mut asp_reduction = 0;
+
             loop {
                 worker.pos = self.root_pos;
                 worker.accumulator = root_acc;
@@ -553,13 +559,15 @@ impl<'cfg> Searcher<'cfg> {
                 // The node's own best score, not root_moves[0]: the list is still
                 // in last iteration's order, so a fail-high on any other move would
                 // read as a score inside the window and end the iteration on a bound.
-                let Ok(score) = worker.negamax::<RootNode>(self, depth, alpha, beta, 0, 0, false) else {
+                let retry_depth = (depth - asp_reduction).max(1);
+                let Ok(score) = worker.negamax::<RootNode>(self, retry_depth, alpha, beta, 0, 0, false) else {
                     aborted = true;
                     break;
                 };
 
                 if score <= alpha {
                     self.print_bound(depth, score, tui::ScoreBound::Upper);
+                    asp_reduction = 0;
                     beta = lerp(beta, alpha, sp.asp_narrow);
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
@@ -577,6 +585,7 @@ impl<'cfg> Searcher<'cfg> {
                     if let Some(i) = self.root_moves.iter().position(|rm| rm.score == score) {
                         self.root_moves[..=i].rotate_right(1);
                     }
+                    asp_reduction = (asp_reduction + 1).min(sp.asp_reduction_max);
                     beta = (score + delta).min(INF);
                 } else {
                     break;
