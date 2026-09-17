@@ -80,6 +80,9 @@ const MAX_TRACKED_CAPTURES: usize = 64;
 /// rounding to nothing or to a whole one.
 const LMR_SCALE: i32 = 1024;
 
+/// No quiet history read yet this iteration. Out of range for a sum of five i16 entries.
+const NO_QUIET_HIST: i32 = i32::MIN;
+
 /// Chess search has three distinct contexts:
 /// root (first ply, owns the move list), PV, and non-PV
 /// (zero-window scouts that just need a yes/no answer).
@@ -1305,7 +1308,7 @@ impl Worker<'_> {
                 // Killers are exempt; a killer is a per-ply refutation whose
                 // global history is often deeply negative, terrible in most
                 // positions and saving in this one.
-                if !in_check
+                let quiet_hist = if !in_check
                     && !N::PV
                     && !mv.is_tactical()
                     && res.move_count >= 1
@@ -1321,7 +1324,10 @@ impl Worker<'_> {
                     if hist < -sp.hist_prune_margin * depth {
                         continue;
                     }
-                }
+                    hist
+                } else {
+                    NO_QUIET_HIST
+                };
 
                 // ── SEE Pruning (~20 Elo)
                 // Skip moves whose destination-square exchange clearly loses material.
@@ -1350,9 +1356,12 @@ impl Worker<'_> {
                 let reduction = if depth >= sp.lmr_min_depth && res.move_count >= 1 && mv.is_quiet() && !in_check {
                     let mut r = searcher.cfg.lmr(depth, res.move_count + 1);
                     let pt = self.pos.expect_piece_at(mv.from());
-                    let hist = self
-                        .history
-                        .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4);
+                    let hist = if quiet_hist != NO_QUIET_HIST {
+                        quiet_hist
+                    } else {
+                        self.history
+                            .score_quiet(self.pos.stm, pt, mv.from(), mv.to(), threats, cont1, cont2, cont4)
+                    };
 
                     if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                         r -= sp.killer_lmr_bonus;
