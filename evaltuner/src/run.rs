@@ -658,7 +658,7 @@ fn train_loop(
     }
 
     let mut grad_stats = GradientStats::new(100);
-    // worth 12% of epoch time at 32.8M positions.
+    // Gathering through shuffled indices costs 12% of epoch time at 32.8M positions.
     let mut indices = vec![0u32; train_len];
     let mut shuffler = Shuffler::new(train_len);
 
