@@ -398,11 +398,9 @@ impl TranspositionTable {
             if mv.is_null() && !QS {
                 store_mv = slot.mv.load(Ordering::Relaxed);
             }
-            // A qsearch visit would otherwise wipe the flag a previous negamax
-            // store left on this position.
-            if QS || mv.is_null() {
-                store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
-            }
+            // Every call site passes the flag its own probe read, so this
+            // catches only a probe that was thrown out as a collision.
+            store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
         }
 
         slot.store(SlotWrite {
