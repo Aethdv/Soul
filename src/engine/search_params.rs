@@ -223,12 +223,13 @@ search_params! {
         //                  default  min   max
         T (good_capture_margin, 182,   0,  300),
 
-        //                default  min   max
-        T (asp_depth,           5,   1,    6),
-        T (asp_initial,        18,   1,   32),
-        T (asp_widen_div,       4,   1,   14),
-        T (asp_narrow,         50,   0,  100),
-        T (asp_reduction_max,   3,   0,    5),
+        //                  default  min   max
+        T (asp_depth,             5,   1,      6),
+        T (asp_initial,          18,   1,     32),
+        T (asp_widen_div,         4,   1,     14),
+        T (asp_score_div,     16384, 9000, 24000),
+        T (asp_narrow,           50,   0,    100),
+        T (asp_reduction_max,     3,   0,      5),
 
         //               default   min   max
         T (qs_recapture_ply,   4,    2),

@@ -539,8 +539,14 @@ impl<'cfg> Searcher<'cfg> {
             // lifts beta. Each retry widens the window so a score that truly
             // moved doesn't thrash.
             let mut delta = sp.asp_initial;
-            let mut alpha = if depth >= sp.asp_depth { (self.prev_score - delta).max(-INF) } else { -INF };
-            let mut beta = if depth >= sp.asp_depth { (self.prev_score + delta).min(INF) } else { INF };
+            let (mut alpha, mut beta) = (-INF, INF);
+
+            if depth >= sp.asp_depth {
+                delta += self.prev_score * self.prev_score / sp.asp_score_div;
+                alpha = (self.prev_score - delta).max(-INF);
+                beta = (self.prev_score + delta).min(INF);
+            }
+
             let mut aborted = false;
 
             // ── Aspiration Fail-High Reduction
