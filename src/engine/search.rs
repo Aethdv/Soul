@@ -1164,9 +1164,16 @@ impl Worker<'_> {
 
                 let value = value?;
                 if value >= probcut_beta {
-                    searcher
-                        .tt
-                        .store(self.pos.hash, ply, probcut_depth, value, mv, tt::Bound::Lower, tt_probe.pv, raw_static_eval);
+                    searcher.tt.store(
+                        self.pos.hash,
+                        ply,
+                        probcut_depth + 1,
+                        value,
+                        mv,
+                        tt::Bound::Lower,
+                        tt_probe.pv,
+                        raw_static_eval,
+                    );
 
                     return Ok(lerp(value, beta, sp.probcut_blend));
                 }
