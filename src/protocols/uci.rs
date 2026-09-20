@@ -7,6 +7,7 @@
 use std::{
     io::{self, Write},
     iter::Peekable,
+    mem,
     str::FromStr,
     sync::{
         Arc,
@@ -86,6 +87,7 @@ pub struct UciState {
     go_pretty: bool,
     pretty_print: bool,
     show_currmove: bool,
+    soft_nodes: bool,
     stdout_isatty: Option<bool>,
     stderr_isatty: Option<bool>,
     is_frc: bool,
@@ -153,6 +155,7 @@ impl UciState {
             go_pretty: false,
             pretty_print: false,
             show_currmove: true,
+            soft_nodes: false,
             stdout_isatty: None,
             stderr_isatty: None,
             is_frc: false,
@@ -529,6 +532,7 @@ fn print_options() {
     println!("option name Hash type spin default 16 min 1 max 524288");
     println!("option name Threads type spin default 1 min 1 max 1024");
     println!("option name Overhead type spin default 10 min 0 max 2000");
+    println!("option name SoftNodes type check default false");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
     println!("option name UCI_ShowCurrMove type check default true");
@@ -588,7 +592,11 @@ where I: Iterator<Item = &'a str> {
 fn cmd_go<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     state.stop_search();
-    let limits = parse_go_limits(&state.board, tokens);
+    let mut limits = parse_go_limits(&state.board, tokens);
+    if state.soft_nodes && limits.nodes > 0 {
+        limits.softnodes = mem::take(&mut limits.nodes);
+    }
+
     dispatch_search(state, limits);
 }
 
@@ -644,6 +652,8 @@ where I: Iterator<Item = &'a str> {
                 );
             }
         },
+
+        "softnodes" => state.soft_nodes = parse_bool(&value),
 
         "uci_chess960" => state.is_frc = parse_bool(&value),
 
