@@ -78,7 +78,7 @@ endef
 else
 define win_build
 	@echo "Building $(EXE_NAME)-v$(VERSION)-$(2).exe..."
-	@RUSTFLAGS="$(1)" cargo zigbuild --release --quiet --target $(WIN_TARGET)
+	@RUSTFLAGS="$(1)" cargo zigbuild --release --quiet --target $(WIN_TARGET) $(CARGO_FEATURES)
 	@cp target/$(WIN_TARGET)/release/$(EXE_NAME).exe $(EXE_NAME)-v$(VERSION)-$(2).exe
 	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-$(2).exe"
 endef
@@ -90,13 +90,13 @@ define pgo_build
 	@cargo pgo clean > /dev/null
 	@echo "Instrumenting..."
 	@CC=cc RUSTFLAGS="-C target-cpu=native -C metadata=pgo" \
-		cargo pgo build -- --quiet
+		cargo pgo build -- --quiet $(CARGO_FEATURES)
 	@echo "Training..."
 	@LLVM_PROFILE_FILE="target/pgo-profiles/%p.profraw" \
 		target/$(RUST_HOST)/release/$(EXE_NAME) bench $(DEPTH) > /dev/null
 	@echo "Optimizing..."
 	@CC=cc RUSTFLAGS="-C target-cpu=native -C metadata=pgo" \
-		cargo pgo optimize build -- --quiet
+		cargo pgo optimize build -- --quiet $(CARGO_FEATURES)
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
 endef
