@@ -4,7 +4,7 @@ pub mod bench;
 #[cfg(feature = "rigs")] pub mod byteboard;
 #[cfg(feature = "datagen")] pub mod datagen;
 #[cfg(feature = "dataset")] pub mod dataset;
-#[cfg(feature = "datagen")] pub mod genfens;
+pub mod genfens;
 #[cfg(feature = "rigs")] pub mod measure;
 pub mod perft;
 #[cfg(feature = "rigs")] pub mod speedtest;

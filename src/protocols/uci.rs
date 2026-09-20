@@ -365,7 +365,6 @@ pub fn print_help(use_ansi: bool) {
     h.command("datagen", "Generate self-play training data");
     #[cfg(feature = "dataset")]
     h.command("dataset", "Manage datasets (inspect, info, encode)");
-    #[cfg(feature = "datagen")]
     h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
@@ -497,7 +496,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "speedtest" => tools::speedtest::run(0),
         #[cfg(feature = "datagen")]
         "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
-        #[cfg(feature = "datagen")]
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {

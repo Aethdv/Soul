@@ -27,6 +27,26 @@ impl<T> DerefMut for Align64<T> {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
+pub struct Rng {
+    state: u64,
+}
+
+impl Rng {
+    pub const fn new(seed: u64) -> Self { Self { state: seed } }
+
+    #[inline]
+    pub const fn splitmix64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
+#[inline(always)]
+pub fn mulhi64(value: u64, bound: usize) -> usize { ((value as u128 * bound as u128) >> 64) as usize }
+
 /// Zero when the denominator is not positive, so an empty tally reports nothing
 /// instead of a NaN.
 #[inline]

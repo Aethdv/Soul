@@ -4,23 +4,25 @@
 //! `info string genfens <fen>` and exits. The `book` supplies the lines to play
 //! out of, not the pool itself.
 
-use fastrand::Rng;
+use std::{
+    fs,
+    io::{self, BufRead},
+};
 
 use crate::{
-    core::board::{Position, STARTPOS},
+    core::{
+        board::{Position, STARTPOS},
+        util::{Rng, mulhi64},
+    },
     engine::movegen::gen_legal_moves,
-    tools::dataset::load_epd_fens,
 };
 
 const MARKER: &str = "info string genfens";
 
-/// A fixed count fixes the side to move: an even number of plies out of the
-/// start position always lands on White.
 const MIN_PLIES: usize = 6;
 const MAX_PLIES: usize = 9;
 
-/// Mate or stalemate along the way ends an attempt. Past this many, the book has
-/// nothing playable in it and a short count is the right answer.
+/// Mate or stalemate along the way ends an attempt.
 const MAX_ATTEMPTS: usize = 100;
 
 pub fn run(args: &[&str]) {
@@ -30,13 +32,12 @@ pub fn run(args: &[&str]) {
         return;
     };
 
-    let mut rng = Rng::with_seed(request.seed);
+    let mut rng = Rng::new(request.seed);
     for _ in 0..request.count {
         let Some(fen) = opening(&book, &mut rng, request.plies) else {
             eprintln!("genfens: no playable opening in {MAX_ATTEMPTS} attempts");
             return;
         };
-
         println!("{MARKER} {fen}");
     }
 }
@@ -83,13 +84,21 @@ impl Request {
             return Some(vec![STARTPOS.to_owned()]);
         };
 
-        load_epd_fens(path).ok().filter(|lines| !lines.is_empty())
+        let mut fens = Vec::new();
+        for line in io::BufReader::new(fs::File::open(path).ok()?).lines() {
+            let line = line.ok()?;
+            if Position::try_from_fen(&line).is_ok() {
+                fens.push(line);
+            }
+        }
+
+        Some(fens).filter(|fens| !fens.is_empty())
     }
 }
 
 fn opening(book: &[String], rng: &mut Rng, plies: Option<usize>) -> Option<String> {
     (0..MAX_ATTEMPTS).find_map(|_| {
-        let plies = plies.unwrap_or_else(|| rng.usize(MIN_PLIES..=MAX_PLIES));
+        let plies = plies.unwrap_or_else(|| MIN_PLIES + mulhi64(rng.splitmix64(), MAX_PLIES - MIN_PLIES + 1));
         play_out(book, rng, plies)
     })
 }
@@ -97,31 +106,32 @@ fn opening(book: &[String], rng: &mut Rng, plies: Option<usize>) -> Option<Strin
 /// A random book line, `plies` random legal moves, and the position that results.
 /// `None` if it mates or stalemates on the way or on arrival.
 fn play_out(book: &[String], rng: &mut Rng, plies: usize) -> Option<String> {
-    let mut pos = Position::from_fen(&book[rng.usize(..book.len())]);
+    let mut pos = Position::from_fen(&book[mulhi64(rng.splitmix64(), book.len())]);
     let mut acc = pos.initial_accumulator();
     for _ in 0..plies {
         let moves = gen_legal_moves(&pos);
         if moves.is_empty() {
             return None;
         }
-        pos.make_move(moves[rng.usize(..moves.len())], &mut acc);
+        pos.make_move(moves[mulhi64(rng.splitmix64(), moves.len())], &mut acc);
     }
     (!gen_legal_moves(&pos).is_empty()).then(|| pos.as_fen())
 }
 
 #[cfg(test)]
 mod tests {
-    use fastrand::Rng;
-
     use super::{Request, opening};
     use crate::{
-        core::board::{Position, STARTPOS},
+        core::{
+            board::{Position, STARTPOS},
+            util::Rng,
+        },
         engine::movegen::gen_legal_moves,
     };
 
     fn pool(seed: u64, count: usize) -> Vec<String> {
         let book = vec![STARTPOS.to_owned()];
-        let mut rng = Rng::with_seed(seed);
+        let mut rng = Rng::new(seed);
         (0..count).filter_map(|_| opening(&book, &mut rng, None)).collect()
     }
 
@@ -129,6 +139,8 @@ mod tests {
     fn a_seed_reproduces_its_pool() {
         assert_eq!(pool(42, 8), pool(42, 8));
         assert_ne!(pool(42, 8), pool(43, 8), "neighboring seeds draw their own openings");
+        let zero = pool(0, 8);
+        assert!(zero.iter().skip(1).any(|fen| fen != &zero[0]), "seed 0 repeats one opening");
     }
 
     #[test]
@@ -161,5 +173,17 @@ mod tests {
     fn a_book_that_loads_nothing_has_no_openings() {
         let request = Request::parse(&["8", "seed", "42", "book", "/nonexistent.epd"]);
         assert_eq!(request.book(), None, "no falling back to the start position");
+    }
+
+    #[test]
+    fn a_book_line_keeps_its_epd_opcodes() {
+        let path = std::env::temp_dir().join(format!("soul_genfens_{}.epd", std::process::id()));
+        let opcodes = "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - bm Nf3; id \"sicilian\";";
+        std::fs::write(&path, format!("{opcodes}\nnot a position at all\n{STARTPOS}\n")).expect("writing the book");
+        let request = Request::parse(&["1", "book", path.to_str().expect("a utf-8 temp path")]);
+        let book = request.book().expect("an opcode line is a position");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(book, vec![opcodes.to_owned(), STARTPOS.to_owned()]);
+        assert_eq!(Position::from_fen(&book[0]).as_fen(), "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
     }
 }

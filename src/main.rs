@@ -72,7 +72,6 @@ fn main() {
                 let datagen_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::datagen::run(&datagen_args, &stop);
             },
-            #[cfg(feature = "datagen")]
             "genfens" => {
                 let genfens_args: Vec<&str> = args[2..].iter().map(String::as_str).collect();
                 tools::genfens::run(&genfens_args);

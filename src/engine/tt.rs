@@ -23,6 +23,7 @@ use crate::{
         board::Position,
         defs::{score_from_tt, score_to_tt},
         moves::Move,
+        util::mulhi64,
     },
     engine::{movegen::is_pseudo_legal, search_params::SearchParams},
     hugepages::{HugePages, PageKind},
@@ -423,12 +424,7 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    fn index(&self, hash: u64) -> usize {
-        // mulhi64: the top 64 bits of hash · len. Lands the hash uniformly
-        // in [0, len), the way hash % len would, but with a multiply.
-        let clusters = self.clusters.len();
-        (((hash as u128) * (clusters as u128)) >> 64) as usize
-    }
+    fn index(&self, hash: u64) -> usize { mulhi64(hash, self.clusters.len()) }
 }
 
 /// Whether the entry already stored beats a revisit of the same position.
