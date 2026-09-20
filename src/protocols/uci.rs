@@ -127,8 +127,8 @@ impl UciState {
                         pool.wait();
                         cfg.stop.store(false, Ordering::Relaxed);
 
-                        is_searching_worker.store(false, Ordering::Relaxed);
                         let _ = result_tx.send(history_table);
+                        is_searching_worker.store(false, Ordering::Relaxed);
                     },
                     SearchCommand::Quit => break,
                 }
@@ -159,6 +159,12 @@ impl UciState {
             stdout_isatty: None,
             stderr_isatty: None,
             is_frc: false,
+        }
+    }
+
+    fn absorb_history(&mut self) {
+        while let Ok(table) = self.history_rx.try_recv() {
+            self.persistent_history = table;
         }
     }
 
@@ -207,9 +213,7 @@ pub fn main_loop(initial_command: Option<String>) {
     }
 
     while let Ok(line) = rx.recv() {
-        while let Ok(new_hist) = state.history_rx.try_recv() {
-            state.persistent_history = new_hist;
-        }
+        state.absorb_history();
 
         if !process_command(&mut state, line.trim()) {
             break;
@@ -235,9 +239,7 @@ pub fn run_commands(lines: &[String]) {
             thread::yield_now();
         }
 
-        while let Ok(table) = state.history_rx.try_recv() {
-            state.persistent_history = table;
-        }
+        state.absorb_history();
     }
 }
 
@@ -458,6 +460,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "isready" => println!("readyok"),
         "ucinewgame" => {
             state.stop_search();
+            state.absorb_history();
             state.persistent_history.clear();
             // SAFETY: stop_search spins until the worker clears is_searching, which it
             // does only after pool.wait() parks every helper, so nothing can probe the table.
