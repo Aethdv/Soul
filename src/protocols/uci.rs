@@ -209,7 +209,9 @@ pub fn main_loop(initial_command: Option<String>) {
     let rx = spawn_stdin_listener(state.stop.clone());
 
     if let Some(cmd) = initial_command {
-        process_command(&mut state, cmd.trim());
+        if !process_command(&mut state, cmd.trim()) {
+            return;
+        }
     }
 
     while let Ok(line) = rx.recv() {
