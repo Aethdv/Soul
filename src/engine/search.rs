@@ -1181,10 +1181,10 @@ impl Worker<'_> {
         }
 
         // ── Internal Iterative Reduction (~14 Elo)
-        // No TT move means we are searching blind, and blind ordering does not
-        // deserve full depth. The entry this search stores hands the next iteration
-        // the move it was missing.
-        let depth = if depth >= sp.iir_depth && tt_move.get().is_none() { depth - sp.iir_reduction } else { depth };
+        // With no TT move to order first, search at reduced depth so the resulting
+        // TT entry can provide one on the next iteration. Skip this in check, where
+        // the reduction would only cancel the check extension.
+        let depth = if !in_check && depth >= sp.iir_depth && tt_move.get().is_none() { depth - sp.iir_reduction } else { depth };
 
         // ──────── Move loop ────────
 
