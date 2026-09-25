@@ -870,6 +870,15 @@ impl Worker<'_> {
         (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
     }
 
+    /// At MAX_PLY there is no room to search an evasion, so positions in check return a draw score.
+    fn max_ply_score(&mut self, nodes: u64, sp: &SearchParams) -> i32 {
+        if self.xb_checkers().is_not_empty() {
+            return draw_score(nodes);
+        }
+        let raw_eval = self.evaluate();
+        self.corrected_eval(raw_eval, sp)
+    }
+
     /// Negamax with alpha-beta pruning.
     ///
     /// Since chess is zero-sum, we maximize the evaluation from the current side's
@@ -912,7 +921,7 @@ impl Worker<'_> {
         }
 
         if ply >= MAX_PLY {
-            return Ok(self.evaluate());
+            return Ok(self.max_ply_score(searcher.nodes, sp));
         }
 
         // The slot LMR reads at ply + 1 was zeroed here by the parent.
@@ -1862,7 +1871,7 @@ impl Worker<'_> {
         }
 
         if ply >= MAX_PLY {
-            return Ok(self.evaluate());
+            return Ok(self.max_ply_score(searcher.nodes, sp));
         }
 
         let alpha_orig = alpha;
