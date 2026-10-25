@@ -1,7 +1,8 @@
 # <img src="assets/tetosing.png" alt="TetoSing" width="32" height="32" /> Soul
 
 Soul is a contemporary, Hand-Crafted Evaluation (HCE) alpha-beta chess engine written in Rust.
-Supports the UCI and XBoard/CECP protocols, plus full Chess960 (Fischer Random)
+First chess engine with [XorBoard](<https://aethdv.com/posts/xorboard/>).
+Supports the UCI and XBoard/CECP protocols, plus full Chess960 (Fischer Random).
 
 Rather than relying on black-box Neural Networks, Soul pushes traditional algorithmic evaluation to its
 absolute limit with SIMD, zero-cost abstractions, and a custom tuning framework built from scratch.
@@ -9,8 +10,7 @@ absolute limit with SIMD, zero-cost abstractions, and a custom tuning framework 
 ## <img src="assets/rocket.gif" alt="Rocket" width="20" height="20" /> Quick Start
 
 You will need `rustup` with the nightly toolchain and `make`.\
-The nightly version is specified in `rust-toolchain.toml`\
-and will be installed automatically by `rustup` on first build.
+The nightly version is specified in `rust-toolchain.toml` and will be installed automatically by `rustup` on first build.
 
 > [!WARNING]  
 > The evaluation accumulator is SIMD throughout, so Soul strictly requires an **AVX2**-capable CPU (x86-64-v3 or newer). Older CPUs are not supported.
