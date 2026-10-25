@@ -15,9 +15,10 @@ HAS_WIN_STD := $(shell rustup target list --installed 2>/dev/null | grep -x $(WI
 COMMA := ,
 RUST_HOST := $(shell rustc -vV | sed -n 's/host: //p')
 
-# OpenBench passes CC=cargo (for C/C++ engines). Override it so cc-rs
-# (used by evaltune's zstd-sys) finds a real C compiler instead of cargo.
+# OpenBench passes CC=cargo; use the host compiler instead.
+ifeq ($(CC),cargo)
 override CC := cc
+endif
 
 # If you want to build faster (specify your own number of threads);
 # bash: export CARGO_ENCODED_RUSTFLAGS=$'-Ctarget-cpu=native\x1f-Zthreads=8'
