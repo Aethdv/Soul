@@ -44,28 +44,25 @@ DEBUG_EXE := debug$(EXE_EXT)
         datagen avx2 avx2-bmi2 avx512 corrstats movepicker storecost \
         windows win-avx2 win-avx2-bmi2 win-avx512
 
-# ── Build recipes
+# ── Builds
 
-# A binary named for the version and the ISA it needs, for a release.
 define release_build
 	@echo "Building $(EXE_NAME)-v$(VERSION)-$(2)$(EXE_EXT)..."
-	@RUSTFLAGS="$(1)" cargo build --release --quiet --target $(RUST_HOST)
+	@RUSTFLAGS="$(1)" cargo build --release --target $(RUST_HOST)
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE_NAME)-v$(VERSION)-$(2)$(EXE_EXT)
 	@echo "Done: ./$(EXE_NAME)-v$(VERSION)-$(2)$(EXE_EXT)"
 endef
 
-# ./soul, overwritten every time. What you build to play against or test.
 define local_build
 	@echo "Building $(2)..."
-	@RUSTFLAGS="$(1)" cargo build --release --quiet --target $(RUST_HOST) $(CARGO_FEATURES)
+	@RUSTFLAGS="$(1)" cargo build --release --target $(RUST_HOST) $(CARGO_FEATURES)
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
 endef
 
-# An instrumented build kept beside ./soul, benched on the spot.
 define stats_build
 	@echo "Building $(EXE_NAME)-$(2)..."
-	@RUSTFLAGS="-C target-cpu=native" cargo build --release --features $(1) --quiet
+	@RUSTFLAGS="-C target-cpu=native" cargo build --release --features $(1)
 	@cp target/release/$(EXE_NAME) $(EXE)-$(2)
 	@echo "Done: ./$(EXE)-$(2)"
 	@./$(EXE)-$(2) bench $(DEPTH)
@@ -111,7 +108,7 @@ define perf_report
 	@perf report --stdio --no-inline --children --max-stack 32 --percent-limit 1.0 >> $(1)
 endef
 
-# ── Playing binaries
+# ── Binaries
 
 native: ## Build optimized for your CPU
 	$(call local_build,-C target-cpu=native,native)
