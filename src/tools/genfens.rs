@@ -1,8 +1,7 @@
-//! Openings drawn on demand, a fresh pool per run rather than one fixed list.
+//! Openings are drawn on demand from a fresh pool each run, not a fixed list.
 //!
-//! `genfens N seed S book <path|None> <extra>` prints N lines of
-//! `info string genfens <fen>` and exits. The `book` supplies the lines to play
-//! out of, not the pool itself.
+//! `genfens N seed S book <path|None> <extra>` prints N lines of `info string genfens <fen>` and exits.
+//! The book supplies the opening lines to play out, not the pool itself.
 
 use std::{
     fs,
@@ -12,7 +11,7 @@ use std::{
 use crate::{
     core::{
         board::{Position, STARTPOS},
-        util::{Rng, mulhi64},
+        util::mulhi64,
     },
     engine::movegen::gen_legal_moves,
 };
@@ -25,10 +24,26 @@ const MAX_PLIES: usize = 9;
 /// Mate or stalemate along the way ends an attempt.
 const MAX_ATTEMPTS: usize = 100;
 
+struct Rng {
+    state: u64,
+}
+
+impl Rng {
+    const fn new(seed: u64) -> Self { Self { state: seed } }
+
+    const fn splitmix64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
 pub fn run(args: &[&str]) {
     let request = Request::parse(args);
     let Some(book) = request.book() else {
-        eprintln!("genfens: no positions loaded from '{}'", request.book.as_deref().unwrap_or_default());
+        eprintln!("genfens: no positions loaded from '{}'", request.book_path.as_deref().unwrap_or_default());
         return;
     };
 
@@ -45,18 +60,14 @@ pub fn run(args: &[&str]) {
 struct Request {
     count: usize,
     seed: u64,
-    book: Option<String>,
+    book_path: Option<String>,
     plies: Option<usize>,
 }
 
 impl Request {
-    /// `N seed S book <path|None> [extra]`, the count positional and the rest keyed.
-    ///
-    /// The runner passes `extra` through unread, so it contains arguments written
-    /// for other engines. Skipping an unknown key alone leaves its value to be
-    /// skipped in turn, so a lone flag cannot swallow the key behind it.
+    /// Parses the count and the keys this generator owns; other engine arguments are ignored.
     fn parse(args: &[&str]) -> Self {
-        let mut request = Self { count: 1, seed: 0, book: None, plies: None };
+        let mut request = Self { count: 1, seed: 0, book_path: None, plies: None };
         if let Some(count) = args.first().and_then(|n| n.parse().ok()) {
             request.count = count;
         }
@@ -70,17 +81,17 @@ impl Request {
                     }
                 },
                 "plies" => request.plies = rest.next().and_then(|v| v.parse().ok()),
-                "book" => request.book = rest.next().filter(|&path| path != "None").map(str::to_owned),
+                "book" => request.book_path = rest.next().filter(|&path| path != "None").map(str::to_owned),
                 _ => {},
             }
         }
+
         request
     }
 
-    /// A named book that loads nothing fails here rather than falling back to the
-    /// start position, which would hand the run a pool nobody asked for.
+    /// A named book that loads nothing fails here; only an unnamed book falls back to the start position.
     fn book(&self) -> Option<Vec<String>> {
-        let Some(path) = self.book.as_deref() else {
+        let Some(path) = self.book_path.as_deref() else {
             return Some(vec![STARTPOS.to_owned()]);
         };
 
@@ -107,7 +118,8 @@ fn opening(book: &[String], rng: &mut Rng, plies: Option<usize>) -> Option<Strin
 /// `None` if it mates or stalemates on the way or on arrival.
 fn play_out(book: &[String], rng: &mut Rng, plies: usize) -> Option<String> {
     let mut pos = Position::from_fen(&book[mulhi64(rng.splitmix64(), book.len())]);
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
+
     for _ in 0..plies {
         let moves = gen_legal_moves(&pos);
         if moves.is_empty() {
@@ -115,17 +127,15 @@ fn play_out(book: &[String], rng: &mut Rng, plies: usize) -> Option<String> {
         }
         pos.make_move(moves[mulhi64(rng.splitmix64(), moves.len())], &mut acc);
     }
-    (!gen_legal_moves(&pos).is_empty()).then(|| pos.as_fen())
+
+    (!gen_legal_moves(&pos).is_empty()).then(|| pos.to_fen())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Request, opening};
+    use super::{Request, Rng, opening};
     use crate::{
-        core::{
-            board::{Position, STARTPOS},
-            util::Rng,
-        },
+        core::board::{Position, STARTPOS},
         engine::movegen::gen_legal_moves,
     };
 
@@ -165,7 +175,7 @@ mod tests {
         let request = Request::parse(&["8", "seed", "42", "book", "None", "depth", "6"]);
         assert_eq!(request.count, 8);
         assert_eq!(request.seed, 42);
-        assert_eq!(request.book, None, "the literal None is no book");
+        assert_eq!(request.book_path, None, "the literal None is no book");
         assert_eq!(request.plies, None, "an argument meant for another engine is skipped");
     }
 
@@ -184,6 +194,6 @@ mod tests {
         let book = request.book().expect("an opcode line is a position");
         std::fs::remove_file(&path).ok();
         assert_eq!(book, vec![opcodes.to_owned(), STARTPOS.to_owned()]);
-        assert_eq!(Position::from_fen(&book[0]).as_fen(), "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
+        assert_eq!(Position::from_fen(&book[0]).to_fen(), "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
     }
 }

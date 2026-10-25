@@ -1,66 +1,42 @@
 //! NUMA topology detection and thread binding.
-//!
-//! A many-threaded search on a multi-socket box pays for memory it doesn't place
-//! and caches it lets go cold. Two localities matter, at two granularities:
-//!
-//! - The NUMA node is the memory domain, where a memory controller lives. The
-//!   transposition table's pages want to spread across these so no one controller
-//!   serves every thread. This is the unit `/sys/devices/system/node/` reports.
-//! - The L3 domain (a CCX on AMD) is the cache domain, finer, sitting inside a
-//!   node. A thread pinned to one keeps its own hot state in a warm L3. On an EPYC
-//!   under NPS1 the kernel folds a whole socket into one node and hides these, so
-//!   they're read from the cache topology instead.
-//!
-//! Bind a thread to its L3 domain and it lands cache-local and memory-local at
-//! once, since the L3 is inside the node. Detection is plain `/sys` file reads, so
-//! it works on any Linux and needs no `libc`; only the binding itself is a syscall,
-//! and that path is x86-64 Linux. Everywhere else the whole module degrades to a
-//! single domain and binding becomes a no-op.
 
 use std::{fmt, fs, thread};
 
-/// A logical CPU index, as the kernel numbers it.
 type Cpu = usize;
 
-/// The machine's locality map: memory domains and the finer cache domains that
-/// subdivide them. Both partition the CPUs the process is actually allowed on.
-pub struct NumaTopology {
-    /// The memory domains.
+/// NUMA memory nodes and L3 cache domains available to this process.
+pub(crate) struct NumaTopology {
     nodes: Vec<Vec<Cpu>>,
-    /// The cache domains, falling back to `nodes` when the cache topology can't be read.
-    domains: Vec<Vec<Cpu>>,
+    l3_domains: Vec<Vec<Cpu>>,
 }
 
 impl NumaTopology {
-    /// Collapses to a single domain only when `/sys` is unreadable, as off Linux. On Linux it reads the nodes and
-    /// L3 domains, including the NPS1 EPYC that shows one node over many caches.
-    pub fn detect() -> Self {
+    pub(crate) fn detect() -> Self {
         let allowed = allowed_cpus();
         let nodes = read_numa_nodes(&allowed).unwrap_or_else(|| vec![allowed.clone()]);
         // ♪ numa numa iei ♪
-        let domains = read_l3_domains(&allowed).unwrap_or_else(|| nodes.clone());
-        Self { nodes, domains }
+        let l3_domains = read_l3_domains(&allowed).unwrap_or_else(|| nodes.clone());
+        Self { nodes, l3_domains }
     }
 
-    pub fn num_nodes(&self) -> usize { self.nodes.len() }
+    pub(crate) fn num_nodes(&self) -> usize { self.nodes.len() }
+    #[cfg(test)]
+    fn num_l3_domains(&self) -> usize { self.l3_domains.len() }
+    pub(crate) fn should_bind_l3(&self, threads: usize) -> bool { self.l3_domains.len() > 1 && threads > 1 }
 
-    pub fn num_domains(&self) -> usize { self.domains.len() }
+    /// Don't stripe a single thread's table across NUMA nodes.
+    pub(crate) fn should_split_across_nodes(&self, threads: usize) -> bool { self.nodes.len() > 1 && threads > 1 }
 
-    pub fn should_bind(&self, threads: usize) -> bool { self.domains.len() > 1 && threads > 1 }
-
-    /// A lone thread wants its table local, not striped across remote controllers.
-    pub fn should_distribute(&self, threads: usize) -> bool { self.nodes.len() > 1 && threads > 1 }
-
-    /// One domain index per worker, balanced by fill so a domain with more CPUs takes
-    /// proportionally more threads and no node is favored, which would fight other
-    /// instances sharing the box.
-    pub fn distribute(&self, threads: usize) -> Vec<usize> {
+    /// Assigns workers to L3 domains proportional to their CPU counts.
+    pub(crate) fn assign_l3_domains(&self, threads: usize) -> Vec<usize> {
         let mut assignment = Vec::with_capacity(threads);
-        let mut occupied = vec![0usize; self.domains.len().max(1)];
+        let mut occupied = vec![0usize; self.l3_domains.len().max(1)];
 
         for _ in 0..threads {
-            let pick = (0..self.domains.len())
-                .min_by(|&a, &b| fill(occupied[a], &self.domains[a]).total_cmp(&fill(occupied[b], &self.domains[b])))
+            let pick = (0..self.l3_domains.len())
+                .min_by(|&a, &b| {
+                    fill_ratio(occupied[a], &self.l3_domains[a]).total_cmp(&fill_ratio(occupied[b], &self.l3_domains[b]))
+                })
                 .unwrap_or(0);
 
             occupied[pick] += 1;
@@ -69,27 +45,22 @@ impl NumaTopology {
         assignment
     }
 
-    /// Returns whether the bind took.
-    pub fn bind_to_domain(&self, domain: usize) -> bool { self.domains.get(domain).is_some_and(|cpus| sys::bind_thread(cpus)) }
-
-    /// Pin the calling thread to a memory domain, for the threads that first-touch
-    /// the TT's slices into place. Returns whether the bind took.
-    pub fn bind_to_node(&self, node: usize) -> bool { self.nodes.get(node).is_some_and(|cpus| sys::bind_thread(cpus)) }
+    pub(crate) fn bind_to_l3_domain(&self, domain: usize) -> bool {
+        self.l3_domains.get(domain).is_some_and(|cpus| sys::bind_thread(cpus))
+    }
+    /// Pins the calling thread to a NUMA node for first-touch placement.
+    pub(crate) fn bind_to_node(&self, node: usize) -> bool { self.nodes.get(node).is_some_and(|cpus| sys::bind_thread(cpus)) }
 }
 
 impl fmt::Display for NumaTopology {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} NUMA node(s), {} L3 domain(s)", self.nodes.len(), self.domains.len())
+        write!(f, "{} NUMA node(s), {} L3 domain(s)", self.nodes.len(), self.l3_domains.len())
     }
 }
 
-/// Fill ratio of a domain once one more thread joins it. Lower means more room.
-fn fill(occupied: usize, domain: &[Cpu]) -> f64 { (occupied + 1) as f64 / domain.len().max(1) as f64 }
+fn fill_ratio(occupied: usize, domain: &[Cpu]) -> f64 { (occupied + 1) as f64 / domain.len().max(1) as f64 }
 
-/// The CPUs the process may run on: its affinity mask if the kernel will tell us,
-/// else every online CPU. Respecting the mask keeps an instance pinned by `taskset`
-/// from binding onto CPUs it was fenced off from, which is how several instances
-/// share a box without fighting for the same cores.
+/// CPUs available to this process, preferring its affinity mask.
 fn allowed_cpus() -> Vec<Cpu> {
     if let Some(mask) = sys::process_affinity() {
         return mask;
@@ -106,8 +77,6 @@ fn allowed_cpus() -> Vec<Cpu> {
     (0..n).collect()
 }
 
-/// The NUMA nodes, each the allowed CPUs the kernel places on that node. `None`
-/// when `/sys` has nothing to say, leaving the caller to assume one node.
 fn read_numa_nodes(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
     let online = fs::read_to_string("/sys/devices/system/node/online").ok()?;
     let mut nodes = Vec::new();
@@ -121,12 +90,10 @@ fn read_numa_nodes(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
     (!nodes.is_empty()).then_some(nodes)
 }
 
-/// The L3 domains: each allowed CPU grouped with the CPUs it shares an L3 with.
-/// `None` when the cache topology is unreadable, so binding falls back to nodes.
 fn read_l3_domains(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
     let ceiling = allowed.iter().copied().max().map_or(0, |m| m + 1);
     let mut grouped = vec![false; ceiling];
-    let mut domains = Vec::new();
+    let mut l3_domains = Vec::new();
 
     for &cpu in allowed {
         if grouped[cpu] {
@@ -141,15 +108,14 @@ fn read_l3_domains(allowed: &[Cpu]) -> Option<Vec<Vec<Cpu>>> {
         }
 
         if !group.is_empty() {
-            domains.push(group);
+            l3_domains.push(group);
         }
     }
-    (!domains.is_empty()).then_some(domains)
+    (!l3_domains.is_empty()).then_some(l3_domains)
 }
 
-/// The `shared_cpu_list` of a CPU's level-3 cache. The cache index for L3 isn't fixed; it is
-/// whichever index reports `level` 3.
 fn read_l3_siblings(cpu: Cpu) -> Option<String> {
+    // Cache indices are not fixed; find the entry whose level is 3.
     for index in 0..8 {
         let base = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index{index}");
         let Ok(level) = fs::read_to_string(format!("{base}/level")) else {
@@ -157,13 +123,13 @@ fn read_l3_siblings(cpu: Cpu) -> Option<String> {
         };
 
         if level.trim() == "3" {
-            return fs::read_to_string(format!("{base}/shared_cpu_list")).ok().map(|s| s.trim().to_string());
+            return fs::read_to_string(format!("{base}/shared_cpu_list")).ok();
         }
     }
     None
 }
 
-/// Parse a kernel cpulist (`"0-15,128-143"`, `"0,2,4"`) into its CPU indices.
+/// Parse a kernel cpulist such as `0-15,128-143`.
 fn parse_cpu_list(s: &str) -> Vec<Cpu> {
     let mut cpus = Vec::new();
 
@@ -197,14 +163,11 @@ mod sys {
     const SYS_SCHED_SETAFFINITY: usize = 203;
     const SYS_SCHED_GETAFFINITY: usize = 204;
 
-    /// The calling thread's allowed CPUs, decoded from its affinity bitmask, or
-    /// `None` if the call fails. A 512-byte buffer covers 4096 CPUs, past any real
-    /// machine, so the kernel never truncates the mask into it.
-    pub fn process_affinity() -> Option<Vec<Cpu>> {
-        let mut mask = [0u64; 64];
+    /// Calling thread's allowed CPUs, or `None` if the query fails.
+    pub(super) fn process_affinity() -> Option<Vec<Cpu>> {
+        let mut mask = [0u64; 64]; // 4096 CPUs
 
-        // SAFETY: sched_getaffinity(0, bytes, ptr) fills the calling thread's mask
-        // into `mask` for `bytes`; the buffer is `mask.len() * 8` and lives here.
+        // SAFETY: mask is a writable mask.len() * 8 byte buffer.
         let ret = unsafe { syscall3(SYS_SCHED_GETAFFINITY, 0, mask.len() * 8, mask.as_mut_ptr() as usize) };
         if ret < 0 {
             return None;
@@ -216,16 +179,13 @@ mod sys {
             let mut bits = bits;
             while bits != 0 {
                 cpus.push(word * 64 + bits.trailing_zeros() as usize);
-                bits &= bits - 1; // clear the lowest set bit
+                bits &= bits - 1;
             }
         }
         Some(cpus)
     }
 
-    /// Pin the calling thread to `cpus`, then yield so the scheduler acts on the
-    /// new mask now rather than at the next natural preemption. Returns the bind's
-    /// success; a failure is best-effort-ignored, leaving the thread unpinned.
-    pub fn bind_thread(cpus: &[Cpu]) -> bool {
+    pub(super) fn bind_thread(cpus: &[Cpu]) -> bool {
         let Some(&highest) = cpus.iter().max() else {
             return false;
         };
@@ -237,24 +197,24 @@ mod sys {
             mask[cpu / 64] |= 1u64 << (cpu % 64);
         }
 
-        // SAFETY: sched_setaffinity(0, bytes, ptr) reads bytes of mask for the
-        // calling thread (pid 0); bytes is words * 8, exactly the buffer.
+        // SAFETY: mask contains words * 8 readable bytes.
         let ret = unsafe { syscall3(SYS_SCHED_SETAFFINITY, 0, words * 8, mask.as_ptr() as usize) };
         if ret != 0 {
             return false;
         }
-        // SAFETY: sched_yield takes no arguments and only reschedules.
+
+        // Let the scheduler move the thread onto its new affinity immediately.
+        // SAFETY: sched_yield takes no arguments.
         unsafe { syscall3(SYS_SCHED_YIELD, 0, 0, 0) };
         true
     }
 
     /// # Safety
-    /// A valid x86-64 Linux syscall: `n` and its arguments must form a sound call,
-    /// and any pointer argument must satisfy that syscall's requirements.
+    /// `n` and its arguments must form a valid x86-64 Linux syscall.
     unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
         let ret: isize;
-        // SAFETY: x86-64 Linux ABI: number in rax, args in rdi/rsi/rdx, result in
-        // rax; the instruction clobbers rcx and r11.
+
+        // SAFETY: x86-64 Linux syscall ABI; syscall clobbers rcx and r11.
         unsafe {
             std::arch::asm!(
                 "syscall",
@@ -275,9 +235,8 @@ mod sys {
 mod sys {
     use super::Cpu;
 
-    pub fn process_affinity() -> Option<Vec<Cpu>> { None }
-
-    pub fn bind_thread(_cpus: &[Cpu]) -> bool { false }
+    pub(super) fn process_affinity() -> Option<Vec<Cpu>> { None }
+    pub(super) fn bind_thread(_cpus: &[Cpu]) -> bool { false }
 }
 
 #[cfg(test)]
@@ -293,8 +252,7 @@ mod tests {
 
     #[test]
     fn parses_an_epyc_node_cpulist() {
-        // EPYC 9654 node 0: physical cores plus their SMT siblings, two blocks.
-        let cpus = parse_cpu_list("0-95,192-287");
+        let cpus = parse_cpu_list("0-95,192-287"); // EPYC 9654 node 0
         assert_eq!(cpus.len(), 192);
         assert_eq!(cpus.first(), Some(&0));
         assert_eq!(cpus.last(), Some(&287));
@@ -303,25 +261,23 @@ mod tests {
 
     #[test]
     fn distribute_balances_by_fill() {
-        let topo = NumaTopology { nodes: vec![(0..32).collect()], domains: vec![(0..16).collect(), (16..32).collect()] };
-        let assignment = topo.distribute(4);
+        let topo = NumaTopology { nodes: vec![(0..32).collect()], l3_domains: vec![(0..16).collect(), (16..32).collect()] };
+        let assignment = topo.assign_l3_domains(4);
         assert_eq!(assignment.iter().filter(|&&d| d == 0).count(), 2);
         assert_eq!(assignment.iter().filter(|&&d| d == 1).count(), 2);
     }
 
     #[test]
     fn single_domain_never_binds() {
-        let topo = NumaTopology { nodes: vec![(0..8).collect()], domains: vec![(0..8).collect()] };
-        assert!(!topo.should_bind(8));
-        assert_eq!(topo.distribute(4), vec![0, 0, 0, 0]);
+        let topo = NumaTopology { nodes: vec![(0..8).collect()], l3_domains: vec![(0..8).collect()] };
+        assert!(!topo.should_bind_l3(8));
+        assert_eq!(topo.assign_l3_domains(4), vec![0, 0, 0, 0]);
     }
 
     #[test]
     fn detect_is_sane_on_this_box() {
-        // Exercises the live `/sys` reads and the affinity syscall end to end.
-        // Whatever this machine is, detection always lands at least one domain.
         let topo = NumaTopology::detect();
         assert!(topo.num_nodes() >= 1);
-        assert!(topo.num_domains() >= 1);
+        assert!(topo.num_l3_domains() >= 1);
     }
 }

@@ -1,7 +1,5 @@
-//! External interfaces for UCI and XBoard communication.
-
-pub mod notation;
-pub mod smp;
-pub mod spmc;
+mod notation;
+mod smp;
+mod spmc;
 pub mod uci;
 pub mod xboard;

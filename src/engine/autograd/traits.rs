@@ -1,8 +1,10 @@
 //! Mathematical traits for generic evaluation and automatic differentiation.
 
+#![cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "parameter loading is the tuner's"))]
+
 use std::{
     arch::x86_64::_mm_cvtsi32_si128,
-    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+    ops::{Add, AddAssign, Div, Mul, Neg, Sub},
 };
 
 use crate::{
@@ -10,110 +12,40 @@ use crate::{
     weave::{I16x8, I32x4},
 };
 
-/// Every array width the tunable rows name. `slot_width!` in `eval_params` keeps its own
-/// copy for the kinds that are not arrays, so a new width is an entry in both.
-///
-/// `seed` is the dual loader, the one shape whose body advances the gradient slot.
-#[macro_export]
-macro_rules! array_widths {
-    ($shape:ident $($carried:tt)*) => {
-        $crate::array_widths! { @$shape [$($carried)*] Array4 = 4, Array6 = 6 }
-    };
-
-    (@decl [] $($name:ident = $n:literal),*) => {
-        $( type $name: core::ops::Index<usize, Output = Self>; )*
-    };
-
-    (@sig [] $($name:ident = $n:literal),*) => {
-        paste::paste! { $(
-            fn [<load_ $name:lower>](values: &[f64], offset: usize, slot: &mut usize) -> Self::$name;
-        )* }
-    };
-
-    (@bind [$t:ty] $($name:ident = $n:literal),*) => {
-        $( type $name = [$t; $n]; )*
-    };
-
-    (@load [$conv:expr] $($name:ident = $n:literal),*) => {
-        paste::paste! { $(
-            #[inline(always)]
-            fn [<load_ $name:lower>](values: &[f64], offset: usize, _slot: &mut usize) -> Self::$name {
-                core::array::from_fn(|i| ($conv)(values[offset + i]))
-            }
-        )* }
-    };
-
-    (@seed [] $($name:ident = $n:literal),*) => {
-        paste::paste! { $(
-            #[inline(always)]
-            fn [<load_ $name:lower>](values: &[f64], offset: usize, slot: &mut usize) -> Self::$name {
-                let out = core::array::from_fn(|i| DualNode::seed(values[offset + i], *slot + i));
-                *slot += $n;
-                out
-            }
-        )* }
-    };
-}
-
-/// The interface `evaluate` is generic over: `i32` with `I16x8`/`I32x4` for search,
-/// `DualNode` for the tuner, `f64` for the oracle. The module doc has the why.
-///
-/// `to_i32` and `to_f64` hand back a raw value to branch on, and the gradient stops
-/// there: whatever the branch decides is invisible to the derivative.
-pub trait EvalMath:
+/// `i32` with `I16x8`/`I32x4` for search.
+/// `f64` for the tuner.
+/// `DualNode` for the gradient oracle.
+#[rustfmt::skip]
+pub(crate) trait EvalMath:
     Sized
     + Copy
-    + Clone
     + Add<Output = Self>
     + AddAssign
     + Sub<Output = Self>
-    + SubAssign
     + Mul<Output = Self>
-    + MulAssign
     + Div<Output = Self>
-    + DivAssign
     + Neg<Output = Self>
 {
     type Scalar;
-    type Vec4: EnvVec4<Scalar = Self::Scalar, Vec8 = Self::Vec8>;
-    type Vec8: EnvVec8<Scalar = Self::Scalar, Vec4 = Self::Vec4>;
-    crate::array_widths!(decl);
+    type Vec4: EvalVec4<Scalar = Self::Scalar, Vec8 = Self::Vec8>;
+    type Vec8: EvalVec8<Vec4 = Self::Vec4>;
+    type Array6: core::ops::Index<usize, Output = Self>;
 
     fn load_scalar(values: &[f64], offset: usize, slot: &mut usize) -> Self;
     fn load_vec4(values: &[f64], offset: usize, slot: &mut usize) -> Self::Vec4;
-    crate::array_widths!(sig);
+    fn load_array6(values: &[f64], offset: usize, slot: &mut usize) -> Self::Array6;
 
     fn zero() -> Self;
-    fn new(val: f64) -> Self;
-
-    fn max(self, other: Self) -> Self;
-    fn min(self, other: Self) -> Self;
-
     fn from_i32(val: i32) -> Self;
-    fn from_vi32x4(v: crate::weave::I32x4) -> Self::Vec4;
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4;
-
-    fn abs(self) -> Self;
-
-    fn to_i32(self) -> i32;
-    fn to_f64(self) -> f64;
-
-    /// Truncate the fractional part (acts as identity for integers).
     fn trunc(self) -> Self;
-
-    /// `clamp` is taken by the inherent methods on both `i32` and `f64`, hence the name.
-    fn math_clamp(self, min: Self, max: Self) -> Self;
-
-    /// Tapered interpolation: (MG · phase + EG · (TOTAL_PHASE - phase)) / TOTAL_PHASE.
-    /// Specialized per-type to allow SIMD `madd` in the engine hot path.
     fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self;
 }
 
-pub trait EnvVec4: Sized + Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
+pub(crate) trait EvalVec4: Sized + Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
     type Scalar;
     type Vec8;
 
-    fn zero() -> Self;
     fn splat(val: i32) -> Self;
     fn from_lanes(a: Self::Scalar, b: Self::Scalar, c: Self::Scalar, d: Self::Scalar) -> Self;
     fn extract<const N: i32>(self) -> Self::Scalar;
@@ -121,22 +53,18 @@ pub trait EnvVec4: Sized + Copy + Add<Output = Self> + Sub<Output = Self> + Mul<
     fn pack_i16(self, hi: Self) -> Self::Vec8;
 }
 
-pub trait EnvVec8: Sized + Copy {
-    type Scalar;
+pub(crate) trait EvalVec8: Sized + Copy {
     type Vec4;
 
     fn zero() -> Self;
-    fn splat(val: i16) -> Self;
     fn madd(self, rhs: Self) -> Self::Vec4;
-    fn load_i32_4(self) -> Self::Vec4;
-    fn extract<const N: i32>(self) -> Self::Scalar;
 }
 
 impl EvalMath for i32 {
     type Scalar = i32;
     type Vec4 = I32x4;
     type Vec8 = I16x8;
-    crate::array_widths!(bind i32);
+    type Array6 = [i32; 6];
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, _slot: &mut usize) -> Self { values[offset] as i32 }
@@ -151,54 +79,30 @@ impl EvalMath for i32 {
         )
     }
 
-    crate::array_widths!(load |v: f64| v as i32);
+    #[inline(always)]
+    fn load_array6(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array6 {
+        core::array::from_fn(|i| values[offset + i] as i32)
+    }
 
     #[inline(always)]
     fn zero() -> Self { 0 }
 
     #[inline(always)]
-    fn new(val: f64) -> Self { val as i32 }
-
-    #[inline(always)]
     fn from_i32(val: i32) -> Self { val }
-
-    #[inline(always)]
-    fn max(self, other: Self) -> Self { std::cmp::max(self, other) }
-
-    #[inline(always)]
-    fn min(self, other: Self) -> Self { std::cmp::min(self, other) }
-
-    #[inline(always)]
-    fn abs(self) -> Self { i32::abs(self) }
-
-    #[inline(always)]
-    fn to_i32(self) -> i32 { self }
-
-    #[inline(always)]
-    fn from_vi32x4(v: I32x4) -> Self::Vec4 { v }
 
     #[inline(always)]
     fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 { I32x4::from_array(arr) }
 
     #[inline(always)]
-    fn to_f64(self) -> f64 { self as f64 }
-
-    #[inline(always)]
     fn trunc(self) -> Self { self }
-
-    #[inline(always)]
-    fn math_clamp(self, min: Self, max: Self) -> Self { Ord::clamp(self, min, max) }
 
     #[inline(always)]
     fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self {
         let eg_p = TOTAL_PHASE - phase;
-        // Both halves sit in [0, TOTAL_PHASE], so they pack into one i32 with no sign bit
-        // bleeding from the low lane into the high.
         let packed = (phase as u32) | ((eg_p as u32) << 16);
-        // SAFETY: AVX2 per the compile_error gate in weave/mod.rs; a register move with no
-        // memory operand and no further precondition.
+        // SAFETY: SSE2 is guaranteed on x86_64.
         let weights = I16x8(unsafe { _mm_cvtsi32_si128(packed.cast_signed()) });
-        // madd's pairwise dot product folds mg·phase + eg·eg_phase into one instruction.
+        // One madd computes mg · phase + eg · eg_p.
         acc.madd(weights).extract::<0>() / TOTAL_PHASE
     }
 }
@@ -207,7 +111,7 @@ impl EvalMath for f64 {
     type Scalar = f64;
     type Vec4 = F64Vec4;
     type Vec8 = F64Vec8;
-    crate::array_widths!(bind f64);
+    type Array6 = [f64; 6];
 
     #[inline(always)]
     fn load_scalar(values: &[f64], offset: usize, _slot: &mut usize) -> Self { values[offset] }
@@ -217,93 +121,59 @@ impl EvalMath for f64 {
         Self::Vec4::from_lanes(values[offset], values[offset + 1], values[offset + 2], values[offset + 3])
     }
 
-    crate::array_widths!(load |v: f64| v);
+    #[inline(always)]
+    fn load_array6(values: &[f64], offset: usize, _slot: &mut usize) -> Self::Array6 {
+        core::array::from_fn(|i| values[offset + i])
+    }
 
     #[inline(always)]
     fn zero() -> Self { 0.0 }
 
     #[inline(always)]
-    fn new(val: f64) -> Self { val }
-
-    #[inline(always)]
     fn from_i32(val: i32) -> Self { f64::from(val) }
 
     #[inline(always)]
-    fn max(self, other: Self) -> Self { f64::max(self, other) }
-
-    #[inline(always)]
-    fn min(self, other: Self) -> Self { f64::min(self, other) }
-
-    #[inline(always)]
-    fn abs(self) -> Self { f64::abs(self) }
-
-    #[inline(always)]
-    fn to_i32(self) -> i32 { self as i32 }
-
-    #[inline(always)]
-    fn from_vi32x4(v: I32x4) -> Self::Vec4 {
-        let arr = v.to_array();
-        F64Vec4([arr[0] as f64, arr[1] as f64, arr[2] as f64, arr[3] as f64])
-    }
-
-    #[inline(always)]
-    fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 { F64Vec4([arr[0] as f64, arr[1] as f64, arr[2] as f64, arr[3] as f64]) }
-
-    #[inline(always)]
-    fn to_f64(self) -> f64 { self }
+    fn from_i32_array(arr: [i32; 4]) -> Self::Vec4 { F64Vec4(arr.map(f64::from)) }
 
     #[inline(always)]
     fn trunc(self) -> Self { f64::trunc(self) }
 
     #[inline(always)]
-    fn math_clamp(self, min: Self, max: Self) -> Self { f64::clamp(self, min, max) }
-
-    #[inline(always)]
     fn taper_acc(acc: &Self::Vec8, phase: Self) -> Self {
         let mg = acc.0[0];
         let eg = acc.0[1];
-        let p = phase;
         let tot = f64::from(TOTAL_PHASE);
-        ((mg * p + eg * (tot - p)) / tot).trunc()
+        ((mg * phase + eg * (tot - phase)) / tot).trunc()
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct F64Vec4(pub [f64; 4]);
+pub(crate) struct F64Vec4(pub(crate) [f64; 4]);
 
 #[derive(Clone, Copy)]
-pub struct F64Vec8(pub [f64; 8]);
+pub(crate) struct F64Vec8(pub(crate) [f64; 8]);
 
 impl Add for F64Vec4 {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self::Output {
-        F64Vec4([self.0[0] + rhs.0[0], self.0[1] + rhs.0[1], self.0[2] + rhs.0[2], self.0[3] + rhs.0[3]])
-    }
+    fn add(self, rhs: Self) -> Self::Output { F64Vec4(std::array::from_fn(|i| self.0[i] + rhs.0[i])) }
 }
 
 impl Sub for F64Vec4 {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self::Output {
-        F64Vec4([self.0[0] - rhs.0[0], self.0[1] - rhs.0[1], self.0[2] - rhs.0[2], self.0[3] - rhs.0[3]])
-    }
+    fn sub(self, rhs: Self) -> Self::Output { F64Vec4(std::array::from_fn(|i| self.0[i] - rhs.0[i])) }
 }
 
 impl Mul for F64Vec4 {
     type Output = Self;
     #[inline(always)]
-    fn mul(self, rhs: Self) -> Self::Output {
-        F64Vec4([self.0[0] * rhs.0[0], self.0[1] * rhs.0[1], self.0[2] * rhs.0[2], self.0[3] * rhs.0[3]])
-    }
+    fn mul(self, rhs: Self) -> Self::Output { F64Vec4(std::array::from_fn(|i| self.0[i] * rhs.0[i])) }
 }
 
-impl EnvVec4 for F64Vec4 {
+impl EvalVec4 for F64Vec4 {
     type Scalar = f64;
     type Vec8 = F64Vec8;
-
-    #[inline(always)]
-    fn zero() -> Self { F64Vec4([0.0; 4]) }
 
     #[inline(always)]
     fn splat(val: i32) -> Self { F64Vec4([f64::from(val); 4]) }
@@ -313,10 +183,9 @@ impl EnvVec4 for F64Vec4 {
 
     #[inline(always)]
     fn srai<const SHIFT: i32>(self) -> Self {
-        // floor, not trunc: a signed arithmetic right shift rounds toward negative
-        // infinity, where truncation toward zero would diverge on negative values.
+        // Negative values must round down, as an arithmetic shift does.
         let div = f64::from(1 << SHIFT);
-        F64Vec4([(self.0[0] / div).floor(), (self.0[1] / div).floor(), (self.0[2] / div).floor(), (self.0[3] / div).floor()])
+        F64Vec4(self.0.map(|value| (value / div).floor()))
     }
 
     #[inline(always)]
@@ -328,15 +197,11 @@ impl EnvVec4 for F64Vec4 {
     fn extract<const N: i32>(self) -> f64 { self.0[N as usize] }
 }
 
-impl EnvVec8 for F64Vec8 {
-    type Scalar = f64;
+impl EvalVec8 for F64Vec8 {
     type Vec4 = F64Vec4;
 
     #[inline(always)]
     fn zero() -> Self { F64Vec8([0.0; 8]) }
-
-    #[inline(always)]
-    fn splat(val: i16) -> Self { F64Vec8([f64::from(val); 8]) }
 
     #[inline(always)]
     fn madd(self, rhs: Self) -> Self::Vec4 {
@@ -347,20 +212,11 @@ impl EnvVec8 for F64Vec8 {
             self.0[6] * rhs.0[6] + self.0[7] * rhs.0[7],
         ])
     }
-
-    #[inline(always)]
-    fn load_i32_4(self) -> Self::Vec4 { F64Vec4([self.0[0], self.0[1], self.0[2], self.0[3]]) }
-
-    #[inline(always)]
-    fn extract<const N: i32>(self) -> Self::Scalar { self.0[N as usize] }
 }
 
-impl EnvVec4 for I32x4 {
+impl EvalVec4 for I32x4 {
     type Scalar = i32;
     type Vec8 = I16x8;
-
-    #[inline(always)]
-    fn zero() -> Self { Self::zero() }
 
     #[inline(always)]
     fn splat(val: i32) -> Self { Self::splat(val) }
@@ -378,22 +234,12 @@ impl EnvVec4 for I32x4 {
     fn pack_i16(self, hi: Self) -> Self::Vec8 { self.pack_i16(hi) }
 }
 
-impl EnvVec8 for I16x8 {
-    type Scalar = i32;
+impl EvalVec8 for I16x8 {
     type Vec4 = I32x4;
 
     #[inline(always)]
     fn zero() -> Self { Self::zero() }
 
     #[inline(always)]
-    fn splat(val: i16) -> Self { Self::splat(val) }
-
-    #[inline(always)]
     fn madd(self, rhs: Self) -> Self::Vec4 { self.madd(rhs) }
-
-    #[inline(always)]
-    fn load_i32_4(self) -> Self::Vec4 { self.load_i32_4() }
-
-    #[inline(always)]
-    fn extract<const N: i32>(self) -> Self::Scalar { i32::from(self.extract::<N>()) }
 }

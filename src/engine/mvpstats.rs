@@ -1,18 +1,4 @@
-//! Move-picker diagnostics and heuristic efficiency profiling.
-//!
-//! Tracks two primary metrics to evaluate move ordering performance:
-//!
-//! - Quiet Sort Utilization: Ratio of quiets sorted versus actually consumed.
-//!   High utilization justifies eager `sort_unstable`; heavy mass at 0–1 quiets
-//!   indicates a lazy partial-sort or linear scan would be cheaper. Read it against
-//!   the selection bias: cut-nodes usually cut before quiets are generated at all,
-//!   so the nodes that pay for the sort are the ones that consume it.
-//!
-//! - Beta-Cutoff Distribution: Move index (1-based) and heuristic tier that
-//!   triggered a fail-high. The first-move cutoff percentage directly measures
-//!   ordering quality.
-//!
-//! Gated by the `mvpstats` feature, and compiled out entirely when it is off.
+//! Move-ordering statistics.
 
 use std::{
     io::{self, IsTerminal},
@@ -20,37 +6,30 @@ use std::{
 };
 
 use crate::{
-    color::{self, BOLD, GOLD, RESET},
+    color::{self, BOLD, GOLD_PEN, RESET},
     core::util::{fmt_count, pct},
 };
 
-/// Quiet consumption buckets: index = moves consumed; last bucket represents `N-1+`.
+const CLASS_NAMES: [&str; 4] = ["hash", "capture", "killer", "quiet"];
+
 const QUIET_BUCKETS: usize = 12;
+const CUTOFF_BUCKETS: usize = 8;
+
+const QUIET_USE_NEUTRAL: f64 = 50.0;
+const FIRST_CUTOFF_NEUTRAL: f64 = 90.0;
 
 static QUIET_HIST: [AtomicU64; QUIET_BUCKETS] = [const { AtomicU64::new(0) }; QUIET_BUCKETS];
 static QUIET_GENERATED: AtomicU64 = AtomicU64::new(0);
 static QUIET_CONSUMED: AtomicU64 = AtomicU64::new(0);
 static QUIET_NODES: AtomicU64 = AtomicU64::new(0);
 
-/// Ordered to match [`CutoffKind`]'s discriminants, which index the counters.
-const KIND_NAMES: [&str; 4] = ["hash", "capture", "killer", "quiet"];
-
-/// Cutoff move index buckets: index = (1-based move index - 1); last bucket is `N-1+`.
-const CUTOFF_BUCKETS: usize = 8;
-
-/// Where the color scale reads neutral: half the sorted quiets consumed, and nine
-/// cutoffs in ten landing on the first move.
-const QUIET_USE_NEUTRAL: f64 = 50.0;
-const FIRST_CUTOFF_NEUTRAL: f64 = 90.0;
-
 static CUTOFF_HIST: [AtomicU64; CUTOFF_BUCKETS] = [const { AtomicU64::new(0) }; CUTOFF_BUCKETS];
-static CUTOFF_KIND: [AtomicU64; KIND_NAMES.len()] = [const { AtomicU64::new(0) }; KIND_NAMES.len()];
+static CUTOFF_CLASS: [AtomicU64; CLASS_NAMES.len()] = [const { AtomicU64::new(0) }; CLASS_NAMES.len()];
 static CUTOFF_NODES: AtomicU64 = AtomicU64::new(0);
 
-/// Heuristic source that surfaced the cutoff move.
 #[derive(Clone, Copy)]
 #[repr(usize)]
-pub enum CutoffKind {
+pub(super) enum CutoffClass {
     Hash = 0,
     Capture = 1,
     Killer = 2,
@@ -59,7 +38,7 @@ pub enum CutoffKind {
 
 /// Records a quiet-stage search node: `generated` sorted vs. `consumed` yielded.
 #[inline]
-pub fn record_quiets(generated: u32, consumed: u32) {
+pub(super) fn record_quiets(generated: u32, consumed: u32) {
     QUIET_HIST[(consumed as usize).min(QUIET_BUCKETS - 1)].fetch_add(1, Relaxed);
     QUIET_GENERATED.fetch_add(u64::from(generated), Relaxed);
     QUIET_CONSUMED.fetch_add(u64::from(consumed), Relaxed);
@@ -68,14 +47,13 @@ pub fn record_quiets(generated: u32, consumed: u32) {
 
 /// Records a beta-cutoff occurring on the `index`-th searched move (1-based).
 #[inline]
-pub fn record_cutoff(index: u32, kind: CutoffKind) {
+pub(super) fn record_cutoff(index: u32, kind: CutoffClass) {
     CUTOFF_HIST[(index.max(1) as usize - 1).min(CUTOFF_BUCKETS - 1)].fetch_add(1, Relaxed);
-    CUTOFF_KIND[kind as usize].fetch_add(1, Relaxed);
+    CUTOFF_CLASS[kind as usize].fetch_add(1, Relaxed);
     CUTOFF_NODES.fetch_add(1, Relaxed);
 }
 
-/// Prints aggregated move picker statistics to stdout.
-pub fn report() {
+pub(crate) fn report() {
     report_quiets();
     report_cutoffs();
 }
@@ -111,22 +89,20 @@ fn report_cutoffs() {
 
     header("MovePicker cutoff ordering");
     println!("  fail-high nodes {}   first-move cutoff {rate}", fmt_count(nodes));
-
     histogram(&CUTOFF_HIST, nodes, 1, "move");
 
     let (gold, _, reset) = style();
-    println!("  {gold}by mechanism{reset}");
+    println!("  {gold}by class{reset}");
 
-    for (name, count) in KIND_NAMES.iter().zip(&CUTOFF_KIND) {
+    for (name, count) in CLASS_NAMES.iter().zip(&CUTOFF_CLASS) {
         let count = count.load(Relaxed);
         println!("  {name:>8}  {:>11}  {:>6.1}%", fmt_count(count), pct(count, nodes));
     }
 }
 
-/// The bucket column shows `first`; the other three are the same table every time.
-fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize, first: &str) {
+fn histogram(buckets: &[AtomicU64], nodes: u64, base: usize, heading: &str) {
     let (gold, bold, reset) = style();
-    println!("  {gold}{bold}{first:>8}  {:>11}  {:>7}  {:>7}{reset}", "nodes", "share", "cumul");
+    println!("  {gold}{bold}{heading:>8}  {:>11}  {:>7}  {:>7}{reset}", "nodes", "share", "cumul");
 
     let mut cumulative = 0u64;
     for (i, b) in buckets.iter().enumerate() {
@@ -145,20 +121,16 @@ fn header(title: &str) {
     println!("\n{gold}{bold}{title}{reset}");
 }
 
-/// Paints a percentage against the point where the scale reads neutral: deep red at
-/// zero, deep green at twice it.
-fn pct_colored(pct: f64, neutral: f64) -> String { colored(&format!("{pct:.1}%"), (pct / neutral - 1.0).clamp(-1.0, 1.0)) }
-
-/// Gold, bold and reset, or three empty strings off a terminal. `BOLD` comes through
-/// here so a piped report cannot keep an escape its reset was stripped from.
-fn style() -> (String, &'static str, &'static str) {
-    if io::stdout().is_terminal() { (color::ansi_fg(GOLD), BOLD, RESET) } else { (String::new(), "", "") }
-}
-
-fn colored(text: &str, advantage: f64) -> String {
+fn pct_colored(pct: f64, neutral: f64) -> String {
+    let text = format!("{pct:.1}%");
     if io::stdout().is_terminal() {
+        let advantage = (pct / neutral - 1.0).clamp(-1.0, 1.0);
         format!("{}{text}{RESET}", color::ansi_fg(color::advantage(advantage)))
     } else {
-        text.to_string()
+        text
     }
+}
+
+fn style() -> (&'static str, &'static str, &'static str) {
+    if io::stdout().is_terminal() { (GOLD_PEN, BOLD, RESET) } else { ("", "", "") }
 }

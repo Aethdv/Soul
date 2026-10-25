@@ -1,19 +1,4 @@
-//! Search time allocation and limit management.
-//!
-//! Allocates soft and hard time budgets derived from protocol limits and tracks
-//! wall-clock consumption during iterative deepening.
-//!
-//! # Limits
-//! - Soft: Target duration for deciding whether to start a new search iteration.
-//!   Dynamically adjusted during search via move stability and score fluctuation factors.
-//! - Hard: Upper bound where ongoing search operations must immediately abort to avoid
-//!   timing out.
-//!
-//! # Allocation Precedence
-//! 1. `infinite` or unclocked controls run unbounded (`Duration::MAX`).
-//! 2. `movetime` allocates a fixed duration minus move overhead.
-//! 3. Clocked controls allocate based on phase interpolation (sudden death) or
-//!    moves-to-go (repeating time controls), incorporating increments.
+//! Yes, this is time management.
 
 use std::time::{Duration, Instant};
 
@@ -22,8 +7,10 @@ use crate::{
     engine::{search::Limits, search_params::SearchParams},
 };
 
-/// Tracks elapsed search time against soft and hard limits.
-pub struct TimeManager {
+pub(crate) const DEFAULT_OVERHEAD_MS: u64 = 10;
+pub(crate) const MAX_OVERHEAD_MS: u64 = 2000;
+
+pub(super) struct TimeManager {
     start: Instant,
     hard: Duration,
     soft: Duration,
@@ -34,18 +21,18 @@ pub struct TimeManager {
     bm_changes: f64,
 }
 
-pub struct Iteration {
-    pub depth: i32,
-    pub best_move_changed: bool,
-    pub root_moves: usize,
-    pub best_nodes: u64,
-    pub total_nodes: u64,
-    pub score: i32,
-    pub prev_score: i32,
+pub(super) struct Iteration {
+    pub(super) depth: i32,
+    pub(super) best_move_changed: bool,
+    pub(super) root_moves: usize,
+    pub(super) best_nodes: u64,
+    pub(super) total_nodes: u64,
+    pub(super) score: i32,
+    pub(super) prev_score: i32,
 }
 
 impl TimeManager {
-    pub fn new(
+    pub(super) fn new(
         limits: &Limits,
         start: Instant,
         stm: Color,
@@ -59,46 +46,38 @@ impl TimeManager {
     }
 
     #[inline]
-    pub fn is_hard_limit_reached(&self) -> bool { self.start.elapsed() >= self.hard }
+    pub(super) fn is_hard_limit_reached(&self) -> bool { self.start.elapsed() >= self.hard }
+
+    #[cfg(test)]
+    #[inline]
+    pub(super) fn soft_limit(&self) -> Duration { self.soft }
+
+    #[cfg(test)]
+    #[inline]
+    pub(super) fn hard_limit(&self) -> Duration { self.hard }
 
     #[inline]
-    pub fn soft_limit(&self) -> Duration { self.soft }
+    pub(super) fn is_finite_budget(&self) -> bool { self.hard != Duration::MAX }
 
     #[inline]
-    pub fn hard_limit(&self) -> Duration { self.hard }
+    pub(super) fn elapsed(&self) -> Duration { self.start.elapsed() }
 
     #[inline]
-    pub fn is_finite_budget(&self) -> bool { self.hard != Duration::MAX }
-
-    #[inline]
-    pub fn elapsed(&self) -> Duration { self.start.elapsed() }
-
-    #[inline]
-    pub fn scale_base_soft(&mut self, factor: f64) {
+    pub(super) fn scale_base_soft(&mut self, factor: f64) {
         self.base_soft = self.base_soft.mul_f64(factor);
         self.recompute_soft();
     }
 
-    /// prev_depth_ms · 2 is a rough branching-factor proxy; each additional ply
-    /// typically costs about twice the previous one.
     #[inline]
-    pub fn should_stop(&self, elapsed_ms: u64, prev_depth_ms: u64, params: &SearchParams) -> bool {
-        elapsed_ms >= self.soft.as_millis() as u64
-            || elapsed_ms + prev_depth_ms * params.tm_iter_scale as u64 / 100 > self.hard.as_millis() as u64
+    pub(super) fn should_stop(&self, elapsed_ms: u64, prev_depth_ms: u64, params: &SearchParams) -> bool {
+        elapsed_ms >= millis(self.soft) || elapsed_ms + prev_depth_ms * params.tm_iter_scale as u64 / 100 > millis(self.hard)
     }
 
-    /// Applies one completed iteration to the soft limit.
-    pub fn update(&mut self, iter: &Iteration, params: &SearchParams) {
+    pub(super) fn update(&mut self, iter: &Iteration, params: &SearchParams) {
         // ── Node Effort TM (~20 Elo)
-        // Scale the soft budget by the best move's share
-        // of total search effort. A large share means the search keeps
-        // confirming one move, so shrink the budget. A small share means
-        // effort is scattered across candidates, so stretch it.
-        //
-        //   percent = clamp(floor, base − scale · best_nodes / total_nodes)
-        //
-        // Gated below effort_depth: early iterations haven't
-        // accumulated enough node signal for the ratio to be meaningful.
+        // How much of the search went into the best move?
+        // If one move accounts for most of the nodes, use less time; if the nodes
+        // are spread across moves, use more. Early iterations make this ratio unreliable.
         if iter.depth >= params.effort_depth && iter.root_moves > 1 {
             let effort_discount = params.effort_scale as u64 * iter.best_nodes / iter.total_nodes.max(1);
             let percent = (params.effort_base as u64)
@@ -108,16 +87,10 @@ impl TimeManager {
         }
 
         // ── Score Swing (~28 Elo)
-        // Scale the soft budget by how far the score moved since last iteration.
-        // A drop means a refutation surfaced, so double the budget to buy depth
-        // and resolve it. A surge means we found something strong, so halve it
-        // and bank the time.
-        //
-        //   factor = 2 ^ (clamp(prev − new, ±scale) / scale)
-        //
-        // Clamping pins the factor to [0.5, 2.0]; the exponent makes equal-size
-        // gains and losses scale the budget by reciprocal amounts. Gated below
-        // score_drop_depth: low-depth aspiration churn is noise, not signal.
+        // Did the score drop as the search deepened?
+        // A drop may signal a refutation, so spend more time; a gain lets us spend less.
+        // A drop by score_swing_scale doubles the factor; an equal gain halves it.
+        // Ignore shallow swings, where aspiration retries make score changes unreliable.
         self.score_factor = if iter.depth >= params.score_drop_depth {
             let scale = params.score_swing_scale as f64;
             let diff = ((iter.prev_score - iter.score) as f64).clamp(-scale, scale);
@@ -126,19 +99,15 @@ impl TimeManager {
             1.0
         };
 
-        // ── Best-Move Instability TM
-        // Node effort and score swing both read a settled position as settled.
-        // Neither sees the top two moves trading places under a steady score,
-        // which is the position worth another iteration.
-        //
-        // Halving each iteration leaves the count reading recent churn rather
-        // than everything the search ever reconsidered.
+        // ── Best-Move Instability TM (~20 Elo)
+        // The score can hold steady while the best move keeps changing.
+        // Count those changes toward extra time, with decay so recent ones matter more.
         if iter.best_move_changed {
             self.bm_changes += 1.0;
         }
+
         self.bm_inst = 1.0 + f64::from(params.bm_inst_scale) / 100.0 * self.bm_changes;
         self.bm_changes *= f64::from(params.bm_inst_decay) / 100.0;
-
         self.recompute_soft();
     }
 
@@ -236,7 +205,10 @@ fn compute_budget(
     (with_overhead(soft_ms.min(hard_ms), overhead), with_overhead(hard_ms, overhead))
 }
 
-// The 1 ms floor keeps a zero-length window off the search, which would abort on entry.
+/// Saturate oversized millisecond counts to `u64::MAX`.
+#[inline]
+fn millis(d: Duration) -> u64 { u64::try_from(d.as_millis()).unwrap_or(u64::MAX) }
+
 #[inline]
 fn with_overhead(ms: u64, overhead: u64) -> Duration { Duration::from_millis(ms.saturating_sub(overhead).max(1)) }
 
@@ -264,6 +236,7 @@ mod tests {
             score: 0,
             prev_score: 0,
         };
+
         tm.update(&settled, &params);
         assert!(tm.soft_limit() <= discounted, "the iteration factors restored {:?}", tm.soft_limit());
     }

@@ -9,47 +9,41 @@
 //!   `T (name, default, min)`            tune; explicit min, auto max and step
 //!   `T (name, default, min, max)`       tune; explicit bounds, auto step
 //!   `NT(name, default)`                 frozen; auto-derive still applies
-//!   `NT(name, default, min, max)`       frozen; bounds kept for when it is not
+//!   `NT(name, default, min, max)`       frozen; explicit bounds, auto step
 //!
-//! Auto-derive: `min = 0`, `max = default + default/2 + 10`, `step = max/20` (≥ 1).
+//! Omitted bounds use `min = 0`, `max = |default| + |default|/2 + 10`.
+//! Step is `(max - min)/20`, with a minimum of 1.
 //!
 //! Search reads each value from its own [`SearchParams`]. A tunable entry is
 //! advertised as a UCI spin option and settable by name; a frozen one is neither,
 //! and its bounds are the range it would be tuned over.
 
-/// Static metadata for one tunable parameter.
 #[derive(Debug)]
 pub(crate) struct ParamDef {
-    pub name: &'static str,
-    pub min: f64,
-    pub max: f64,
-    step: f64,
-    pub default: f64,
-    frozen: bool,
+    pub(crate) name: &'static str,
+    pub(crate) min: i32,
+    pub(crate) max: i32,
+    pub(crate) step: i32,
+    pub(crate) default: i32,
+    pub(crate) frozen: bool,
 }
 
-// Default-derived upper bound; symmetric around 1.5× magnitude with a floor.
 const fn auto_max(default: i32) -> i32 {
     let abs_d = default.abs();
     abs_d + 10 + abs_d / 2
 }
 
-// Default-derived step. Floor of 1 prevents zero-step on tiny defaults.
-const fn auto_step(max: i32) -> i32 { (max / 20).max(1) }
+const fn auto_step(range: i32) -> i32 { (range / 20).max(1) }
 
-/// The tunables as an SPSA table, one parameter a line:
-/// `name, int, value, min, max, c_end, r_end`.
-pub fn spsa_table() -> String {
+pub(crate) fn spsa_table() -> String {
     tunable_param_defs()
-        .iter()
         .map(|p| format!("{}, int, {}, {}, {}, {}, {SPSA_R_END}\n", p.name, p.default, p.min, p.max, p.step))
         .collect()
 }
 
 /// The tunables as UCI spin options, one a line.
-pub fn uci_options() -> String {
+pub(crate) fn uci_options() -> String {
     tunable_param_defs()
-        .iter()
         .map(|p| format!("option name {} type spin default {} min {} max {}\n", p.name, p.default, p.min, p.max))
         .collect()
 }
@@ -59,12 +53,10 @@ macro_rules! search_params {
         search_params!(@collect [$name] [] $($body)*);
     };
 
-    // Final emit
     (@collect [$name:ident] [$($entries:tt)*]) => {
         search_params!(@emit $name [$($entries)*]);
     };
 
-    // T(name, default): auto bounds + step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, 0, $crate::engine::search_params::auto_max($def),
@@ -72,7 +64,6 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // T(name, default, min): auto max + step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $crate::engine::search_params::auto_max($def),
@@ -80,14 +71,12 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // T(name, default, min, max): auto step
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $max, $crate::engine::search_params::auto_step($max - $min), false)
         ] $($rest)*);
     };
 
-    // NT(name, default): frozen, auto bounds
     (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, 0, $crate::engine::search_params::auto_max($def),
@@ -95,7 +84,6 @@ macro_rules! search_params {
         ] $($rest)*);
     };
 
-    // NT(name, default, min, max)
     (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
         search_params!(@collect [$name] [$($entries)*
             ($field, $def, $min, $max, $crate::engine::search_params::auto_step($max - $min), true)
@@ -104,18 +92,17 @@ macro_rules! search_params {
 
     (@emit $name:ident [$( ($field:ident, $def:literal, $min:expr, $max:expr, $step:expr, $frozen:expr) )*]) => {
         #[derive(Clone, Copy, Debug)]
-        pub struct $name {
-            $( pub $field: i32, )*
+        pub(crate) struct $name {
+            $( pub(crate) $field: i32, )*
         }
 
         impl $name {
-            /// The hand-picked defaults, usable in const context so a table built
-            /// from these values can still be a `const`.
-            pub const fn new() -> Self {
+            pub(crate) const fn new() -> Self {
                 Self { $( $field: $def, )* }
             }
 
-            pub fn get(&self, name: &str) -> Option<i32> {
+            #[cfg(test)]
+            pub(crate) fn get(&self, name: &str) -> Option<i32> {
                 $(
                     if !$frozen && name == stringify!($field) {
                         return Some(self.$field);
@@ -124,10 +111,10 @@ macro_rules! search_params {
                 None
             }
 
-            pub fn set(&mut self, name: &str, value: i32) -> bool {
+            pub(crate) fn set(&mut self, name: &str, value: i32) -> bool {
                 $(
                     if !$frozen && name == stringify!($field) {
-                        self.$field = value.clamp($min as i32, $max as i32);
+                        self.$field = value.clamp($min, $max);
                         return true;
                     }
                 )*
@@ -145,10 +132,10 @@ macro_rules! search_params {
             $(
                 ParamDef {
                     name: stringify!($field),
-                    min: $min as f64,
-                    max: $max as f64,
-                    step: $step as f64,
-                    default: $def as f64,
+                    min: $min,
+                    max: $max,
+                    step: $step,
+                    default: $def,
                     frozen: $frozen,
                 }
             ),*
@@ -160,8 +147,8 @@ macro_rules! search_params {
 /// Terminal learning rate for the SPSA table.
 const SPSA_R_END: f64 = 0.002;
 
-pub(crate) fn tunable_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| !p.frozen).collect() }
-pub(crate) fn frozen_param_defs() -> Vec<&'static ParamDef> { PARAM_DEFS.iter().filter(|p| p.frozen).collect() }
+pub(crate) fn tunable_param_defs() -> impl Iterator<Item = &'static ParamDef> { PARAM_DEFS.iter().filter(|p| !p.frozen) }
+pub(crate) fn frozen_param_defs() -> impl Iterator<Item = &'static ParamDef> { PARAM_DEFS.iter().filter(|p| p.frozen) }
 
 search_params! {
     pub struct SearchParams {
@@ -363,19 +350,19 @@ mod tests {
     #[test]
     fn every_tunable_is_advertised_and_settable() {
         let options = uci_options();
+        let tunable: Vec<&str> = tunable_param_defs().map(|p| p.name).collect();
         let advertised: Vec<&str> = options
             .lines()
             .map(|line| line.split_whitespace().nth(2).expect("option name <name>"))
             .collect();
-        let tunable: Vec<&str> = tunable_param_defs().iter().map(|p| p.name).collect();
         assert_eq!(advertised, tunable);
 
         let mut sp = SearchParams::default();
         for def in tunable_param_defs() {
-            assert!(sp.set(def.name, def.max as i32), "{} refused a write", def.name);
-            assert_eq!(sp.get(def.name), Some(def.max as i32), "{} did not take it", def.name);
-            assert!(sp.set(def.name, def.min as i32 - 1_000_000), "{} refused a write", def.name);
-            assert_eq!(sp.get(def.name), Some(def.min as i32), "{} was not clamped", def.name);
+            assert!(sp.set(def.name, def.max), "{} refused a write", def.name);
+            assert_eq!(sp.get(def.name), Some(def.max), "{} did not take it", def.name);
+            assert!(sp.set(def.name, def.min - 1_000_000), "{} refused a write", def.name);
+            assert_eq!(sp.get(def.name), Some(def.min), "{} was not clamped", def.name);
         }
     }
 
@@ -383,7 +370,7 @@ mod tests {
     fn a_frozen_entry_is_neither_advertised_nor_settable() {
         let mut sp = SearchParams::default();
         for def in PARAM_DEFS.iter().filter(|p| p.frozen) {
-            assert!(!sp.set(def.name, def.max as i32), "{} is frozen and took a write", def.name);
+            assert!(!sp.set(def.name, def.max), "{} is frozen and took a write", def.name);
             assert_eq!(sp.get(def.name), None, "{} is frozen and read back", def.name);
         }
         assert!(!sp.set("no_such_param", 1));

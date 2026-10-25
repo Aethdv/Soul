@@ -1,21 +1,20 @@
-//! Search, evaluation, and time management.
-
-pub mod adjudication;
-pub mod autograd;
-pub mod combiner;
-#[cfg(feature = "corrstats")] pub mod corrstats;
-pub mod eval;
+#[cfg(any(test, feature = "datagen"))]
+pub(crate) mod adjudication;
+pub(crate) mod autograd;
+pub(crate) mod combiner;
+#[cfg(feature = "corrstats")] pub(crate) mod corrstats;
+pub(crate) mod eval;
 pub mod eval_params;
-pub mod history;
+pub(crate) mod history;
 pub mod mobility;
-pub mod movegen;
-pub mod movepicker;
-#[cfg(feature = "mvpstats")] pub mod mvpstats;
-pub mod search;
-pub mod search_params;
-pub mod see;
-pub mod term;
-pub mod tm;
-pub mod tt;
-pub mod tui;
+pub(crate) mod movegen;
+mod movepicker;
+#[cfg(feature = "mvpstats")] pub(crate) mod mvpstats;
+pub(crate) mod search;
+pub(crate) mod search_params;
+pub(crate) mod see;
+pub(crate) mod term;
+pub(crate) mod tm;
+pub(crate) mod tt;
+pub(crate) mod tui;
 pub mod wdl;

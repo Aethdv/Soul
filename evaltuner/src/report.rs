@@ -18,7 +18,7 @@ use crate::{
     engine::{BLOCKS, Block, Group, PIECE_TABLES, TABLE_SQUARES, TOTAL_PHASE, Tunable, color, eval_record, pct},
     groups::GROUP_NAMES,
     lion::GateCensus,
-    palette::{self, ALARM, BRAND, CLEAR_LINE, COUNT, DIM, LAB, MOVED, RESET, VAL},
+    palette::{self, ALARM, BRAND, CLEAR_TO_EOL, COUNT, DIM, LAB, MOVED, RESET, VAL},
     run::{TrainerContext, artifact},
     training::{phase_of, phase_weights, sigmoid},
 };
@@ -141,7 +141,7 @@ impl EpochStats {
              {LAB}train{RESET} {DIM}{train_loss:.6}{RESET}  \
              {LAB}ref{RESET} {ref_cell}  \
              {LAB}lr{RESET} {VAL}{lr:.4}{RESET}  {LAB}Δp{RESET} {DIM}{moved:>3}{RESET}  \
-             {DIM}{elapsed:.2}s{RESET}  {DIM}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_LINE}"
+             {DIM}{elapsed:.2}s{RESET}  {DIM}{mpos:.1}M pos/s{RESET}{warn}{CLEAR_TO_EOL}"
         )
     }
 }
@@ -268,9 +268,12 @@ pub fn write_params<W: Write>(w: &mut W, params: &[Tunable], values: &[f64], ini
             let mg_val = values[mg_idx].round() as i32;
             let eg_val = values[eg_idx].round() as i32;
             let fixed = params[mg_idx].is_fixed;
-            let tag = if fixed { "CS" } else { "S" };
             let label = PIECE_NAMES.get(i).map_or(String::new(), |name| format!(" // {name}"));
-            let s = format!("{tag}({mg_val:>4}, {eg_val:>4}),{label}");
+            let s = if fixed {
+                format!("CS({mg_val:>3}, {eg_val:>4}),{label}")
+            } else {
+                format!("S({mg_val:>4}, {eg_val:>4}),{label}")
+            };
             let changed = initial.is_some_and(|ini| mg_val != ini[mg_idx].round() as i32 || eg_val != ini[eg_idx].round() as i32);
             writeln!(w, "         {}", highlight(&s, changed, initial)).ok();
         }

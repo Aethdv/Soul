@@ -1,6 +1,5 @@
-//! Node counting and NPS benchmarking utility.
-//!
-//! Runs the search at fixed depth across a suite of positions.
+//! A fixed-depth search over a suite of positions.
+//! Its deterministic node count lets us compare search behavior across patches.
 
 use std::{
     io::{self, IsTerminal, Write},
@@ -13,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    color::{self, RESET, Rgb},
+    color::{self, RESET},
     core::{board::Position, defs::Protocol},
     engine::{
         history::History,
@@ -30,9 +29,6 @@ const FENS: &str = include_str!("../data/bench.fens");
 const THROBBER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 const FPS: u64 = 30;
 
-const PURPLE: Rgb = (180, 140, 255);
-
-/// The tty progress line.
 struct Progress {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
@@ -45,7 +41,7 @@ impl Progress {
 
         let handle = thread::spawn(move || {
             let tick = Duration::from_nanos(1_000_000_000 / FPS);
-            let purple = color::ansi_fg(PURPLE);
+            let purple = color::LILAC_PEN;
 
             let draw = |phase: usize| {
                 let solved = done.load(Relaxed);
@@ -90,14 +86,14 @@ pub fn run(depth: i32, hash_mb: usize) {
     let progress = tty.then(|| Progress::spawn(start, total, Arc::clone(&done), Arc::clone(&nodes)));
     let limits = Limits { depth, silent: true, protocol: Protocol::Uci, ..Default::default() };
 
-    // Clear between positions, never reallocate.
+    // Cleared between positions rather than reallocated.
     let tt = Arc::new(TranspositionTable::new(hash_mb, 1));
 
     let mut search_time = Duration::ZERO;
 
     for fen in &fens {
         let board = Position::from_fen(fen);
-        let history = vec![board.hash];
+        let trail = vec![board.hash];
 
         // SAFETY: bench runs each search inline on this thread, so none is in flight.
         unsafe { tt.clear(1) };
@@ -105,9 +101,10 @@ pub fn run(depth: i32, hash_mb: usize) {
         let t0 = Instant::now();
         let cfg = SearchConfig::new(limits.clone(), Instant::now(), stop_signal.clone(), 0, SearchParams::default());
 
-        let mut history_table = History::new();
-        let mut searcher = Searcher::new(&cfg, &board, &history, tt.clone());
-        searcher.iterative_deepening(&mut history_table);
+        let mut history = History::new();
+        let mut searcher = Searcher::new(&cfg, &board, &trail, tt.clone());
+
+        searcher.iterative_deepening(&mut history);
         search_time += t0.elapsed();
         nodes.fetch_add(searcher.nodes, Relaxed);
         done.fetch_add(1, Relaxed);

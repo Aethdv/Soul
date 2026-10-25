@@ -1,9 +1,7 @@
-//! Autograd: the differentiation layer the tuner shares with the eval.
+#[cfg(test)] pub(crate) mod dual;
+pub(crate) mod traits;
 
-pub mod dual;
-pub mod traits;
-
-pub use dual::DualNode;
-pub use traits::{EnvVec4, EnvVec8, EvalMath};
+pub(crate) use traits::EvalMath;
+#[cfg(feature = "dataset")] pub(crate) use traits::EvalVec8;
 
 #[cfg(test)] mod tests;

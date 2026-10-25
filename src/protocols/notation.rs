@@ -1,8 +1,8 @@
-//! Shared coordinate move-string parsing for the UCI and XBoard protocols.
+//! Coordinate move parsing shared by UCI and XBoard.
 
 use crate::{
     core::{
-        board::Position,
+        board::{Position, castling_targets},
         defs::{PieceType, Square},
         error::MoveError,
         moves::Move,
@@ -10,19 +10,15 @@ use crate::{
     engine::movegen::gen_legal_moves,
 };
 
-/// Resolve a coordinate move string (`e2e4`, `e7e8q`) to the legal move it names on
-/// `board`. Castling is accepted in both king-to-file (`e1g1`) and king-onto-rook
-/// (FRC `e1h1`) notation, so a GUI using either convention parses.
-pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
-    // Non-ASCII would put a multibyte boundary mid-slice below and panic; reject it.
+pub(super) fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
+    // Reject non-ASCII before byte slicing.
     if !matches!(uci.len(), 4 | 5) || !uci.is_ascii() {
         return Err(MoveError::InvalidFormat);
     }
 
-    let from_sq = square_from_str(&uci[0..2])?;
-    let to_sq = square_from_str(&uci[2..4])?;
-
-    let promo = if uci.len() == 5 { Some(piece_from_char(uci.chars().nth(4).unwrap())?) } else { None };
+    let from_sq = Square::from_algebraic(&uci[0..2]).ok_or(MoveError::InvalidFormat)?;
+    let to_sq = Square::from_algebraic(&uci[2..4]).ok_or(MoveError::InvalidFormat)?;
+    let promo = if uci.len() == 5 { Some(promotion_piece(uci.as_bytes()[4])?) } else { None };
     let legal = gen_legal_moves(board);
 
     legal
@@ -31,43 +27,19 @@ pub fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
             if mv.from() == from_sq && mv.to() == to_sq && mv.promo() == promo {
                 return true;
             }
-
-            // ── Castling Normalization
-            // Castling is stored king-onto-rook, which the comparison above already
-            // matches. A GUI sending the king-to-file form (e1g1) instead names a
-            // square the king lands on, so it is resolved from the rook's side.
-            if mv.is_castling() && promo.is_none() && mv.from() == from_sq {
-                let rank = from_sq.rank();
-                let is_kingside = mv.to().file() > from_sq.file();
-                let dest_file = if is_kingside { 6 } else { 2 }; // G or C
-
-                if to_sq == Square::from_coords(dest_file, rank) {
-                    return true;
-                }
-            }
-            false
+            // Castling is stored king-onto-rook, so the king's destination square matches as well.
+            mv.is_castling() && promo.is_none() && mv.from() == from_sq && castling_targets(from_sq, mv.to()).0 == to_sq
         })
         .copied()
         .ok_or(MoveError::NotFound)
 }
 
-fn square_from_str(s: &str) -> Result<Square, MoveError> {
-    let file = s.as_bytes()[0].wrapping_sub(b'a');
-    let rank = s.as_bytes()[1].wrapping_sub(b'1');
-
-    if file > 7 || rank > 7 {
-        return Err(MoveError::InvalidFormat);
-    }
-
-    Ok(Square::from_coords(file, rank))
-}
-
-fn piece_from_char(c: char) -> Result<PieceType, MoveError> {
-    match c.to_ascii_lowercase() {
-        'q' => Ok(PieceType::Queen),
-        'r' => Ok(PieceType::Rook),
-        'b' => Ok(PieceType::Bishop),
-        'n' => Ok(PieceType::Knight),
+fn promotion_piece(byte: u8) -> Result<PieceType, MoveError> {
+    match byte.to_ascii_lowercase() {
+        b'q' => Ok(PieceType::Queen),
+        b'r' => Ok(PieceType::Rook),
+        b'b' => Ok(PieceType::Bishop),
+        b'n' => Ok(PieceType::Knight),
         _ => Err(MoveError::InvalidFormat),
     }
 }
@@ -90,9 +62,10 @@ mod tests {
     }
 
     #[test]
-    fn a_move_string_is_four_or_five_characters() {
+    fn rejects_malformed_move_strings() {
         let board = Position::from_fen(CASTLING);
         assert!(parse_uci_move(&board, "e1g1xx").is_err());
         assert!(parse_uci_move(&board, "a1a").is_err());
+        assert!(parse_uci_move(&board, "aé1").is_err());
     }
 }

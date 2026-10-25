@@ -22,7 +22,7 @@ it:
 
 No calculus at runtime, only bookkeeping scaled by the outer derivative `∂L/∂score`. That is worth
 one rule: **every non-linearity lives in the combiner, never in a term.** King danger is the live
-case, `pressure + pressure²·curvature/DANGER_SCALE`, so it sits in `LinearCombiner` and reaches the
+case, `pressure + pressure²·curvature/DANGER_SCALE`, so it sits in `combiner` and reaches the
 term as a per-side slope. Put a parameter inside an activation in a term and the scatter computes a
 wrong gradient in silence.
 
@@ -32,7 +32,7 @@ wrong gradient in silence.
 `gradient.rs` does the same from a `FeatureRecord`, features packed to `i8` once at startup, and
 that is what every epoch runs.
 
-**`eval_dual_fused`** is forward-mode autodiff: every number holds its gradient vector, so the
+**`eval_dual_grad`** is forward-mode autodiff: every number holds its gradient vector, so the
 product rule fires on each multiply and linearity is never assumed. It is a test, not a path. Run
 both, diff the gradients, and a disagreement means the hand-derived formula is wrong.
 
@@ -46,16 +46,16 @@ The buckets are the stable shape, not the term list.
 
 ```mermaid
 flowchart TD
-    ACC["SIMD accumulator: PSQT + material"] --> MGEG["mg_eg"]
+    ACC["SIMD accumulator: PSQT + material"] --> MGEG["material_psqt"]
     MOB["mobility / threats / battery / xray reach"] --> MOBB["mobility"]
     BON["bishop pair · rook-open · passers · ..."] --> BONB["bonus"]
     SAF["shield / exposure / weak squares · xray ring"] --> SAFB["safety_us - safety_them + xray"]
-    ATK["attacker pressure per king"] --> DNG["danger_us / danger_them"]
+    ATK["attacker pressure per king"] --> DNG["pressure_us / pressure_them"]
     PHASE["phase"] --> MGEG
     PHASE --> SAFB
     OPEN["openness"] --> MOBB
 
-    subgraph Combiner ["LinearCombiner"]
+    subgraph Combiner ["combiner.rs"]
         DNG --> CURVE["curve each side, then difference"]
         MGEG & MOBB & BONB & SAFB & CURVE --> SUM(("Σ"))
     end
@@ -92,10 +92,10 @@ can move during the run, by golden section every few epochs or by a sign step of
 |---|---|
 | `src/engine/eval.rs` | `evaluate_generic<T>`, the `bonus_terms!` roster, `register_terms!` |
 | `src/engine/eval_params.rs` | Weight arrays, the slot map, `Tunable` descriptors |
-| `src/engine/combiner.rs` | `LinearCombiner`, and every non-linearity |
+| `src/engine/combiner.rs` | `combine`, `backward`, and every non-linearity |
 | `src/engine/autograd/dual.rs` | `DualNode` |
 | `src/core/psqt.rs` | PSQT layout and index mapping |
-| `src/tools/dataset/tape.rs` | `eval_linear_grad`, `eval_dual_fused`, the oracle tests |
+| `src/tools/dataset/tape.rs` | `eval_linear_grad`, `eval_dual_grad`, the oracle tests |
 | `src/tools/dataset/gradient.rs` | `FeatureRecord` and the cached scatter |
 | `evaltuner/src/config.rs` | The TOML schema and the loss functions |
 | `evaltuner/src/run.rs` | Datasets in, epoch loop, checkpoints out |

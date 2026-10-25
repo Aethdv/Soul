@@ -1,85 +1,59 @@
-//! Board representation: the `Position` type and incremental game state.
-//!
-//! Hybrid bitboard + mailbox representation:
-//! - `side_bb[2]` + `role_bb[6]`: bitboard planes for bulk set operations
-//! - `pieces[64]`: mailbox for 𝒪(1) "what piece is on this square?" queries
-//!
-//! Both views stay perfectly synchronized through `add_piece` / `remove_piece`.
-//!
-//! Zobrist hash and SIMD accumulator are maintained incrementally, updated
-//! diff-style in `make_move`, restored from snapshots in `unmake_move`.
+//! Board representation and position state.
 
-use std::{fmt, iter};
+use std::iter;
 
+#[cfg(any(test, feature = "rigs", feature = "nostore"))]
+use crate::weave::U64x4;
 use crate::{
     core::{
-        defs::{Bitboard, Color, FILE_A, FILE_H, PieceType, Square},
+        defs::{Bitboard, Color, Direction, PieceType, Square},
         error::FenError,
         moves::Move,
         psqt, zobrist,
     },
-    weave::{I16x8, U64x4},
+    weave::I16x8,
 };
 
-pub mod attacks;
-pub mod bitboard;
+pub(crate) mod attacks;
+pub(crate) mod bitboard;
 mod fen;
 mod make;
-pub mod spatial;
-pub mod xorboard;
+pub(crate) mod spatial;
+pub(crate) mod xorboard;
 
 #[cfg(test)] mod tests;
 
+pub(crate) use make::castling_targets;
+
 pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-pub const ROOK_W_KS: usize = 0;
-pub const ROOK_W_QS: usize = 1;
-pub const ROOK_B_KS: usize = 2;
-pub const ROOK_B_QS: usize = 3;
+pub(crate) const WHITE_OO: u8 = 1;
+pub(crate) const WHITE_OOO: u8 = 2;
+pub(crate) const BLACK_OO: u8 = 4;
+pub(crate) const BLACK_OOO: u8 = 8;
 
-/// King's home file in the standard starting position (e = 4).
-pub const DEFAULT_KING_FILE: u8 = 4;
-/// h-file
-pub const KINGSIDE_FILE: u8 = 7;
-/// a-file
-pub const QUEENSIDE_FILE: u8 = 0;
-/// f1, g1
-pub const W_OO_EMPTY: Bitboard = Bitboard(0x60);
-/// b1, c1, d1
-pub const W_OOO_EMPTY: Bitboard = Bitboard(0x0E);
-/// f8, g8
-pub const B_OO_EMPTY: Bitboard = Bitboard(0x6000_0000_0000_0000);
-/// b8, c8, d8
-pub const B_OOO_EMPTY: Bitboard = Bitboard(0x0E00_0000_0000_0000);
+pub(crate) const ROOK_W_KS: usize = 0;
+pub(crate) const ROOK_W_QS: usize = 1;
+pub(crate) const ROOK_B_KS: usize = 2;
+pub(crate) const ROOK_B_QS: usize = 3;
 
-/// Toward a-file (queenside rook)
-pub const SEARCH_LEFT: i8 = -1;
-/// Toward h-file (kingside rook)
-pub const SEARCH_RIGHT: i8 = 1;
+const ROOK_RIGHTS: [u8; 4] = [WHITE_OO, WHITE_OOO, BLACK_OO, BLACK_OOO];
 
-pub const WHITE_OO: u8 = 1;
-pub const WHITE_OOO: u8 = 2;
-pub const BLACK_OO: u8 = 4;
-pub const BLACK_OOO: u8 = 8;
+const W_OO_EMPTY: Bitboard = Bitboard(0x60); // f1, g1
+const W_OOO_EMPTY: Bitboard = Bitboard(0x0E); // b1, c1, d1
+const B_OO_EMPTY: Bitboard = Bitboard(0x6000_0000_0000_0000); // f8, g8
+const B_OOO_EMPTY: Bitboard = Bitboard(0x0E00_0000_0000_0000); // b8, c8, d8
 
-/// e1, h1 → g1, f1
-pub const CASTLE_W_KS: [u8; 4] = [4, 7, 6, 5];
-/// e1, a1 → c1, d1
-pub const CASTLE_W_QS: [u8; 4] = [4, 0, 2, 3];
-/// e8, h8 → g8, f8
-pub const CASTLE_B_KS: [u8; 4] = [60, 63, 62, 61];
-/// e8, a8 → c8, d8
-pub const CASTLE_B_QS: [u8; 4] = [60, 56, 58, 59];
-/// e1, f1, g1
-pub const CASTLE_W_KS_CHECK: [u8; 3] = [4, 5, 6];
-/// e1, d1, c1
-pub const CASTLE_W_QS_CHECK: [u8; 3] = [4, 3, 2];
-/// e8, f8, g8
-pub const CASTLE_B_KS_CHECK: [u8; 3] = [60, 61, 62];
-/// e8, d8, c8
-pub const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58];
+const CASTLE_W_KS: [u8; 4] = [4, 7, 6, 5]; // e1, h1 → g1, f1
+const CASTLE_W_QS: [u8; 4] = [4, 0, 2, 3]; // e1, a1 → c1, d1
+const CASTLE_B_KS: [u8; 4] = [60, 63, 62, 61]; // e8, h8 → g8, f8
+const CASTLE_B_QS: [u8; 4] = [60, 56, 58, 59]; // e8, a8 → c8, d8
 
-// Every row of the table below, pinned. A field that moves fails the build.
+const CASTLE_W_KS_CHECK: [u8; 3] = [4, 5, 6]; // e1, f1, g1
+const CASTLE_W_QS_CHECK: [u8; 3] = [4, 3, 2]; // e1, d1, c1
+const CASTLE_B_KS_CHECK: [u8; 3] = [60, 61, 62]; // e8, f8, g8
+const CASTLE_B_QS_CHECK: [u8; 3] = [60, 59, 58]; // e8, d8, c8
+
 const _: () = {
     use std::mem::{align_of, offset_of, size_of};
 
@@ -99,100 +73,49 @@ const _: () = {
     assert!(offset_of!(Position, stm) == 173);
     assert!(offset_of!(Position, halfmove_clock) == 174);
     assert!(offset_of!(Position, en_passant) == 175);
-    assert!(offset_of!(Position, is_frc) == 177);
+    assert!(offset_of!(Position, frc_notation) == 177);
     assert!(offset_of!(Position, fullmove_number) == 178);
 
     assert!(size_of::<StateInfo>() == 40, "StateInfo must be exactly 40 bytes");
     assert!(align_of::<StateInfo>() == 8);
 };
 
-pub use fen::Fen;
-pub(crate) use make::castling_targets;
-
-//  192 bytes, spans three cache lines.
-//
-//  ┌──────────────────┬────────┬───────┐
-//  │ Field            │ Offset │ Bytes │
-//  ├──────────────────┼────────┼───────┤
-//  │ side_bb          │      0 │    16 │
-//  │ role_bb          │     16 │    48 │
-//  │ occ              │     64 │     8 │
-//  │ hash             │     72 │     8 │
-//  │ pawn_key         │     80 │     8 │
-//  │ minor_key        │     88 │     8 │
-//  │ major_key        │     96 │     8 │
-//  │ pieces           │    104 │    64 │
-//  │ castling_rooks   │    168 │     4 │
-//  │ castling_rights  │    172 │     1 │
-//  │ stm              │    173 │     1 │
-//  │ halfmove_clock   │    174 │     1 │
-//  │ en_passant       │    175 │     2 │
-//  │ is_frc           │    177 │     1 │
-//  │ fullmove_number  │    178 │     2 │
-//  │ (tail padding)   │    180 │    12 │
-//  └──────────────────┴────────┴───────┘
+#[rustfmt::skip]
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(32))]
-pub struct Position {
-    /// Occupancy bitboards indexed by [`Color`].
-    pub side_bb: [Bitboard; 2],
-    /// Occupancy bitboards by piece type across both colors.
-    pub role_bb: [Bitboard; 6],
-    pub occ: Bitboard,
-    /// Full incremental Zobrist hash (pieces, side to move, castling, en passant).
-    pub hash: u64,
-    /// Incremental pawn-only Zobrist key. This and the two below key the correction tables.
-    pub pawn_key: u64,
-    /// Incremental minor-piece (N+B) Zobrist key.
-    pub minor_key: u64,
-    /// Incremental major-piece (R+Q) Zobrist key.
-    pub major_key: u64,
-    /// Mailbox, read through `piece_at`; `PieceType::None` where a square is empty.
-    pub pieces: [PieceType; 64],
-    /// Original castling rook squares for Chess960 (FRC), indexed by right's bit position.
-    ///
-    /// A slot is only meaningful while its right is held. Losing the right clears the bit
-    /// and leaves the slot naming the square it named before, so a reader that skips the
-    /// rights check sees a rook home the side no longer owns.
-    pub castling_rooks: [Square; 4],
-    /// Packed castling rights mask (bits 0–3: White KS, White QS, Black KS, Black QS).
-    pub castling_rights: u8,
-    pub stm: Color,
-    /// Half-move clock since last capture or pawn push (fifty-move rule counter).
-    pub halfmove_clock: u8,
-    /// En passant target transit square (e.g. `e3`/`e6`), set after a 2-square pawn push.
-    pub en_passant: Option<Square>,
-    /// Chess960. When set, FENs and castling moves take their Chess960 form.
-    pub is_frc: bool,
-    /// Full-move count; starts at 1 and increments after each Black move.
-    pub fullmove_number: u16,
+pub struct Position { // 180 B + 12 B tail padding
+    pub(crate) side_bb: [Bitboard; 2],      // 16 B
+    pub(crate) role_bb: [Bitboard; 6],      // 48 B
+    pub(crate) occ: Bitboard,               // 8 B
+    pub(crate) hash: u64,                   // 8 B
+    pub(crate) pawn_key: u64,               // 8 B
+    pub(crate) minor_key: u64,              // 8 B
+    pub(crate) major_key: u64,              // 8 B
+    pub(crate) pieces: [PieceType; 64],     // 64 B
+    pub(crate) castling_rooks: [Square; 4], // 4 B
+    pub(crate) castling_rights: u8,         // 1 B
+    pub(crate) stm: Color,                  // 1 B
+    pub(crate) halfmove_clock: u8,          // 1 B
+    pub(crate) en_passant: Option<Square>,  // 2 B
+    pub(crate) frc_notation: bool,          // 1 B
+    pub(crate) fullmove_number: u16,        // 2 B
 }
 
-/// The irreversible state needed to undo a move: stack-allocated, snapshotted per move.
-///
-/// A move destroys castling rights, the fifty-move counter, en passant availability and the
-/// captured piece. Snapshotting them before the move makes `unmake_move` a memcpy rather
-/// than a recalculation.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct StateInfo {
-    pub hash: u64,
-    pub pawn_key: u64,
-    pub minor_key: u64,
-    pub major_key: u64,
-    pub en_passant: Option<Square>,
-    pub castling_rights: u8,
-    pub captured: PieceType,
-    pub halfmove_clock: u8,
-}
-
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", Fen(self)) }
+pub(crate) struct StateInfo {
+    pub(crate) hash: u64,
+    pub(crate) pawn_key: u64,
+    pub(crate) minor_key: u64,
+    pub(crate) major_key: u64,
+    pub(crate) en_passant: Option<Square>,
+    pub(crate) castling_rights: u8,
+    pub(crate) captured: PieceType,
+    pub(crate) halfmove_clock: u8,
 }
 
 impl Position {
-    /// An empty board: no pieces, White to move, Zobrist initialized.
-    pub fn new() -> Self {
+    pub(crate) fn empty() -> Self {
         let mut pos = Self {
             side_bb: [Bitboard(0); 2],
             role_bb: [Bitboard(0); 6],
@@ -207,35 +130,37 @@ impl Position {
             stm: Color::White,
             halfmove_clock: 0,
             en_passant: None,
-            is_frc: false,
+            frc_notation: false,
             fullmove_number: 1,
         };
+
         pos.hash = pos.calc_zobrist();
         pos
     }
 
-    /// Parse a FEN string, panicking on invalid input.
-    /// Use `try_from_fen` for user-supplied FENs where graceful error handling is needed.
+    #[inline]
+    pub fn stm(&self) -> Color { self.stm }
+
+    /// Panics on invalid FEN.
     pub fn from_fen(fen: &str) -> Self { Self::try_from_fen(fen).unwrap_or_else(|e| panic!("Invalid FEN: {e}")) }
+    pub(crate) fn try_from_fen(fen: &str) -> Result<Self, FenError> {
+        Self::try_from_tokens(&mut fen.split_whitespace().peekable())
+    }
 
-    pub fn try_from_fen(fen: &str) -> Result<Self, FenError> { Self::try_from_tokens(&mut fen.split_whitespace().peekable()) }
-
-    /// Parse from pre-split FEN tokens.
-    pub fn try_from_tokens<'a, I>(parts: &mut iter::Peekable<I>) -> Result<Self, FenError>
+    /// Leaves a trailing `moves` token unconsumed.
+    pub(crate) fn try_from_tokens<'a, I>(parts: &mut iter::Peekable<I>) -> Result<Self, FenError>
     where I: Iterator<Item = &'a str> {
         fen::try_from_tokens(parts)
     }
 
-    /// Apply `mv` to the position. Returns the undo packet needed by `unmake_move`.
     #[inline]
-    pub fn make_move(&mut self, mv: Move, acc: &mut I16x8) -> StateInfo { make::make_move(self, mv, acc) }
+    pub(crate) fn make_move(&mut self, mv: Move, acc: &mut I16x8) -> StateInfo { make::make_move(self, mv, acc) }
 
     #[inline]
-    pub fn unmake_move(&mut self, mv: Move, info: &StateInfo) { make::unmake_move(self, mv, info); }
+    pub(crate) fn unmake_move(&mut self, mv: Move, info: &StateInfo) { make::unmake_move(self, mv, info); }
 
-    /// Null move pruning's primitive: the opponent gets a free move.
     #[inline]
-    pub fn make_null_move(&mut self) -> StateInfo {
+    pub(crate) fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
             hash: self.hash,
             pawn_key: self.pawn_key,
@@ -253,12 +178,12 @@ impl Position {
 
         self.stm = self.stm.opposite();
         self.hash ^= zobrist::key_side();
-        self.halfmove_clock += 1;
+        self.halfmove_clock = self.halfmove_clock.saturating_add(1);
         info
     }
 
     #[inline]
-    pub fn unmake_null_move(&mut self, info: &StateInfo) {
+    pub(crate) fn unmake_null_move(&mut self, info: &StateInfo) {
         self.stm = self.stm.opposite();
         self.hash = info.hash;
         self.pawn_key = info.pawn_key;
@@ -268,44 +193,27 @@ impl Position {
         self.halfmove_clock = info.halfmove_clock;
     }
 
-    /// NMP reads this to stay out of pure pawn endings, where zugzwang makes a free move a lie.
     #[inline]
-    pub fn has_non_pawn_material(&self, side: Color) -> bool {
-        let dominated =
+    pub(crate) fn has_non_pawn_material(&self, side: Color) -> bool {
+        let material =
             self.side_bb[side as usize] & !(self.role_bb[PieceType::Pawn as usize] | self.role_bb[PieceType::King as usize]);
-        dominated.is_not_empty()
+        material.is_not_empty()
     }
 
-    /// Must be called before the move is applied to the board:
-    /// it reads the current piece layout to determine what changed.
-    #[inline(always)]
-    pub fn update_accumulator(&self, acc: &mut I16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
-        make::update_accumulator(self, acc, mv, pt, captured, placed);
-    }
-
-    /// Once at position setup; `make_move` and `unmake_move` keep it current after that.
-    pub fn initial_accumulator(&self) -> I16x8 {
+    pub(crate) fn psqt_accumulator(&self) -> I16x8 {
         let mut acc = I16x8::splat(0);
         for sq in self.occ {
-            // MG/EG lanes are i16 and won't overflow at realistic piece values
             acc += psqt::entry(self.piece_at(sq), sq, self.color_at(sq));
         }
         acc
     }
 
-    /// Adjudicates strict FIDE threefold repetition (unlike search, which typically
-    /// prunes at 2 occurrences). Scans backward within the reversible move horizon
-    /// (`halfmove_clock`), as irreversible moves prevent earlier positions from recurring.
-    pub fn is_threefold_repetition(&self, history: &[u64]) -> bool {
-        if history.len() < 4 {
-            return false;
-        }
-
+    pub(crate) fn is_threefold_repetition(&self, history: &[u64]) -> bool {
+        // A pawn move or capture cuts off any possible repetition.
         let limit = history.len().saturating_sub(self.halfmove_clock as usize + 1);
-        let mut count = 1; // Current position counts as occurrence #1.
+        let mut count = 1;
 
-        // Step back in 2-ply increments to only compare positions with the same side to move.
-        // Skips ply 0 (current position) and ply 1 (opponent to move).
+        // Same side to move, excluding the current position.
         for &h in history[limit..].iter().rev().skip(2).step_by(2) {
             if h == self.hash {
                 count += 1;
@@ -317,179 +225,161 @@ impl Position {
         false
     }
 
-    pub fn is_fifty_move_draw(&self) -> bool { self.halfmove_clock >= 100 }
+    pub(crate) fn is_fifty_move_draw(&self) -> bool { self.halfmove_clock >= 100 }
 
-    /// Detects draw by insufficient mating material.
-    ///
-    /// Covers K vs K, K+N vs K, and K+B vs K. Exotic cases like same colored
-    /// bishops or K+N+N vs K are left to the 50-move rule or adjudication.
-    pub fn is_draw_by_material(&self) -> bool {
-        // Any pawns, rooks, or queens on the board → someone can still win.
-        let force = self.role_bb[PieceType::Pawn as usize]
+    /// K vs K, K+N vs K, and K+B vs K only.
+    pub(crate) fn is_draw_by_material(&self) -> bool {
+        let pawns_or_majors = self.role_bb[PieceType::Pawn as usize]
             | self.role_bb[PieceType::Rook as usize]
             | self.role_bb[PieceType::Queen as usize];
 
-        if force.is_not_empty() {
+        if pawns_or_majors.is_not_empty() {
             return false;
         }
 
-        // Only kings and minor pieces remain. A lone minor can't deliver mate.
         let minors = self.role_bb[PieceType::Knight as usize].popcount() + self.role_bb[PieceType::Bishop as usize].popcount();
         minors <= 1
     }
 
-    /// Fully validates a castling move encoded as king-onto-rook (`ksq` → `rsq`),
-    /// the Chess960 form, resolving the wing by `rsq.file() < ksq.file()`.
-    ///
-    /// Checks all FIDE castling legality criteria:
-    /// 1. Castling rights for the resolved wing are intact.
-    /// 2. Transit and destination squares are clear of obstructions.
-    /// 3. The king is not in check, nor does it pass through or land on attacked squares.
-    ///
-    /// The single source of truth for both move generation and TT move validation.
-    /// A hash collision can produce a `CASTLE`-flagged move from an unrelated position;
-    /// this full validation prevents illegal castling through pieces or into check.
-    ///
-    /// The caller must ensure `ksq` and `rsq` currently host `color`'s King and Rook.
+    /// `ksq` and `rsq` must hold `color`'s king and castling rook.
     #[inline]
-    pub fn is_castle_move_legal(&self, color: Color, ksq: Square, rsq: Square) -> bool {
+    pub(crate) fn is_castle_legal(&self, color: Color, ksq: Square, rsq: Square) -> bool {
         let queenside = rsq.file() < ksq.file();
-        let (mask, data, check_sqs, empty): (u8, &[u8; 4], &[u8], Bitboard) = match (color, queenside) {
+        let (right, layout, check_sqs, empty): (u8, &[u8; 4], &[u8], Bitboard) = match (color, queenside) {
             (Color::White, false) => (WHITE_OO, &CASTLE_W_KS, &CASTLE_W_KS_CHECK, W_OO_EMPTY),
             (Color::White, true) => (WHITE_OOO, &CASTLE_W_QS, &CASTLE_W_QS_CHECK, W_OOO_EMPTY),
             (Color::Black, false) => (BLACK_OO, &CASTLE_B_KS, &CASTLE_B_KS_CHECK, B_OO_EMPTY),
             (Color::Black, true) => (BLACK_OOO, &CASTLE_B_QS, &CASTLE_B_QS_CHECK, B_OOO_EMPTY),
         };
-        self.castling_rights & mask != 0 && self.is_castle_legal(self.occ, ksq, rsq, data, check_sqs, empty, color.opposite())
+
+        self.castling_rights & right != 0 && self.is_castle_path_legal(ksq, rsq, layout, check_sqs, empty, color.opposite())
     }
 
-    /// Rights mask and `castling_rooks` slot for a rook, from its file against its
-    /// king's. The king starts between its rooks in Chess960 too, so the file decides.
+    pub(crate) fn has_nonstandard_castling_rook(&self) -> bool {
+        [(ROOK_W_KS, 7), (ROOK_W_QS, 0), (ROOK_B_KS, 63), (ROOK_B_QS, 56)]
+            .into_iter()
+            .any(|(slot, home)| self.castling_rights & ROOK_RIGHTS[slot] != 0 && self.castling_rooks[slot] != Square(home))
+    }
+
     #[inline]
-    pub const fn castling_side(rook: Square, king: Square, color: Color) -> (u8, usize) {
-        match (matches!(color, Color::White), rook.file() > king.file()) {
-            (true, true) => (WHITE_OO, ROOK_W_KS),
-            (true, false) => (WHITE_OOO, ROOK_W_QS),
-            (false, true) => (BLACK_OO, ROOK_B_KS),
-            (false, false) => (BLACK_OOO, ROOK_B_QS),
+    fn is_castle_path_legal(
+        &self,
+        ksq: Square,
+        rsq: Square,
+        layout: &[u8; 4],
+        std_king_path: &[u8],
+        empty_mask: Bitboard,
+        attacker: Color,
+    ) -> bool {
+        let &[std_king, std_rook, king_dst, rook_dst] = layout;
+
+        if ksq.0 == std_king && rsq.0 == std_rook && (self.occ & empty_mask).is_empty() {
+            for &sq in std_king_path {
+                if self.is_attacked(Square(sq), attacker, Bitboard::EMPTY) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        let king_dst = Square(king_dst);
+        let rook_dst = Square(rook_dst);
+        let king_path = bitboard::between_bb(ksq, king_dst) | ksq.bitboard() | king_dst.bitboard();
+        let rook_path = bitboard::between_bb(rsq, rook_dst) | rsq.bitboard() | rook_dst.bitboard();
+        let movers = ksq.bitboard() | rsq.bitboard();
+
+        if (self.occ & !movers & (king_path | rook_path)).is_not_empty() {
+            return false;
+        }
+
+        let king = ksq.bitboard();
+        for sq in king_path {
+            if self.is_attacked(sq, attacker, king) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    #[cfg(feature = "dataset")]
+    #[inline]
+    pub(crate) const fn castling_rook_slot(rook: Square, king: Square, color: Color) -> usize {
+        match (color, rook.file() > king.file()) {
+            (Color::White, true) => ROOK_W_KS,
+            (Color::White, false) => ROOK_W_QS,
+            (Color::Black, true) => ROOK_B_KS,
+            (Color::Black, false) => ROOK_B_QS,
         }
     }
 
-    /// Emits `color`'s castling moves, at most one per wing.
-    ///
-    /// The right gates the slot read, or a stale slot aliases the other side's and
-    /// double-generates. [`Self::is_castle_move_legal`] owns the rest.
     #[inline]
-    pub fn for_each_castle(&self, color: Color, mut emit: impl FnMut(Move)) {
+    pub(crate) fn for_each_castle(&self, color: Color, mut emit: impl FnMut(Move)) {
         let king_bb = self.pieces(PieceType::King, color);
         if king_bb.is_empty() {
             return;
         }
 
         let ksq = king_bb.lsb();
-        let (oo, ooo, ks, qs) = if color == Color::White {
-            (WHITE_OO, WHITE_OOO, ROOK_W_KS, ROOK_W_QS)
-        } else {
-            (BLACK_OO, BLACK_OOO, ROOK_B_KS, ROOK_B_QS)
+        let slots = match color {
+            Color::White => [ROOK_W_KS, ROOK_W_QS],
+            Color::Black => [ROOK_B_KS, ROOK_B_QS],
         };
 
-        for (mask, slot) in [(oo, ks), (ooo, qs)] {
-            if self.castling_rights & mask == 0 {
+        for slot in slots {
+            if self.castling_rights & ROOK_RIGHTS[slot] == 0 {
                 continue;
             }
 
             let rsq = self.castling_rooks[slot];
-            if self.is_castle_move_legal(color, ksq, rsq) {
+            if self.is_castle_legal(color, ksq, rsq) {
                 emit(Move::new(ksq, rsq, Move::CASTLE));
             }
         }
     }
 
-    /// Verifies path clearance and king transit safety for a castling move.
-    ///
-    /// `data` layout: `[canonical_king_src, canonical_rook_src, king_dst, rook_dst]`.
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn is_castle_legal(
-        &self,
-        occ: Bitboard,
-        ksq: Square,
-        rsq: Square,
-        data: &[u8; 4],
-        check_sqs: &[u8],
-        empty_mask: Bitboard,
-        opp: Color,
-    ) -> bool {
-        // ── Fast path: Standard chess starting placement
-        if ksq.0 == data[0] && rsq.0 == data[1] && (occ & empty_mask).is_empty() {
-            for &sq in check_sqs {
-                if self.is_attacked::<false>(Square(sq), opp, Bitboard(0)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        // ── Slow path: Chess960 (FRC) arbitrary placement
-        // All movement occurs on the home rank. The closed interval spanning the minimum
-        // and maximum of both pieces' source and target squares must be entirely empty,
-        // ignoring the casting king and rook themselves.
-        let (king_dst, rook_dst) = (data[2], data[3]);
-        let min = ksq.0.min(rsq.0).min(king_dst).min(rook_dst);
-        let max = ksq.0.max(rsq.0).max(king_dst).max(rook_dst);
-        for sq in min..=max {
-            if sq == ksq.0 || sq == rsq.0 {
-                continue;
-            }
-            if occ.check_bit(Square(sq)) {
-                return false;
-            }
-        }
+    pub(crate) fn to_fen(self) -> String { self.to_string() }
+    pub(crate) fn pretty_print(&self) { fen::pretty_print(self) }
 
-        // Masking out the king's own square lets an enemy slider's x-ray through it reach the
-        // transit path, where leaving the king in place would hide the attack behind itself.
-        let k_lo = ksq.0.min(king_dst);
-        let k_hi = ksq.0.max(king_dst);
-        let king_bb = Bitboard(1u64 << ksq.0);
-        for sq in k_lo..=k_hi {
-            if self.is_attacked::<true>(Square(sq), opp, king_bb) {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Serialize the current position back to a FEN string.
-    pub fn as_fen(&self) -> String { fen::as_fen(self) }
-    /// Print a board diagram to stdout.
-    pub fn pretty_print(&self) { fen::pretty_print(self) }
     #[inline(always)]
-    pub fn piece_at(&self, sq: Square) -> PieceType { self.pieces[sq.0 as usize] }
+    pub(crate) fn piece_at(&self, sq: Square) -> PieceType { self.pieces[sq.as_usize()] }
 
-    /// Returns the piece at `sq`, asserting that the square is occupied.
-    /// Bypasses debug bounds checking for the hottest inner loops only.
     #[inline(always)]
-    pub fn expect_piece_at(&self, sq: Square) -> PieceType {
+    pub(crate) fn expect_piece_at(&self, sq: Square) -> PieceType {
         debug_assert!(self.occ.check_bit(sq));
-        self.piece_at(sq)
+        let pt = self.piece_at(sq);
+        debug_assert!(pt != PieceType::None);
+        pt
     }
 
-    /// Branchless: tests one bit in Black's occupancy.
-    /// Only meaningful when the square is actually occupied.
+    /// The piece `mv` takes, read before the move is made. En passant takes a pawn
+    /// that is not on `mv.to()`; castling and other quiet moves yield `PieceType::None`.
     #[inline(always)]
-    pub const fn color_at(&self, sq: Square) -> Color {
-        // Black's side_bb bit → 1 (Black), absent → 0 (White).
-        Color::from(self.side_bb[1].check_bit(sq) as u8)
+    pub(crate) fn captured_piece(&self, mv: Move) -> PieceType {
+        if mv.is_castling() {
+            PieceType::None
+        } else if mv.is_en_passant() {
+            PieceType::Pawn
+        } else {
+            self.piece_at(mv.to())
+        }
     }
 
     #[inline(always)]
-    pub fn pieces(&self, pt: PieceType, color: Color) -> Bitboard { self.role_bb[pt as usize] & self.side_bb[color as usize] }
-    #[inline(always)]
-    pub fn occupancy(&self) -> Bitboard { self.occ }
+    pub(crate) const fn color_at(&self, sq: Square) -> Color {
+        debug_assert!(self.occ.check_bit(sq));
+        Color::from(self.side_bb[Color::Black.as_usize()].check_bit(sq) as u8)
+    }
 
-    /// Rough material total (both sides) using standard piece values:
-    /// P=1, N=3, B=3, R=5, Q=9.
+    #[inline(always)]
+    pub(crate) fn pieces(&self, pt: PieceType, color: Color) -> Bitboard {
+        debug_assert!(pt != PieceType::None);
+        self.role_bb[pt.as_usize()] & self.side_bb[color.as_usize()]
+    }
+
+    /// P=1, N=B=3, R=5, Q=9 across both colors.
     #[inline]
-    pub const fn material_count(&self) -> u32 {
+    pub(crate) const fn material_count(&self) -> u32 {
         let p = self.role_bb[PieceType::Pawn as usize].popcount();
         let n = self.role_bb[PieceType::Knight as usize].popcount();
         let b = self.role_bb[PieceType::Bishop as usize].popcount();
@@ -498,54 +388,32 @@ impl Position {
         p + 3 * n + 3 * b + 5 * r + 9 * q
     }
 
-    /// Number of pieces of type `pt` on the board, both colors combined.
     #[inline(always)]
-    pub const fn piece_count(&self, pt: PieceType) -> i32 {
-        if pt.is_none() {
-            return 0;
-        }
-        self.role_bb[pt as usize].popcount() as i32
+    pub(crate) const fn piece_count(&self, pt: PieceType) -> i32 {
+        if matches!(pt, PieceType::None) { 0 } else { self.role_bb[pt as usize].popcount() as i32 }
     }
 
-    /// Is `sq` attacked by any piece of `attacker`'s color?
-    ///
-    /// `VIRTUAL = true` removes `mask_out` from occupancy,
-    /// required for detecting X-ray attacks through the king,
-    /// basically sliding check evasion.
+    /// Excludes `mask_out` from slider occupancy; leaper attacks and piece sets are unchanged.
     #[inline(always)]
-    pub fn is_attacked<const VIRTUAL: bool>(&self, sq: Square, attacker: Color, mask_out: Bitboard) -> bool {
-        attacks::is_attacked::<VIRTUAL>(self, sq, attacker, mask_out)
+    pub(crate) fn is_attacked(&self, sq: Square, attacker: Color, mask_out: Bitboard) -> bool {
+        attacks::is_attacked(self, sq, attacker, mask_out)
     }
 
-    /// Bitboard of all enemy pieces currently giving check to the side to move.
     #[inline(always)]
-    pub fn checkers(&self) -> Bitboard { attacks::checkers(self) }
+    pub(crate) fn checkers(&self) -> Bitboard { attacks::checkers(self) }
 
-    /// Bulk pawn attack mask: all squares attacked by any pawn of `color`.
-    ///
-    /// Parallel shift-and-mask:
-    /// One operation covers all pawns simultaneously, versus per-pawn lookup.
-    /// One of the most-called routines in move gen.
     #[inline]
-    pub fn pawn_attacks(&self, color: Color) -> Bitboard {
+    pub(crate) fn pawn_attacks(&self, color: Color) -> Bitboard {
         let pawns = self.pieces(PieceType::Pawn, color);
         match color {
-            Color::White => ((pawns << 9) & !FILE_A) | ((pawns << 7) & !FILE_H),
-            Color::Black => ((pawns >> 9) & !FILE_H) | ((pawns >> 7) & !FILE_A),
+            Color::White => pawns.shift(Direction::NorthEast) | pawns.shift(Direction::NorthWest),
+            Color::Black => pawns.shift(Direction::SouthEast) | pawns.shift(Direction::SouthWest),
         }
     }
 
-    /// Computes the aggregate attack bitboard for `color` using vectorized SIMD ray fills.
-    ///
-    /// # Caveat
-    /// Due to generator exclusions in parallel flood-fill routines, squares hosting
-    /// friendly sliders are excluded from the final mask. Consequently, mutual defenses
-    /// (e.g. a rook defending a friendly rook) do not appear.
-    ///
-    /// This is safe for querying whether opponent pieces or squares are under attack,
-    /// but must not be used to check if friendly pieces are defended.
+    #[cfg(any(test, feature = "rigs", feature = "nostore"))]
     #[inline]
-    pub fn threats(&self, color: Color) -> Bitboard {
+    pub(crate) fn threats(&self, color: Color) -> Bitboard {
         let us = self.side_bb[color];
         let empty = U64x4::splat(!self.occ.0);
 
@@ -554,24 +422,14 @@ impl Position {
         let rq = ((self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & us).0;
         let king = (self.role_bb[PieceType::King] & us).0;
 
-        let sliders = spatial::atk_rook(U64x4::splat(rq), empty) | spatial::atk_bishop(U64x4::splat(bq), empty);
-        let leapers = spatial::atk_knight(U64x4::splat(knights)) | spatial::atk_king(U64x4::splat(king));
+        let sliders = spatial::atk_rooks(U64x4::splat(rq), empty) | spatial::atk_bishops(U64x4::splat(bq), empty);
+        let leapers = spatial::atk_knights(U64x4::splat(knights)) | spatial::atk_kings(U64x4::splat(king));
         Bitboard((sliders | leapers).extract::<0>()) | self.pawn_attacks(color)
     }
 
-    /// Returns higher-value enemy pieces newly attacked by a quiet move.
-    ///
-    /// Used for move ordering threat heuristics. Only considers targets strictly
-    /// more valuable than the attacking piece:
-    /// - Pawn → Minors and majors (N, B, R, Q)
-    /// - Knight / Bishop → Majors (R, Q)
-    /// - Rook → Queen
-    /// - Queen / King → None
-    ///
-    /// For sliders, attacks already cast from the `from` square are masked out so
-    /// that moving along an existing ray is not counted as a fresh threat.
+    /// Higher-value enemy pieces newly attacked from `to`, using the pre-move position.
     #[inline]
-    pub fn new_threats(&self, pt: PieceType, from: Square, to: Square) -> Bitboard {
+    pub(crate) fn new_threats(&self, pt: PieceType, from: Square, to: Square) -> Bitboard {
         let them = self.side_bb[self.stm.opposite()];
         let rq = (self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) & them;
         let q = self.role_bb[PieceType::Queen] & them;
@@ -582,42 +440,35 @@ impl Position {
                 bitboard::atk_pawn(to, self.stm) & bigger
             },
             PieceType::Knight => bitboard::atk_knight(to) & rq,
-            PieceType::Bishop => Bitboard(bitboard::atk_bishop(to, self.occ).0 & !bitboard::atk_bishop(from, self.occ).0) & rq,
-            PieceType::Rook => Bitboard(bitboard::atk_rook(to, self.occ).0 & !bitboard::atk_rook(from, self.occ).0) & q,
-            _ => Bitboard(0),
+            PieceType::Bishop => bitboard::atk_bishop(to, self.occ) & !bitboard::atk_bishop(from, self.occ) & rq,
+            PieceType::Rook => bitboard::atk_rook(to, self.occ) & !bitboard::atk_rook(from, self.occ) & q,
+            _ => Bitboard::EMPTY,
         }
     }
 
-    /// Can any pawn of `color` legally capture en passant on `ep_sq`?
     #[inline]
-    pub fn can_capture_ep(&self, ep_sq: Square, color: Color) -> bool { attacks::can_capture_ep(self, ep_sq, color) }
+    pub(crate) fn has_ep_attacker(&self, ep_sq: Square) -> bool { attacks::can_capture_ep(self, ep_sq, self.stm) }
 
-    /// Friendly pieces of the given color pinned to their king.
     #[inline]
-    pub fn pinned_pieces(&self, color: Color) -> Bitboard { attacks::pinned_pieces(self, color) }
-
-    /// Friendly pieces of the side to move pinned to the king.
-    #[inline]
-    pub fn king_blockers(&self) -> Bitboard { attacks::pinned_pieces(self, self.stm) }
+    pub(crate) fn pinned_pieces(&self, color: Color) -> Bitboard { attacks::pinned_pieces(self, color) }
 
     #[inline(always)]
-    pub fn set_piece_type(&mut self, sq: Square, pt: PieceType) { self.pieces[sq.0 as usize] = pt; }
+    pub(crate) fn add_piece(&mut self, sq: Square, pt: PieceType, color: Color) { make::update_piece::<true>(self, sq, pt, color); }
 
-    /// Place a piece on `sq`, updating bitboards, mailbox, and Zobrist hash.
     #[inline(always)]
-    pub fn add_piece(&mut self, sq: Square, pt: PieceType, color: Color) { make::update_piece::<true>(self, sq, pt, color); }
+    pub(crate) fn remove_piece(&mut self, sq: Square, pt: PieceType, color: Color) {
+        make::update_piece::<false>(self, sq, pt, color);
+    }
 
-    /// Remove a piece from `sq`, updating bitboards, mailbox, and Zobrist hash.
-    #[inline(always)]
-    pub fn remove_piece(&mut self, sq: Square, pt: PieceType, color: Color) { make::update_piece::<false>(self, sq, pt, color); }
+    pub(crate) fn recompute_hashes(&mut self) {
+        self.hash = self.calc_zobrist();
+        self.pawn_key = self.calc_pawn_hash();
+        self.minor_key = self.calc_minor_hash();
+        self.major_key = self.calc_major_hash();
+    }
 
-    /// Full Zobrist re-computation from scratch, for initialization and
-    /// debug verification against the incrementally maintained `self.hash`.
-    pub fn calc_zobrist(&self) -> u64 {
-        let mut key = 0u64;
-        for sq in self.occ {
-            key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
-        }
+    pub(crate) fn calc_zobrist(&self) -> u64 {
+        let mut key = self.calc_subset_hash(self.occ);
 
         if self.stm == Color::Black {
             key ^= zobrist::key_side();
@@ -633,20 +484,15 @@ impl Position {
         key
     }
 
-    /// Zobrist hash of all pawns (both colors). Recomputed from scratch, for
-    /// initialization and debug verification against the incremental [`Self::pawn_key`].
-    pub fn calc_pawn_hash(&self) -> u64 { self.calc_subset_hash(self.role_bb[PieceType::Pawn]) }
+    pub(crate) fn calc_pawn_hash(&self) -> u64 { self.calc_subset_hash(self.role_bb[PieceType::Pawn]) }
 
-    /// Zobrist hash of all minor pieces (knights + bishops, both colors).
-    pub fn calc_minor_hash(&self) -> u64 {
+    pub(crate) fn calc_minor_hash(&self) -> u64 {
         self.calc_subset_hash(self.role_bb[PieceType::Knight] | self.role_bb[PieceType::Bishop])
     }
+    pub(crate) fn calc_major_hash(&self) -> u64 {
+        self.calc_subset_hash(self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen])
+    }
 
-    /// Zobrist hash of all major pieces (rooks + queens, both colors).
-    pub fn calc_major_hash(&self) -> u64 { self.calc_subset_hash(self.role_bb[PieceType::Rook] | self.role_bb[PieceType::Queen]) }
-
-    /// XOR-folds each piece's Zobrist key over a subset of the board,
-    /// the key schema the correction-history tables index on.
     fn calc_subset_hash(&self, pieces: Bitboard) -> u64 {
         let mut key = 0u64;
         for sq in pieces {
@@ -654,8 +500,4 @@ impl Position {
         }
         key
     }
-}
-
-impl Default for Position {
-    fn default() -> Self { Self::new() }
 }

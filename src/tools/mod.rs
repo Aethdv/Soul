@@ -1,11 +1,11 @@
-//! Development utilities: benchmarking, perft, and the optional dataset and measurement tools.
-
+#[cfg(feature = "rigs")] pub mod attack_table_bench;
 pub mod bench;
-#[cfg(feature = "rigs")] pub mod byteboard;
+#[cfg(feature = "rigs")]
+#[cfg_attr(not(test), expect(dead_code, reason = "byteboard API: the rig reads part of it, its tests the rest"))]
+mod byteboard;
 #[cfg(feature = "datagen")] pub mod datagen;
 #[cfg(feature = "dataset")] pub mod dataset;
 pub mod genfens;
-#[cfg(feature = "rigs")] pub mod measure;
 pub mod perft;
 #[cfg(feature = "rigs")] pub mod speedtest;
 pub mod spsa;

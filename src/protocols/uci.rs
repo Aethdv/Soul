@@ -1,8 +1,4 @@
-//! Universal Chess Interface (UCI) protocol implementation.
-//!
-//! Commands arrive on stdin, are dispatched by `process_command`, and mutate one
-//! `UciState`. A search never runs on this thread: `go` hands the position to the
-//! search worker and returns, so `stop` and `isready` still get answered.
+//! Universal Chess Interface (UCI) protocol handling.
 
 use std::{
     io::{self, Write},
@@ -22,19 +18,20 @@ use crate::{
     cli::Help,
     core::{
         board::{Position, STARTPOS},
+        defs::{MAX_DEPTH, Protocol},
         zobrist::key_side,
     },
     engine::{
         eval::detailed_eval,
         history::History,
-        search::{Limits, SearchConfig, SearchDisplay, Searcher},
+        search::{Limits, SearchConfig, SearchDisplay},
         search_params::{self, SearchParams},
-        tt::TranspositionTable,
+        tm::{DEFAULT_OVERHEAD_MS, MAX_OVERHEAD_MS},
     },
     numa::NumaTopology,
     protocols::{
         notation::parse_uci_move,
-        smp::{LazySmpPool, table_and_pool},
+        smp::{DEFAULT_HASH_MB, MAX_HASH_MB, MAX_THREADS, TableAndPool},
     },
     tools,
     weave::I16x8,
@@ -59,28 +56,20 @@ static LICENSE_NOTICE: &str = concat!(
 
 #[allow(clippy::large_enum_variant)]
 enum SearchCommand {
-    Go(Box<SearchConfig>, Position, Vec<u64>, History, Arc<TranspositionTable>, Sender<History>, Arc<LazySmpPool>),
+    Go { cfg: Box<SearchConfig>, board: Position, trail: Vec<u64>, history: History, search: TableAndPool },
     Quit,
 }
 
-pub struct UciState {
+struct UciState {
     board: Position,
     accumulator: I16x8,
-    history: Vec<u64>,
-    /// The move-ordering heuristic tables, carried across positions within a game
-    /// and reset by `ucinewgame`.
+    trail: Vec<u64>,
     persistent_history: History,
-    tt: Arc<TranspositionTable>,
+    search: TableAndPool,
     stop: Arc<AtomicBool>,
     search_tx: Sender<SearchCommand>,
-    history_tx: mpsc::Sender<History>,
     history_rx: mpsc::Receiver<History>,
-    /// Relaxed everywhere; a finished search hands its history table back over
-    /// `history_rx`, so this flag never has to publish anything.
     is_searching: Arc<AtomicBool>,
-    smp_pool: Arc<LazySmpPool>,
-    threads: usize,
-    hash_size: usize,
     overhead: u64,
     search_params: SearchParams,
     show_wdl: bool,
@@ -89,45 +78,25 @@ pub struct UciState {
     show_currmove: bool,
     soft_nodes: bool,
     stdout_isatty: Option<bool>,
-    stderr_isatty: Option<bool>,
-    is_frc: bool,
+    frc_notation: bool,
 }
 
 impl UciState {
     fn new() -> Self {
         let board = Position::from_fen(STARTPOS);
-        let history = vec![board.hash];
+        let trail = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
-        let (tt, smp_pool) = table_and_pool(16, 1);
-
         let (tx, rx) = mpsc::channel::<SearchCommand>();
         let (h_tx, h_rx) = mpsc::channel::<History>();
-
         let is_searching_worker = is_searching.clone();
 
         thread::spawn(move || {
             while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    SearchCommand::Go(cfg, board, history, mut history_table, tt, result_tx, pool) => {
-                        // ── Lazy SMP
-                        // Helpers are persistent, parked on a channel, not spawned per
-                        // search. The pool sends each helper a cloned config and root state,
-                        // then they run iterative_deepening alongside main. The TT is the
-                        // only coordination surface.
-                        pool.launch(&cfg, board, &history);
-
-                        tt.bind_search_thread(0, cfg.threads);
-                        let mut ctx = Searcher::new(&cfg, &board, &history, tt);
-                        ctx.iterative_deepening(&mut history_table);
-
-                        // Main is done. Signal helpers, wait for them to park,
-                        // then clear the flag so the next search starts clean.
-                        cfg.stop.store(true, Ordering::Relaxed);
-                        pool.wait();
-                        cfg.stop.store(false, Ordering::Relaxed);
-
-                        let _ = result_tx.send(history_table);
+                    SearchCommand::Go { cfg, board, trail, mut history, search } => {
+                        search.search(&cfg, board, &trail, &mut history);
+                        let _ = h_tx.send(history);
                         is_searching_worker.store(false, Ordering::Relaxed);
                     },
                     SearchCommand::Quit => break,
@@ -136,20 +105,16 @@ impl UciState {
         });
 
         Self {
-            accumulator: board.initial_accumulator(),
+            accumulator: board.psqt_accumulator(),
             board,
-            history,
+            trail,
             persistent_history: History::new(),
-            tt,
+            search: TableAndPool::default(),
             stop,
             search_tx: tx,
-            history_tx: h_tx,
             history_rx: h_rx,
             is_searching,
-            smp_pool,
-            threads: 1,
-            hash_size: 16,
-            overhead: 10,
+            overhead: DEFAULT_OVERHEAD_MS,
             search_params: SearchParams::default(),
             show_wdl: false,
             go_pretty: false,
@@ -157,8 +122,7 @@ impl UciState {
             show_currmove: true,
             soft_nodes: false,
             stdout_isatty: None,
-            stderr_isatty: None,
-            is_frc: false,
+            frc_notation: false,
         }
     }
 
@@ -170,25 +134,24 @@ impl UciState {
 
     fn stop_search(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-
-        while self.is_searching.load(Ordering::Relaxed) {
-            thread::yield_now();
-        }
-
+        self.wait_for_search();
         self.stop.store(false, Ordering::Relaxed);
     }
 
-    /// Reset to a fresh root position; rebuild the accumulator and reseed the
-    /// repetition history with the new root hash.
-    fn load_position(&mut self, board: Position) {
-        self.board = board;
-        self.board.is_frc = self.is_frc;
-        self.accumulator = self.board.initial_accumulator();
-        self.history.clear();
-        self.history.push(self.board.hash);
+    fn wait_for_search(&self) {
+        while self.is_searching.load(Ordering::Relaxed) {
+            thread::yield_now();
+        }
     }
 
-    /// Search display flags assembled from the current option + tty state.
+    fn load_position(&mut self, board: Position) {
+        self.board = board;
+        self.board.frc_notation = self.frc_notation;
+        self.accumulator = self.board.psqt_accumulator();
+        self.trail.clear();
+        self.trail.push(self.board.hash);
+    }
+
     fn search_display(&self) -> SearchDisplay {
         SearchDisplay {
             show_wdl: self.show_wdl,
@@ -208,25 +171,20 @@ pub fn main_loop(initial_command: Option<String>) {
     let mut state = UciState::new();
     let rx = spawn_stdin_listener(state.stop.clone());
 
-    if let Some(cmd) = initial_command {
-        if !process_command(&mut state, cmd.trim()) {
-            return;
-        }
+    if let Some(cmd) = initial_command
+        && !process_command(&mut state, cmd.trim())
+    {
+        return;
     }
 
     while let Ok(line) = rx.recv() {
         state.absorb_history();
-
         if !process_command(&mut state, line.trim()) {
             break;
         }
     }
 }
 
-/// Runs each argument as one protocol line, with no stdin listener behind it.
-///
-/// A test runner spawns the engine with its commands as arguments rather than on
-/// stdin, and `quit` ends the sequence early.
 pub fn run_commands(lines: &[String]) {
     let mut state = UciState::new();
     for line in lines {
@@ -234,82 +192,74 @@ pub fn run_commands(lines: &[String]) {
             break;
         }
 
-        // go hands the search to another thread and returns, so a quit on the
-        // next line would stop it before it reported. cmd_go raises the flag
-        // before it sends, so this cannot miss the start of a search.
-        while state.is_searching.load(Ordering::Relaxed) {
-            thread::yield_now();
-        }
-
+        // go returns while its search is still running, so the batch waits for it here.
+        state.wait_for_search();
         state.absorb_history();
     }
 }
 
-pub fn run_cli_go(args: &[String]) {
+pub fn run_cli_go(args: &[&str]) {
     let state = UciState::new();
-    let mut iter = args.iter().map(String::as_str).peekable();
+    let mut iter = args.iter().copied().peekable();
     let limits = parse_go_limits(&state.board, &mut iter);
-
     dispatch_search(&state, limits);
-
-    while state.is_searching.load(Ordering::Relaxed) {
-        thread::yield_now();
-    }
+    state.wait_for_search();
 }
 
-/// Build the config for `limits` and hand the root position to the search worker.
-/// Returns as soon as it is sent; waiting for the result is the caller's business.
+pub fn run_cli_pretty(depth: Option<i32>) {
+    let mut state = UciState::new();
+    state.show_wdl = true;
+    state.go_pretty = true;
+    dispatch_search(&state, Limits { depth: depth.unwrap_or(MAX_DEPTH), protocol: Protocol::Uci, ..Default::default() });
+    state.wait_for_search();
+}
+
 fn dispatch_search(state: &UciState, limits: Limits) {
     let display = state.search_display();
-    state.tt.set_age_factor(state.search_params.tt_age_factor);
+    state.search.tt().set_age_factor(state.search_params.tt_age_factor);
     let mut cfg = SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, display, state.search_params);
-    cfg.threads = state.threads;
-    cfg.node_slots = SearchConfig::node_slots(state.threads);
-
+    cfg.set_threads(state.search.threads());
     state.is_searching.store(true, Ordering::Relaxed);
+
     state
         .search_tx
-        .send(SearchCommand::Go(
-            Box::new(cfg),
-            state.board,
-            state.history.clone(),
-            state.persistent_history.clone(),
-            state.tt.clone(),
-            state.history_tx.clone(),
-            state.smp_pool.clone(),
-        ))
+        .send(SearchCommand::Go {
+            cfg: Box::new(cfg),
+            board: state.board,
+            trail: state.trail.clone(),
+            history: state.persistent_history.clone(),
+            search: state.search.clone(),
+        })
         .unwrap();
 }
 
-pub fn parse_go_limits<'a, I>(board: &Position, tokens: &mut Peekable<I>) -> Limits
+fn parse_go_limits<'a, I>(board: &Position, tokens: &mut Peekable<I>) -> Limits
 where I: Iterator<Item = &'a str> {
     let mut limits = Limits::default();
 
+    // Match arms also consume from tokens.
     #[allow(clippy::while_let_on_iterator)]
     while let Some(token) = tokens.next() {
         match token {
-            "wtime" => limits.wtime = parse_val(tokens),
-            "btime" => limits.btime = parse_val(tokens),
-            "winc" => limits.winc = parse_val(tokens),
-            "binc" => limits.binc = parse_val(tokens),
-            "movestogo" => limits.movestogo = parse_val(tokens),
-            "depth" => limits.depth = parse_val(tokens),
-            "softnodes" => limits.softnodes = parse_val(tokens),
-            "hardnodes" | "nodes" => limits.nodes = parse_val(tokens),
-            "movetime" => limits.movetime = parse_val(tokens),
+            "wtime" => limits.wtime = parse_default(tokens, 0),
+            "btime" => limits.btime = parse_default(tokens, 0),
+            "winc" => limits.winc = parse_default(tokens, 0),
+            "binc" => limits.binc = parse_default(tokens, 0),
+            "movestogo" => limits.movestogo = parse_default(tokens, 0),
+            "depth" => limits.depth = parse_default(tokens, 0),
+            "softnodes" => limits.softnodes = parse_default(tokens, 0),
+            "hardnodes" | "nodes" => limits.nodes = parse_default(tokens, 0),
+            "movetime" => limits.movetime = parse_default(tokens, 0),
             "infinite" => limits.infinite = true,
-            "mate" => limits.mate = Some(parse_val(tokens)),
+            "mate" => limits.mate = Some(parse_default(tokens, 0)),
             "perft" => {
-                limits.perft = Some(parse_val(tokens));
+                limits.perft = Some(parse_default(tokens, 0));
                 if matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk")) {
                     tokens.next();
                     limits.perft_bulk = true;
                 }
             },
             "searchmoves" => {
-                // Peek before consuming;
-                // tokens like depth must not be swallowed
-                // when they fail to parse as a UCI move.
                 while let Some(&mv_str) = tokens.peek() {
                     if let Ok(mv) = parse_uci_move(board, mv_str) {
                         limits.searchmoves.push(mv);
@@ -322,6 +272,7 @@ where I: Iterator<Item = &'a str> {
             _ => {},
         }
     }
+
     limits
 }
 
@@ -348,9 +299,10 @@ pub fn print_help(use_ansi: bool) {
     h.separator();
 
     h.header("Options");
-    h.command_default("Hash", "Hash table size in MB (1-524288)", "16");
-    h.command_default("Threads", "Number of search threads (1-1024)", "1");
-    h.command_default("Overhead", "Move overhead in ms (0-2000)", "10");
+    h.command_default("Hash", &format!("Hash table size in MB (1-{MAX_HASH_MB})"), &DEFAULT_HASH_MB.to_string());
+    h.command_default("Threads", &format!("Number of search threads (1-{MAX_THREADS})"), "1");
+    h.command_default("Overhead", &format!("Move overhead in ms (0-{MAX_OVERHEAD_MS})"), &DEFAULT_OVERHEAD_MS.to_string());
+    h.command_default("SoftNodes", "Make go nodes a per-iteration limit", "false");
     h.command_default("UCI_ShowWDL", "Show win/draw/loss stats", "false");
     h.command_default("UCI_Chess960", "Enable Chess960/FRC mode", "false");
     h.command_default("UCI_ShowCurrMove", "Show current move being searched", "true");
@@ -366,12 +318,14 @@ pub fn print_help(use_ansi: bool) {
     h.command_args("divide", "<N> [bulk]", "Perft divide test");
     #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
-    h.command("spsa", "Print the tunable search params as an SPSA table");
-    h.command_args("spsa apply", "<REPORT> [--dry-run]", "Fold a finished tune's values into the defaults");
+    #[cfg(feature = "rigs")]
+    h.command_args("atb", "<run|gen|export|validate|count|dump> ...", "Attack-table benchmark");
+    h.command("spsa", "Print the tunable search params as an SPSA table; long tables in a terminal go to spsa.txt");
+    h.command_args("spsa apply", "<REPORT> [--dry-run] [--params <PATH>]", "Write a finished tune's values into the defaults");
     #[cfg(feature = "datagen")]
     h.command("datagen", "Generate self-play training data");
     #[cfg(feature = "dataset")]
-    h.command("dataset", "Manage datasets (inspect, info, encode)");
+    h.command("dataset", "Manage datasets (inspect, info, scores)");
     h.command_args("genfens", "<N> seed <S> book <PATH|None>", "Print N opening FENs");
     h.command("gopretty", "Toggle pretty-print mode for search output");
     h.command("prettyprint", "Toggle pretty-print mode (alias: pp)");
@@ -382,12 +336,8 @@ pub fn print_help(use_ansi: bool) {
     h.command("license", "Show license information");
 }
 
-/// Spawns a dedicated stdin listener thread that handles time critical commands
-/// (`isready`, `stop`) immediately, even while the engine is searching.
-/// Other commands are forwarded to the main loop.
-///
-/// This is required by UCI spec:
-/// "the engine must always be able to process input from stdin, even while thinking."
+/// Reads commands while the main thread waits for search to finish.
+/// Answers `isready` and signals `stop`/`quit` without waiting for search.
 fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
 
@@ -411,6 +361,7 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                 "isready" => {
                     println!("readyok");
                     let _ = io::stdout().flush();
+                    continue;
                 },
                 "quit" => {
                     stop.store(true, Ordering::Relaxed);
@@ -419,25 +370,16 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                 },
                 "stop" => {
                     stop.store(true, Ordering::Relaxed);
-                    // The flag ends the search; main still needs the line itself to
-                    // run stop_search() and reset state.
-                    if tx.send(line).is_err() {
-                        break; // Main thread died
-                    }
                 },
-                _ => {
-                    // Always forward to the main thread's command channel.
-                    // Commands queue up and are processed in order after any
-                    // pending stop_search() completes. Dropping commands here
-                    // causes a race; e.g. cutechess-cli gets readyok before the
-                    // search thread stops, sends position/go, and we lose them.
-                    if tx.send(line).is_err() {
-                        break; // Main thread died
-                    }
-                },
+                _ => {},
+            }
+
+            if tx.send(line).is_err() {
+                break;
             }
         }
     });
+
     rx
 }
 
@@ -464,9 +406,8 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             state.stop_search();
             state.absorb_history();
             state.persistent_history.clear();
-            // SAFETY: stop_search spins until the worker clears is_searching, which it
-            // does only after pool.wait() parks every helper, so nothing can probe the table.
-            unsafe { state.tt.clear(state.threads) };
+            // SAFETY: stop_search waits for search() to return with all helpers parked.
+            unsafe { state.search.tt().clear(state.search.threads()) };
             state.load_position(Position::from_fen(STARTPOS));
         },
         "position" => cmd_position(state, &mut tokens),
@@ -477,11 +418,11 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "license" => print_license(),
         "isatty" => cmd_isatty(state, &mut tokens),
         "d" | "display" => state.board.pretty_print(),
-        "fen" => println!("{}", state.board.as_fen()),
+        "fen" => println!("{}", state.board.to_fen()),
 
         "eval" => {
             let res = detailed_eval(&state.board, &state.accumulator);
-            println!("PSQT:     {:>5}", res.psqt);
+            println!("PSQT:     {:>5}", res.material_psqt);
             println!("Mobility: {:>5}", res.mobility);
             println!("Bonus:    {:>5}", res.bonus);
             println!("Safety:   {:>5}", res.safety);
@@ -490,20 +431,17 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "bench" => tools::bench::run(parse_default(&mut tokens, tools::bench::DEFAULT_DEPTH), 16),
-        "perft" => {
+        "perft" | "divide" => {
             let depth = parse_default(&mut tokens, 5);
             let bulk = matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk"));
-            tools::perft::run(&state.board, depth, false, bulk);
-        },
-        "divide" => {
-            let depth = parse_default(&mut tokens, 5);
-            let bulk = matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk"));
-            tools::perft::run(&state.board, depth, true, bulk);
+            tools::perft::run(&state.board, depth, cmd == "divide", bulk);
         },
         #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(0),
         #[cfg(feature = "datagen")]
-        "datagen" => tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop),
+        "datagen" => {
+            let _ = tools::datagen::run(&tokens.collect::<Vec<_>>(), &state.stop);
+        },
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {
@@ -534,9 +472,9 @@ fn print_id() {
 }
 
 fn print_options() {
-    println!("option name Hash type spin default 16 min 1 max 524288");
-    println!("option name Threads type spin default 1 min 1 max 1024");
-    println!("option name Overhead type spin default 10 min 0 max 2000");
+    println!("option name Hash type spin default {DEFAULT_HASH_MB} min 1 max {MAX_HASH_MB}");
+    println!("option name Threads type spin default 1 min 1 max {MAX_THREADS}");
+    println!("option name Overhead type spin default {DEFAULT_OVERHEAD_MS} min 0 max {MAX_OVERHEAD_MS}");
     println!("option name SoftNodes type check default false");
     println!("option name UCI_ShowWDL type check default false");
     println!("option name UCI_Chess960 type check default false");
@@ -546,45 +484,32 @@ fn print_options() {
 
 fn cmd_position<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
-    let Some(subcmd) = tokens.next() else {
-        return;
-    };
-
-    if subcmd == "startpos" {
-        state.load_position(Position::from_fen(STARTPOS));
-        state.tt.begin_search();
-
-        if tokens.peek() == Some(&"moves") {
-            tokens.next();
-            process_moves(state, tokens);
-        }
-    } else if subcmd == "fen" {
-        match Position::try_from_tokens(&mut *tokens) {
-            Ok(board) => {
-                state.load_position(board);
-                state.tt.begin_search();
-            },
-
+    let board = match tokens.next() {
+        Some("startpos") => Position::from_fen(STARTPOS),
+        Some("fen") => match Position::try_from_tokens(&mut *tokens) {
+            Ok(board) => board,
             Err(e) => {
                 println!("info string warning: invalid fen: {e}");
                 return;
             },
-        }
+        },
+        _ => return,
+    };
 
-        if tokens.peek() == Some(&"moves") {
-            tokens.next();
-            process_moves(state, tokens);
-        }
+    state.load_position(board);
+    state.search.tt().begin_search();
+
+    if tokens.next_if_eq(&"moves").is_some() {
+        process_moves(state, tokens);
     }
 }
 
-fn process_moves<'a, I>(state: &mut UciState, moves: &mut Peekable<I>)
-where I: Iterator<Item = &'a str> {
-    for move_str in moves.by_ref() {
+fn process_moves<'a>(state: &mut UciState, moves: impl Iterator<Item = &'a str>) {
+    for move_str in moves {
         match parse_uci_move(&state.board, move_str) {
             Ok(mv) => {
                 state.board.make_move(mv, &mut state.accumulator);
-                state.history.push(state.board.hash);
+                state.trail.push(state.board.hash);
             },
             Err(_) => {
                 println!("info string warning: illegal move {move_str}");
@@ -598,6 +523,7 @@ fn cmd_go<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     state.stop_search();
     let mut limits = parse_go_limits(&state.board, tokens);
+
     if state.soft_nodes && limits.nodes > 0 {
         limits.softnodes = mem::take(&mut limits.nodes);
     }
@@ -609,26 +535,17 @@ fn cmd_setoption<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     let mut name_parts = Vec::new();
     let mut value_parts = Vec::new();
-    let mut reading_name = false;
-    let mut reading_value = false;
+    let mut parts: Option<&mut Vec<&str>> = None;
 
     for token in tokens {
-        if token == "name" {
-            reading_name = true;
-            reading_value = false;
-            continue;
-        }
-
-        if token == "value" {
-            reading_name = false;
-            reading_value = true;
-            continue;
-        }
-
-        if reading_name {
-            name_parts.push(token);
-        } else if reading_value {
-            value_parts.push(token);
+        match token {
+            "name" => parts = Some(&mut name_parts),
+            "value" => parts = Some(&mut value_parts),
+            _ => {
+                if let Some(parts) = &mut parts {
+                    parts.push(token);
+                }
+            },
         }
     }
 
@@ -638,17 +555,14 @@ where I: Iterator<Item = &'a str> {
     match name.as_str() {
         "hash" => {
             if let Ok(mb) = value.parse::<usize>() {
-                state.hash_size = mb.clamp(1, 524288);
-                (state.tt, state.smp_pool) = table_and_pool(state.hash_size, state.threads);
+                state.search.set_hash(mb);
             }
         },
-
         "overhead" => {
             if let Ok(v) = value.parse::<u64>() {
-                state.overhead = v.clamp(0, 2000);
+                state.overhead = v.clamp(0, MAX_OVERHEAD_MS);
             }
         },
-
         "uci_showwdl" => {
             state.show_wdl = parse_bool(&value);
             if state.show_wdl {
@@ -657,31 +571,15 @@ where I: Iterator<Item = &'a str> {
                 );
             }
         },
-
         "softnodes" => state.soft_nodes = parse_bool(&value),
-
-        "uci_chess960" => state.is_frc = parse_bool(&value),
-
+        "uci_chess960" => state.frc_notation = parse_bool(&value),
         "uci_showcurrmove" => {
             state.show_currmove = parse_bool(&value);
         },
-
         "prettyprint" => {
             state.pretty_print = parse_bool(&value);
         },
-
-        "threads" => {
-            let n = value.parse::<usize>().unwrap_or(1).clamp(1, 1024);
-            if n != state.threads {
-                state.threads = n;
-                // Re-place the table for the new thread count (multi-node only).
-                if state.tt.spans_nodes() {
-                    state.tt = Arc::new(TranspositionTable::new(state.hash_size, n));
-                }
-                state.smp_pool = LazySmpPool::new(n, state.tt.clone());
-            }
-        },
-
+        "threads" => state.search.set_threads(value.parse().unwrap_or(1)),
         _ => {
             if let Ok(v) = value.parse::<i32>() {
                 state.search_params.set(&name, v);
@@ -690,16 +588,7 @@ where I: Iterator<Item = &'a str> {
     }
 }
 
-fn parse_val<'a, T, I>(tokens: &mut Peekable<I>) -> T
-where
-    T: FromStr + Default,
-    I: Iterator<Item = &'a str>,
-{
-    parse_default(tokens, T::default())
-}
-
-/// The next token, or `fallback` when it is missing or unparsable. Peeks first, so
-/// a token that isn't a value for this key stays for whoever it does belong to.
+/// Leaves an unparsable token untouched.
 fn parse_default<'a, T, I>(tokens: &mut Peekable<I>, fallback: T) -> T
 where
     T: FromStr,
@@ -714,40 +603,17 @@ where
     fallback
 }
 
-fn parse_bool(value: &str) -> bool { matches!(value.to_lowercase().as_str(), "true" | "t" | "yes" | "y" | "1") }
+fn parse_bool(value: &str) -> bool { ["true", "t", "yes", "y", "1"].iter().any(|v| value.eq_ignore_ascii_case(v)) }
 
 fn cmd_isatty<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
-    let mut target = 0b11; // both stdout and stderr by default
+    let (first, second) = (tokens.next(), tokens.next());
+    let value = match first {
+        Some(target) if target.eq_ignore_ascii_case("stdout") => second,
+        _ => first,
+    };
 
-    let arg1 = tokens.next();
-    let arg2 = tokens.next();
-
-    let mut bool_str = None;
-
-    if let Some(tok) = arg1 {
-        match tok.to_lowercase().as_str() {
-            "stdout" => {
-                target = 0b01;
-                bool_str = arg2;
-            },
-            "stderr" => {
-                target = 0b10;
-                bool_str = arg2;
-            },
-            _val => {
-                bool_str = Some(tok);
-            },
-        }
-    }
-
-    if let Some(tok) = bool_str {
-        let val = parse_bool(tok);
-        if target & 0b01 != 0 {
-            state.stdout_isatty = Some(val);
-        }
-        if target & 0b10 != 0 {
-            state.stderr_isatty = Some(val);
-        }
+    if let Some(value) = value {
+        state.stdout_isatty = Some(parse_bool(value));
     }
 }

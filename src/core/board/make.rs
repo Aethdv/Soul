@@ -10,20 +10,18 @@ use crate::{
     weave::I16x8,
 };
 
-/// Applies a move to the position, incrementally maintaining the Zobrist hash
-/// and accumulator. Returns a [`StateInfo`] snapshot for perfect rollback.
 #[inline(always)]
-pub fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
+pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
     let stm = pos.stm;
     let opp = stm.opposite();
     let from = mv.from();
     let to = mv.to();
     let pt = pos.expect_piece_at(from);
 
-    debug_assert!(pt != PieceType::None, "make_move: no piece on {from} (move: {})\n{}", mv.to_uci(pos.is_frc), pos.as_fen());
-
     let captured = if mv.is_castling() { PieceType::None } else { pos.piece_at(to) };
 
+    // Written out here and in make_null_move, and restored field by field in both unmakes.
+    // A shared constructor and restorer cost 4.1M more instructions over a 4.4M-node bench.
     let state = StateInfo {
         castling_rights: pos.castling_rights,
         hash: pos.hash,
@@ -35,7 +33,7 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
         en_passant: pos.en_passant,
     };
 
-    let placed = if mv.is_promotion() { mv.promo().unwrap_or(PieceType::Queen) } else { pt };
+    let placed = mv.promo().unwrap_or(pt);
 
     update_accumulator(pos, acc, mv, pt, captured, placed);
 
@@ -43,14 +41,13 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
         if pt == PieceType::Pawn || captured != PieceType::None { 0 } else { pos.halfmove_clock.saturating_add(1) };
 
     if captured != PieceType::None {
-        pos.hash ^= zobrist::key_piece(captured, opp, to);
-        toggle_corr_key(pos, captured, opp, to);
+        toggle_piece_keys(pos, captured, opp, to);
         pos.remove_piece(to, captured, opp);
     } else if mv.is_en_passant() {
+        // The captured pawn stands on to's file one rank back: flipping bit 3 steps
+        // rank 6 to 5 for White and rank 3 to 4 for Black.
         let victim_sq = to ^ 8;
-
-        pos.hash ^= zobrist::key_piece(PieceType::Pawn, opp, victim_sq);
-        toggle_corr_key(pos, PieceType::Pawn, opp, victim_sq);
+        toggle_piece_keys(pos, PieceType::Pawn, opp, victim_sq);
         pos.remove_piece(victim_sq, PieceType::Pawn, opp);
     }
 
@@ -58,12 +55,10 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
         apply_castling(pos, from, to, stm);
     } else {
         pos.remove_piece(from, pt, stm);
-        pos.hash ^= zobrist::key_piece(pt, stm, from);
-        toggle_corr_key(pos, pt, stm, from);
+        toggle_piece_keys(pos, pt, stm, from);
 
         pos.add_piece(to, placed, stm);
-        pos.hash ^= zobrist::key_piece(placed, stm, to);
-        toggle_corr_key(pos, placed, stm, to);
+        toggle_piece_keys(pos, placed, stm, to);
     }
 
     pos.stm = opp;
@@ -79,15 +74,12 @@ pub fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateInfo {
     state
 }
 
-/// Reverses a move, perfectly restoring the prior position.
-///
-/// The accumulator must be bulk-restored from the snapshot
-/// by the caller, no incremental undo needed.
-/// This keeps unmake fast and avoids tricky sign-flip bugs.
+/// The accumulator is not touched: the caller restores its own copy.
 #[inline(always)]
-pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
+pub(super) fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.stm = pos.stm.opposite();
     let stm = pos.stm;
+
     if stm == Color::Black {
         pos.fullmove_number -= 1;
     }
@@ -122,9 +114,8 @@ pub fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     }
 }
 
-/// Incrementally updates the accumulator with PSQT vector deltas.
 #[inline]
-pub fn update_accumulator(pos: &Position, acc: &mut I16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
+fn update_accumulator(pos: &Position, acc: &mut I16x8, mv: Move, pt: PieceType, captured: PieceType, placed: PieceType) {
     let stm = pos.stm;
     let from = mv.from();
     let to = mv.to();
@@ -146,35 +137,30 @@ pub fn update_accumulator(pos: &Position, acc: &mut I16x8, mv: Move, pt: PieceTy
     if captured != PieceType::None {
         *acc -= psqt::entry(captured, to, opp);
     } else if mv.is_en_passant() {
-        // The victim pawn sits one rank behind `to`.
-        // Toggling bit 3 (±8) maps rank 5 → 4 for White and rank 2 → 3 for Black.
         *acc -= psqt::entry(PieceType::Pawn, to ^ 8, opp);
     }
 }
 
-/// Compile-time add/remove of a piece on the board.
-/// The const generic eliminates the branch entirely.
 #[inline(always)]
-pub fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceType, color: Color) {
+pub(super) fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: PieceType, color: Color) {
     if ADD {
         pos.role_bb[pt].set_bit(sq);
         pos.side_bb[color].set_bit(sq);
         pos.occ.set_bit(sq);
-        pos.set_piece_type(sq, pt);
+        pos.pieces[sq.0 as usize] = pt;
     } else {
         pos.role_bb[pt].clear_bit(sq);
         pos.side_bb[color].clear_bit(sq);
         pos.occ.clear_bit(sq);
-        pos.set_piece_type(sq, PieceType::None);
+        pos.pieces[sq.0 as usize] = PieceType::None;
     }
 }
 
-/// Routes one piece's Zobrist key into the correction key its type owns: pawns to
-/// `pawn_key`, knight and bishop to `minor_key`, rook and queen to `major_key`, king
-/// to none. XOR is self-inverse, so one call serves the departure and the arrival.
 #[inline(always)]
-fn toggle_corr_key(pos: &mut Position, pt: PieceType, color: Color, sq: Square) {
+fn toggle_piece_keys(pos: &mut Position, pt: PieceType, color: Color, sq: Square) {
     let key = zobrist::key_piece(pt, color, sq);
+    pos.hash ^= key;
+
     match pt {
         PieceType::Pawn => pos.pawn_key ^= key,
         PieceType::Knight | PieceType::Bishop => pos.minor_key ^= key,
@@ -183,11 +169,10 @@ fn toggle_corr_key(pos: &mut Position, pt: PieceType, color: Color, sq: Square) 
     }
 }
 
-/// Undoes a castling move on the board.
-/// Hash and accumulator are bulk-restored from the snapshot;
-/// only bitboards and the mailbox need rewinding.
+/// Both destinations are cleared before either origin is restored because Chess960
+/// castling squares can overlap.
 #[inline]
-pub fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square) {
+fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square) {
     let (king_to, rook_to) = castling_targets(king_from, rook_from);
     let stm = pos.stm;
 
@@ -197,13 +182,7 @@ pub fn revert_castling(pos: &mut Position, king_from: Square, rook_from: Square)
     update_piece::<true>(pos, rook_from, PieceType::Rook, stm);
 }
 
-/// Resolves the final landing squares for a castling move.
-///
-/// Our move encoding stores the rook's home square in `mv.to()`; this is FRC-safe
-/// since the rook can live on any file. From the relative positions of king and rook
-/// we derive:
-///   O-O-O → king lands on c-file, rook on d-file
-///   O-O   → king lands on g-file, rook on f-file
+/// King and rook land on g/f for O-O and c/d for O-O-O, regardless of their starting files.
 #[inline(always)]
 pub(crate) fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Square) {
     let queenside = rook_sq.file() < king_sq.file();
@@ -214,31 +193,23 @@ pub(crate) fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Squ
     )
 }
 
-/// Executes castling on the board and patches the Zobrist hash.
-///
-/// Both pieces are lifted before either is placed; this is critical for
-/// DFRC where a destination square can coincide with the other piece's origin.
-/// The king's hash removal is deliberately handled here because `make_move` skips it.
+/// Both pieces are lifted before either is placed, because in Chess960 either destination
+/// can be the other piece's origin.
 #[inline]
 fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm: Color) {
     let (king_to, rook_to) = castling_targets(king_from, rook_from);
 
-    // Lift both first (DFRC-safe: no source/destination aliasing).
     pos.remove_piece(king_from, PieceType::King, stm);
-    pos.hash ^= zobrist::key_piece(PieceType::King, stm, king_from);
+    toggle_piece_keys(pos, PieceType::King, stm, king_from);
     pos.remove_piece(rook_from, PieceType::Rook, stm);
-    pos.hash ^= zobrist::key_piece(PieceType::Rook, stm, rook_from);
-    toggle_corr_key(pos, PieceType::Rook, stm, rook_from);
+    toggle_piece_keys(pos, PieceType::Rook, stm, rook_from);
 
-    // Land at final squares.
     pos.add_piece(king_to, PieceType::King, stm);
-    pos.hash ^= zobrist::key_piece(PieceType::King, stm, king_to);
+    toggle_piece_keys(pos, PieceType::King, stm, king_to);
     pos.add_piece(rook_to, PieceType::Rook, stm);
-    pos.hash ^= zobrist::key_piece(PieceType::Rook, stm, rook_to);
-    toggle_corr_key(pos, PieceType::Rook, stm, rook_to);
+    toggle_piece_keys(pos, PieceType::Rook, stm, rook_to);
 }
 
-/// Revokes castling rights touched by the move's origin and destination.
 #[inline]
 fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: Square, to: Square, old: u8) {
     if old == 0 {
@@ -271,11 +242,8 @@ fn refresh_castling_rights(pos: &mut Position, pt: PieceType, stm: Color, from: 
     }
 }
 
-/// Maintains the en passant square in the position and hash.
-///
-/// Only recorded after a double pawn push and only when an enemy pawn can
-/// actually capture; this avoids polluting the transposition table with
-/// positions that differ solely by a phantom EP square no one can use.
+/// Recorded only when an enemy pawn can capture, so the same position never gets two hashes
+/// for an en passant square nothing can use.
 #[inline]
 fn refresh_en_passant(pos: &mut Position, mv: Move, from: Square, to: Square, old_ep: Option<Square>) {
     if let Some(sq) = old_ep {
@@ -286,7 +254,7 @@ fn refresh_en_passant(pos: &mut Position, mv: Move, from: Square, to: Square, ol
 
     if mv.is_double_push() {
         let ep_sq = Square(u8::midpoint(from.0, to.0));
-        if pos.can_capture_ep(ep_sq, pos.stm) {
+        if pos.has_ep_attacker(ep_sq) {
             pos.en_passant = Some(ep_sq);
             pos.hash ^= zobrist::key_ep(ep_sq);
         }

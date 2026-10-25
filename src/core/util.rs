@@ -1,65 +1,45 @@
-//! Low-level memory and concurrency utilities.
-//!
-//! - `Align64`: Forces 64-byte alignment on arbitrary types to prevent false sharing.
+//! Cache-line alignment, bounded hash indexing and number formatting.
 
-use std::ops::{Deref, DerefMut};
+#[cfg(feature = "datagen")] use std::ops::{Deref, DerefMut};
 
-/// Cache-line aligned wrapper (64 bytes).
-///
-/// Prevents false sharing when data is accessed from multiple threads.
+#[cfg(feature = "datagen")]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[repr(C, align(64))]
-pub struct Align64<T>(pub T);
+pub(crate) struct Align64<T>(pub(crate) T);
 
+#[cfg(feature = "datagen")]
 impl<T> Align64<T> {
     #[inline]
-    pub const fn new(val: T) -> Self { Self(val) }
+    pub(crate) const fn new(val: T) -> Self { Self(val) }
 }
 
+#[cfg(feature = "datagen")]
 impl<T> Deref for Align64<T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &Self::Target { &self.0 }
 }
 
+#[cfg(feature = "datagen")]
 impl<T> DerefMut for Align64<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
-pub struct Rng {
-    state: u64,
-}
-
-impl Rng {
-    pub const fn new(seed: u64) -> Self { Self { state: seed } }
-
-    #[inline]
-    pub const fn splitmix64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-}
-
 #[inline(always)]
-pub fn mulhi64(value: u64, bound: usize) -> usize { ((value as u128 * bound as u128) >> 64) as usize }
+pub(crate) fn mulhi64(value: u64, bound: usize) -> usize { ((value as u128 * bound as u128) >> 64) as usize }
 
-/// Zero when the denominator is not positive, so an empty tally reports nothing
-/// instead of a NaN.
+/// Returns zero unless `den` is positive.
 #[inline]
 #[must_use]
-pub fn ratio(num: f64, den: f64) -> f64 { if den > 0.0 { num / den } else { 0.0 } }
+pub(crate) fn ratio(num: f64, den: f64) -> f64 { if den > 0.0 { num / den } else { 0.0 } }
 
-/// `part` as a percentage of `whole`, 0.0 when nothing was counted.
 #[inline]
 #[must_use]
 pub fn pct(part: u64, whole: u64) -> f64 { ratio(part as f64, whole as f64) * 100.0 }
 
-/// Formats a number with comma separators: 1234567 -> "1,234,567".
-pub fn format_comma(n: u64) -> String {
+/// 1234567 → "1,234,567".
+pub fn fmt_comma(n: u64) -> String {
     let raw = n.to_string();
     let len = raw.len();
     let comma_count = len.saturating_sub(1) / 3;
@@ -74,11 +54,8 @@ pub fn format_comma(n: u64) -> String {
     buf
 }
 
-/// Hooman counters: 1234 -> "1.23K", 1234567 -> "1.23M".
-///
-/// SI prefixes, so nodes read the way nps already does: G rather than B past a
-/// billion.
-pub fn fmt_count(n: u64) -> String {
+/// 1234 → "1.23K", 1234567 → "1.23M"; uses `G` for billions.
+pub(crate) fn fmt_count(n: u64) -> String {
     match n {
         0..1_000 => n.to_string(),
         1_000..1_000_000 => format!("{:.2}K", n as f64 / 1e3),
@@ -87,11 +64,9 @@ pub fn fmt_count(n: u64) -> String {
     }
 }
 
-/// A duration in the largest two units that fit, milliseconds below a second.
-///
-/// One shape for a search clock and a datagen ETA: the first needs `26ms`, the
-/// second needs `2h 5m 3s`.
-pub fn format_duration(ms: u64) -> String {
+/// Uses milliseconds below one second, then the largest fitting units:
+/// `26ms`, `2m 5s`, `2h 5m 3s`, `3d 2h 5m`.
+pub(crate) fn fmt_duration(ms: u64) -> String {
     let (secs, mins) = (ms / 1_000 % 60, ms / 60_000 % 60);
     let (hours, days) = (ms / 3_600_000 % 24, ms / 86_400_000);
 
@@ -103,7 +78,7 @@ pub fn format_duration(ms: u64) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "datagen"))]
 mod tests {
     use super::*;
 

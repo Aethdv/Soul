@@ -1,22 +1,12 @@
 //! Huge-page-backed allocation for the transposition table.
 //!
-//! A transposition table is the pathological case for the TLB: megabytes to
-//! hundreds of gigabytes, touched at random. On 4KB pages a 256GB table needs
-//! 67 million page-table entries and the CPU caches a couple thousand, so almost
-//! every probe pays a multi-level page walk before it reaches the entry. Huge
-//! pages collapse that walk. A 2MB page covers 512× the ground of a 4KB one, a
-//! 1GB page another 512×, and at 1GB the page table for a 256GB region is 2KB
-//! that simply stays in cache.
-//!
-//! Huge pages are x86-64 Linux only here; other targets get a plain zeroed allocation.
-//! That path issues `mmap`/`madvise`/`munmap` as raw syscalls, so the build needs
-//! no `libc` at all.
+//! x86-64 Linux tries explicit huge pages and THP; other targets use a page-aligned allocation.
 
 use std::{fmt, marker::PhantomData, mem, ops::Deref, ptr::NonNull, slice};
 
-/// The page size the OS actually backed an allocation with.
+/// Allocation backing; `Thp` records a hint, not a confirmed page size.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PageKind {
+pub(crate) enum PageKind {
     /// 1GB explicit huge pages (`hugetlb`); needs a reserved pool.
     Huge1G,
     /// 2MB explicit huge pages (`hugetlb`); needs a reserved pool.
@@ -27,14 +17,9 @@ pub enum PageKind {
     Base,
 }
 
-/// An owned region of `len` `T`s, backed by the largest huge page the OS will
-/// give. Derefs to `[T]`, so it stands in for a `Box<[T]>` at the call site.
-pub struct HugePages<T> {
+pub(crate) struct HugePages<T> {
     ptr: NonNull<T>,
-    /// Addressable `T`s. The mapping rounds up to a page boundary, so this can
-    /// exceed the requested count.
     len: usize,
-    /// Mapped byte length, kept for the matching free.
     bytes: usize,
     kind: PageKind,
     _marker: PhantomData<T>,
@@ -51,69 +36,44 @@ impl fmt::Display for PageKind {
     }
 }
 
-// SAFETY: HugePages owns a unique mapping for its whole lifetime; whether the
-// elements may be shared across threads is then governed by T's own Send/Sync,
-// exactly as for Box<[T]>. The TT's Cluster is atomic, hence Sync.
+// SAFETY: HugePages uniquely owns its region; sharing elements is therefore
+// governed by T's Send/Sync, as with Box<[T]>.
 unsafe impl<T: Send> Send for HugePages<T> {}
 unsafe impl<T: Sync> Sync for HugePages<T> {}
 
 impl<T> HugePages<T> {
-    /// Allocate at least `min_bytes`, viewed as `[T]`, mapped but not pre-faulted.
-    ///
-    /// The pages come lazily, so the first write to each one faults it in.
-    /// The TT uses this to drive first-touch from its own NUMA-bound threads,
-    /// which places each page on the node that touched it. `zeroed` is this
-    /// same map with the pre-fault folded in.
+    pub(crate) fn kind(&self) -> PageKind { self.kind }
+
+    /// Allocate at least `min_bytes` without pre-faulting.
     ///
     /// # Safety
-    /// As [`zeroed`]: `T` must be valid when zero-initialized.
-    /// The OS zeroes each page at fault time and no constructor runs.
-    pub unsafe fn mapped(min_bytes: usize) -> Self {
+    /// `T` must be valid when zero-initialized and require no alignment above a page.
+    pub(crate) unsafe fn mapped(min_bytes: usize) -> Self {
+        assert!(mem::size_of::<T>() != 0);
         let (ptr, bytes, kind) = map(min_bytes.max(mem::size_of::<T>()));
         Self { ptr: ptr.cast(), len: bytes / mem::size_of::<T>(), bytes, kind, _marker: PhantomData }
     }
 
-    /// Allocate at least `min_bytes` of zeroed memory, viewed as `[T]`, every page
-    /// pre-faulted so the search runs hot from its first node.
+    /// Allocate at least `min_bytes` and pre-fault every page.
     ///
     /// # Safety
-    /// `T` must be valid when zero-initialized: the mapping comes back zeroed and
-    /// is reinterpreted as `T` without running any constructor. Its alignment must
-    /// also fit within a page, which is all a mapping's base is guaranteed to be.
-    pub unsafe fn zeroed(min_bytes: usize) -> Self {
-        // SAFETY: caller's contract on T.
+    /// Same requirements as [`Self::mapped`].
+    pub(crate) unsafe fn prefaulted(min_bytes: usize) -> Self {
+        // SAFETY: caller satisfies mapped's contract.
         let pages = unsafe { Self::mapped(min_bytes) };
-        // mmap hands the pages out lazily, and faulting them mid-search would stall on
-        // the clock, with no ucinewgame to absorb it.
-        // SAFETY: a fresh exclusive mapping of bytes, nothing aliases it.
-        unsafe { zero_region(pages.ptr.cast::<u8>().as_ptr(), pages.bytes) };
+        // SAFETY: pages uniquely owns the entire region.
+        unsafe { pages.clear() };
         pages
     }
 
-    pub fn kind(&self) -> PageKind { self.kind }
-
-    /// Reset to an empty table, leaving the pages resident.
-    ///
-    /// A zeroing memset, not a page discard. Discarding empties the table for one
-    /// syscall, but then the next search re-faults every page it touches, on the
-    /// clock; the cost of emptying belongs here, off it, with the pages kept hot.
+    /// Zero the region without discarding its resident pages.
     ///
     /// # Safety
-    /// Nothing may read the region while it is cleared. The write is not atomic,
-    /// so a probe racing it is a data race however atomic the element type is.
-    pub unsafe fn clear(&self) {
-        // SAFETY: caller's contract.
-        unsafe { zero_region(self.ptr.cast::<u8>().as_ptr(), self.bytes) };
+    /// No references into the region may be used while it is cleared.
+    pub(crate) unsafe fn clear(&self) {
+        // SAFETY: caller excludes all aliases during the write.
+        unsafe { self.ptr.cast::<u8>().as_ptr().write_bytes(0, self.bytes) };
     }
-}
-
-/// The write is memory-bandwidth-bound, so one pass is the floor.
-///
-/// # Safety
-/// `base` must be writable for `bytes`, and nothing may read the region concurrently.
-unsafe fn zero_region(base: *mut u8, bytes: usize) {
-    // SAFETY: caller's contract.
-    unsafe { base.write_bytes(0, bytes) };
 }
 
 impl<T> Deref for HugePages<T> {
@@ -121,14 +81,14 @@ impl<T> Deref for HugePages<T> {
 
     #[inline(always)]
     fn deref(&self) -> &[T] {
-        // SAFETY: ptr maps len elements, zeroed then valid as T (zeroed() contract).
+        // SAFETY: construction guarantees ptr covers len valid T values.
         unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
 impl<T> Drop for HugePages<T> {
     fn drop(&mut self) {
-        // SAFETY: ptr/bytes name the mapping map handed back.
+        // SAFETY: ptr/bytes are exactly the region returned by map.
         unsafe { unmap(self.ptr.cast(), self.bytes) }
     }
 }
@@ -151,7 +111,7 @@ mod linux {
     const PROT_RW: usize = 0x1 | 0x2; // PROT_READ | PROT_WRITE
     const MAP_PRIVATE_ANON: usize = 0x02 | 0x20; // MAP_PRIVATE | MAP_ANONYMOUS
     const MAP_HUGETLB: usize = 0x40000;
-    // The huge page's log2 size sits at bit 26; 2^21 = 2MB, 2^30 = 1GB.
+    // The huge page's log2 size sits at bit 26.
     const MAP_HUGE_2MB: usize = 21 << 26;
     const MAP_HUGE_1GB: usize = 30 << 26;
     const MADV_HUGEPAGE: usize = 14;
@@ -159,12 +119,8 @@ mod linux {
     const GB: usize = 1 << 30;
     const MB2: usize = 2 << 20;
 
-    /// The tier ladder: 1GB hugetlb, 2MB hugetlb, then a plain mapping hinted
-    /// toward transparent huge pages. Each tier rounds the length up to its page
-    /// size, so the byte count kept for the free names the whole mapping and the
-    /// tail cannot outlive the `munmap`.
-    pub fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
-        // 1GB only past a gigabyte, or rounding up to the boundary is mostly waste.
+    pub(super) fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
+        // Avoid rounding a sub-gigabyte table up to 1GB.
         if min_bytes >= GB {
             let len = min_bytes.next_multiple_of(GB);
             if let Some(p) = mmap(len, MAP_HUGETLB | MAP_HUGE_1GB) {
@@ -176,49 +132,41 @@ mod linux {
         if let Some(p) = mmap(len, MAP_HUGETLB | MAP_HUGE_2MB) {
             return (p, len, PageKind::Huge2M);
         }
-        // The base needs the same 2MB alignment. THP only fills a 2MB-aligned
-        // span; a mapping that starts mid-page loses both ends back to 4KB, and
-        // under madvise policy the kernel can't pre-align, since the hint lands
-        // after it has already picked the address.
+
+        // THP needs a 2MB-aligned span; mmap itself guarantees only page alignment.
         let p = mmap_aligned(len, MB2);
-        // SAFETY: p/len name the mapping just returned. madvise reports whether the
-        // hint was accepted at all (it is rejected only when THP is compiled out).
+        // SAFETY: p/len name the live mapping above.
         let kind = if unsafe { madvise(p, len, MADV_HUGEPAGE) } { PageKind::Thp } else { PageKind::Base };
         (p, len, kind)
     }
 
     /// # Safety
     /// `ptr`/`bytes` must name a mapping returned by [`map`].
-    pub unsafe fn unmap(ptr: NonNull<u8>, bytes: usize) {
-        // SAFETY: caller contract.
+    pub(super) unsafe fn unmap(ptr: NonNull<u8>, bytes: usize) {
+        // SAFETY: caller guarantees ptr/bytes name the live mapping.
         unsafe { syscall6(SYS_MUNMAP, ptr.as_ptr() as usize, bytes, 0, 0, 0, 0) };
     }
 
     fn mmap(len: usize, extra_flags: usize) -> Option<NonNull<u8>> {
-        // SAFETY: anonymous mapping (fd = -1, offset = 0); all arguments are kernel-checked.
+        // SAFETY: valid anonymous mmap arguments; the kernel validates the request.
         let ret = unsafe { syscall6(SYS_MMAP, 0, len, PROT_RW, MAP_PRIVATE_ANON | extra_flags, usize::MAX, 0) };
-        // Failure returns -errno in -4095..=-1; success returns a user address.
+        // Raw syscalls return -errno in -4095..=-1.
         if (-4095..0).contains(&ret) { None } else { NonNull::new(ret as *mut u8) }
     }
 
-    /// `mmap` `len` bytes at a base aligned to `align`, a power-of-two multiple of
-    /// the page size. Over-maps by one `align` and returns the slack at each end,
-    /// so the kept span is exactly `len` and a later `munmap(base, len)` frees it
-    /// whole. Bare `mmap` only aligns to 4KB; THP needs the 2MB boundary.
+    /// Map `len` bytes at an `align` boundary by overmapping and freeing the slack.
     fn mmap_aligned(len: usize, align: usize) -> NonNull<u8> {
         let over = mmap(len + align, 0).expect("mmap failed for the transposition table");
         let base = over.as_ptr() as usize;
         let head = base.next_multiple_of(align) - base;
 
-        // SAFETY: over maps len + align bytes. head and head + len stay inside it,
-        // both are page multiples, so each partial munmap splits the VMA on a page
-        // boundary and frees only the slack; the [aligned, aligned + len) span stays.
+        // SAFETY: the retained len-byte span and both slack regions are disjoint,
+        // page-aligned parts of the original len + align mapping.
         unsafe {
             let aligned = over.as_ptr().add(head);
             if head > 0 {
                 unmap(over, head);
             }
-
             unmap(NonNull::new_unchecked(aligned.add(len)), align - head);
             NonNull::new_unchecked(aligned)
         }
@@ -227,18 +175,16 @@ mod linux {
     /// # Safety
     /// `ptr`/`len` must name a live mapping.
     unsafe fn madvise(ptr: NonNull<u8>, len: usize, advice: usize) -> bool {
-        // SAFETY: caller contract.
+        // SAFETY: caller guarantees ptr/len name a live mapping.
         unsafe { syscall6(SYS_MADVISE, ptr.as_ptr() as usize, len, advice, 0, 0, 0) == 0 }
     }
 
     /// # Safety
-    /// A valid x86_64 Linux syscall: `n` and its arguments must form a sound call,
-    /// and any pointer arguments must satisfy that syscall's requirements.
+    /// `n` and its arguments must form a valid x86-64 Linux syscall.
     #[inline]
     unsafe fn syscall6(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) -> isize {
         let ret: isize;
-        // SAFETY: x86_64 Linux ABI: number in rax, args in rdi/rsi/rdx/r10/r8/r9,
-        // result in rax; the instruction clobbers rcx and r11.
+        // SAFETY: x86-64 Linux syscall ABI; syscall clobbers rcx and r11.
         unsafe {
             std::arch::asm!(
                 "syscall",
@@ -269,19 +215,19 @@ mod portable {
 
     const PAGE: usize = 4096;
 
-    pub fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
+    pub(super) fn map(min_bytes: usize) -> (NonNull<u8>, usize, PageKind) {
         let bytes = min_bytes.next_multiple_of(PAGE);
         let layout = Layout::from_size_align(bytes, PAGE).unwrap();
-        // SAFETY: layout is non-zero (min_bytes >= size_of::<T>() >= 1).
+        // SAFETY: layout is valid and non-zero.
         let ptr = unsafe { alloc::alloc_zeroed(layout) };
         (NonNull::new(ptr).expect("allocation failed for the transposition table"), bytes, PageKind::Base)
     }
 
     /// # Safety
     /// `ptr`/`bytes` must name an allocation returned by [`map`].
-    pub unsafe fn unmap(ptr: NonNull<u8>, bytes: usize) {
+    pub(super) unsafe fn unmap(ptr: NonNull<u8>, bytes: usize) {
         let layout = Layout::from_size_align(bytes, PAGE).unwrap();
-        // SAFETY: layout matches the one map allocated with.
+        // SAFETY: layout matches the allocation.
         unsafe { alloc::dealloc(ptr.as_ptr(), layout) };
     }
 }

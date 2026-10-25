@@ -1,22 +1,18 @@
 //! Static evaluation of piece mobility, king safety, and spatial control.
-//!
-//! Attack maps are the expensive part, so they're built once per position and
-//! shared: mobility, king safety, threats, and x-ray batteries all read the same
-//! bitboards instead of recomputing the slider attacks they each need.
 
 use crate::{
     core::{
         board::{
             Position,
-            bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_rook, line_bb},
-            spatial::SpatialMaps,
+            bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_queen, atk_rook, line_bb},
+            spatial::SliderMaps,
             xorboard::XorBoard,
         },
-        defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
+        defs::{Bitboard, Color, PieceType, Square},
     },
     engine::{
-        autograd::traits::{EnvVec4, EnvVec8, EvalMath},
-        combiner::Accumulators,
+        autograd::traits::{EvalMath, EvalVec4, EvalVec8},
+        combiner::{Accumulators, taper},
         eval::{EvalParams, SharedFeatures},
         eval_params::{ATTACKER, LAYOUT},
         term::{KingSafetyUpstream, LinearTerm, TaperPair, TermSource},
@@ -24,99 +20,77 @@ use crate::{
     weave::F64x4,
 };
 
-// Pawn rams (locked head-to-head) and total pawn count yield an openness scalar,
-// which blends between the "closed" and "open" weight vectors in scoring. The
-// 10-bit fixed point keeps f32 out of the hot eval loop.
-//
-//   openness = clamp(1 − 0.08 · rams − 0.02 · pawns, 0, 1)
-//
 /// Per-ram contribution toward closedness.
-pub const RAM_SCALE: i32 = 82; // 0.08 · 1024
+const RAM_SCALE: i32 = 82; // 0.08 · 1024
 /// Per-pawn contribution toward closedness.
-pub const PAWN_SCALE: i32 = 20; // 0.02 · 1024
+const PAWN_SCALE: i32 = 20; // 0.02 · 1024
 /// Fixed-point precision (1.0 ≡ 1024).
 pub const OPEN_UNITY: i32 = 1024;
+#[cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "read by the tuner's scatter"))]
 const INV_OPEN_UNITY: f64 = 1.0 / OPEN_UNITY as f64;
 
-pub struct Mobility;
-pub struct MobilityTerm;
-pub struct KingSafetyTerm;
+pub(crate) struct MobilityTerm;
+pub(crate) struct KingSafetyTerm;
 
-/// Complete mobility snapshot for one position, computed once and consumed by
-/// both the engine (score diff) and the tuner (raw feature extraction).
-///
 /// `us` is White in every field; nothing here is side-to-move relative.
 #[derive(Clone, Default, Debug)]
-pub struct SpatialMetrics {
-    pub metrics_us: SideMetrics,
-    pub metrics_them: SideMetrics,
-    pub safety_us: SafetyMetrics,
-    pub safety_them: SafetyMetrics,
+pub(crate) struct SpatialMetrics {
+    pub(crate) metrics_us: SideMetrics,
+    pub(crate) metrics_them: SideMetrics,
+    pub(crate) safety_us: SafetyMetrics,
+    pub(crate) safety_them: SafetyMetrics,
 }
 
-/// Spatial metrics for one side.
-///
-/// - `mobility`: squares off enemy pawn attacks, summed per piece rather than over the union.
-/// - `shadow_mobility`: safe x-ray (battery) squares we control.
-/// - `threats`: enemy pieces our direct attacks touch.
-/// - `shadow_threats`: enemy pieces our x-rays touch.
 #[derive(Clone, Copy, Default, Debug)]
-pub struct SideMetrics {
-    pub mobility: i32,
-    pub shadow_mobility: i32,
-    pub threats: i32,
-    pub shadow_threats: i32,
+pub(crate) struct SideMetrics {
+    /// Squares outside enemy pawn attacks, counted once per attacking piece.
+    pub(crate) mobility: i32,
+    /// X-ray squares outside enemy pawn attacks, counted once per square.
+    pub(crate) shadow_mobility: i32,
+    pub(crate) threats: i32,
+    pub(crate) shadow_threats: i32,
 }
 
 /// Raw king-zone features for one side.
-///
-/// Kept separate so the tuner can regress independent gradients against each component.
-/// The engine folds them into shelter and pressure, which the combiner collapses.
 #[derive(Clone, Copy, Default, Debug)]
-pub struct SafetyMetrics {
+pub(crate) struct SafetyMetrics {
     /// King-zone squares they attack, capped at `ATTACKER.len() - 1`.
-    pub attacked_zone: usize,
+    pub(crate) attacked_zone: usize,
     /// King-zone squares attacked by them but not defended by us.
-    pub weak: i32,
+    pub(crate) weak: i32,
     /// Friendly pawns adjacent to the king.
-    pub shield: i32,
-    /// Rook-reachable squares from the king (open lines = exposure).
-    pub ortho_exposure: i32,
+    pub(crate) shield: i32,
+    /// Rook-reachable squares from the king.
+    pub(crate) ortho_exposure: i32,
     /// Bishop-reachable squares from the king.
-    pub diag_exposure: i32,
+    pub(crate) diag_exposure: i32,
 }
 
-/// Extracted mobility features for generic dispatch.
-pub struct MobilityInput {
-    pub diff: F64x4,
-    pub openness: i32,
+#[cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "read by the tuner's scatter"))]
+pub(crate) struct MobilityInput {
+    pub(crate) diff: F64x4,
+    pub(crate) openness: i32,
 }
 
-/// Extracted king-safety features for generic dispatch. Per-side rather than
-/// differenced, because the forward scores each side into its own bucket.
-pub struct KingSafetyInput {
-    pub us: SafetyMetrics,
-    pub them: SafetyMetrics,
+#[cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "read by the tuner's scatter"))]
+pub(crate) struct KingSafetyInput {
+    pub(crate) us: SafetyMetrics,
+    pub(crate) them: SafetyMetrics,
 }
 
-/// Position openness from raw pawn bitboards, in fixed-point [0, OPEN_UNITY].
-///
-/// Rams come from shifting White's pawns one rank north onto Black's, which catches
-/// every locked pair exactly once. Side-relative bitboards instead shift Black's pawns
-/// backwards down the board and count pairs that are not rams.
+/// Openness in fixed point, 0 to [`OPEN_UNITY`]. Pawn colors must be absolute;
+/// the northward shift counts White pawns blocked by Black pawns.
 #[inline]
-pub fn compute_openness_raw(white_pawns: u64, black_pawns: u64) -> i32 {
+pub(crate) fn compute_openness_raw(white_pawns: u64, black_pawns: u64) -> i32 {
     let rams = (white_pawns << 8) & black_pawns;
     (OPEN_UNITY - RAM_SCALE * rams.count_ones() as i32 - PAWN_SCALE * (white_pawns | black_pawns).count_ones() as i32)
         .clamp(0, OPEN_UNITY)
 }
 
 impl SideMetrics {
-    /// `self` minus `them`, in the lane order the weight vectors and the layout offsets
-    /// both use. Nothing checks that order, so a swap here silently hands the shipped
-    /// weights to the wrong metric.
+    /// Lane order must match the mobility weight vectors.
     #[inline(always)]
-    fn diff(&self, them: &Self) -> [i32; 4] {
+    pub(crate) fn diff(&self, them: &Self) -> [i32; 4] {
         [
             self.mobility - them.mobility,
             self.shadow_mobility - them.shadow_mobility,
@@ -127,22 +101,16 @@ impl SideMetrics {
 }
 
 impl SafetyMetrics {
-    /// Shelter minus exposure. Positive → well-sheltered king.
     #[inline]
-    pub fn shelter<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T) -> T {
-        let shelter = T::from_i32(self.shield) * w_shield;
+    fn score<T: EvalMath<Scalar = T>>(&self, w_shield: T, w_ortho: T, w_diag: T) -> T {
+        let shield = T::from_i32(self.shield) * w_shield;
         let exposure = T::from_i32(self.ortho_exposure) * w_ortho + T::from_i32(self.diag_exposure) * w_diag;
-        shelter - exposure
+        shield - exposure
     }
 
-    /// What the attackers are worth against this king, before the combiner curves it.
-    ///
-    /// `w_atk` is indexed by the attacked-square count, so escalation with pressure
-    /// lives in the weight table; `weak / 10` keeps resolution high for the tuner
-    /// (0.1 cp increments) while staying integer in eval. DualNode passes gradient
-    /// through `.trunc()` unmodified (straight-through).
+    /// Attacker weights use 0.1 cp per weak square; truncation is straight-through for gradients.
     #[inline]
-    pub fn pressure<T: EvalMath<Scalar = T>>(&self, w_atk: T) -> T { ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc() }
+    fn pressure<T: EvalMath<Scalar = T>>(&self, w_atk: T) -> T { ((w_atk * T::from_i32(self.weak)) / T::from_i32(10)).trunc() }
 
     #[inline(always)]
     fn analyze(ksq: Square, occ: Bitboard, atk_us: Bitboard, atk_them: Bitboard, our_pawns: Bitboard) -> Self {
@@ -158,70 +126,73 @@ impl SafetyMetrics {
     }
 }
 
-impl Mobility {
-    #[inline]
-    pub fn compute_all(
-        pos: &Position,
-        maps: &SpatialMaps,
-        pinned_w: Bitboard,
-        pinned_b: Bitboard,
-        rows: Option<&XorBoard>,
-    ) -> SpatialMetrics {
-        let ctx = EvalCtx::build(pos, maps, pinned_w, pinned_b);
-        let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, ctx.ksq_us, !ctx.pawn_atk_them);
-        let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, ctx.ksq_them, !ctx.pawn_atk_us);
-        let safety_us = SafetyMetrics::analyze(ctx.ksq_us, ctx.occ, ctx.atk_us, ctx.atk_them, ctx.pawn_us);
-        let safety_them = SafetyMetrics::analyze(ctx.ksq_them, ctx.occ, ctx.atk_them, ctx.atk_us, ctx.pawn_them);
-        let metrics_us = score_side(ctx.them, ctx.atk_us, mob_us, ctx.pawn_atk_them, ctx.xray_us);
-        let metrics_them = score_side(ctx.us, ctx.atk_them, mob_them, ctx.pawn_atk_us, ctx.xray_them);
-        SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }
-    }
+#[inline]
+pub(crate) fn compute_all(
+    pos: &Position,
+    maps: &SliderMaps,
+    pinned_w: Bitboard,
+    pinned_b: Bitboard,
+    rows: Option<&XorBoard>,
+) -> SpatialMetrics {
+    let attacks = EvalAttacks::build(pos, maps, pinned_w, pinned_b);
+    let mob_us = piece_mobility(pos, rows, Color::White, pinned_w, attacks.ksq_us, !attacks.pawn_atk_them);
+    let mob_them = piece_mobility(pos, rows, Color::Black, pinned_b, attacks.ksq_them, !attacks.pawn_atk_us);
+    let safety_us = SafetyMetrics::analyze(
+        attacks.ksq_us,
+        pos.occ,
+        attacks.atk_us,
+        attacks.atk_them,
+        pos.pieces(PieceType::Pawn, Color::White),
+    );
+    let safety_them = SafetyMetrics::analyze(
+        attacks.ksq_them,
+        pos.occ,
+        attacks.atk_them,
+        attacks.atk_us,
+        pos.pieces(PieceType::Pawn, Color::Black),
+    );
+    let metrics_us = side_metrics(pos.side_bb[Color::Black], attacks.atk_us, mob_us, attacks.pawn_atk_them, attacks.xray_us);
+    let metrics_them = side_metrics(pos.side_bb[Color::White], attacks.atk_them, mob_them, attacks.pawn_atk_us, attacks.xray_them);
+    SpatialMetrics { metrics_us, metrics_them, safety_us, safety_them }
+}
 
-    /// Tapered, openness-interpolated score differential, `metrics_us` minus `metrics_them`.
-    #[inline(always)]
-    pub fn evaluate_score_diff<T: EvalMath<Scalar = T>>(
-        metrics_us: &SideMetrics,
-        metrics_them: &SideMetrics,
-        openness: i32,
-        phase: T,
-        w_mg_o: T::Vec4,
-        w_mg_c: T::Vec4,
-        w_eg_o: T::Vec4,
-        w_eg_c: T::Vec4,
-    ) -> T {
-        let d = metrics_us.diff(metrics_them);
-        let diff = T::Vec4::from_lanes(T::from_i32(d[0]), T::from_i32(d[1]), T::from_i32(d[2]), T::from_i32(d[3]));
+/// Tapered, openness-interpolated score differential, `metrics_us` minus `metrics_them`.
+#[inline(always)]
+fn evaluate_score_diff<T: EvalMath<Scalar = T>>(
+    metrics_us: &SideMetrics,
+    metrics_them: &SideMetrics,
+    openness: i32,
+    phase: T,
+    w_mg_o: T::Vec4,
+    w_mg_c: T::Vec4,
+    w_eg_o: T::Vec4,
+    w_eg_c: T::Vec4,
+) -> T {
+    let diff = T::from_i32_array(metrics_us.diff(metrics_them));
 
-        let o = T::Vec4::splat(openness);
-        let c = T::Vec4::splat(OPEN_UNITY - openness);
-        let half = T::Vec4::splat(OPEN_UNITY / 2); // rounding bias
+    let o = T::Vec4::splat(openness);
+    let c = T::Vec4::splat(OPEN_UNITY - openness);
+    let rounding_bias = T::Vec4::splat(OPEN_UNITY / 2);
 
-        // Interpolate the open/closed weight vectors by openness.
-        let w_mg = (w_mg_o * o + w_mg_c * c + half).srai::<10>();
-        let w_eg = (w_eg_o * o + w_eg_c * c + half).srai::<10>();
+    let w_mg = (w_mg_o * o + w_mg_c * c + rounding_bias).srai::<10>();
+    let w_eg = (w_eg_o * o + w_eg_c * c + rounding_bias).srai::<10>();
 
-        // SIMD dot-product diff against the MG and EG weights.
-        let w_packed = w_mg.pack_i16(w_eg);
-        let diff_packed = diff.pack_i16(diff);
-        let madd = diff_packed.madd(w_packed);
+    // madd sums adjacent products, leaving two partial sums per half: lanes 0 and 1 for MG, 2 and 3 for EG.
+    let w_packed = w_mg.pack_i16(w_eg);
+    let diff_packed = diff.pack_i16(diff);
+    let madd = diff_packed.madd(w_packed);
 
-        let mg_sum = madd.extract::<0>() + madd.extract::<1>();
-        let eg_sum = madd.extract::<2>() + madd.extract::<3>();
+    let mg_sum = madd.extract::<0>() + madd.extract::<1>();
+    let eg_sum = madd.extract::<2>() + madd.extract::<3>();
 
-        let t_total_phase = T::from_i32(TOTAL_PHASE);
-        let t_eg_phase = t_total_phase - phase;
-        // Integer division truncates for the engine; the tuner's f64 has to be told.
-        ((mg_sum * phase + eg_sum * t_eg_phase) / t_total_phase).trunc()
-    }
+    taper(mg_sum, eg_sum, phase)
+}
 
-    /// Position openness in fixed-point [0, 1024], White's pawns first as
-    /// [`compute_openness_raw`] requires.
-    #[inline]
-    pub fn compute_openness(pos: &Position) -> i32 {
-        let white = pos.pieces(PieceType::Pawn, Color::White);
-        let black = pos.pieces(PieceType::Pawn, Color::Black);
-        compute_openness_raw(u64::from(white), u64::from(black))
-    }
+#[inline]
+pub(crate) fn compute_openness(pos: &Position) -> i32 {
+    let white = pos.pieces(PieceType::Pawn, Color::White);
+    let black = pos.pieces(PieceType::Pawn, Color::Black);
+    compute_openness_raw(white.0, black.0)
 }
 
 impl LinearTerm for MobilityTerm {
@@ -230,14 +201,13 @@ impl LinearTerm for MobilityTerm {
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
-        acc.mobility = Mobility::evaluate_score_diff::<T>(
+        acc.mobility = evaluate_score_diff::<T>(
             &features.spatial.metrics_us, &features.spatial.metrics_them, features.openness, phase, params.mg_mob_open,
             params.mg_mob_closed, params.eg_mob_open, params.eg_mob_closed,
         );
     }
 
-    /// Scalar mirror of the SIMD blend above: open/closed weights round to whole
-    /// centipawns per lane, before the taper.
+    // Round each blended weight before tapering, matching the SIMD arithmetic shift.
     #[inline(always)]
     fn apply_input(input: MobilityInput, values: &[f64], phase: f64, acc: &mut Accumulators<f64>) {
         let open_base = LAYOUT.mobility_open_offset;
@@ -247,7 +217,7 @@ impl LinearTerm for MobilityTerm {
         let closed_raw = unity - open_raw;
 
         let mut diff = [0.0f64; 4];
-        // SAFETY: `diff` is exactly the 4 lanes `storeu` writes.
+        // SAFETY: diff is exactly the 4 lanes storeu writes.
         unsafe { input.diff.storeu(diff.as_mut_ptr()) };
 
         let blend = |lane: usize| {
@@ -261,15 +231,10 @@ impl LinearTerm for MobilityTerm {
             eg_sum += d * blend(4 + i);
         }
 
-        // Both halves sum before the taper, exactly as the madd above does.
-        let total_phase = f64::from(TOTAL_PHASE);
-        acc.mobility = ((mg_sum * phase + eg_sum * (total_phase - phase)) / total_phase).trunc();
+        acc.mobility = taper(mg_sum, eg_sum, phase);
     }
 
-    ///   `∂score/∂mg_mob_open[j]   = d_mg · diff[j] · (openness / 1024)`
-    ///   `∂score/∂mg_mob_closed[j] = d_mg · diff[j] · (closedness / 1024)`
-    ///
-    /// The combiner pre-multiplies `d_mg = d · t_mg`, `d_eg = d · t_eg` so scatter skips the taper split.
+    // Rounding in the weight blend uses a straight-through derivative.
     #[inline(always)]
     fn scatter(input: MobilityInput, upstream: TaperPair, grads: &mut [f64]) {
         let open_base = LAYOUT.mobility_open_offset;
@@ -305,7 +270,7 @@ impl TermSource<MobilityTerm> for SharedFeatures {
 }
 
 impl LinearTerm for KingSafetyTerm {
-    /// The combiner's MG taper is folded into every field, and the danger halves
+    /// The combiner's MG taper is folded into every field, and the pressure halves
     /// arrive already signed, which is why scatter adds both of them.
     type Upstream = KingSafetyUpstream;
     type Input = KingSafetyInput;
@@ -314,38 +279,32 @@ impl LinearTerm for KingSafetyTerm {
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
         let (us, them) = (&features.spatial.safety_us, &features.spatial.safety_them);
 
-        acc.safety_us = us.shelter(params.w_shield, params.w_ortho, params.w_diag);
-        acc.safety_them = them.shelter(params.w_shield, params.w_ortho, params.w_diag);
-        acc.danger_us = us.pressure(params.atk_weights[us.attacked_zone]);
-        acc.danger_them = them.pressure(params.atk_weights[them.attacked_zone]);
+        acc.safety_us = us.score(params.w_shield, params.w_ortho, params.w_diag);
+        acc.safety_them = them.score(params.w_shield, params.w_ortho, params.w_diag);
+        acc.pressure_us = us.pressure(params.atk_weights[us.attacked_zone]);
+        acc.pressure_them = them.pressure(params.atk_weights[them.attacked_zone]);
     }
 
     #[inline(always)]
     fn apply_input(input: KingSafetyInput, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
-        acc.safety_us = input.us.shelter(values[ks], values[ks + 1], values[ks + 2]);
-        acc.safety_them = input.them.shelter(values[ks], values[ks + 1], values[ks + 2]);
-        acc.danger_us = input.us.pressure(values[ao + input.us.attacked_zone]);
-        acc.danger_them = input.them.pressure(values[ao + input.them.attacked_zone]);
+        acc.safety_us = input.us.score(values[ks], values[ks + 1], values[ks + 2]);
+        acc.safety_them = input.them.score(values[ks], values[ks + 1], values[ks + 2]);
+        acc.pressure_us = input.us.pressure(values[ao + input.us.attacked_zone]);
+        acc.pressure_them = input.them.pressure(values[ao + input.them.attacked_zone]);
     }
 
-    ///   `∂score/∂w_shield  =  upstream · (shield_us − shield_them)`
-    ///   `∂score/∂w_ortho   = −upstream · (ortho_us  − ortho_them)`
-    ///   `∂score/∂w_diag    = −upstream · (diag_us   − diag_them)`
-    ///   `∂score/∂atk_weights[idx_side] = ±upstream · (weak_side / 10)`
-    ///
-    /// The combiner pre-multiplies the `MG · phase/24` taper into `upstream`.
     #[inline(always)]
     fn scatter(input: KingSafetyInput, upstream: KingSafetyUpstream, grads: &mut [f64]) {
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
-        grads[ks] += upstream.shelter * f64::from(input.us.shield - input.them.shield);
-        grads[ks + 1] -= upstream.shelter * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
-        grads[ks + 2] -= upstream.shelter * f64::from(input.us.diag_exposure - input.them.diag_exposure);
+        grads[ks] += upstream.safety * f64::from(input.us.shield - input.them.shield);
+        grads[ks + 1] -= upstream.safety * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
+        grads[ks + 2] -= upstream.safety * f64::from(input.us.diag_exposure - input.them.diag_exposure);
 
-        grads[ao + input.us.attacked_zone] += upstream.danger_us * (f64::from(input.us.weak) / 10.0);
-        grads[ao + input.them.attacked_zone] += upstream.danger_them * (f64::from(input.them.weak) / 10.0);
+        grads[ao + input.us.attacked_zone] += upstream.pressure_us * (f64::from(input.us.weak) / 10.0);
+        grads[ao + input.them.attacked_zone] += upstream.pressure_them * (f64::from(input.them.weak) / 10.0);
     }
 }
 
@@ -356,42 +315,26 @@ impl TermSource<KingSafetyTerm> for SharedFeatures {
     fn extract(&self) -> KingSafetyInput { KingSafetyInput { us: self.spatial.safety_us, them: self.spatial.safety_them } }
 }
 
-/// Pre-computed attack maps for both sides.
-struct EvalCtx {
-    us: Bitboard,
-    them: Bitboard,
-    occ: Bitboard,
-    // Piece and pawn attacks, king excluded. A king's own reach never helps
-    // assault the enemy king zone.
+struct EvalAttacks {
+    // Piece and pawn attacks, king excluded.
     atk_us: Bitboard,
     atk_them: Bitboard,
     pawn_atk_us: Bitboard,
     pawn_atk_them: Bitboard,
     ksq_us: Square,
     ksq_them: Square,
-    // The pawns themselves, for the shield count.
-    pawn_us: Bitboard,
-    pawn_them: Bitboard,
     xray_us: Bitboard,
     xray_them: Bitboard,
 }
 
-impl EvalCtx {
-    /// Builds both sides' attack maps: White is "us", Black is "them".
-    ///
-    /// A pinned piece contributes only what it could legally play:
-    /// - Knights: nothing. A knight can never stay on the pin ray, so it drops out
-    ///   of the attack map entirely.
-    /// - Sliders (bishops, rooks, queens): the pin ray alone. A rook pinned
-    ///   horizontally still threatens along that rank.
-    ///
-    /// Without this the threat and danger counts credit attacks that would leave the
-    /// king in check.
+impl EvalAttacks {
+    /// White is "us", Black is "them". Pinned knights contribute no attacks;
+    /// pinned sliders contribute only along the king's ray. Pawn attacks remain unfiltered.
     #[inline(always)]
-    fn build(pos: &Position, maps: &SpatialMaps, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
+    fn build(pos: &Position, maps: &SliderMaps, pinned_w: Bitboard, pinned_b: Bitboard) -> Self {
         let us = pos.side_bb[Color::White];
         let them = pos.side_bb[Color::Black];
-        let occ = pos.occupancy();
+        let occ = pos.occ;
 
         let knights = pos.role_bb[PieceType::Knight];
         let kings = pos.role_bb[PieceType::King];
@@ -410,21 +353,20 @@ impl EvalCtx {
         let knight_atk_us = knight_attacks(us, pinned_w);
         let knight_atk_them = knight_attacks(them, pinned_b);
 
-        // SpatialMaps drops pinned pieces from the direct and the x-ray maps alike. Only
-        // the direct maps get their pin rays back below: a pinned piece backing a battery
-        // is rare enough that the second pass would cost more than it scores.
+        // SliderMaps excludes pinned sliders. Restore their direct attacks along
+        // the pin ray; their x-rays stay excluded to avoid extra battery probes.
         let (mut slider_atk_us, mut slider_atk_them, xray_us, xray_them) = (
-            Bitboard(maps.w_ortho_direct() | maps.w_diag_direct()),
-            Bitboard(maps.b_ortho_direct() | maps.b_diag_direct()),
-            Bitboard(maps.w_ortho_xray() | maps.w_diag_xray()),
-            Bitboard(maps.b_ortho_xray() | maps.b_diag_xray()),
+            maps.w_ortho_direct() | maps.w_diag_direct(),
+            maps.b_ortho_direct() | maps.b_diag_direct(),
+            maps.w_ortho_xray() | maps.w_diag_xray(),
+            maps.b_ortho_xray() | maps.b_diag_xray(),
         );
 
         // A queen sits in both sets, and the pin ray masks off whichever half it cannot play.
         let rq = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
         let bq = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
 
-        let inject_pinned = |pinned: Bitboard, ksq: Square| {
+        let pinned_attacks = |pinned: Bitboard, ksq: Square| {
             let mut atk = Bitboard(0);
             for sq in pinned & rq {
                 atk |= atk_rook(sq, occ) & line_bb(ksq, sq);
@@ -435,8 +377,8 @@ impl EvalCtx {
             atk
         };
 
-        slider_atk_us |= inject_pinned(pinned_w, ksq_us);
-        slider_atk_them |= inject_pinned(pinned_b, ksq_them);
+        slider_atk_us |= pinned_attacks(pinned_w, ksq_us);
+        slider_atk_them |= pinned_attacks(pinned_b, ksq_them);
 
         let pawn_atk_us = pos.pawn_attacks(Color::White);
         let pawn_atk_them = pos.pawn_attacks(Color::Black);
@@ -444,34 +386,10 @@ impl EvalCtx {
         let atk_us = slider_atk_us | knight_atk_us | pawn_atk_us;
         let atk_them = slider_atk_them | knight_atk_them | pawn_atk_them;
 
-        Self {
-            atk_us,
-            atk_them,
-            pawn_atk_us,
-            pawn_atk_them,
-            ksq_us,
-            ksq_them,
-            pawn_us: pos.pieces(PieceType::Pawn, Color::White),
-            pawn_them: pos.pieces(PieceType::Pawn, Color::Black),
-            us,
-            them,
-            occ,
-            xray_us,
-            xray_them,
-        }
+        Self { atk_us, atk_them, pawn_atk_us, pawn_atk_them, ksq_us, ksq_them, xray_us, xray_them }
     }
 }
 
-/// What each piece of `color` reaches inside `area`, summed over the side.
-///
-/// A fill cannot produce this. ORing the sides together loses which piece got
-/// where, so a square two of our pieces attack is worth one to the union and two
-/// here. The rows keep the identity and answer in one vectorized pass; without
-/// them the same sum is a probe per piece, which only an offline tuner can
-/// afford.
-///
-/// The pin policy matches SpatialMaps: a pinned knight has nothing legal,
-/// a pinned slider keeps its pin ray, a pinned pawn is left whole.
 fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned: Bitboard, ksq: Square, area: Bitboard) -> i32 {
     if let Some(rows) = rows {
         return rows.mobility(color, pinned, ksq, area);
@@ -482,10 +400,10 @@ fn piece_mobility(pos: &Position, rows: Option<&XorBoard>, color: Color, pinned:
     total
 }
 
-/// Nothing scores these counts yet. Each reference indexes a bucketed table per piece
-/// class with exactly this number, and `evaltune spread` sizes those tables off the
-/// distribution.
-pub fn for_each_piece_mobility(
+/// Visits each non-king piece with its mobility count inside `area`.
+/// Pinned knights contribute zero; pinned sliders stay on the pin ray.
+/// Pawn attacks remain unfiltered by pins.
+fn for_each_piece_mobility(
     pos: &Position,
     color: Color,
     pinned: Bitboard,
@@ -493,7 +411,7 @@ pub fn for_each_piece_mobility(
     area: Bitboard,
     mut visit: impl FnMut(PieceType, u32),
 ) {
-    let occ = pos.occupancy();
+    let occ = pos.occ;
 
     for square in pos.side_bb[color] & !pos.role_bb[PieceType::King] {
         let piece = pos.piece_at(square);
@@ -502,22 +420,22 @@ pub fn for_each_piece_mobility(
             PieceType::Knight => atk_knight(square),
             PieceType::Bishop => atk_bishop(square, occ),
             PieceType::Rook => atk_rook(square, occ),
-            PieceType::Queen => atk_rook(square, occ) | atk_bishop(square, occ),
+            PieceType::Queen => atk_queen(square, occ),
             _ => Bitboard(0),
         };
 
-        let legal = match piece {
+        let attacks = match piece {
             _ if !pinned.check_bit(square) => attacks,
             PieceType::Knight => Bitboard(0),
             PieceType::Bishop | PieceType::Rook | PieceType::Queen => attacks & line_bb(ksq, square),
             _ => attacks,
         };
 
-        visit(piece, (legal & area).popcount());
+        visit(piece, (attacks & area).popcount());
     }
 }
 
-/// The pin set, king square and area here are the ones [`Mobility::compute_all`] passes down.
+/// Visits each non-king piece with the mobility count used by evaluation.
 pub fn piece_mobility_counts(pos: &Position, color: Color, visit: impl FnMut(PieceType, u32)) {
     for_each_piece_mobility(
         pos,
@@ -530,8 +448,7 @@ pub fn piece_mobility_counts(pos: &Position, color: Color, visit: impl FnMut(Pie
 }
 
 #[inline(always)]
-fn score_side(them: Bitboard, atk_us: Bitboard, mobility: i32, enemy_pawn_atk: Bitboard, xray_us: Bitboard) -> SideMetrics {
-    // Enemy pieces our direct attacks touch (king excluded from attack map).
+fn side_metrics(them: Bitboard, atk_us: Bitboard, mobility: i32, enemy_pawn_atk: Bitboard, xray_us: Bitboard) -> SideMetrics {
     let threats = (atk_us & them).popcount() as i32;
     let shadow_mobility = (xray_us & !enemy_pawn_atk).popcount() as i32;
     let shadow_threats = (xray_us & them).popcount() as i32;
@@ -556,7 +473,7 @@ mod tests {
 
         for fen in FENS {
             let pos = Position::from_fen(fen);
-            let rows = XorBoard::new(&pos);
+            let rows = XorBoard::from_position(&pos);
 
             for color in [Color::White, Color::Black] {
                 let pinned = pos.pinned_pieces(color);
@@ -572,6 +489,6 @@ mod tests {
     #[test]
     fn openness_counts_the_locked_pair() {
         let pos = Position::from_fen("4k3/8/8/4p3/4P3/8/8/4K3 w - - 0 1");
-        assert_eq!(Mobility::compute_openness(&pos), OPEN_UNITY - RAM_SCALE - 2 * PAWN_SCALE);
+        assert_eq!(compute_openness(&pos), OPEN_UNITY - RAM_SCALE - 2 * PAWN_SCALE);
     }
 }

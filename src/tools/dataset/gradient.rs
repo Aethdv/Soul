@@ -1,57 +1,37 @@
-//! Packed tuning record [`FeatureRecord`] and evaluation gradient pipelines.
-//!
-//! [`eval_record`] evaluates a packed position from the side-to-move perspective.
-//! [`accumulate_record_grad`] propagates loss gradients back to evaluation weights.
-//! [`TermSource`] implementations connect each term's generic accumulator logic to record fields.
+//! Cached evaluation and gradients for the tuner.
 
-use super::SoulEntry;
+use super::{SoulEntry, compute_phase_f64};
 use crate::{
     core::{
         defs::{Color, TOTAL_PHASE},
-        phase::compute_phase_f64,
         psqt,
     },
     engine::{
-        combiner::{Accumulators, Combiner, CombinerParams, LinearCombiner, taper},
+        combiner::{self, Accumulators, CombinerParams, taper},
         eval::{SharedFeatures, XrayTerm, apply_all_inputs, evaluate_psqt, extract_phase, scatter_all_terms},
         eval_params::LAYOUT,
-        mobility::{KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics, compute_openness_raw},
+        mobility::{KingSafetyInput, KingSafetyTerm, MobilityInput, MobilityTerm, SafetyMetrics},
         term::{self, TermSource},
     },
     weave::F64x4,
 };
 
-/// Packed 104-byte training position representation.
-///
-/// Stores pre-resolved evaluation features and PSQT indices in side-to-move
-/// perspective (us - them). Feature extraction runs once at startup; only weight
-/// values change across training epochs.
 #[repr(C)]
 #[derive(Default)]
 pub struct FeatureRecord {
-    pub piece_slot: [PieceSlot; 32],
+    psqt_slot: [PsqtSlot; 32],
     pub passed_pawn: [i8; 6],
     pub enemy_king_dist: [i8; 6],
     pub phalanx: [i8; 6],
     pub defended_pawn: [i8; 6],
-    /// Metric differentials (us - them): mobility, shadow mobility, threats, shadow
-    /// threats. i16 because these pass ±127.
     pub mobility_diff: [i16; 4],
-    /// Packed king safety metrics: `[attacked_zone, weak, shield, (ortho << 4) | diag]`.
     pub safety_us: [u8; 4],
     pub safety_them: [u8; 4],
-    /// Piece count differential per type (us - them).
-    pub mat_diffs: [i8; 6],
-    /// Total piece counts per type across both sides for game phase calculation.
+    pub material_diff: [i8; 6],
     pub phase_counts: [u8; 6],
-    /// Fixed-point openness from `compute_openness_raw`, kept as the integer so the
-    /// openness math matches the engine's.
-    pub open_raw: i32,
-    /// Fast static evaluation for volatility filtering.
+    pub openness: i32,
     pub static_eval: i16,
-    /// Search evaluation label (side-to-move relative), or [`SoulEntry::NO_SCORE`].
     pub score: i16,
-    /// Game outcome label (side-to-move relative: 0 = loss, 1 = draw, 2 = win).
     pub result: u8,
     pub xray_ortho: i8,
     pub bishop_pair_diff: i8,
@@ -62,20 +42,24 @@ pub struct FeatureRecord {
     pub tempo: i8,
     pub minor_behind_pawn_diff: i8,
     pub piece_count: u8,
-    /// Number of friendly pieces. Indices `0..us_count` add to score; `us_count..piece_count` subtract.
     pub us_count: u8,
+}
+
+pub struct RecordEval {
+    pub score: f64,
+    phase: f64,
+    buckets: Accumulators<f64>,
+    combiner_params: CombinerParams<f64>,
 }
 
 const _: () = assert!(size_of::<FeatureRecord>() == 104);
 
 impl FeatureRecord {
-    /// Partitions active piece slots into friendly (additive) and opponent (subtractive) slices.
     #[inline(always)]
-    fn gather(&self) -> (&[PieceSlot], &[PieceSlot]) {
-        self.piece_slot[..self.piece_count as usize].split_at(self.us_count as usize)
+    fn split_sides(&self) -> (&[PsqtSlot], &[PsqtSlot]) {
+        self.psqt_slot[..self.piece_count as usize].split_at(self.us_count as usize)
     }
 
-    /// Extracts and packs evaluation features from a dataset entry.
     pub fn from_entry(entry: &SoulEntry) -> Self {
         let pos = entry.to_board();
 
@@ -93,16 +77,11 @@ impl FeatureRecord {
             )
         };
 
-        let mobility_diff = [
-            (mob_us.mobility - mob_them.mobility) as i16,
-            (mob_us.shadow_mobility - mob_them.shadow_mobility) as i16,
-            (mob_us.threats - mob_them.threats) as i16,
-            (mob_us.shadow_threats - mob_them.shadow_threats) as i16,
-        ];
+        let mobility_diff = mob_us.diff(mob_them).map(|d| d as i16);
 
         let sign = if is_black { -1 } else { 1 };
 
-        let acc = pos.initial_accumulator();
+        let acc = pos.psqt_accumulator();
         let phase = extract_phase(&acc);
 
         let mut record = Self {
@@ -112,6 +91,7 @@ impl FeatureRecord {
             static_eval: evaluate_psqt(&pos, &acc, phase) as i16,
             score: entry.score,
             result: entry.result,
+            openness: shared.openness,
             ..Default::default()
         };
 
@@ -121,36 +101,25 @@ impl FeatureRecord {
     }
 }
 
-/// Intermediate state from a forward evaluation pass, consumed by backward gradient accumulation.
-pub struct RecordEval {
-    pub score: f64,
-    pub phase: f64,
-    pub buckets: Accumulators<f64>,
-    pub combiner: CombinerParams<f64>,
-}
-
 #[inline]
 pub fn eval_record(record: &FeatureRecord, values: &[f64]) -> f64 { eval_record_full(record, values).score }
 
-/// Evaluates a packed record using the provided weight vector.
-///
-/// Fills the same buckets `fill_accumulators` fills from a board, through the same
-/// registered terms, so `LinearCombiner` owns every rounding site.
+/// Evaluates a packed record with the same terms and combiner as board evaluation.
 #[inline]
 pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
+    assert!(values.len() >= LAYOUT.total, "values must hold the full parameter vector");
     let layout = &LAYOUT;
     let phase_counts = record.phase_counts.map(f64::from);
     let phase = compute_phase_f64(&phase_counts, values);
 
     // Sum PSQT contributions separately for friendly and opponent pieces.
-    let (ours, theirs) = record.gather();
+    let (ours, theirs) = record.split_sides();
 
-    let sum_psqt = |slots: &[PieceSlot]| {
+    let sum_psqt = |slots: &[PsqtSlot]| {
         slots.iter().fold((0.0, 0.0), |(mg, eg), slot| {
             let (mg_idx, eg_idx) = slot.indices();
-            // SAFETY: PieceSlot::new takes a piece type <= 5 with a mirrored square <= 31,
-            // so mg_idx <= 5·64+31 = 351 and eg_idx = mg_idx+32 <= 383, both inside the
-            // 384-entry PSQT block. Default gives slot zero, which is also in range.
+            // SAFETY: values is full length; PsqtSlot holds type <= 5 and square <= 31,
+            // so mg_idx <= 351 and eg_idx <= 383.
             unsafe { (mg + *values.get_unchecked(mg_idx), eg + *values.get_unchecked(eg_idx)) }
         })
     };
@@ -164,8 +133,9 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     // Most types are level in most positions, so the zero products are worth skipping.
     // The gradient scatter guards the same way.
     let mat_offset = layout.material_offset;
+
     for pt in 0..6 {
-        let diff = f64::from(record.mat_diffs[pt]);
+        let diff = f64::from(record.material_diff[pt]);
         if diff != 0.0 {
             mg_total += diff * values[mat_offset + pt];
             eg_total += diff * values[mat_offset + 6 + pt];
@@ -173,36 +143,35 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
     }
 
     let mut buckets = Accumulators::<f64> {
-        mg_eg: taper(mg_total, eg_total, phase),
+        material_psqt: taper(mg_total, eg_total, phase),
         mobility: 0.0,
         bonus_mg: 0.0,
         bonus_eg: 0.0,
         safety_us: 0.0,
         safety_them: 0.0,
-        danger_us: 0.0,
-        danger_them: 0.0,
+        pressure_us: 0.0,
+        pressure_them: 0.0,
         xray: 0.0,
     };
 
     apply_all_inputs(record, values, phase, &mut buckets);
-
-    let combiner = CombinerParams::from_values(values);
-
-    RecordEval { score: LinearCombiner::forward(&buckets, phase, &combiner), phase, buckets, combiner }
+    let combiner_params = CombinerParams::from_values(values);
+    RecordEval { score: combiner::combine(&buckets, phase, &combiner_params), phase, buckets, combiner_params }
 }
 
-/// Propagates upstream loss gradients (dLoss/dScore) back into the parameter gradient buffer.
-pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradient: f64, grads: &mut [f64]) {
+/// Adds `d_score` times each parameter's partial derivative into `grads`.
+pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, d_score: f64, grads: &mut [f64]) {
+    assert!(grads.len() >= LAYOUT.total, "grads must hold the full parameter vector");
     let mg_weight = eval.phase / f64::from(TOTAL_PHASE);
     let eg_weight = 1.0 - mg_weight;
 
     let layout = &LAYOUT;
-    let (ours, theirs) = record.gather();
+    let (ours, theirs) = record.split_sides();
 
-    let mut scatter = |slots: &[PieceSlot], mg_step: f64, eg_step: f64| {
+    let mut scatter = |slots: &[PsqtSlot], mg_step: f64, eg_step: f64| {
         for slot in slots {
             let (mg_idx, eg_idx) = slot.indices();
-            // SAFETY: Invariants guaranteed by PieceSlot construction.
+            // SAFETY: grads is full length and PsqtSlot indices are in bounds.
             unsafe {
                 *grads.get_unchecked_mut(mg_idx) += mg_step;
                 *grads.get_unchecked_mut(eg_idx) += eg_step;
@@ -210,50 +179,43 @@ pub fn accumulate_record_grad(record: &FeatureRecord, eval: &RecordEval, gradien
         }
     };
 
-    let mg_step = gradient * mg_weight;
-    let eg_step = gradient * eg_weight;
+    let mg_step = d_score * mg_weight;
+    let eg_step = d_score * eg_weight;
 
     scatter(ours, mg_step, eg_step);
     scatter(theirs, -mg_step, -eg_step);
 
     let mat_offset = layout.material_offset;
+
     for pt in 0..6 {
-        let diff = f64::from(record.mat_diffs[pt]);
-        if diff.abs() > 0.001 {
-            grads[mat_offset + pt] += gradient * diff * mg_weight;
-            grads[mat_offset + 6 + pt] += gradient * diff * eg_weight;
+        let diff = f64::from(record.material_diff[pt]);
+        if diff != 0.0 {
+            grads[mat_offset + pt] += d_score * diff * mg_weight;
+            grads[mat_offset + 6 + pt] += d_score * diff * eg_weight;
         }
     }
 
-    let upstreams = LinearCombiner::backward(&eval.buckets, eval.phase, &eval.combiner, gradient, grads);
+    let upstreams = combiner::backward(&eval.buckets, eval.phase, &eval.combiner_params, d_score, grads);
     scatter_all_terms(record, &upstreams, grads);
 }
 
-/// Compact 8-bit PSQT entry address (`piece_type * 32 + mirror_sq`).
-///
-/// Encoded with a tight 32-entry stride since `mirror_sq <= 31`.
-/// [`PieceSlot::mg_index`] expands this to the standard 64-entry table stride.
 #[repr(transparent)]
 #[derive(Clone, Copy, Default)]
-pub struct PieceSlot(u8);
+struct PsqtSlot(u8);
 
-impl PieceSlot {
+impl PsqtSlot {
     #[inline(always)]
     fn new(piece_type: usize, mirror_sq: usize) -> Self {
         debug_assert!(piece_type <= 5 && mirror_sq <= 31, "slot out of range: {piece_type}, {mirror_sq}");
         Self((piece_type * 32 + mirror_sq) as u8)
     }
 
-    /// Computes the MG index (range 0..=351).
-    ///
-    /// Expands `piece_type * 32 + sq` into `piece_type * 64 + sq` via `slot + (slot & !31)`.
     #[inline(always)]
     const fn mg_index(self) -> usize {
         let slot = self.0 as usize;
         slot + (slot & !31)
     }
 
-    /// Returns `(mg_index, eg_index)`. The endgame table sits 32 entries after middlegame.
     #[inline(always)]
     const fn indices(self) -> (usize, usize) {
         let mg = self.mg_index();
@@ -262,68 +224,44 @@ impl PieceSlot {
 }
 
 impl FeatureRecord {
-    /// Unpacks piece nibbles into partitioned gather slots, material differentials,
-    /// phase counts, and pawn openness.
     fn pack_board(&mut self, entry: &SoulEntry) {
         let mut us_count = 0usize;
-        let mut them_slots = [PieceSlot::default(); 32];
+        let mut them_slots = [PsqtSlot::default(); 32];
         let mut them_count = 0usize;
-        let mut mat_diffs = [0i32; 6];
+        let mut material_diff = [0i8; 6];
         let mut phase_counts = [0u8; 6];
-        let mut white_pawns = 0u64;
-        let mut black_pawns = 0u64;
 
-        let stm_black = (entry.stm_and_ep & 0x80) != 0;
+        let stm_black = entry.stm() == Color::Black;
 
-        for (sq, nibble) in super::quant::packed_pieces(entry.occupancy, &entry.pieces) {
+        for (sq, nibble) in super::packing::unpack_pieces(entry.occupancy, &entry.pieces) {
             let raw_type = (nibble & 0x07) as usize;
             let is_black = (nibble & 0x08) != 0;
-            let piece_type = if raw_type == 6 { 3 } else { raw_type }; // Map castling rook back to normal rook
-            debug_assert!(piece_type <= 5, "malformed nibble: pt={piece_type}");
-
-            if piece_type > 5 {
-                continue;
-            }
-
+            let piece_type = if raw_type == 6 { 3 } else { raw_type };
             let is_us = is_black == stm_black;
             let sq_idx = if is_black { sq.as_usize() } else { sq.flip_rank().as_usize() };
-            let slot = PieceSlot::new(piece_type, psqt::mirror_sq(sq_idx));
+            let slot = PsqtSlot::new(piece_type, psqt::mirror_sq(sq_idx));
 
             if is_us {
-                self.piece_slot[us_count] = slot;
+                self.psqt_slot[us_count] = slot;
                 us_count += 1;
             } else {
                 them_slots[them_count] = slot;
                 them_count += 1;
             }
 
-            mat_diffs[piece_type] += if is_us { 1 } else { -1 };
+            material_diff[piece_type] += if is_us { 1 } else { -1 };
             phase_counts[piece_type] += 1;
-
-            if piece_type == 0 {
-                let bit = 1u64 << sq.0;
-                if is_black {
-                    black_pawns |= bit;
-                } else {
-                    white_pawns |= bit;
-                }
-            }
         }
 
-        self.piece_slot[us_count..us_count + them_count].copy_from_slice(&them_slots[..them_count]);
+        self.psqt_slot[us_count..us_count + them_count].copy_from_slice(&them_slots[..them_count]);
         self.us_count = us_count as u8;
         self.piece_count = (us_count + them_count) as u8;
-        self.mat_diffs = mat_diffs.map(|diff| diff as i8);
+        self.material_diff = material_diff;
         self.phase_counts = phase_counts;
-        self.open_raw = compute_openness_raw(white_pawns, black_pawns);
     }
 }
 
-/// Packs safety metrics into 4 bytes:
-/// - Byte 0: Attacker count
-/// - Byte 1: Weak square count (signed i8 as u8)
-/// - Byte 2: Pawn shield score (signed i8 as u8)
-/// - Byte 3: `(ortho_exposure << 4) | diag_exposure` (each 4 bits, 0..=15)
+// Bytes: attacked_zone, weak, shield, then ortho/diag exposure nibbles (maxima 14/13).
 #[inline]
 fn pack_safety(m: &SafetyMetrics) -> [u8; 4] {
     [m.attacked_zone as u8, m.weak as u8, m.shield as u8, ((m.ortho_exposure as u8) << 4) | m.diag_exposure as u8]
@@ -333,8 +271,8 @@ fn pack_safety(m: &SafetyMetrics) -> [u8; 4] {
 fn unpack_safety(raw: [u8; 4]) -> SafetyMetrics {
     SafetyMetrics {
         attacked_zone: raw[0] as usize,
-        weak: raw[1] as i8 as i32,
-        shield: raw[2] as i8 as i32,
+        weak: raw[1] as i32,
+        shield: raw[2] as i32,
         ortho_exposure: (raw[3] >> 4) as i32,
         diag_exposure: (raw[3] & 0x0F) as i32,
     }
@@ -390,15 +328,7 @@ impl TermSource<MobilityTerm> for FeatureRecord {
 
     #[inline(always)]
     fn extract(&self) -> MobilityInput {
-        MobilityInput {
-            diff: F64x4::from([
-                f64::from(self.mobility_diff[0]),
-                f64::from(self.mobility_diff[1]),
-                f64::from(self.mobility_diff[2]),
-                f64::from(self.mobility_diff[3]),
-            ]),
-            openness: self.open_raw,
-        }
+        MobilityInput { diff: F64x4::from(self.mobility_diff.map(f64::from)), openness: self.openness }
     }
 }
 
@@ -427,7 +357,7 @@ mod tests {
     fn every_slot_addresses_its_own_psqt_entry() {
         for pt in 0..6 {
             for sq in 0..32 {
-                let mg = PieceSlot::new(pt, sq).mg_index();
+                let mg = PsqtSlot::new(pt, sq).mg_index();
                 assert_eq!(mg, pt * 64 + sq, "slot ({pt}, {sq}) lands on the wrong entry");
                 assert!(mg + 32 < 384, "slot ({pt}, {sq}) reaches past the table");
             }
@@ -436,7 +366,7 @@ mod tests {
 
     #[test]
     fn packed_differentials_recount_from_a_fresh_board() {
-        use crate::tools::dataset::quant;
+        use crate::tools::dataset::packing;
 
         let fens = [
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -446,15 +376,15 @@ mod tests {
 
         for fen in fens {
             let pos = Position::from_fen(fen);
-            let entry = quant::from_board(&pos, 0.0, None);
+            let entry = packing::from_board(&pos, 0.0, None);
             let record = FeatureRecord::from_entry(&entry);
 
             for pt in PieceType::ALL {
                 let us = pos.pieces(pt, pos.stm).popcount() as i32;
                 let them = pos.pieces(pt, pos.stm.opposite()).popcount() as i32;
-                assert_eq!(i32::from(record.mat_diffs[pt.as_usize()]), us - them, "{fen}");
+                assert_eq!(i32::from(record.material_diff[pt.as_usize()]), us - them, "{fen}");
             }
-            assert_eq!(i32::from(record.piece_count), pos.occupancy().popcount() as i32, "{fen}");
+            assert_eq!(i32::from(record.piece_count), pos.occ.popcount() as i32, "{fen}");
         }
     }
 }

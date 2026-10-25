@@ -80,7 +80,7 @@ pub fn load_datasets(paths: &[String], filter: &ReplayFilter) -> (Vec<SoulEntry>
                     // No game boundaries in the format, so every position is its own partition.
                     all_groups.extend(iter::repeat_n(1u32, epd_entries.len()));
                     for entry in &epd_entries {
-                        let stm = entry.board.stm;
+                        let stm = entry.board.stm();
                         all_entries.push(SoulEntry::from_board(
                             &entry.board,
                             flip_wdl(entry.result, stm),
@@ -180,13 +180,31 @@ fn bail_dataset(path: &str, err: &dyn fmt::Display) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{SoulEntry, dataset_fingerprint};
+    use std::{env, fs, process};
+
+    use super::{ReplayFilter, SoulEntry, dataset_fingerprint, load_datasets};
+
+    #[test]
+    fn epd_labels_become_side_to_move_relative() {
+        let path = env::temp_dir().join(format!("soul-epd-labels-{}.epd", process::id()));
+        fs::write(
+            &path,
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1 | 476 | 1.0\n\
+             4k3/8/8/8/8/8/8/4K3 b - - 0 1 | 476 | 1.0\n\
+             4k3/8/8/8/8/8/8/4K3 b - - 0 1;d\n",
+        )
+        .expect("write EPD");
+        let (entries, ..) = load_datasets(&[path.to_str().expect("UTF-8 path").to_owned()], &ReplayFilter::UNRESTRICTED);
+        fs::remove_file(path).expect("remove EPD");
+        let labels: Vec<_> = entries.iter().map(|entry| (entry.score, entry.result)).collect();
+        assert_eq!(labels, [(476, 2), (-476, 0), (SoulEntry::NO_SCORE, 1)]);
+    }
 
     #[test]
     fn an_edit_beyond_the_first_chunk_changes_the_fingerprint() {
         let entries = vec![SoulEntry::default(); 70_000];
         let mut edited = entries.clone();
-        edited[69_000].castling = 0b1010;
+        edited[69_000].castling_rights = 0b1010;
         assert_eq!(dataset_fingerprint(&entries), dataset_fingerprint(&entries), "the same entries must hash the same");
         assert_ne!(
             dataset_fingerprint(&entries),

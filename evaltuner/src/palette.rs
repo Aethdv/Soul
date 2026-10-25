@@ -27,7 +27,7 @@ pub const ALARM: &str = color::ALARM_PEN;
 /// Parameters the run changed.
 pub const MOVED: &str = color::JADE_PEN;
 
-pub use color::{CLEAR_LINE, RESET, ansi_fg as fg};
+pub use color::{CLEAR_TO_EOL, RESET, ansi_fg as fg};
 
 /// A warning line: the alarm pen, the `[!]` prefix and a reset.
 #[macro_export]

@@ -297,7 +297,7 @@ fn main() {
     // BMI2 extracts the occupancy with PEXT, so the magic and its shift are dead
     // weight there and the entry is two fields instead of four.
     for (name, entries) in [("ROOKS", &rooks), ("BISHOPS", &bishops)] {
-        writeln!(f, "pub static {name}: [MagicEntry; 64] = [").unwrap();
+        writeln!(f, "static {name}: [MagicEntry; 64] = [").unwrap();
         for entry in entries {
             if is_bmi2 {
                 writeln!(f, "    MagicEntry {{ mask: {:#018X}, offset: {} }},", entry.mask, entry.offset).unwrap();
@@ -313,7 +313,7 @@ fn main() {
         writeln!(f, "];").unwrap();
     }
 
-    writeln!(f, "pub static ATTACK_TABLE: [u64; {}] = [", table.len()).unwrap();
+    writeln!(f, "static ATTACK_TABLE: [u64; {}] = [", table.len()).unwrap();
     for chunk in table.chunks(8) {
         write!(f, "    ").unwrap();
         for &val in chunk {
@@ -325,7 +325,7 @@ fn main() {
 
     let (lines, between) = init_lines_between();
     for (name, rows) in [("LINES", lines), ("BETWEEN", between)] {
-        writeln!(f, "pub static {name}: [[u64; 64]; 64] = [").unwrap();
+        writeln!(f, "static {name}: [[u64; 64]; 64] = [").unwrap();
         for row in rows {
             write!(f, "    [").unwrap();
             for val in row {

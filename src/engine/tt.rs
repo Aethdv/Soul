@@ -1,16 +1,11 @@
-//! Transposition table: the search's memory of positions it has already seen.
+//! The transposition table caches search results by position hash.
+//! A hit can improve move ordering or, when its bound is deep enough, skip a
+//! subtree. Iterative deepening makes earlier results useful to later searches.
 //!
-//! When iterative deepening revisits a node, it hopes to find it already here. A hit
-//! can cut a whole subtree, and since each iteration seeds the next, deepening stays
-//! cheap.
-//!
-//! The table is lockless because Lazy SMP has every thread reading and writing it at
-//! once. A 16-bit verification key catches most hash collisions; the roughly one in
-//! 2¹⁶ that slips through can hand back a wrong score, or a move belonging to another
-//! position, which is why every stored move is re-checked by `is_pseudo_legal` before
-//! the search plays it.
-//!
-//! Entries sit in three-slot clusters, so replacement has a choice of victim.
+//! Lazy SMP workers share the table without locks. Each entry has a 16-bit
+//! verification key, so collisions can return another position's data; concurrent
+//! writes can also mix fields. Before a stored move is used, `is_pseudo_legal`
+//! checks it against the current position. If it fails, the entire entry is discarded.
 
 use std::{
     arch, mem, slice,
@@ -31,12 +26,9 @@ use crate::{
 };
 
 /// No eval stored, which is what an in-check store leaves behind.
-/// Sits above MATE, so it can never be mistaken for a score.
-pub const SCORE_NONE: i32 = 32000;
+pub(super) const SCORE_NONE: i32 = 32000;
 
 const CLUSTER_SIZE: usize = 3;
-
-/// `age` is 5 bits; generation distance is read modulo 32.
 const AGE_MASK: u8 = 0x1F;
 
 /// How much deeper a stored result must be to outrank a revisit of the same position.
@@ -46,11 +38,9 @@ const _: () = assert!(mem::size_of::<TtEntry>() == 10);
 const _: () = assert!(mem::size_of::<Cluster>() == 32);
 const _: () = assert!(mem::align_of::<Cluster>() == 32);
 
-/// What a stored score proves. Discriminants are the on-slot encoding, two bits of `packed`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
-pub enum Bound {
-    /// Empty slot.
+pub(super) enum Bound {
     #[default]
     None = 0,
     Exact = 1,
@@ -61,16 +51,27 @@ pub enum Bound {
 }
 
 impl Bound {
-    /// Total over the two bits, so a torn read decodes to a variant instead of nothing.
+    /// Classifies the score against the window before search updates alpha.
+    #[inline(always)]
+    pub(super) fn from_score(score: i32, alpha: i32, beta: i32) -> Self {
+        if score >= beta {
+            Self::Lower
+        } else if score > alpha {
+            Self::Exact
+        } else {
+            Self::Upper
+        }
+    }
+
     #[inline(always)]
     const fn from_bits(bits: u16) -> Self {
-        // SAFETY: the mask leaves 0..=3, and every one of those is a declared discriminant.
+        // SAFETY: masking with 0x3 restricts the discriminant to 0..=3, covering all four variants.
         unsafe { mem::transmute((bits & 0x3) as u8) }
     }
 }
 
 #[inline(always)]
-pub fn can_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> bool {
+pub(super) fn can_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> bool {
     match bound {
         Bound::Exact => true,
         Bound::Lower => score >= beta,
@@ -79,9 +80,8 @@ pub fn can_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> bool {
     }
 }
 
-/// The static eval clamped into the range a searched score proves.
 #[inline(always)]
-pub fn clamp_to_bound(bound: Bound, score: i32, eval: i32) -> i32 {
+pub(super) fn clamp_to_bound(bound: Bound, score: i32, eval: i32) -> i32 {
     match bound {
         Bound::Exact => score,
         Bound::Lower => eval.max(score),
@@ -90,8 +90,6 @@ pub fn clamp_to_bound(bound: Bound, score: i32, eval: i32) -> i32 {
     }
 }
 
-/// A stale move is caught by `is_pseudo_legal`,
-/// and a stale score is only a bad cutoff.
 #[repr(C)]
 struct TtEntry {
     key: AtomicU16,
@@ -102,34 +100,30 @@ struct TtEntry {
     packed: AtomicU16,
 }
 
-pub struct TranspositionTable {
+pub(crate) struct TranspositionTable {
     clusters: HugePages<Cluster>,
-    /// Bumped once per search. Wraps at 255, and aging reads only its low 5 bits,
-    /// so `wrapping_sub` measures generation distance modulo 32.
-    pub generation: AtomicU8,
+    /// Bumped per search; aging measures generation distance modulo 32.
+    generation: AtomicU8,
     age_factor: AtomicI32,
-    /// The machine's locality, detected once.
     numa: NumaTopology,
 }
 
-/// Half a cache line, aligned so a cluster never straddles two.
 #[repr(C, align(32))]
 struct Cluster {
     slots: [TtEntry; CLUSTER_SIZE],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TtMove {
-    /// A fail-low store leaves a null move behind.
+pub(super) enum TtMove {
     Null,
     Found(Move),
-    /// Garbage under a matching key, so the slot's score proves nothing either.
+    /// A pseudo-illegal move means the verification key collided; discard.
     Collision,
 }
 
 impl TtMove {
     #[inline(always)]
-    pub fn get(self) -> Option<Move> {
+    pub(super) fn get(self) -> Option<Move> {
         match self {
             Self::Found(mv) => Some(mv),
             Self::Null | Self::Collision => None,
@@ -137,27 +131,23 @@ impl TtMove {
     }
 }
 
-/// What a probe hands back, already unfolded into search units.
 #[derive(Clone, Copy)]
-pub struct TtData {
+pub(super) struct TtData {
     raw_mv: Move,
-    pub pv: bool,
-    /// Raw static eval at store time, `SCORE_NONE` when the position was in check.
-    pub eval: i32,
-    pub score: i32,
-    pub bound: Bound,
-    pub depth: i32,
+    pub(super) pv: bool,
+    pub(super) eval: i32,
+    pub(super) score: i32,
+    pub(super) bound: Bound,
+    pub(super) depth: i32,
 }
 
 impl TtData {
-    /// No slot matched.
-    pub const NONE: Self =
+    pub(super) const NONE: Self =
         Self { raw_mv: Move::null(), pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
 
-    /// Bind once per node and after the cutoff test,
-    /// since a probe that cuts never needs the move.
+    /// A pseudo-illegal move makes every field in the entry untrustworthy.
     #[inline(always)]
-    pub fn mv(&self, pos: &Position) -> TtMove {
+    pub(super) fn mv(&self, pos: &Position) -> TtMove {
         if self.raw_mv.is_null() {
             TtMove::Null
         } else if is_pseudo_legal(pos, self.raw_mv) {
@@ -168,7 +158,6 @@ impl TtData {
     }
 }
 
-#[derive(Clone, Copy, Default)]
 struct SlotWrite {
     key: u16,
     mv: u16,
@@ -177,27 +166,28 @@ struct SlotWrite {
     depth: u8,
     bound: Bound,
     age: u8,
-    pv: u8,
+    pv: bool,
 }
 
-/// The cluster index is drawn from the high bits.
+/// Low 16 bits; `index` draws the cluster from high bits.
 #[inline(always)]
 const fn verification_key(hash: u64) -> u16 { hash as u16 }
 
-const fn pack(depth: u8, bound: Bound, pv: u8, age: u8) -> u16 {
-    depth as u16 | ((bound as u16 & 0x3) << 8) | ((pv as u16 & 0x1) << 10) | ((age as u16 & 0x1F) << 11)
+const fn pack(depth: u8, bound: Bound, pv: bool, age: u8) -> u16 {
+    depth as u16 | ((bound as u16 & 0x3) << 8) | ((pv as u16) << 10) | ((age as u16 & 0x1F) << 11)
 }
 
 const fn packed_depth(packed: u16) -> u8 { (packed & 0xFF) as u8 }
 const fn packed_bound(packed: u16) -> Bound { Bound::from_bits(packed >> 8) }
-const fn packed_pv(packed: u16) -> u8 { ((packed >> 10) & 0x1) as u8 }
+const fn packed_pv(packed: u16) -> bool { ((packed >> 10) & 0x1) != 0 }
 const fn packed_age(packed: u16) -> u8 { ((packed >> 11) & 0x1F) as u8 }
 
 impl TtEntry {
-    /// The replacement scan's read. Relaxed is enough, since a scan never reads payload
-    /// off this load, and a stale word costs the store path a preserved move and no more.
     #[inline(always)]
-    fn scan_read(&self) -> (u16, u16) { (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed)) }
+    fn scan_read(&self) -> (u16, u16) {
+        // Replacement tolerates stale metadata; probes use the Acquire path.
+        (self.key.load(Ordering::Relaxed), self.packed.load(Ordering::Relaxed))
+    }
 
     #[inline(always)]
     fn is_occupied(&self) -> bool { packed_bound(self.packed.load(Ordering::Relaxed)) != Bound::None }
@@ -214,12 +204,13 @@ impl TtEntry {
         if bound == Bound::None {
             return None;
         }
+
         Some(TtData {
             raw_mv: Move::from_u16(self.mv.load(Ordering::Relaxed)),
             score: score_from_tt(i32::from(self.score.load(Ordering::Relaxed).cast_signed()), ply),
             depth: i32::from(packed_depth(packed)),
             bound,
-            pv: packed_pv(packed) != 0,
+            pv: packed_pv(packed),
             eval: i32::from(self.eval.load(Ordering::Relaxed).cast_signed()),
         })
     }
@@ -231,14 +222,13 @@ impl TtEntry {
         self.score.store(entry.score.cast_unsigned(), Ordering::Relaxed);
         self.eval.store(entry.eval.cast_unsigned(), Ordering::Relaxed);
         self.packed.store(packed, Ordering::Relaxed);
-        // key goes last. A reader that Acquire-loads this new key is then
-        // guaranteed the four payload writes above, released before it.
+        // Concurrent writers can still mix payload fields; Acquire does not guarantee a coherent snapshot.
         self.key.store(entry.key, Ordering::Release);
     }
 }
 
 impl TranspositionTable {
-    pub fn new(size_mb: usize, threads: usize) -> Self {
+    pub(crate) fn new(size_mb: usize, threads: usize) -> Self {
         let numa = NumaTopology::detect();
         let clusters = Self::alloc(size_mb, &numa, threads);
         Self {
@@ -249,37 +239,30 @@ impl TranspositionTable {
         }
     }
 
-    pub fn resize(&mut self, size_mb: usize, threads: usize) { self.clusters = Self::alloc(size_mb, &self.numa, threads); }
+    pub(crate) fn set_age_factor(&self, factor: i32) { self.age_factor.store(factor, Ordering::Relaxed); }
+    pub(crate) fn spans_nodes(&self) -> bool { self.numa.num_nodes() > 1 }
+    pub(crate) fn page_kind(&self) -> PageKind { self.clusters.kind() }
 
-    pub fn set_age_factor(&self, factor: i32) { self.age_factor.store(factor, Ordering::Relaxed); }
-    pub fn spans_nodes(&self) -> bool { self.numa.num_nodes() > 1 }
-    pub fn page_kind(&self) -> PageKind { self.clusters.kind() }
-
-    /// The cluster count follows from the page-rounded byte size, so a 1GB-page
-    /// table holds a few more slots than a 4KB one of the same request.
+    /// Page rounding determines the cluster count, not the requested size.
     fn alloc(size_mb: usize, numa: &NumaTopology, threads: usize) -> HugePages<Cluster> {
         let bytes = size_mb.max(1) * 1024 * 1024;
-        // SAFETY (both paths): Cluster is valid when zero-initialized (all fields
-        // are AtomicU16(0), so every slot reads back as BOUND_NONE). Satisfies HugePages::mapped
-        // and HugePages::zeroed's documented precondition. On the multi-node path,
-        // first_touch does the actual zeroing before any reader reaches the data.
-        if numa.should_distribute(threads) {
+
+        if numa.should_split_across_nodes(threads) {
+            // SAFETY: zero-initialized clusters are valid: a zero bound marks each slot empty.
+            // Page alignment satisfies Cluster's 32-byte alignment requirement.
             let clusters = unsafe { HugePages::mapped(bytes) };
-            // SAFETY: the mapping is fresh and unpublished, so nothing can read it.
+            // SAFETY: The mapping is fresh and unpublished.
             unsafe { first_touch(&clusters, numa) };
             clusters
         } else {
-            unsafe { HugePages::zeroed(bytes) }
+            unsafe { HugePages::prefaulted(bytes) }
         }
     }
 
-    /// Occupancy in permille (0..=1000), sampled over the first 1000 slots.
-    pub fn hashfull(&self) -> usize {
+    /// Occupancy in permille, sampled from up to the first 1000 slots.
+    pub(super) fn hashfull(&self) -> usize {
         let total = self.clusters.len() * CLUSTER_SIZE;
         let sample = total.min(1000);
-        if sample == 0 {
-            return 0;
-        }
         self.clusters
             .iter()
             .flat_map(|c| c.slots.iter())
@@ -290,17 +273,15 @@ impl TranspositionTable {
             / sample
     }
 
-    /// Empty the table and reset the generation counter, placing the cleared pages for
-    /// the thread count the next search will use. On a multi-node box this is also the
-    /// mapping's first fault, since `alloc` left it untouched.
+    /// Clears the table and resets its generation. On NUMA systems, each slice
+    /// is cleared by a thread bound to its node.
     ///
     /// # Safety
-    /// No search may be running. The clear writes the region non-atomically, so a
-    /// probe landing in it is a data race however atomic the slots are.
-    pub unsafe fn clear(&self, threads: usize) {
-        // SAFETY: caller's contract, on both branches.
+    /// No search may access the table during the clear; slots are zeroed non-atomically.
+    pub(crate) unsafe fn clear(&self, threads: usize) {
+        // SAFETY: The caller excludes concurrent access in both branches.
         unsafe {
-            if self.numa.should_distribute(threads) {
+            if self.numa.should_split_across_nodes(threads) {
                 first_touch(&self.clusters, &self.numa);
             } else {
                 self.clusters.clear();
@@ -309,32 +290,27 @@ impl TranspositionTable {
         self.generation.store(0, Ordering::Relaxed);
     }
 
-    pub fn begin_search(&self) { self.generation.fetch_add(1, Ordering::Relaxed); }
+    pub(crate) fn begin_search(&self) { self.generation.fetch_add(1, Ordering::Relaxed); }
 
-    /// Keeps the thread's compute on its cores and the per-thread state it allocates
-    /// next in a warm L3.
-    pub fn bind_search_thread(&self, thread_id: usize, threads: usize) {
-        if self.numa.should_bind(threads) {
-            self.numa.bind_to_domain(self.numa.distribute(threads)[thread_id]);
+    pub(crate) fn bind_search_thread(&self, thread_id: usize, threads: usize) {
+        if self.numa.should_bind_l3(threads) {
+            self.numa.bind_to_l3_domain(self.numa.assign_l3_domains(threads)[thread_id]);
         }
     }
 
-    /// A TT lookup is a near-random memory access, the kind that stalls the negamax
-    /// loop on a miss; issued early, the fetch overlaps the work up to the read.
+    /// TT probes have poor locality; prefetch early to overlap the cache miss with useful work.
     #[inline(always)]
-    pub fn prefetch(&self, hash: u64) {
+    pub(super) fn prefetch(&self, hash: u64) {
         let idx = self.index(hash);
-        // SAFETY: _mm_prefetch is a non-faulting hint instruction available
-        // on all x86_64 targets; ptr is valid within the allocation.
+        // SAFETY: index bounds idx to the allocation; prefetch is non-faulting.
         unsafe {
             let ptr = self.clusters.as_ptr().add(idx) as *const i8;
-            #[cfg(target_arch = "x86_64")]
             arch::x86_64::_mm_prefetch::<{ arch::x86_64::_MM_HINT_T0 }>(ptr);
         }
     }
 
     #[inline(always)]
-    pub fn probe(&self, hash: u64, ply: usize) -> TtData {
+    pub(super) fn probe(&self, hash: u64, ply: usize) -> TtData {
         let key16 = verification_key(hash);
         self.cluster(self.index(hash))
             .slots
@@ -344,14 +320,14 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
+    pub(super) fn store(&self, hash: u64, ply: usize, depth: i32, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         self.store_in::<false>(hash, ply, depth, score, mv, bound, pv, eval);
     }
 
-    /// Qsearch floods the table with shallow entries, so its replacement is timid:
+    /// QSearch floods the table with shallow entries, so its replacement is timid:
     /// a fresh deep result is never evicted for one.
     #[inline(always)]
-    pub fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
+    pub(super) fn store_qs(&self, hash: u64, ply: usize, score: i32, mv: Move, bound: Bound, pv: bool, eval: i32) {
         self.store_in::<true>(hash, ply, 0, score, mv, bound, pv, eval);
     }
 
@@ -363,7 +339,7 @@ impl TranspositionTable {
         let cluster = self.cluster(self.index(hash));
 
         let mut victim = (!QS).then_some(0);
-        // Qsearch evicts only at quality zero or below, so its bar sits one above it.
+        // QSearch evicts only at quality zero or below, so its bar sits one above it.
         let mut worst_quality = if QS { 1 } else { i32::MAX };
         let mut existing = None;
 
@@ -393,14 +369,14 @@ impl TranspositionTable {
         }
 
         let mut store_mv = mv.inner();
-        let mut store_pv = pv as u8;
+        let mut store_pv = pv;
 
         if existing.is_some() {
             if mv.is_null() && !QS {
+                // No new move to order by; keep the stored one.
                 store_mv = slot.mv.load(Ordering::Relaxed);
             }
-            // Every call site passes the flag its own probe read, so this
-            // catches only a probe that was thrown out as a collision.
+            // The probe may have missed this entry; don't clear its PV bit.
             store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
         }
 
@@ -409,7 +385,6 @@ impl TranspositionTable {
             mv: store_mv,
             score: score_to_tt(score, ply) as i16,
             eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-            // 8-bit field covers MAX_DEPTH (246); clamp just guards the cast.
             depth: depth.clamp(0, u8::MAX as i32) as u8,
             bound,
             age: cur_age,
@@ -419,7 +394,7 @@ impl TranspositionTable {
 
     #[inline(always)]
     fn cluster(&self, idx: usize) -> &Cluster {
-        // SAFETY: idx is index()'s output, a mulhi64 in [0, clusters.len()).
+        // SAFETY: index maps every hash into 0..self.clusters.len().
         unsafe { self.clusters.get_unchecked(idx) }
     }
 
@@ -427,8 +402,8 @@ impl TranspositionTable {
     fn index(&self, hash: u64) -> usize { mulhi64(hash, self.clusters.len()) }
 }
 
-/// Whether the entry already stored beats a revisit of the same position.
-/// An exact bound is the position's value rather than a window artifact.
+/// Whether the stored entry outranks a revisit of the same position.
+/// An exact result always replaces the stored entry, regardless of depth.
 #[inline(always)]
 fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8) -> bool {
     bound != Bound::Exact
@@ -436,31 +411,28 @@ fn stored_outranks(packed: u16, depth: i32, pv: bool, bound: Bound, cur_age: u8)
         && i32::from(packed_depth(packed)) >= depth + 2 * i32::from(pv) + DEPTH_SLACK
 }
 
-/// How readily a slot gives way: its depth, discounted by how many generations
-/// old it is. `age_factor` sets the exchange rate between the two.
+/// Deeper entries score higher; each generation of age costs `age_factor`.
 #[inline(always)]
 fn replacement_quality(packed: u16, current_age: u8, age_factor: i32) -> i32 {
     let gen_diff = (current_age.wrapping_sub(packed_age(packed)) & AGE_MASK) as i32;
     packed_depth(packed) as i32 - gen_diff * age_factor
 }
 
-/// First-touch decides a page's home node, so zeroing each slice from a thread bound
-/// to its own node spreads the table across the memory controllers.
+/// First-touch determines NUMA placement, so each thread zeroes its local slice.
 ///
 /// # Safety
-/// No search may be running: builds an exclusive `&mut` over the shared region
-/// and writes it non-atomically.
+/// No search may run: this creates an exclusive mutable slice and writes it non-atomically.
 unsafe fn first_touch(clusters: &HugePages<Cluster>, numa: &NumaTopology) {
     let nodes = numa.num_nodes();
     let len = clusters.len();
-    // SAFETY: caller's contract; the region maps len clusters.
+    // SAFETY: clusters provides storage for len aligned clusters.
     let region = unsafe { slice::from_raw_parts_mut(clusters.as_ptr() as *mut Cluster, len) };
+
     thread::scope(|scope| {
         for (node, chunk) in region.chunks_mut(len.div_ceil(nodes)).enumerate() {
             scope.spawn(move || {
                 numa.bind_to_node(node);
-                // SAFETY: chunk is this thread's disjoint slice; a zeroed Cluster is
-                // the empty state, so writing zeros first-touches it into a valid one.
+                // SAFETY: Chunks are disjoint, and zeroed clusters represent empty slots.
                 unsafe { chunk.as_mut_ptr().write_bytes(0, chunk.len()) };
             });
         }

@@ -1,14 +1,4 @@
 //! Static Exchange Evaluation.
-//!
-//! `see_ge(pos, mv, threshold, pins, values)` answers in time linear in the attacker
-//! count: will the moving side net at least `threshold` material if both
-//! sides recapture optimally on `mv`'s destination?
-//!
-//! Used by qsearch to prune losing captures, by the picker for the
-//! good/bad-capture split, and by search for SEE pruning and ProbCut.
-//!
-//! One `balance` integer, perspective-flipped per recapture: no scratch
-//! array, no post-loop minimax pass.
 
 use crate::{
     core::{
@@ -23,8 +13,7 @@ use crate::{
     engine::search_params::SearchParams,
 };
 
-/// SEE's own scale, so shifting material into PSQT does not move search thresholds. King stays 0.
-pub const fn see_values(sp: &SearchParams) -> [i32; 8] {
+pub(crate) const fn see_values(sp: &SearchParams) -> [i32; 8] {
     let mut v = [0i32; 8];
     v[PieceType::Pawn.as_usize()] = sp.see_value_pawn;
     v[PieceType::Knight.as_usize()] = sp.see_value_knight;
@@ -34,20 +23,11 @@ pub const fn see_values(sp: &SearchParams) -> [i32; 8] {
     v
 }
 
-/// Capture order for the exchange loop: cheapest first, the king left out because
-/// reaching it ends the chain rather than continuing it.
 const LVA_ORDER: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen];
 
-/// Is the static exchange on `mv`'s destination square at least
-/// `threshold` centipawns for the side making `mv`?
-///
-/// The pin scan and the value table both belong to the caller, so a loop of
-/// exchanges at one position pays for them once. En passant, promotions, castling
-/// and revealed slider x-rays are all modeled.
+/// Whether the mover nets at least `threshold` from the exchange after `mv`.
 #[must_use]
-pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, values: &[i32; 8]) -> bool {
-    // Castling captures nothing, and its to square holds our own rook, so the
-    // exchange loop would price a trade that never happens.
+pub(crate) fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, values: &[i32; 8]) -> bool {
     if mv.is_castling() {
         return threshold <= 0;
     }
@@ -55,41 +35,30 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, values: &[i
     let from = mv.from();
     let to = mv.to();
 
-    // Resolve the initial exchange into two scalars:
-    //   gain     - material that moves into our column this ply
-    //              (captured piece + promotion upgrade, if any)
-    //   attacker - piece sitting on to after our move, whose value
-    //              will be lost if the opponent recaptures
+    // gain includes the capture and promotion gain; attacker is the piece
+    // left on `to`, whose value the next recapture would win.
     let (gain, attacker) = if mv.is_en_passant() {
-        (val(values, PieceType::Pawn), PieceType::Pawn)
+        (values[PieceType::Pawn], PieceType::Pawn)
     } else if let Some(promo) = mv.promo() {
-        // The mover becomes promo; we earn the upgrade on top of
-        // whatever (if anything) was captured on to.
-        let captured = val(values, pos.piece_at(to));
-        let upgrade = val(values, promo) - val(values, PieceType::Pawn);
+        let captured = values[pos.piece_at(to)];
+        let upgrade = values[promo] - values[PieceType::Pawn];
         (captured + upgrade, promo)
     } else {
-        (val(values, pos.piece_at(to)), pos.piece_at(from))
+        (values[pos.piece_at(to)], pos.piece_at(from))
     };
 
-    // What the side to move still has to gain to beat the previous player's outcome.
     let mut balance = gain - threshold;
     if balance < 0 {
-        // Even with the free gift, the move doesn't reach threshold.
-        return false;
+        return false; // even without a recapture, the move falls short of threshold.
     }
 
-    balance = val(values, attacker) - balance;
+    balance = values[attacker] - balance;
     if balance <= 0 {
-        // Even if the attacker is lost for nothing, the move still clears
-        // threshold, so no deeper search is needed.
-        return true;
+        return true; // even if the attacker is lost for nothing, the move still clears threshold.
     }
 
-    // Rebuild occupancy with our attacker lifted off its square
-    // (and for en passant also the victim pawn on to ^ 8),
-    // then recompute the full attacker set from scratch, picking
-    // up any slider that was previously blocked by our attacker.
+    // Attacks to `to` don't depend on its occupancy. Vacating `from` and,
+    // for en passant, the captured pawn's square can reveal sliders.
     let mut occ = pos.occ ^ from.bitboard();
     if mv.is_en_passant() {
         occ ^= (to ^ 8).bitboard();
@@ -101,36 +70,28 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, values: &[i
     let diag = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
     let orth = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
 
-    let caller = pos.color_at(from);
-    let mut stm = caller;
+    let mut stm = pos.color_at(from);
     let mut flipped = false;
 
     loop {
         stm = stm.opposite();
         let stm_attackers = attackers & pos.side_bb[stm];
         if stm_attackers.is_empty() {
-            // The side to move has no attacker left, so the trade ends with
-            // the previous mover keeping their net.
+            // The previous mover keeps their net gain.
             return !flipped;
         }
 
-        // Pick the least-valuable attacker.
         let attacker_of = |pt: PieceType| (stm_attackers & pos.role_bb[pt]).into_iter().next().map(|sq| (pt, sq));
         let Some((lva, lva_sq)) = LVA_ORDER.into_iter().find_map(attacker_of) else {
-            // A king may not capture into check, so an opposing attacker still on
-            // the square ends the chain instead of continuing it.
+            // A king can recapture only if the target square is undefended.
             let opp_attackers = attackers & pos.side_bb[stm.opposite()];
             return if opp_attackers.is_not_empty() { !flipped } else { flipped };
         };
 
         occ ^= lva_sq.bitboard();
 
-        // Reveal x-rays through the newly vacated square:
-        //   Pawn   - diagonal sliders behind the capturing pawn
-        //   Bishop - diagonal sliders collinear with the bishop
-        //   Rook   - orthogonal sliders collinear with the rook
-        //   Queen  - both
-        //   Knight - nothing (leaper, no ray behind it)
+        // Removing the attacker can uncover a slider behind it.
+        // Pawn recaptures uncover diagonal sliders, just like bishops.
         match lva {
             PieceType::Pawn | PieceType::Bishop => {
                 attackers |= atk_bishop(to, occ) & diag;
@@ -145,32 +106,29 @@ pub fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, values: &[i
         }
         attackers &= occ & !excluded;
 
-        // Negamax flip: the next player's running deficit is this attacker's value
-        // minus the previous player's. Ties go to the caller, so once the perspective
-        // has flipped, break-even no longer clears the threshold.
-        balance = val(values, lva) - balance;
+        // Flip the balance for the next side's perspective. Ties favor the
+        // original mover, so the cutoff alternates between < 0 and <= 0.
+        balance = values[lva] - balance;
         if balance < i32::from(flipped) {
             return flipped;
         }
+
         flipped = !flipped;
     }
 }
 
-#[inline(always)]
-fn val(values: &[i32; 8], pt: PieceType) -> i32 { values[pt.as_usize()] }
-
-/// Pinned attackers that can't legally recapture on `to`: a pinned piece moves
-/// only along its pin ray, so it reaches `to` only when `to` lies on that ray.
+/// Exclude pinned attackers that cannot legally recapture on `to`.
+/// A pinned piece can recapture only along its pin line.
 #[inline]
 fn pin_excluded(pins: &Pins, to: Square) -> Bitboard {
-    (pins.blockers(Color::White) & !line_bb(pins.king(Color::White), to))
-        | (pins.blockers(Color::Black) & !line_bb(pins.king(Color::Black), to))
+    (pins.pinned(Color::White) & !line_bb(pins.king(Color::White), to))
+        | (pins.pinned(Color::Black) & !line_bb(pins.king(Color::Black), to))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{core::board::Position, engine::movegen::gen_legal_moves};
+    use crate::engine::movegen::gen_legal_moves;
 
     const DEFAULTS: SearchParams = SearchParams::new();
     const VALUES: [i32; 8] = see_values(&DEFAULTS);
@@ -180,14 +138,13 @@ mod tests {
     const R: i32 = VALUES[PieceType::Rook.as_usize()];
     const Q: i32 = VALUES[PieceType::Queen.as_usize()];
 
-    /// Resolve a UCI move string against the legal move list.
     fn legal_move(pos: &Position, uci: &str) -> Move {
         for mv in gen_legal_moves(pos).iter() {
-            if mv.to_uci(pos.is_frc) == uci {
+            if mv.to_uci(pos.frc_notation) == uci {
                 return *mv;
             }
         }
-        panic!("move {uci} not legal in {}", pos.as_fen());
+        panic!("move {uci} not legal in {}", pos.to_fen());
     }
 
     #[track_caller]
@@ -195,10 +152,7 @@ mod tests {
         let pos = Position::from_fen(fen);
         let mv = legal_move(&pos, uci);
         let pins = Pins::new(&pos);
-        assert!(
-            see_ge(&pos, mv, expected, &pins, &VALUES),
-            "SEE({uci}) ≥ {expected} should hold (claimed value: {expected})\n  fen: {fen}",
-        );
+        assert!(see_ge(&pos, mv, expected, &pins, &VALUES), "SEE({uci}) ≥ {expected} should hold\n  fen: {fen}");
         assert!(
             !see_ge(&pos, mv, expected + 1, &pins, &VALUES),
             "SEE({uci}) ≥ {} should fail (claimed value: {expected})\n  fen: {fen}",
@@ -213,25 +167,25 @@ mod tests {
     fn rook_takes_pawn_defended_by_rook() { assert_see("4r2k/8/8/4p3/8/8/8/4R2K w - - 0 1", "e1e5", P - R); }
 
     #[test]
+    fn rook_recaptures_knight() { assert_see("k7/3n4/8/4p2R/8/8/8/4R2K w - - 0 1", "e1e5", P - R + N); }
+
+    #[test]
     fn pawn_takes_knight_undefended() { assert_see("7k/8/8/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N); }
 
     #[test]
     fn pawn_takes_knight_defended_by_pawn() { assert_see("7k/8/2p5/3n4/4P3/8/8/7K w - - 0 1", "e4d5", N - P); }
 
     #[test]
-    fn queen_takes_pawn_defended_by_pawn() {
-        // catastrophic, don't do it
-        assert_see("7k/8/8/8/2p5/3p4/4Q3/7K w - - 0 1", "e2d3", P - Q);
-    }
+    fn pawn_takes_queen_defended_by_king() { assert_see("8/8/2k5/3q4/2P5/8/8/K7 w - - 0 1", "c4d5", Q - P); }
+
+    #[test]
+    fn queen_takes_pawn_defended_by_pawn() { assert_see("7k/8/8/8/2p5/3p4/4Q3/7K w - - 0 1", "e2d3", P - Q); }
 
     #[test]
     fn knight_takes_knight_defended_by_knight() { assert_see("7k/4n3/8/3n4/8/2N5/8/7K w - - 0 1", "c3d5", 0); }
 
     #[test]
-    fn rook_battery_xray_chain() {
-        // (W) Re2xPe5, (B) Re7xRe5, (W) Re1xRe5 via x-ray, (B) Re8xRe5 via x-ray.
-        assert_see("4r3/4r2k/8/4p3/8/8/4R3/4R2K w - - 0 1", "e2e5", P - R);
-    }
+    fn rook_battery_xray_chain() { assert_see("4r3/4r2k/8/4p3/8/8/4R3/4R2K w - - 0 1", "e2e5", P - R); }
 
     #[test]
     fn en_passant_undefended() { assert_see("4k3/8/8/2pP4/8/8/8/4K3 w - c6 0 1", "d5c6", P); }
@@ -246,14 +200,14 @@ mod tests {
     fn quiet_queen_promotion_defended_by_knight() { assert_see("7k/2n1P3/8/8/8/8/8/7K w - - 0 1", "e7e8q", -P); }
 
     #[test]
-    fn capture_promotion_undefended() {
-        // PxN
-        assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", N + Q - P);
-    }
+    fn capture_promotion_undefended() { assert_see("4n2k/3P4/8/8/8/8/8/4K3 w - - 0 1", "d7e8q", N + Q - P); }
 
     #[test]
-    fn pinned_defender_cannot_recapture() {
-        // RxP has no recapture
-        assert_see("8/8/k7/4p2R/2n5/8/4B3/6K1 w - - 0 1", "h5e5", P);
-    }
+    fn castling_captures_nothing() { assert_see("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1", 0); }
+
+    #[test]
+    fn pinned_defender_cannot_recapture() { assert_see("8/8/k7/4p2R/2n5/8/4B3/6K1 w - - 0 1", "h5e5", P); }
+
+    #[test]
+    fn king_cannot_recapture_defended_rook() { assert_see("8/8/5k2/4p3/3B4/4R3/8/7K w - - 0 1", "e3e5", P); }
 }

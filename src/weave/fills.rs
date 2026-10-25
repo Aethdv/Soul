@@ -1,4 +1,4 @@
-//! Kogge-Stone Parallel Prefix Fills (SIMD).
+//! Kogge-Stone occluded fills, four boards per vector.
 //!
 //! A fill tells you a square is attacked, not which rook attacks it.
 //! Recovering the `(from, to)` pairs a `Move` needs costs more than
@@ -30,8 +30,8 @@ macro_rules! kogge_fill {
     };
 }
 
-pub const FILE_A: u64 = 0x0101_0101_0101_0101;
-pub const FILE_H: u64 = 0x8080_8080_8080_8080;
+pub(crate) const FILE_A: u64 = 0x0101_0101_0101_0101;
+pub(crate) const FILE_H: u64 = 0x8080_8080_8080_8080;
 
 // A file step off the h-file reappears on the a-file.
 // A vertical shift leaves the board entirely.
@@ -46,41 +46,28 @@ kogge_fill!(fill_southwest, shr, 9, 18, 36, FILE_H);
 
 impl U64x4 {
     #[inline(always)]
-    pub fn shift_north(self) -> Self { self.shl::<8>() }
+    pub(crate) fn shift_north(self) -> Self { self.shl::<8>() }
 
     #[inline(always)]
-    pub fn shift_south(self) -> Self { self.shr::<8>() }
+    pub(crate) fn shift_south(self) -> Self { self.shr::<8>() }
 
     #[inline(always)]
-    pub fn shift_east(self) -> Self { U64x4::splat(FILE_H).andnot(self).shl::<1>() }
+    pub(crate) fn shift_east(self) -> Self { U64x4::splat(FILE_H).andnot(self).shl::<1>() }
 
     #[inline(always)]
-    pub fn shift_west(self) -> Self { U64x4::splat(FILE_A).andnot(self).shr::<1>() }
+    pub(crate) fn shift_west(self) -> Self { U64x4::splat(FILE_A).andnot(self).shr::<1>() }
 
     #[inline(always)]
-    pub fn shift_ne(self) -> Self { U64x4::splat(FILE_H).andnot(self).shl::<9>() }
+    pub(crate) fn shift_ne(self) -> Self { U64x4::splat(FILE_H).andnot(self).shl::<9>() }
 
     #[inline(always)]
-    pub fn shift_nw(self) -> Self { U64x4::splat(FILE_A).andnot(self).shl::<7>() }
+    pub(crate) fn shift_nw(self) -> Self { U64x4::splat(FILE_A).andnot(self).shl::<7>() }
 
     #[inline(always)]
-    pub fn shift_se(self) -> Self { U64x4::splat(FILE_H).andnot(self).shr::<7>() }
+    pub(crate) fn shift_se(self) -> Self { U64x4::splat(FILE_H).andnot(self).shr::<7>() }
 
     #[inline(always)]
-    pub fn shift_sw(self) -> Self { U64x4::splat(FILE_A).andnot(self).shr::<9>() }
-}
-
-/// Compute sliding attacks from a fill by shifting one step and removing the generators.
-/// `fill_fn`: one of `fill_north`, etc.
-/// `shift_fn`: matching single-step shift.
-#[inline(always)]
-pub fn attacks_from_fill<F, S>(generator: U64x4, pro: U64x4, fill_fn: F, shift_fn: S) -> U64x4
-where
-    F: Fn(U64x4, U64x4) -> U64x4,
-    S: Fn(U64x4) -> U64x4,
-{
-    let filled = fill_fn(generator, pro);
-    shift_fn(filled) & !generator
+    pub(crate) fn shift_sw(self) -> Self { U64x4::splat(FILE_A).andnot(self).shr::<9>() }
 }
 
 #[cfg(test)]
@@ -102,7 +89,6 @@ mod tests {
         let generator = U64x4::splat(1u64); // a1
         let propagator = U64x4::splat(!1u64); // everything except a1 is empty
         let fill = fill_north(generator, propagator);
-        // Should fill the entire A file
         assert_eq!(fill.extract::<0>(), FILE_A);
     }
 
@@ -111,7 +97,6 @@ mod tests {
         // H1 = bit 7
         let bb = U64x4::splat(1u64 << 7);
         let shifted = bb.shift_east();
-        // Should be zero: H file cannot shift east
         assert_eq!(shifted.extract::<0>(), 0);
     }
 

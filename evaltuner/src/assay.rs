@@ -11,8 +11,9 @@ use crate::{
     alarm,
     config::{EvalTuneConfig, LossFn},
     engine::{
-        Color, DECISIVE_ENDING, FeatureRecord, GameScan, LAYOUT, OPEN_UNITY, PieceType, QUIET_ENDING, SoulEntry, TOTAL_PHASE,
-        collect_parameters, default_values, eval_record, format_comma, pct, piece_mobility_counts, scan_viri_games, sigmoid,
+        Color, FeatureRecord, GameScan, LAYOUT, MAX_QUIET_ENDING, MIN_DECISIVE_ENDING, OPEN_UNITY, PieceType, SoulEntry,
+        TOTAL_PHASE, collect_parameters, default_values, eval_record, fmt_comma, pct, piece_mobility_counts, scan_viri_games,
+        sigmoid,
     },
     loader::{load_datasets, resolve_dataset_paths},
     palette::{ALARM, COUNT, DIM, LAB, RESET, VAL},
@@ -88,7 +89,7 @@ pub fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, sample:
             entries = strided(entries, cap);
         }
 
-        println!("  Extracting features ({} entries)...", format_comma(entries.len() as u64));
+        println!("  Extracting features ({} entries)...", fmt_comma(entries.len() as u64));
         let records = entries.par_iter().map(FeatureRecord::from_entry).collect();
         sets.push(Set { label: label_for(&paths), paths, entries, records, loaded });
     }
@@ -172,7 +173,7 @@ impl Counts {
         }
 
         for pt in 0..5 {
-            if record.mat_diffs[pt] != 0 {
+            if record.material_diff[pt] != 0 {
                 self.unequal[pt] += 1;
                 self.unequal_phase[pt] += phase;
             }
@@ -347,7 +348,7 @@ fn material(sets: &[Set], shipped: &str) {
             set.label.clone(),
             format!(
                 "{COUNT}{}{RESET} positions, L_fit {VAL}{loss:.4}{RESET}, {steps} Newton steps",
-                format_comma(set.entries.len() as u64),
+                fmt_comma(set.entries.len() as u64),
             ),
         ));
     }
@@ -388,7 +389,7 @@ fn profile(sets: &[Set]) {
         let share = |count: usize| format!("{:.2}%", pct(count as u64, n));
 
         labels.push(&set.label, vec![
-            format_comma(n),
+            fmt_comma(n),
             share(counts.results[2]),
             share(counts.results[1]),
             share(counts.results[0]),
@@ -453,8 +454,8 @@ fn print_games(sets: &[Set]) {
 
     let mut games = Table::new("dataset", {
         let mut columns = strings(&["games", "plies", "kept/game", "pieces left", "draws", "mate"]);
-        columns.push(format!("past {DECISIVE_ENDING}"));
-        columns.push(format!("inside {QUIET_ENDING}"));
+        columns.push(format!("past {MIN_DECISIVE_ENDING}"));
+        columns.push(format!("inside {MAX_QUIET_ENDING}"));
         columns
     });
 
@@ -462,11 +463,11 @@ fn print_games(sets: &[Set]) {
         let n = scan.games as u64;
         let share = |count: usize| format!("{:.1}%", pct(count as u64, n));
         games.push(&set.label, vec![
-            format_comma(n),
+            fmt_comma(n),
             format!("{:.1}", scan.plies as f64 / n as f64),
             format!("{:.1}", set.loaded as f64 / n as f64),
-            format!("{:.1}", scan.pieces_left as f64 / n as f64),
-            share(scan.results[1]),
+            format!("{:.1}", scan.pieces_left_sum as f64 / n as f64),
+            share(scan.draws),
             share(scan.mate_endings),
             share(scan.decisive_endings),
             share(scan.quiet_endings),
@@ -516,7 +517,7 @@ fn material_rows(set: &Set) -> Vec<([f64; 10], f64)> {
             let mg = f64::from(phase_of(record, &phase_w) as u32) / f64::from(TOTAL_PHASE);
             let mut design = [0.0; 10];
             for pt in 0..5 {
-                let diff = f64::from(record.mat_diffs[pt]);
+                let diff = f64::from(record.material_diff[pt]);
                 design[pt] = diff * mg;
                 design[pt + 5] = diff * (1.0 - mg);
             }
@@ -723,7 +724,7 @@ impl Spread {
             });
         }
 
-        let openness = record.open_raw.clamp(0, OPEN_UNITY);
+        let openness = record.openness.clamp(0, OPEN_UNITY);
         self.openness_sum += f64::from(openness);
         if openness == 0 {
             self.openness_floor += 1;
@@ -813,7 +814,7 @@ fn spread(sets: &[Set]) {
             let label = piece.to_char(Color::White).to_lowercase().to_string();
 
             summary.push(&label, vec![
-                format_comma(pieces),
+                fmt_comma(pieces),
                 format!("{:.2}", weighted as f64 / pieces as f64),
                 max.to_string(),
                 stats.cutoff(row, 0.99).to_string(),
@@ -851,7 +852,7 @@ fn spread(sets: &[Set]) {
         let mut phase = Table::new("phase", phase_headings());
         let row = |bins: &[u64; PHASE_BINS], total: u64, sum: f64| {
             let mut cells: Vec<String> = bins.iter().map(|bin| format!("{:.1}%", pct(*bin, total.max(1)))).collect();
-            cells.push(format_comma(total));
+            cells.push(fmt_comma(total));
             cells.push(format!("{:.2}", sum / total.max(1) as f64));
             cells
         };
@@ -924,8 +925,8 @@ fn strided(entries: Vec<SoulEntry>, cap: usize) -> Vec<SoulEntry> {
 
     println!(
         "  Sampling {} of {} positions, every {stride}",
-        format_comma(sampled.len() as u64),
-        format_comma(entries.len() as u64),
+        fmt_comma(sampled.len() as u64),
+        fmt_comma(entries.len() as u64),
     );
     sampled
 }
@@ -997,7 +998,13 @@ mod tests {
 
     #[test]
     fn a_sample_takes_the_whole_span_and_stops_at_the_cap() {
-        let entries: Vec<SoulEntry> = (0..100).map(|i| SoulEntry { occupancy: i, ..SoulEntry::default() }).collect();
+        let entries: Vec<SoulEntry> = (0..100)
+            .map(|i| {
+                let mut entry = SoulEntry::default();
+                entry.occupancy = i;
+                entry
+            })
+            .collect();
         let sampled = strided(entries.clone(), 10);
         assert_eq!(sampled.len(), 10);
         assert_eq!(sampled.first().map(|e| e.occupancy), Some(0));

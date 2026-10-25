@@ -1,8 +1,4 @@
-//! Rose's ByteBoard, the square-indexed store the rig measures XorBoard against.
-//!
-//! A byte per square packs type, color and slot, and `attack[color][square]`
-//! is the sixteen-bit set of that side's slots hitting the square. Updates run
-//! setwise over 64-byte vectors against the ray geometry in [`Geometry`].
+//! 87flowers' ByteBoard.
 
 use core::arch::x86_64::*;
 
@@ -27,15 +23,16 @@ const KNIGHT_SLOTS: u64 = 0x0101_0101_0101_0101;
 const RAY_SLOTS: u64 = !KNIGHT_SLOTS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Place(u8);
+#[repr(transparent)]
+pub(super) struct Place(u8);
 
 impl Place {
-    pub const EMPTY: Self = Self(0);
+    pub(super) const EMPTY: Self = Self(0);
 
     const BLACK: u8 = 0x80;
     const PTYPE: u8 = 0b111 << PTYPE_SHIFT;
 
-    pub fn new(color: Color, pt: PieceType, id: PieceId) -> Self {
+    pub(super) fn new(color: Color, pt: PieceType, id: PieceId) -> Self {
         let code = match pt {
             PieceType::King => PT_KING,
             PieceType::Pawn => PT_PAWN,
@@ -49,50 +46,39 @@ impl Place {
         Self((color as u8) << 7 | code << PTYPE_SHIFT | id.0)
     }
 
-    pub fn is_empty(self) -> bool { self.0 == 0 }
+    pub(super) fn is_empty(self) -> bool { self.0 == 0 }
+    pub(super) fn color(self) -> Color { if self.0 & Self::BLACK == 0 { Color::White } else { Color::Black } }
 
-    pub fn color(self) -> Color { if self.0 & Self::BLACK == 0 { Color::White } else { Color::Black } }
-
-    /// The piece code, which is also the row `Geometry::reach` is indexed by.
+    /// The piece code, which is also the row `Geometry::attack_mask` is indexed by.
     fn code(self) -> usize { usize::from(self.0 & Self::PTYPE) >> PTYPE_SHIFT }
 
-    pub fn id(self) -> PieceId { PieceId(self.0 & 0xF) }
+    pub(super) fn id(self) -> PieceId { PieceId(self.0 & 0xF) }
 }
 
-/// A piece's slot within its side, 0 to 15. Two pieces of one color never share
-/// one, which is what lets an attack entry be sixteen bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct PieceId(u8);
+pub(super) struct PieceId(u8);
 
 impl PieceId {
-    pub fn new(slot: u8) -> Self {
+    pub(super) fn new(slot: u8) -> Self {
         debug_assert!(slot < 16, "a side has sixteen slots");
         Self(slot)
     }
 
-    /// The slot index, for a caller indexing a store laid out the other way.
-    pub fn raw(self) -> u8 { self.0 }
-
-    pub fn mask(self) -> PieceMask { PieceMask(1 << self.0) }
+    pub(super) fn raw(self) -> u8 { self.0 }
+    pub(super) fn to_piece_mask(self) -> PieceMask { PieceMask(1 << self.0) }
 }
 
-/// The slots of one color that reach a square, one bit each.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct PieceMask(u16);
+pub(super) struct PieceMask(u16);
 
 impl PieceMask {
-    pub const EMPTY: Self = Self(0);
+    pub(super) const EMPTY: Self = Self(0);
 
-    pub fn is_empty(self) -> bool { self.0 == 0 }
-
-    pub fn count(self) -> u32 { self.0.count_ones() }
-
-    /// The raw bits, for a caller comparing against another representation.
-    pub fn bits(self) -> u16 { self.0 }
-
-    pub fn contains(self, id: PieceId) -> bool { self.0 & id.mask().0 != 0 }
-
-    pub fn insert(&mut self, id: PieceId) { self.0 |= id.mask().0; }
+    pub(super) fn is_empty(self) -> bool { self.0 == 0 }
+    pub(super) fn popcount(self) -> u32 { self.0.count_ones() }
+    pub(super) fn bits(self) -> u16 { self.0 }
+    pub(super) fn is_set(self, id: PieceId) -> bool { self.0 & id.to_piece_mask().0 != 0 }
+    pub(super) fn set(&mut self, id: PieceId) { self.0 |= id.to_piece_mask().0; }
 }
 
 impl Iterator for PieceMask {
@@ -107,30 +93,22 @@ impl Iterator for PieceMask {
     }
 }
 
-/// One color's attack table: for every square, the slots of that color hitting it.
-/// The XorBoard holds the same relation transposed, one row per piece.
 #[derive(Clone, Copy)]
-pub struct Wordboard([u16; 64]);
+pub(super) struct Wordboard([u16; 64]);
 
 impl Wordboard {
-    pub const EMPTY: Self = Self([0; 64]);
+    pub(super) const EMPTY: Self = Self([0; 64]);
 
     /// Record that `id` reaches `sq`, for a table built from scratch.
-    pub fn insert(&mut self, sq: Square, id: PieceId) { self.0[usize::from(sq)] |= id.mask().0; }
-
-    pub fn read(&self, sq: Square) -> PieceMask { PieceMask(self.0[usize::from(sq)]) }
-
+    pub(super) fn insert(&mut self, sq: Square, id: PieceId) { self.0[usize::from(sq)] |= id.to_piece_mask().0; }
+    pub(super) fn read(&self, sq: Square) -> PieceMask { PieceMask(self.0[usize::from(sq)]) }
     /// The squares this color attacks at all.
-    pub fn any(&self) -> u64 { self.probe(u16::MAX) }
-
+    pub(super) fn bitboard_any(&self) -> u64 { self.probe(u16::MAX) }
     /// The squares any slot in `mask` attacks.
-    pub fn with(&self, mask: PieceMask) -> u64 { self.probe(mask.0) }
+    pub(super) fn bitboard_for(&self, mask: PieceMask) -> u64 { self.probe(mask.0) }
 
-    /// Squares whose entry shares a bit with `mask`, as a bitboard. Sixty-four
-    /// words are four vectors; each pair packs down to bytes so one movemask
-    /// answers thirty-two squares.
     fn probe(&self, mask: u16) -> u64 {
-        // SAFETY: AVX2 per the gate.
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let m = _mm256_set1_epi16(mask.cast_signed());
             let zero = _mm256_setzero_si256();
@@ -141,35 +119,32 @@ impl Wordboard {
                 let lo = _mm256_cmpeq_epi16(load(half * 32), zero);
                 let hi = _mm256_cmpeq_epi16(load(half * 32 + 16), zero);
 
-                // packs interleaves the 128-bit halves, so the permute puts the
-                // squares back in order before the mask is read off.
+                // packs interleaves the 128-bit halves, so the permute puts
+                // the squares back in order before the mask is read off.
                 let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi16(lo, hi));
                 out |= u64::from(!_mm256_movemask_epi8(packed).cast_unsigned()) << (half * 32);
             }
+
             out
         }
     }
 }
 
-pub struct Geometry {
-    rays: [[u8; 64]; 64],
-    inverse: [[u8; 64]; 64],
-    valid: [u64; 64],
-    reach: [[u64; 2]; 8],
+pub(super) struct Geometry {
+    ray_coords: [[u8; 64]; 64],
+    inverse_rays: [[u8; 64]; 64],
+    ray_valid: [u64; 64],
+    attack_mask: [[u64; 2]; 8],
     lane_kind: [u8; 64],
 }
 
-impl Default for Geometry {
-    fn default() -> Self { Self::new() }
-}
-
 impl Geometry {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut g = Self {
-            rays: [[0xFF; 64]; 64],
-            inverse: [[0xFF; 64]; 64],
-            valid: [0; 64],
-            reach: [[0; 2]; 8],
+            ray_coords: [[0xFF; 64]; 64],
+            inverse_rays: [[0xFF; 64]; 64],
+            ray_valid: [0; 64],
+            attack_mask: [[0; 2]; 8],
             lane_kind: [0; 64],
         };
 
@@ -182,9 +157,9 @@ impl Geometry {
 
                 if (0..8).contains(&(f + kf)) && (0..8).contains(&(r + kr)) {
                     let target = ((r + kr) * 8 + f + kf) as usize;
-                    g.rays[sq][slot] = target as u8;
-                    g.inverse[sq][target] = slot as u8;
-                    g.valid[sq] |= 1 << slot;
+                    g.ray_coords[sq][slot] = target as u8;
+                    g.inverse_rays[sq][target] = slot as u8;
+                    g.ray_valid[sq] |= 1 << slot;
                 }
 
                 for d in 1..8usize {
@@ -195,9 +170,9 @@ impl Geometry {
                     }
 
                     let target = (tr * 8 + tf) as usize;
-                    g.rays[sq][slot + d] = target as u8;
-                    g.inverse[sq][target] = (slot + d) as u8;
-                    g.valid[sq] |= 1 << (slot + d);
+                    g.ray_coords[sq][slot + d] = target as u8;
+                    g.inverse_rays[sq][target] = (slot + d) as u8;
+                    g.ray_valid[sq] |= 1 << (slot + d);
                 }
             }
         }
@@ -212,100 +187,134 @@ impl Geometry {
         let diag = 0xFF00_FF00_FF00_FF00u64 & RAY_SLOTS;
         let near = 0x0202_0202_0202_0202u64;
 
-        g.reach[PT_KNIGHT as usize] = [KNIGHT_SLOTS; 2];
-        g.reach[PT_KING as usize] = [near; 2];
-        g.reach[PT_BISHOP as usize] = [diag; 2];
-        g.reach[PT_ROOK as usize] = [orth; 2];
-        g.reach[PT_QUEEN as usize] = [orth | diag; 2];
-        g.reach[PT_PAWN as usize] = [0x0200_0000_0000_0200, 0x0000_0200_0200_0000];
+        g.attack_mask[PT_KNIGHT as usize] = [KNIGHT_SLOTS; 2];
+        g.attack_mask[PT_KING as usize] = [near; 2];
+        g.attack_mask[PT_BISHOP as usize] = [diag; 2];
+        g.attack_mask[PT_ROOK as usize] = [orth; 2];
+        g.attack_mask[PT_QUEEN as usize] = [orth | diag; 2];
+        g.attack_mask[PT_PAWN as usize] = [0x0200_0000_0000_0200, 0x0000_0200_0200_0000];
         g
     }
 
     #[inline(always)]
-    fn fill(&self, sq: usize, occupied: u64) -> u64 {
-        let o = occupied | 0x8181_8181_8181_8181;
-        (o ^ o.wrapping_sub(0x0303_0303_0303_0303)) & self.valid[sq]
+    fn attacks(&self, sq: usize, ray_occupancy: u64) -> u64 {
+        let o = ray_occupancy | 0x8181_8181_8181_8181;
+        (o ^ o.wrapping_sub(0x0303_0303_0303_0303)) & self.ray_valid[sq]
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct ByteBoard {
-    mailbox: V64,
+pub(super) struct ByteBoard {
+    mailbox: [Place; 64],
     attack: [Wordboard; 2],
 }
 
 impl ByteBoard {
-    pub fn empty() -> Self { Self { mailbox: V64::zero(), attack: [Wordboard([0; 64]); 2] } }
-
-    pub fn at(&self, sq: Square) -> Place { Place(self.mailbox.bytes()[usize::from(sq)]) }
-
-    pub fn attacks(&self, color: Color) -> &Wordboard { &self.attack[usize::from(color)] }
-
-    /// Install a table computed from scratch, which is how the rig seeds its oracle.
-    pub fn set_attacks(&mut self, attacks: [Wordboard; 2]) { self.attack = attacks; }
-
-    pub fn occupied(&self) -> u64 { self.mailbox.nonzero() }
-
-    pub fn pieces(&self, color: Color) -> u64 {
-        let black = self.mailbox.signs();
-        self.occupied() & if color == Color::Black { black } else { !black }
+    pub(super) fn empty() -> Self { Self { mailbox: [Place::EMPTY; 64], attack: [Wordboard::EMPTY; 2] } }
+    pub(super) fn at(&self, sq: Square) -> Place { self.mailbox[usize::from(sq)] }
+    pub(super) fn attack_table(&self, color: Color) -> &Wordboard { &self.attack[usize::from(color)] }
+    pub(super) fn set_attacks(&mut self, attacks: [Wordboard; 2]) { self.attack = attacks; }
+    pub(super) fn occupied_bitboard(&self) -> u64 { self.to_vector().nonzero() }
+    pub(super) fn color_bitboard(&self, color: Color) -> u64 {
+        let black = self.to_vector().signs();
+        self.occupied_bitboard() & if color == Color::Black { black } else { !black }
     }
 
-    /// Squares holding a `pt` of `color`, the color and type nibble compared as one.
-    pub fn pieces_of(&self, color: Color, pt: PieceType) -> u64 { self.mailbox.match_high(Place::new(color, pt, PieceId(0)).0) }
+    pub(super) fn bitboard_for(&self, color: Color, pt: PieceType) -> u64 {
+        self.to_vector().match_high(Place::new(color, pt, PieceId(0)).0)
+    }
 
-    /// Drop a place onto a square, leaving the attack table alone.
     #[inline(always)]
-    pub fn put(&mut self, sq: Square, p: Place) { self.mailbox = self.mailbox.write(1u64 << usize::from(sq), p.0); }
+    pub(super) fn put(&mut self, sq: Square, p: Place) { self.mailbox[usize::from(sq)] = p; }
 
-    /// Lift the piece on `sq`: reopen the lines it blocked, drop its own attacks,
-    /// then bare the square.
     #[inline(always)]
-    pub fn remove(&mut self, g: &Geometry, sq: Square) {
+    pub(super) fn remove_piece(&mut self, g: &Geometry, sq: Square) {
         let p = self.at(sq);
-        self.toggle(g, sq);
-        self.clear(p.color(), p.id());
+        self.toggle_sliders_single(g, sq);
+        self.remove_attacks(p.color(), p.id());
         self.put(sq, Place::EMPTY);
     }
 
-    /// Land a piece on an empty square: close the lines through it, then add its own.
     #[inline(always)]
-    pub fn add(&mut self, g: &Geometry, sq: Square, p: Place) {
-        self.toggle(g, sq);
-        self.land(g, sq, p);
+    pub(super) fn add_piece(&mut self, g: &Geometry, sq: Square, p: Place) {
+        self.toggle_sliders_single(g, sq);
+        self.replace_piece(g, sq, p);
     }
 
-    /// Land a piece on a square another already blocked, so only its own attacks change.
     #[inline(always)]
-    pub fn land(&mut self, g: &Geometry, sq: Square, p: Place) {
+    pub(super) fn replace_piece(&mut self, g: &Geometry, sq: Square, p: Place) {
         self.put(sq, p);
         let s = usize::from(sq);
-        let places = self.mailbox.permute(&g.rays[s]);
-        let raymask = g.fill(s, places.nonzero());
-        let reach = raymask & g.reach[p.code()][usize::from(p.color())];
-        self.apply(V64::splat(p.0).keep(reach).permute(&g.inverse[s]));
+        let (_, raymask) = self.rays_from(g, s);
+        let reach = raymask & g.attack_mask[p.code()][usize::from(p.color())];
+        let marked = V64::splat(0xFF).keep(reach).permute(&g.inverse_rays[s]);
+        self.add_attacks(p.color(), p.id(), marked);
     }
 
     #[inline(always)]
-    fn toggle(&mut self, g: &Geometry, sq: Square) {
+    fn add_attacks(&mut self, color: Color, id: PieceId, marked: V64) { self.xor_into(color, marked.marked_words(id)); }
+
+    #[inline(always)]
+    fn rays_from(&self, g: &Geometry, s: usize) -> (V64, u64) {
+        let places = self.to_vector().permute(&g.ray_coords[s]);
+        (places, g.attacks(s, places.nonzero()))
+    }
+
+    #[inline(always)]
+    fn toggle_sliders_single(&mut self, g: &Geometry, sq: Square) {
         let s = usize::from(sq);
-        let places = self.mailbox.permute(&g.rays[s]);
-        let raymask = g.fill(s, places.nonzero());
-        let visible = raymask & places.sliders(g);
-        if visible == 0 {
-            return;
-        }
+        let (places, raymask) = self.rays_from(g, s);
 
-        let rotated = places.keep(visible).lane_spread().rotate();
-        self.apply(rotated.keep(raymask & RAY_SLOTS).permute(&g.inverse[s]));
+        self.apply_words(places.slider_words(g, s, raymask));
     }
 
-    /// Strike one slot out of its color's whole attack table.
     #[inline(always)]
-    pub fn clear(&mut self, color: Color, id: PieceId) {
-        // SAFETY: AVX2 per the gate.
+    fn apply_words(&mut self, words: Option<([__m256i; 4], [__m256i; 4])>) {
+        if let Some((white, black)) = words {
+            self.xor_into(Color::White, white);
+            self.xor_into(Color::Black, black);
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn move_piece(&mut self, g: &Geometry, from: Square, to: Square, p: Place, captured: Option<(Color, PieceId)>) {
+        let s = usize::from(from);
+        let t = usize::from(to);
+
+        let board = self.to_vector();
+        let src_places = board.permute(&g.ray_coords[s]);
+        let src_ray = g.attacks(s, src_places.nonzero());
+
+        let moved = board.write(1u64 << s, 0);
+        let dst_places = moved.permute(&g.ray_coords[t]);
+        let dst_ray = g.attacks(t, dst_places.nonzero());
+
+        moved.write(1u64 << t, p.0).store(self.mailbox.as_mut_ptr().cast());
+        self.apply_words(src_places.slider_words(g, s, src_ray));
+
+        let dst_words = if captured.is_some() { None } else { dst_places.slider_words(g, t, dst_ray) };
+        self.apply_words(dst_words);
+
+        self.remove_attacks(p.color(), p.id());
+        let reach = dst_ray & g.attack_mask[p.code()][usize::from(p.color())];
+        let marked = V64::splat(0xFF).keep(reach).permute(&g.inverse_rays[t]);
+        self.add_attacks(p.color(), p.id(), marked);
+
+        if let Some((color, id)) = captured {
+            self.remove_attacks(color, id);
+        }
+    }
+
+    /// The board as the vector the updates run on.
+    #[inline(always)]
+    #[expect(clippy::wrong_self_convention, reason = "the board is 320 bytes, so the view must not copy it")]
+    fn to_vector(&self) -> V64 { V64::load(self.mailbox.as_ptr().cast()) }
+
+    #[inline(always)]
+    pub(super) fn remove_attacks(&mut self, color: Color, id: PieceId) {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
-            let m = _mm256_set1_epi16((!id.mask().0).cast_signed());
+            let m = _mm256_set1_epi16((!id.to_piece_mask().0).cast_signed());
             let p = self.attack[usize::from(color)].0.as_mut_ptr();
             for q in 0..4 {
                 let v = _mm256_loadu_si256(p.add(q * 16).cast());
@@ -315,61 +324,51 @@ impl ByteBoard {
     }
 
     #[inline(always)]
-    fn apply(&mut self, board: V64) {
-        let (white, black) = board.to_wordboards();
-
-        // SAFETY: AVX2 per the gate.
+    fn xor_into(&mut self, color: Color, words: [__m256i; 4]) {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
-            for (c, src) in [white, black].into_iter().enumerate() {
-                let p = self.attack[c].0.as_mut_ptr();
-                for (q, x) in src.iter().enumerate() {
-                    let v = _mm256_loadu_si256(p.add(q * 16).cast());
-                    _mm256_storeu_si256(p.add(q * 16).cast(), _mm256_xor_si256(v, *x));
-                }
+            let p = self.attack[usize::from(color)].0.as_mut_ptr();
+            for (q, x) in words.iter().enumerate() {
+                let v = _mm256_loadu_si256(p.add(q * 16).cast());
+                _mm256_storeu_si256(p.add(q * 16).cast(), _mm256_xor_si256(v, *x));
             }
         }
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct V64(__m256i, __m256i);
+struct V64(__m256i, __m256i);
 
 impl V64 {
     #[inline(always)]
-    pub fn zero() -> Self {
-        // SAFETY: AVX2 per the gate.
-        unsafe { Self(_mm256_setzero_si256(), _mm256_setzero_si256()) }
-    }
-
-    #[inline(always)]
-    pub fn splat(b: u8) -> Self {
-        // SAFETY: AVX2 per the gate.
+    fn splat(b: u8) -> Self {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let v = _mm256_set1_epi8(b.cast_signed());
             Self(v, v)
         }
     }
 
+    /// The board's bytes as a vector.
     #[inline(always)]
-    pub fn load(b: &[u8; 64]) -> Self {
-        // SAFETY: AVX2 per the gate.
-        unsafe { Self(_mm256_loadu_si256(b.as_ptr().cast()), _mm256_loadu_si256(b.as_ptr().add(32).cast())) }
+    fn load(ptr: *const u8) -> Self {
+        // SAFETY: AVX2 guaranteed; the pointer reads 64 bytes.
+        unsafe { Self(_mm256_loadu_si256(ptr.cast()), _mm256_loadu_si256(ptr.add(32).cast())) }
     }
 
+    /// Write the bytes back.
     #[inline(always)]
-    pub fn bytes(self) -> [u8; 64] {
-        let mut out = [0u8; 64];
-        // SAFETY: AVX2 per the gate.
+    fn store(self, ptr: *mut u8) {
+        // SAFETY: AVX2 guaranteed; the pointer writes 64 bytes.
         unsafe {
-            _mm256_storeu_si256(out.as_mut_ptr().cast(), self.0);
-            _mm256_storeu_si256(out.as_mut_ptr().add(32).cast(), self.1);
+            _mm256_storeu_si256(ptr.cast(), self.0);
+            _mm256_storeu_si256(ptr.add(32).cast(), self.1);
         }
-        out
     }
 
     #[inline(always)]
-    pub fn permute(self, idx: &[u8; 64]) -> Self {
-        // SAFETY: AVX2 per the gate, AVX-512 under its own cfg.
+    fn permute(self, idx: &[u8; 64]) -> Self {
+        // SAFETY: AVX2 guaranteed, AVX-512 under its own cfg.
         unsafe {
             #[cfg(all(target_feature = "avx512vbmi", target_feature = "avx512bw"))]
             {
@@ -382,7 +381,7 @@ impl V64 {
 
             #[cfg(not(all(target_feature = "avx512vbmi", target_feature = "avx512bw")))]
             {
-                let chunks = [
+                let blocks = [
                     _mm256_permute2x128_si256::<0x00>(self.0, self.0),
                     _mm256_permute2x128_si256::<0x11>(self.0, self.0),
                     _mm256_permute2x128_si256::<0x00>(self.1, self.1),
@@ -394,16 +393,14 @@ impl V64 {
 
                 for (h, o) in out.iter_mut().enumerate() {
                     let want = _mm256_loadu_si256(idx.as_ptr().add(h * 32).cast());
-                    let over = _mm256_slli_epi16::<1>(_mm256_and_si256(want, _mm256_set1_epi8(0x40)));
-                    let low = _mm256_or_si256(_mm256_and_si256(want, _mm256_set1_epi8(15)), _mm256_and_si256(want, sign));
-                    let low = _mm256_or_si256(low, _mm256_and_si256(over, sign));
-                    let which = _mm256_and_si256(want, _mm256_set1_epi8(0x30));
+                    // The index's high bit zeroes the byte, so the invalid 0xFF entries come out empty.
+                    let ctrl = _mm256_or_si256(_mm256_and_si256(want, _mm256_set1_epi8(15)), _mm256_and_si256(want, sign));
+                    let four = _mm256_slli_epi16::<3>(want);
+                    let five = _mm256_slli_epi16::<2>(want);
 
-                    for (c, chunk) in chunks.iter().enumerate() {
-                        let mine = _mm256_cmpeq_epi8(which, _mm256_set1_epi8((c * 16) as i8));
-                        let ctrl = _mm256_or_si256(low, _mm256_andnot_si256(mine, sign));
-                        *o = _mm256_or_si256(*o, _mm256_shuffle_epi8(*chunk, ctrl));
-                    }
+                    let near = _mm256_blendv_epi8(_mm256_shuffle_epi8(blocks[0], ctrl), _mm256_shuffle_epi8(blocks[1], ctrl), four);
+                    let far = _mm256_blendv_epi8(_mm256_shuffle_epi8(blocks[2], ctrl), _mm256_shuffle_epi8(blocks[3], ctrl), four);
+                    *o = _mm256_blendv_epi8(near, far, five);
                 }
                 Self(out[0], out[1])
             }
@@ -411,8 +408,8 @@ impl V64 {
     }
 
     #[inline(always)]
-    pub fn nonzero(self) -> u64 {
-        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg.
+    fn nonzero(self) -> u64 {
+        // SAFETY: AVX2 guaranteed, AVX-512VL/BW under its own cfg.
         unsafe {
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
@@ -429,10 +426,10 @@ impl V64 {
         }
     }
 
-    /// Bytes with the sign bit set, which under Rose's layout is every black place.
+    /// Bytes with the sign bit set, which is every black place.
     #[inline(always)]
-    pub fn signs(self) -> u64 {
-        // SAFETY: AVX2 per the gate.
+    fn signs(self) -> u64 {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let lo = _mm256_movemask_epi8(self.0).cast_unsigned();
             let hi = _mm256_movemask_epi8(self.1).cast_unsigned();
@@ -442,8 +439,8 @@ impl V64 {
 
     /// Bytes whose color and piece nibble equals `pattern`'s, ignoring the slot.
     #[inline(always)]
-    pub fn match_high(self, pattern: u8) -> u64 {
-        // SAFETY: AVX2 per the gate.
+    fn match_high(self, pattern: u8) -> u64 {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let want = _mm256_set1_epi8(pattern.cast_signed());
             let nibble = _mm256_set1_epi8(0xF0u8.cast_signed());
@@ -453,12 +450,14 @@ impl V64 {
     }
 
     #[inline(always)]
-    pub fn sliders(self, g: &Geometry) -> u64 {
-        // SAFETY: AVX2 per the gate.
+    fn sliders(self, g: &Geometry) -> u64 {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let s = _mm256_set1_epi8(SLIDER.cast_signed());
             let z = _mm256_setzero_si256();
+
             let mut out = 0u64;
+
             for (h, v) in [self.0, self.1].into_iter().enumerate() {
                 let kind = _mm256_loadu_si256(g.lane_kind.as_ptr().add(h * 32).cast());
                 let is_slider = _mm256_cmpeq_epi8(_mm256_and_si256(v, s), s);
@@ -467,13 +466,14 @@ impl V64 {
                 let m = _mm256_andnot_si256(knight, _mm256_and_si256(is_slider, right_way));
                 out |= u64::from(_mm256_movemask_epi8(m).cast_unsigned()) << (h * 32);
             }
+
             out
         }
     }
 
     #[inline(always)]
-    pub fn keep(self, mask: u64) -> Self {
-        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg.
+    fn keep(self, mask: u64) -> Self {
+        // SAFETY: AVX2 guaranteed, AVX-512VL/BW under its own cfg.
         unsafe {
             #[cfg(all(target_feature = "avx512vl", target_feature = "avx512bw"))]
             {
@@ -488,8 +488,8 @@ impl V64 {
     }
 
     #[inline(always)]
-    pub fn lane_spread(self) -> Self {
-        // SAFETY: AVX2 per the gate.
+    fn lane_spread(self) -> Self {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let pick = _mm256_setr_epi8(
                 -128, 0, 0, 0, 0, 0, 0, 0, -128, 8, 8, 8, 8, 8, 8, 8, -128, 0, 0, 0, 0, 0, 0, 0, -128, 8, 8, 8, 8, 8, 8, 8,
@@ -501,8 +501,8 @@ impl V64 {
     }
 
     #[inline(always)]
-    pub fn write(self, mask: u64, b: u8) -> Self {
-        // SAFETY: AVX2 per the gate, AVX-512VL/BW under its own cfg.
+    fn write(self, mask: u64, b: u8) -> Self {
+        // SAFETY: AVX2 guaranteed, AVX-512VL/BW under its own cfg.
         unsafe {
             let v = _mm256_set1_epi8(b.cast_signed());
 
@@ -517,20 +517,50 @@ impl V64 {
             #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
             {
                 let (lo, hi) = (spread(mask as u32), spread((mask >> 32) as u32));
-                Self(
-                    _mm256_or_si256(_mm256_andnot_si256(lo, self.0), _mm256_and_si256(lo, v)),
-                    _mm256_or_si256(_mm256_andnot_si256(hi, self.1), _mm256_and_si256(hi, v)),
-                )
+                Self(_mm256_blendv_epi8(self.0, v, lo), _mm256_blendv_epi8(self.1, v, hi))
             }
         }
     }
 
     #[inline(always)]
-    pub fn rotate(self) -> Self { Self(self.1, self.0) }
+    fn flip(self) -> Self { Self(self.1, self.0) }
 
     #[inline(always)]
-    pub fn to_wordboards(self) -> ([__m256i; 4], [__m256i; 4]) {
-        // SAFETY: AVX2 per the gate.
+    fn slider_words(self, g: &Geometry, sq: usize, raymask: u64) -> Option<([__m256i; 4], [__m256i; 4])> {
+        let visible = raymask & self.sliders(g);
+        if visible == 0 {
+            return None;
+        }
+
+        let ids = self.keep(visible).lane_spread().flip();
+        let ids = ids.keep(raymask & RAY_SLOTS).permute(&g.inverse_rays[sq]);
+
+        Some(ids.words_by_color())
+    }
+
+    #[inline(always)]
+    fn marked_words(self, id: PieceId) -> [__m256i; 4] {
+        // SAFETY: AVX2 guaranteed.
+        unsafe {
+            let mark = _mm256_set1_epi8(-1);
+            let bit = _mm256_set1_epi16(1i16 << id.raw());
+            let mut out = [_mm256_setzero_si256(); 4];
+
+            for (h, src) in [self.0, self.1].into_iter().enumerate() {
+                let live = _mm256_cmpeq_epi8(src, mark);
+                let lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(live));
+                let hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(live));
+                out[h * 2] = _mm256_and_si256(lo, bit);
+                out[h * 2 + 1] = _mm256_and_si256(hi, bit);
+            }
+
+            out
+        }
+    }
+
+    #[inline(always)]
+    fn words_by_color(self) -> ([__m256i; 4], [__m256i; 4]) {
+        // SAFETY: AVX2 guaranteed.
         unsafe {
             let lut_lo = _mm256_setr_epi8(
                 1, 2, 4, 8, 16, 32, 64, -128, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 8, 16, 32, 64, -128, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -567,6 +597,7 @@ impl V64 {
                 white[h * 2 + 1] = _mm256_andnot_si256(m1, w1);
                 black[h * 2 + 1] = _mm256_and_si256(m1, w1);
             }
+
             (white, black)
         }
     }
@@ -575,7 +606,7 @@ impl V64 {
 #[cfg(not(all(target_feature = "avx512vl", target_feature = "avx512bw")))]
 #[inline(always)]
 fn spread(bits: u32) -> __m256i {
-    // SAFETY: AVX2 per the gate.
+    // SAFETY: AVX2 guaranteed.
     unsafe {
         let v = _mm256_set1_epi32(bits.cast_signed());
         let idx = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
@@ -628,25 +659,89 @@ mod tests {
     #[test]
     fn the_board_answers_by_color_and_by_type() {
         let bb = board();
-        assert_eq!(bb.occupied(), 1 << 0 | 1 << 27 | 1 << 63);
-        assert_eq!(bb.pieces(Color::White), 1 << 0 | 1 << 27);
-        assert_eq!(bb.pieces(Color::Black), 1 << 63);
-        assert_eq!(bb.pieces_of(Color::White, PieceType::Rook), 1 << 0);
-        assert_eq!(bb.pieces_of(Color::Black, PieceType::Rook), 1 << 63);
-        assert_eq!(bb.pieces_of(Color::White, PieceType::Queen), 1 << 27);
-        assert_eq!(bb.pieces_of(Color::Black, PieceType::Queen), 0);
+        assert_eq!(bb.occupied_bitboard(), 1 << 0 | 1 << 27 | 1 << 63);
+        assert_eq!(bb.color_bitboard(Color::White), 1 << 0 | 1 << 27);
+        assert_eq!(bb.color_bitboard(Color::Black), 1 << 63);
+        assert_eq!(bb.bitboard_for(Color::White, PieceType::Rook), 1 << 0);
+        assert_eq!(bb.bitboard_for(Color::Black, PieceType::Rook), 1 << 63);
+        assert_eq!(bb.bitboard_for(Color::White, PieceType::Queen), 1 << 27);
+        assert_eq!(bb.bitboard_for(Color::Black, PieceType::Queen), 0);
         assert_eq!(bb.at(D4).id(), PieceId::new(3));
         assert!(bb.at(Square(1)).is_empty());
     }
 
     #[test]
+    fn a_byte_reads_back_from_every_square() {
+        let types = [PieceType::King, PieceType::Pawn, PieceType::Knight, PieceType::Queen];
+        let place = |sq: u8| Place::new(Color::Black, types[usize::from(sq) / 16], PieceId::new(sq % 16));
+        let mut bb = ByteBoard::empty();
+
+        for sq in 0..64u8 {
+            bb.put(Square(sq), place(sq));
+        }
+        for sq in 0..64u8 {
+            assert_eq!(bb.at(Square(sq)), place(sq));
+        }
+    }
+
+    #[test]
+    fn the_rays_and_their_inverse_agree() {
+        let g = Geometry::new();
+        let e4 = 28usize;
+        let mut reachable = 0u64;
+
+        for sq in 0..64usize {
+            for slot in 0..64usize {
+                if g.ray_valid[sq] >> slot & 1 == 0 {
+                    continue;
+                }
+
+                let target = usize::from(g.ray_coords[sq][slot]);
+                assert_eq!(usize::from(g.inverse_rays[sq][target]), slot);
+
+                if sq == e4 {
+                    reachable |= 1 << target;
+                }
+            }
+        }
+
+        assert_eq!(reachable, 0b0001_0001_1001_0010_0111_1100_0111_1100_1110_1111_0111_1100_0111_1100_1001_0010);
+    }
+
+    #[test]
+    fn a_permute_takes_each_byte_from_its_index() {
+        let types = [PieceType::King, PieceType::Pawn, PieceType::Knight, PieceType::Queen];
+        let mut board = ByteBoard::empty();
+
+        for sq in 0..64u8 {
+            board.put(Square(sq), Place::new(Color::White, types[usize::from(sq) / 16], PieceId::new(sq % 16)));
+        }
+
+        let mut idx = [0u8; 64];
+        for (i, slot) in idx.iter_mut().enumerate() {
+            *slot = ((i * 37 + 11) % 64) as u8;
+        }
+
+        idx[5] = 0xFF;
+
+        let permuted = board.to_vector().permute(&idx);
+        let mut out = [0u8; 64];
+        permuted.store(out.as_mut_ptr());
+
+        for (i, &slot) in idx.iter().enumerate() {
+            let want = if slot == 0xFF { 0 } else { board.at(Square(slot)).0 };
+            assert_eq!(out[i], want, "byte {i}");
+        }
+    }
+
+    #[test]
     fn a_mask_iterates_the_slots_it_holds() {
         let mut mask = PieceMask::EMPTY;
-        mask.insert(PieceId::new(0));
-        mask.insert(PieceId::new(15));
-        assert_eq!(mask.count(), 2);
-        assert!(mask.contains(PieceId::new(15)));
-        assert!(!mask.contains(PieceId::new(1)));
+        mask.set(PieceId::new(0));
+        mask.set(PieceId::new(15));
+        assert_eq!(mask.popcount(), 2);
+        assert!(mask.is_set(PieceId::new(15)));
+        assert!(!mask.is_set(PieceId::new(1)));
         assert_eq!(mask.collect::<Vec<_>>(), vec![PieceId::new(0), PieceId::new(15)]);
         assert!(PieceMask::EMPTY.is_empty());
     }
@@ -656,9 +751,9 @@ mod tests {
         let mut wb = Wordboard::EMPTY;
         wb.insert(D4, PieceId::new(3));
         wb.insert(H8, PieceId::new(4));
-        assert!(wb.read(D4).contains(PieceId::new(3)));
+        assert!(wb.read(D4).is_set(PieceId::new(3)));
         assert!(wb.read(A1).is_empty());
-        assert_eq!(wb.any(), 1 << 27 | 1 << 63);
-        assert_eq!(wb.with(PieceId::new(4).mask()), 1 << 63);
+        assert_eq!(wb.bitboard_any(), 1 << 27 | 1 << 63);
+        assert_eq!(wb.bitboard_for(PieceId::new(4).to_piece_mask()), 1 << 63);
     }
 }

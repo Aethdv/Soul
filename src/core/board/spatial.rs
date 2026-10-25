@@ -1,39 +1,36 @@
-//! Parallelized spatial influence mapping.
-//!
-//! Uses SIMD intrinsics to simultaneously compute orthogonal and diagonal attack rays
-//! for multiple pieces, separating direct influence from X-ray (battery) paths.
+//! SIMD attack sets and slider x-rays through one friendly blocker.
 
 use crate::{
     core::{
         board::Position,
-        defs::{Color, PieceType},
+        defs::{Bitboard, Color, PieceType},
     },
     weave::*,
 };
 
-/// Rook attacks (all 4 cardinal directions).
+#[cfg(any(test, feature = "rigs", feature = "nostore"))]
 #[inline(always)]
-pub fn atk_rook(generator: U64x4, empty: U64x4) -> U64x4 {
-    let n = fill_north(generator, empty).shift_north();
-    let s = fill_south(generator, empty).shift_south();
-    let e = fill_east(generator, empty).shift_east();
-    let w = fill_west(generator, empty).shift_west();
-    (n | s | e | w) & !generator
+pub(super) fn atk_rooks(generators: U64x4, empty: U64x4) -> U64x4 {
+    let n = fill_north(generators, empty).shift_north();
+    let s = fill_south(generators, empty).shift_south();
+    let e = fill_east(generators, empty).shift_east();
+    let w = fill_west(generators, empty).shift_west();
+    n | s | e | w
 }
 
-/// Bishop attacks (all 4 diagonal directions).
+#[cfg(any(test, feature = "rigs", feature = "nostore"))]
 #[inline(always)]
-pub fn atk_bishop(generator: U64x4, empty: U64x4) -> U64x4 {
-    let ne = fill_northeast(generator, empty).shift_ne();
-    let nw = fill_northwest(generator, empty).shift_nw();
-    let se = fill_southeast(generator, empty).shift_se();
-    let sw = fill_southwest(generator, empty).shift_sw();
-    (ne | nw | se | sw) & !generator
+pub(super) fn atk_bishops(generators: U64x4, empty: U64x4) -> U64x4 {
+    let ne = fill_northeast(generators, empty).shift_ne();
+    let nw = fill_northwest(generators, empty).shift_nw();
+    let se = fill_southeast(generators, empty).shift_se();
+    let sw = fill_southwest(generators, empty).shift_sw();
+    ne | nw | se | sw
 }
 
-/// Knight attacks.
+#[cfg(any(test, feature = "rigs", feature = "nostore"))]
 #[inline(always)]
-pub fn atk_knight(knights: U64x4) -> U64x4 {
+pub(super) fn atk_knights(knights: U64x4) -> U64x4 {
     let mask_a = U64x4::splat(FILE_A);
     let mask_h = U64x4::splat(FILE_H);
     let mask_ab = U64x4::splat(FILE_A | (FILE_A << 1));
@@ -44,176 +41,133 @@ pub fn atk_knight(knights: U64x4) -> U64x4 {
     let west2 = mask_ab.andnot(knights).shr::<2>();
     let east2 = mask_gh.andnot(knights).shl::<2>();
 
-    let h1 = west1 | east1;
-    let h2 = west2 | east2;
-    (h1.shl::<16>() | h1.shr::<16>()) | (h2.shl::<8>() | h2.shr::<8>())
+    let one_file = west1 | east1;
+    let two_files = west2 | east2;
+    (one_file.shl::<16>() | one_file.shr::<16>()) | (two_files.shl::<8>() | two_files.shr::<8>())
 }
 
-/// King attacks: shift E/W, merge, then shift N/S.
+#[cfg(any(test, feature = "rigs", feature = "nostore"))]
 #[inline(always)]
-pub fn atk_king(kings: U64x4) -> U64x4 {
-    let attacks = kings | kings.shift_east() | kings.shift_west();
-    (attacks | attacks.shift_north() | attacks.shift_south()) & !kings
+pub(super) fn atk_kings(kings: U64x4) -> U64x4 {
+    let row = kings | kings.shift_east() | kings.shift_west();
+    (row | row.shift_north() | row.shift_south()) & !kings
 }
 
-/// All eight spatial influence surfaces, computed in two vectorized passes.
-///
-/// Orthogonal fields (`ortho_direct`, `ortho_xray`):
-/// - Lane 0: White (R+Q) orthogonal attack set
-/// - Lane 1: Black (R+Q) orthogonal attack set
-/// - Lane 2: Reserved (unused, currently 0)
-/// - Lane 3: Reserved (unused, currently 0)
-///
-/// Diagonal fields (`diag_direct`, `diag_xray`):
-/// - Same structure with (B+Q) generators.
-///
-/// All four lanes per field are computed simultaneously by a single set of
-/// AVX2 `vpsllq`/`vpsrlq` instructions applied to the packed `U64x4`.
-pub struct SpatialMaps {
-    pub ortho_direct: U64x4,
-    pub ortho_xray: U64x4,
-    pub diag_direct: U64x4,
-    pub diag_xray: U64x4,
+pub(crate) struct SliderMaps {
+    ortho_direct: U64x4,
+    ortho_xray: U64x4,
+    diag_direct: U64x4,
+    diag_xray: U64x4,
 }
 
-impl SpatialMaps {
+impl SliderMaps {
     #[inline]
-    pub fn compute(pos: &Position, pinned_w: u64, pinned_b: u64) -> Self {
-        let occ = pos.occ.0;
-        let empty = U64x4::splat(!occ);
-        let w_pcs = pos.side_bb[Color::White].0;
-        let b_pcs = pos.side_bb[Color::Black].0;
+    pub(crate) fn compute(pos: &Position, pinned_white: Bitboard, pinned_black: Bitboard) -> Self {
+        let white = pos.side_bb[Color::White];
+        let black = pos.side_bb[Color::Black];
+        let rq = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
+        let bq = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
+        let unpinned_white = white & !pinned_white;
+        let unpinned_black = black & !pinned_black;
 
-        let w_rq = (pos.role_bb[PieceType::Rook] & pos.side_bb[Color::White]
-            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::White])
-            .0
-            & !pinned_w;
+        let empty = U64x4::splat(!pos.occ.0);
+        let friendly = U64x4::from_lanes(white.0, black.0, 0, 0);
+        let ortho_sliders = U64x4::from_lanes((rq & unpinned_white).0, (rq & unpinned_black).0, 0, 0);
 
-        let b_rq = (pos.role_bb[PieceType::Rook] & pos.side_bb[Color::Black]
-            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::Black])
-            .0
-            & !pinned_b;
-
-        let w_bq = (pos.role_bb[PieceType::Bishop] & pos.side_bb[Color::White]
-            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::White])
-            .0
-            & !pinned_w;
-
-        let b_bq = (pos.role_bb[PieceType::Bishop] & pos.side_bb[Color::Black]
-            | pos.role_bb[PieceType::Queen] & pos.side_bb[Color::Black])
-            .0
-            & !pinned_b;
-
-        let gen_ortho = U64x4::from_lanes(w_rq, b_rq, 0, 0);
-        let us_pcs_ortho = U64x4::from_lanes(w_pcs, b_pcs, 0, 0);
-
-        let (gen_n, gen_s, gen_e, gen_w) = (
-            fill_north(gen_ortho, empty).shift_north(),
-            fill_south(gen_ortho, empty).shift_south(),
-            fill_east(gen_ortho, empty).shift_east(),
-            fill_west(gen_ortho, empty).shift_west(),
+        let (n, s, e, w) = (
+            fill_north(ortho_sliders, empty).shift_north(),
+            fill_south(ortho_sliders, empty).shift_south(),
+            fill_east(ortho_sliders, empty).shift_east(),
+            fill_west(ortho_sliders, empty).shift_west(),
         );
 
-        let ortho_direct = gen_n | gen_s | gen_e | gen_w;
+        let ortho_direct = n | s | e | w;
 
-        // Computes orthogonal X-ray ("shadow") attacks passing through exactly one friendly piece.
-        //
-        // Friendly pieces hit during the first pass (`gen_* & us_pcs_ortho`) serve as
-        // secondary generators. Refilling from these collision points continues the rays
-        // past the first blocker until the next obstruction.
         let ortho_xray = {
-            let (n, s, e, w) = (
-                fill_north(gen_n & us_pcs_ortho, empty).shift_north(),
-                fill_south(gen_s & us_pcs_ortho, empty).shift_south(),
-                fill_east(gen_e & us_pcs_ortho, empty).shift_east(),
-                fill_west(gen_w & us_pcs_ortho, empty).shift_west(),
-            );
-
+            let n = fill_north(n & friendly, empty).shift_north();
+            let s = fill_south(s & friendly, empty).shift_south();
+            let e = fill_east(e & friendly, empty).shift_east();
+            let w = fill_west(w & friendly, empty).shift_west();
             (n | s | e | w) & !ortho_direct
         };
 
-        let gen_diag = U64x4::from_lanes(w_bq, b_bq, 0, 0);
-        let us_pcs_diag = U64x4::from_lanes(w_pcs, b_pcs, 0, 0);
-
-        let (gen_ne, gen_nw, gen_se, gen_sw) = (
-            fill_northeast(gen_diag, empty).shift_ne(),
-            fill_northwest(gen_diag, empty).shift_nw(),
-            fill_southeast(gen_diag, empty).shift_se(),
-            fill_southwest(gen_diag, empty).shift_sw(),
+        let diag_sliders = U64x4::from_lanes((bq & unpinned_white).0, (bq & unpinned_black).0, 0, 0);
+        let (ne, nw, se, sw) = (
+            fill_northeast(diag_sliders, empty).shift_ne(),
+            fill_northwest(diag_sliders, empty).shift_nw(),
+            fill_southeast(diag_sliders, empty).shift_se(),
+            fill_southwest(diag_sliders, empty).shift_sw(),
         );
 
-        let diag_direct = gen_ne | gen_nw | gen_se | gen_sw;
+        let diag_direct = ne | nw | se | sw;
 
         let diag_xray = {
-            let (ne, nw, se, sw) = (
-                fill_northeast(gen_ne & us_pcs_diag, empty).shift_ne(),
-                fill_northwest(gen_nw & us_pcs_diag, empty).shift_nw(),
-                fill_southeast(gen_se & us_pcs_diag, empty).shift_se(),
-                fill_southwest(gen_sw & us_pcs_diag, empty).shift_sw(),
-            );
-
+            let ne = fill_northeast(ne & friendly, empty).shift_ne();
+            let nw = fill_northwest(nw & friendly, empty).shift_nw();
+            let se = fill_southeast(se & friendly, empty).shift_se();
+            let sw = fill_southwest(sw & friendly, empty).shift_sw();
             (ne | nw | se | sw) & !diag_direct
         };
 
         Self { ortho_direct, ortho_xray, diag_direct, diag_xray }
     }
-    #[inline]
-    pub fn w_ortho_direct(&self) -> u64 { self.ortho_direct.extract::<0>() }
-    #[inline]
-    pub fn b_ortho_direct(&self) -> u64 { self.ortho_direct.extract::<1>() }
 
     #[inline]
-    pub fn w_diag_direct(&self) -> u64 { self.diag_direct.extract::<0>() }
+    pub(crate) fn w_ortho_direct(&self) -> Bitboard { Bitboard(self.ortho_direct.extract::<0>()) }
     #[inline]
-    pub fn b_diag_direct(&self) -> u64 { self.diag_direct.extract::<1>() }
+    pub(crate) fn b_ortho_direct(&self) -> Bitboard { Bitboard(self.ortho_direct.extract::<1>()) }
 
-    /// Squares white controls ONLY via shadow (battery/X-ray),
-    /// strictly through exactly 1 own piece blocker.
     #[inline]
-    pub fn w_ortho_xray(&self) -> u64 { self.ortho_xray.extract::<0>() }
+    pub(crate) fn w_diag_direct(&self) -> Bitboard { Bitboard(self.diag_direct.extract::<0>()) }
     #[inline]
-    pub fn b_ortho_xray(&self) -> u64 { self.ortho_xray.extract::<1>() }
+    pub(crate) fn b_diag_direct(&self) -> Bitboard { Bitboard(self.diag_direct.extract::<1>()) }
+
     #[inline]
-    pub fn w_diag_xray(&self) -> u64 { self.diag_xray.extract::<0>() }
+    pub(crate) fn w_ortho_xray(&self) -> Bitboard { Bitboard(self.ortho_xray.extract::<0>()) }
     #[inline]
-    pub fn b_diag_xray(&self) -> u64 { self.diag_xray.extract::<1>() }
+    pub(crate) fn b_ortho_xray(&self) -> Bitboard { Bitboard(self.ortho_xray.extract::<1>()) }
+
+    #[inline]
+    pub(crate) fn w_diag_xray(&self) -> Bitboard { Bitboard(self.diag_xray.extract::<0>()) }
+    #[inline]
+    pub(crate) fn b_diag_xray(&self) -> Bitboard { Bitboard(self.diag_xray.extract::<1>()) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::board::Position;
+    use crate::core::defs::Square;
 
     #[test]
-    fn test_phantom_xray_rook() {
+    fn rook_xray_preserves_direction() {
         let pos = Position::from_fen("4k3/8/8/8/8/P7/8/R1N1K3 w - - 0 1");
-        let st = SpatialMaps::compute(&pos, 0, 0);
-        let xray = st.w_ortho_xray();
-        let a4 = 1u64 << 24;
-        let d1 = 1u64 << 3;
-        let b3 = 1u64 << 17;
-        assert!((xray & a4) != 0, "Should X-ray North from A3 to A4");
-        assert!((xray & d1) != 0, "Should X-ray East from C1 to D1");
-        assert!((xray & b3) == 0, "Phantom X-ray detected! A3 should not radiate East to B3");
+        let maps = SliderMaps::compute(&pos, Bitboard::EMPTY, Bitboard::EMPTY);
+        let xray = maps.w_ortho_xray();
+        let a4 = Square(24);
+        let d1 = Square(3);
+        let b3 = Square(17);
+        assert!(xray.check_bit(a4));
+        assert!(xray.check_bit(d1));
+        assert!(!xray.check_bit(b3));
     }
 
     #[test]
-    fn test_phantom_xray_bishop() {
+    fn bishop_xray_preserves_direction() {
         let pos = Position::from_fen("4k3/8/8/3p4/4P3/P7/8/R4K1B w - - 0 1");
-        let st = SpatialMaps::compute(&pos, 0, 0);
-        let d5 = 1u64 << (4 * 8 + 3); // 35
-        let f5 = 1u64 << (4 * 8 + 5); // 37
-        let diag_xray = st.w_diag_xray();
-        assert!((diag_xray & d5) != 0, "Should X-ray NW from E4 to D5");
-        assert!((diag_xray & f5) == 0, "Phantom X-ray detected! E4 should not radiate NE (only NW)");
+        let maps = SliderMaps::compute(&pos, Bitboard::EMPTY, Bitboard::EMPTY);
+        let d5 = Square(4 * 8 + 3);
+        let f5 = Square(4 * 8 + 5);
+        let diag_xray = maps.w_diag_xray();
+        assert!(diag_xray.check_bit(d5));
+        assert!(!diag_xray.check_bit(f5));
     }
 
     #[test]
-    fn test_self_occlusion() {
+    fn direct_attacks_include_friendly_slider() {
         let pos = Position::from_fen("4k3/8/8/8/8/R7/8/R3K3 w - - 0 1");
-        let st = SpatialMaps::compute(&pos, 0, 0);
-        let a3 = 1u64 << 16;
-        let w_ortho_direct = st.w_ortho_direct();
-        assert!((w_ortho_direct & a3) != 0, "Rook at A1 should defend Rook at A3");
+        let maps = SliderMaps::compute(&pos, Bitboard::EMPTY, Bitboard::EMPTY);
+        let a3 = Square(16);
+        let w_ortho_direct = maps.w_ortho_direct();
+        assert!(w_ortho_direct.check_bit(a3));
     }
 }

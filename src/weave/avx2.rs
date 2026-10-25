@@ -1,12 +1,5 @@
-//! AVX2 (256-bit) SIMD intrinsics wrapper.
-//!
-//! Provides safely typed wrappers around `__m256i` for parallel bitboard
-//! and accumulator operations.
-//!
-//! # Safety
-//! Builds without `target_feature = "avx2"` are rejected at compile time by
-//! `weave/mod.rs`, so every intrinsic here is available on any binary that
-//! reaches this module.
+//! 256-bit vectors. The build is gated on AVX2 in `weave/mod.rs`, so every intrinsic here
+//! exists on any binary that reaches this module.
 
 use core::{
     arch::x86_64::*,
@@ -17,65 +10,17 @@ use super::*;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct U64x4(pub __m256i);
-
-#[derive(Copy, Clone, Debug)]
-#[repr(transparent)]
-pub struct I16x16(pub __m256i);
-
-#[derive(Copy, Clone, Debug)]
-#[repr(transparent)]
-pub struct I32x8(pub __m256i);
-
-impl I32x8 {
-    #[inline(always)]
-    pub fn zero() -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_setzero_si256() })
-    }
-
-    #[inline(always)]
-    pub fn from_raw(v: __m256i) -> Self { Self(v) }
-
-    #[inline(always)]
-    pub fn as_u64x4(self) -> U64x4 { U64x4(self.0) }
-
-    #[inline(always)]
-    pub fn as_i16x16(self) -> I16x16 { I16x16(self.0) }
-
-    /// Horizontal sum to scalar i32.
-    #[inline]
-    pub fn hsum(self) -> i32 {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        unsafe {
-            let v = self.0;
-            let hi128 = _mm256_extracti128_si256::<1>(v);
-            let lo128 = _mm256_castsi256_si128(v);
-            let sum128 = _mm_add_epi32(lo128, hi128);
-            let hi64 = _mm_unpackhi_epi64(sum128, sum128);
-            let sum64 = _mm_add_epi32(sum128, hi64);
-            let hi32 = _mm_shuffle_epi32::<0b_00_00_00_01>(sum64);
-            let sum32 = _mm_add_epi32(sum64, hi32);
-            _mm_cvtsi128_si32(sum32)
-        }
-    }
-}
+pub(crate) struct U64x4(pub(crate) __m256i);
 
 impl U64x4 {
     #[inline(always)]
-    pub fn zero() -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_setzero_si256() })
-    }
-
-    #[inline(always)]
-    pub fn splat(v: u64) -> Self {
+    pub(crate) fn splat(v: u64) -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         Self(unsafe { _mm256_set1_epi64x(v as i64) })
     }
 
     #[inline(always)]
-    pub fn ones() -> Self {
+    fn ones() -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         unsafe {
             let z = _mm256_setzero_si256();
@@ -84,62 +29,50 @@ impl U64x4 {
     }
 
     #[inline(always)]
-    pub fn from_lanes(a: u64, b: u64, c: u64, d: u64) -> Self {
+    pub(crate) fn from_lanes(a: u64, b: u64, c: u64, d: u64) -> Self {
         // _mm256_set_epi64x takes lanes in reverse (3, 2, 1, 0); re-reversed here so a..d map to lanes 0..3.
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         Self(unsafe { _mm256_set_epi64x(d as i64, c as i64, b as i64, a as i64) })
     }
 
-    /// Load 4 contiguous u64s directly from memory.
-    ///
     /// # Safety
     /// `ptr` must be valid for reading 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn load(ptr: *const u64) -> Self {
+    pub(crate) unsafe fn load(ptr: *const u64) -> Self {
         // SAFETY: Caller guarantees the pointer is valid for an unaligned 256-bit read.
         Self(unsafe { _mm256_loadu_si256(ptr as *const __m256i) })
     }
 
     #[inline(always)]
-    pub fn shl<const N: i32>(self) -> Self {
+    pub(crate) fn shl<const N: i32>(self) -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate. Const generic enforces bounds.
         Self(unsafe { _mm256_slli_epi64::<N>(self.0) })
     }
 
     #[inline(always)]
-    pub fn shr<const N: i32>(self) -> Self {
+    pub(crate) fn shr<const N: i32>(self) -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate. Const generic enforces bounds.
         Self(unsafe { _mm256_srli_epi64::<N>(self.0) })
     }
 
     #[inline(always)]
-    pub fn andnot(self, rhs: Self) -> Self {
+    pub(crate) fn andnot(self, rhs: Self) -> Self {
         // Computes (!self) & rhs, following the Intel intrinsic.
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         Self(unsafe { _mm256_andnot_si256(self.0, rhs.0) })
     }
 
     #[inline(always)]
-    pub fn cmp_eq(self, rhs: Self) -> Mask {
+    pub(crate) fn cmp_eq(self, rhs: Self) -> Mask {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         Mask(unsafe { _mm256_cmpeq_epi64(self.0, rhs.0) })
-    }
-
-    #[inline(always)]
-    pub fn cmp_gt(self, rhs: Self) -> Mask {
-        // Bias both comparisons to make signed comparison behave like unsigned
-        let bias = Self::splat(0x8000_0000_0000_0000);
-        let a = self ^ bias;
-        let b = rhs ^ bias;
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Mask(unsafe { _mm256_cmpgt_epi64(a.0, b.0) })
     }
 
     /// Vertical popcount: PSHUFB nibble LUT + SAD trick.
     /// Returns a U64x4 where each lane holds the popcount of the corresponding input lane.
     #[rustfmt::skip]
     #[inline]
-    pub fn popcount(self) -> Self {
+    pub(crate) fn popcount(self) -> Self {
         // SAFETY: AVX2 available per mod.rs compile_error gate.
         unsafe {
             let lut = _mm256_setr_epi8(
@@ -163,16 +96,10 @@ impl U64x4 {
     }
 
     #[inline(always)]
-    pub fn extract<const IDX: i32>(self) -> u64 {
+    pub(crate) fn extract<const IDX: i32>(self) -> u64 {
         // SAFETY: AVX2 available per mod.rs compile_error gate. Const generic enforces bounds.
         unsafe { _mm256_extract_epi64::<IDX>(self.0) as u64 }
     }
-
-    #[inline(always)]
-    pub fn as_i16x16(self) -> I16x16 { I16x16(self.0) }
-
-    #[inline(always)]
-    pub fn as_i32x8(self) -> I32x8 { I32x8(self.0) }
 }
 
 impl Not for U64x4 {
@@ -181,126 +108,28 @@ impl Not for U64x4 {
     fn not(self) -> Self { self ^ Self::ones() }
 }
 
-impl I16x16 {
-    #[inline(always)]
-    pub fn zero() -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_setzero_si256() })
-    }
-
-    #[inline(always)]
-    pub fn splat(v: i16) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_set1_epi16(v) })
-    }
-
-    #[inline(always)]
-    pub fn from_raw(v: __m256i) -> Self { Self(v) }
-
-    /// Loads 16 contiguous i16s directly from memory.
-    ///
-    /// # Safety
-    /// `ptr` must be valid for reading 32 bytes (256 bits).
-    #[inline(always)]
-    pub unsafe fn load(ptr: *const i16) -> Self {
-        // SAFETY: Caller guarantees the pointer is valid for an unaligned 256-bit read.
-        Self(unsafe { _mm256_loadu_si256(ptr as *const __m256i) })
-    }
-
-    /// Stores 16 contiguous i16s directly to memory.
-    ///
-    /// # Safety
-    /// `ptr` must be valid for writing 32 bytes (256 bits).
-    #[inline(always)]
-    pub unsafe fn store(self, ptr: *mut i16) {
-        // SAFETY: Caller guarantees the pointer is valid for an unaligned 256-bit write.
-        unsafe { _mm256_storeu_si256(ptr as *mut __m256i, self.0) }
-    }
-
-    #[inline(always)]
-    pub fn max(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_max_epi16(self.0, rhs.0) })
-    }
-
-    #[inline(always)]
-    pub fn min(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_min_epi16(self.0, rhs.0) })
-    }
-
-    /// Clamp to [0, max]: ReLU then cap.
-    #[inline(always)]
-    pub fn clamp_relu(self, ceil: Self) -> Self { self.max(Self::zero()).min(ceil) }
-
-    #[inline(always)]
-    pub fn mulhi(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_mulhi_epi16(self.0, rhs.0) })
-    }
-
-    #[inline(always)]
-    pub fn mullo(self, rhs: Self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_mullo_epi16(self.0, rhs.0) })
-    }
-
-    /// Horizontal pairwise add of i16 products, producing i32 lanes.
-    #[inline(always)]
-    pub fn madd(self, rhs: Self) -> I32x8 {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        I32x8(unsafe { _mm256_madd_epi16(self.0, rhs.0) })
-    }
-
-    #[inline(always)]
-    pub fn srai<const N: i32>(self) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate. Const generic enforces bounds.
-        Self(unsafe { _mm256_srai_epi16::<N>(self.0) })
-    }
-
-    #[inline(always)]
-    pub fn blend(self, rhs: Self, mask: Mask) -> Self {
-        // SAFETY: AVX2 available per mod.rs compile_error gate.
-        Self(unsafe { _mm256_blendv_epi8(self.0, rhs.0, mask.0) })
-    }
-
-    #[inline(always)]
-    pub fn as_u64x4(self) -> U64x4 { U64x4(self.0) }
-
-    #[inline(always)]
-    pub fn as_i32x8(self) -> I32x8 { I32x8(self.0) }
-}
-
-impl Not for I16x16 {
-    type Output = Self;
-    #[inline(always)]
-    fn not(self) -> Self { self ^ Self::splat(-1) }
-}
-
+#[cfg_attr(not(test), expect(dead_code, reason = "only the dual-number oracle uses it"))]
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct F32x8(pub __m256);
+pub(crate) struct F32x8(pub(crate) __m256);
 
+#[cfg_attr(not(test), expect(dead_code, reason = "only the dual-number oracle uses it"))]
 impl F32x8 {
     #[inline(always)]
-    pub fn zero() -> Self { Self(unsafe { _mm256_setzero_ps() }) }
+    pub(crate) fn zero() -> Self { Self(unsafe { _mm256_setzero_ps() }) }
 
     #[inline(always)]
-    pub fn splat(v: f32) -> Self { Self(unsafe { _mm256_set1_ps(v) }) }
+    pub(crate) fn splat(v: f32) -> Self { Self(unsafe { _mm256_set1_ps(v) }) }
 
-    /// Load 8 contiguous f32s directly from memory.
-    ///
     /// # Safety
     /// `ptr` must be valid for reading 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn loadu(ptr: *const f32) -> Self { Self(unsafe { _mm256_loadu_ps(ptr) }) }
+    pub(crate) unsafe fn loadu(ptr: *const f32) -> Self { Self(unsafe { _mm256_loadu_ps(ptr) }) }
 
-    /// Store 8 contiguous f32s directly to memory.
-    ///
     /// # Safety
     /// `ptr` must be valid for writing 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn storeu(self, ptr: *mut f32) { unsafe { _mm256_storeu_ps(ptr, self.0) }; }
+    pub(crate) unsafe fn storeu(self, ptr: *mut f32) { unsafe { _mm256_storeu_ps(ptr, self.0) }; }
 }
 
 impl Neg for F32x8 {
@@ -316,28 +145,25 @@ impl From<[f32; 8]> for F32x8 {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct F64x4(pub __m256d);
+pub(crate) struct F64x4(pub(crate) __m256d);
 
+#[expect(dead_code, reason = "completeness API: lane operations stay with their type")]
 impl F64x4 {
     #[inline(always)]
-    pub fn zero() -> Self { Self(unsafe { _mm256_setzero_pd() }) }
+    fn zero() -> Self { Self(unsafe { _mm256_setzero_pd() }) }
 
     #[inline(always)]
-    pub fn splat(v: f64) -> Self { Self(unsafe { _mm256_set1_pd(v) }) }
+    pub(crate) fn splat(v: f64) -> Self { Self(unsafe { _mm256_set1_pd(v) }) }
 
-    /// Load 4 contiguous f64s directly from memory.
-    ///
     /// # Safety
     /// `ptr` must be valid for reading 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn loadu(ptr: *const f64) -> Self { Self(unsafe { _mm256_loadu_pd(ptr) }) }
+    pub(crate) unsafe fn loadu(ptr: *const f64) -> Self { Self(unsafe { _mm256_loadu_pd(ptr) }) }
 
-    /// Store 4 contiguous f64s directly to memory.
-    ///
     /// # Safety
     /// `ptr` must be valid for writing 32 bytes (256 bits).
     #[inline(always)]
-    pub unsafe fn storeu(self, ptr: *mut f64) { unsafe { _mm256_storeu_pd(ptr, self.0) }; }
+    pub(crate) unsafe fn storeu(self, ptr: *mut f64) { unsafe { _mm256_storeu_pd(ptr, self.0) }; }
 }
 
 impl Neg for F64x4 {
@@ -360,10 +186,6 @@ impl From<F64x4> for [f64; 4] {
     }
 }
 
-binops! { I32x8:
-    Add add _mm256_add_epi32,
-}
-
 binops! { U64x4:
     Add     add     _mm256_add_epi64,
     Sub     sub     _mm256_sub_epi64,
@@ -376,14 +198,6 @@ assign_ops! { U64x4:
     BitAndAssign bitand_assign  &,
     BitOrAssign  bitor_assign   |,
     BitXorAssign bitxor_assign  ^,
-}
-
-binops! { I16x16:
-    Add    add      _mm256_add_epi16,
-    Sub    sub      _mm256_sub_epi16,
-    BitAnd bitand   _mm256_and_si256,
-    BitOr  bitor    _mm256_or_si256,
-    BitXor bitxor   _mm256_xor_si256,
 }
 
 binops! { F32x8:

@@ -1,8 +1,4 @@
-//! Safe abstraction macros for debug-checked performance invariants.
-
-/// Unchecked indexing in release, bounds-checked in debug.
-///
-/// Usage: `debug_index!(collection, index)`
+/// Bounds-checked in debug; `$index` must be in bounds in release.
 #[macro_export]
 macro_rules! debug_index {
     ($collection:expr, $index:expr) => {{
@@ -13,9 +9,8 @@ macro_rules! debug_index {
 
         #[cfg(not(debug_assertions))]
         {
-            // Some call sites expand inside an unsafe block, where this one is redundant.
+            // SAFETY: $index is required to be in bounds.
             #[allow(unused_unsafe)]
-            // SAFETY: Caller guarantees that $index is within the bounds of $collection
             unsafe {
                 $collection.get_unchecked($index)
             }
@@ -23,13 +18,32 @@ macro_rules! debug_index {
     }};
 }
 
-/// Unchecked mutated indexing in release, bounds-checked in debug.
-///
-/// The `&mut T` comes from `as_mut_ptr()` and pointer arithmetic rather than
-/// `get_unchecked_mut`, so LLVM sees it originating from a local pointer instead of a field
-/// borrow. That can spare reloads of sibling fields, where the aliasing analysis cooperates.
-///
-/// Usage: `debug_index_mut!(collection, index)`
+#[macro_export]
+macro_rules! soul_index_checked {
+    ($type:ty, $size:expr) => {
+        impl<T> std::ops::Index<$type> for [T; $size] {
+            type Output = T;
+
+            #[inline(always)]
+            fn index(&self, idx: $type) -> &Self::Output {
+                let i = usize::from(idx);
+                assert!(i < $size, "Domain-typed index out of bounds");
+                &self[i]
+            }
+        }
+
+        impl<T> std::ops::IndexMut<$type> for [T; $size] {
+            #[inline(always)]
+            fn index_mut(&mut self, idx: $type) -> &mut Self::Output {
+                let i = usize::from(idx);
+                assert!(i < $size, "Domain-typed index out of bounds");
+                &mut self[i]
+            }
+        }
+    };
+}
+
+/// Bounds-checked in debug; `$index` must be in bounds in release.
 #[macro_export]
 macro_rules! debug_index_mut {
     ($collection:expr, $index:expr) => {{
@@ -40,9 +54,9 @@ macro_rules! debug_index_mut {
 
         #[cfg(not(debug_assertions))]
         {
-            // Some call sites expand inside an unsafe block, where this one is redundant.
+            // Pointer arithmetic can avoid sibling-field reloads here.
+            // SAFETY: $index is required to be in bounds.
             #[allow(unused_unsafe)]
-            // SAFETY: Caller guarantees that $index is within the bounds of $collection.
             unsafe {
                 &mut *$collection.as_mut_ptr().add($index)
             }

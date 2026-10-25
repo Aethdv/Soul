@@ -13,8 +13,8 @@ A zero-sized type implementing `LinearTerm`:
 - `apply_input` writes the same buckets from a packed `FeatureRecord`, which has no board and no `EvalParams`.
 - `scatter` takes the combiner's upstream for the bucket and writes `∂loss/∂param` into the term's slots.
 - `type Upstream` is whatever the combiner hands that bucket: `TaperPair` for the pre-tapered ones,
-  `f64` for `xray`, `KingSafetyUpstream` for king safety, which holds the shelter derivative plus one
-  danger derivative per side.
+  `f64` for `xray`, `KingSafetyUpstream` for king safety, which holds the safety derivative plus one
+  pressure derivative per side.
 
 Nearly every term is a tapered bonus, a feature dotted with an `(mg, eg)` pair into the `bonus`
 bucket, and those are one roster row with no hand-written impl. You write a `LinearTerm` yourself
@@ -37,7 +37,7 @@ The feature expression can be anything; the *parameter* has to stay linear.
 One shape did cross the line, and where it went is where the next one goes. King danger accelerates,
 `pressure + pressure²·curvature/DANGER_SCALE`, and `pressure` is itself a sum of weighted features,
 so the square multiplies parameters together and `curvature` is a tunable on top. It lives in
-`LinearCombiner::forward`, not in `KingSafetyTerm`: the term feeds `danger_us` and `danger_them` raw,
+`combiner::combine`, not in `KingSafetyTerm`: the term feeds `pressure_us` and `pressure_them` raw,
 the combiner curves each side after the sum, and `backward` folds the slope
 `1 + 2p·curvature/DANGER_SCALE` into the term's upstream. Leave it in a term and the oracle catches
 you, but only if a test position exercises it.
@@ -182,10 +182,10 @@ taper, so scatter is only `upstream · ∂bucket/∂param`.
 | `bonus` | `TaperPair { d_mg, d_eg }` | `grads[mg] += d_mg · feat`, `grads[eg] += d_eg · feat` |
 | `mobility` | `TaperPair` | the same, times the openness fraction |
 | `xray` | `f64` | `grads[xray] += upstream · feat` |
-| `king_safety` | `KingSafetyUpstream` | shelter slots take `shelter · feat_diff`; each side's attacker weight takes its own `danger_us` / `danger_them` |
+| `king_safety` | `KingSafetyUpstream` | safety slots take `safety · feat_diff`; each side's attacker weight takes its own `pressure_us` / `pressure_them` |
 
-The danger halves arrive separately because the combiner curves each before differencing them, so
-`∂block/∂danger` depends on which king it belongs to.
+The pressure halves arrive separately because the combiner curves each before differencing them, so
+`∂block/∂pressure` depends on which king it belongs to.
 
 A roster row generates all of this. The table matters when you hand-write a novel shape, and if your
 shape is not here, derive `∂bucket/∂param` from your `apply`; the oracle catches the slips.

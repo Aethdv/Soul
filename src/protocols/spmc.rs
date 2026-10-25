@@ -1,12 +1,4 @@
-//! Single-producer multi-consumer broadcast channel.
-//!
-//! One message is heap-allocated per `send`, shared by reference with every receiver, and
-//! freed by the sender's `wait()` once all of them have returned from `recv`.
-//!
-//! A generation bit toggles each `send` so receivers don't pick up stale
-//! messages between `wait` and the next `send`. An `exit` flag shuts down
-//! receivers cleanly: `wake()` sets the flag and unparks every receiver,
-//! at which point `recv` returns `None`.
+//! Single-producer, multi-consumer broadcast channel.
 
 use std::{
     ptr,
@@ -21,6 +13,15 @@ use std::{
 
 use atomic_wait::{wait, wake_all};
 
+pub(super) struct Sender<M> {
+    shared: Arc<Shared<M>>,
+}
+
+pub(super) struct Receiver<M> {
+    shared: Arc<Shared<M>>,
+    generation: bool,
+}
+
 struct Shared<M> {
     msg: AtomicPtr<M>,
     ready: AtomicBool,
@@ -29,23 +30,7 @@ struct Shared<M> {
     num_receivers: u32,
 }
 
-pub struct Sender<M> {
-    shared: Arc<Shared<M>>,
-}
-
-pub struct Receiver<M> {
-    shared: Arc<Shared<M>>,
-    generation: bool,
-}
-
-fn pack(remaining: u32, generation: bool) -> u32 {
-    debug_assert!(remaining < u32::MAX >> 1);
-    remaining | (generation as u32) << 31
-}
-
-fn unpack(v: u32) -> (u32, bool) { (v & (u32::MAX >> 1), (v >> 31) != 0) }
-
-pub fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
+pub(crate) fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
     let shared = Arc::new(Shared {
         msg: AtomicPtr::new(ptr::null_mut()),
         ready: AtomicBool::new(false),
@@ -63,10 +48,8 @@ pub fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
 }
 
 impl<M> Sender<M> {
-    /// The message is freed in `wait()`.
-    pub fn send(&self, msg: M) {
+    pub(crate) fn send(&self, msg: M) {
         let shared = &*self.shared;
-
         let boxed = Box::new(msg);
         shared.msg.store(Box::into_raw(boxed), Relaxed);
         shared.ready.store(true, Release);
@@ -76,8 +59,8 @@ impl<M> Sender<M> {
         wake_all(&shared.futex);
     }
 
-    /// Blocks until every receiver has returned from `recv`, then frees the message.
-    pub fn wait(&self) {
+    /// Waits for every handler to return, then frees the message.
+    pub(super) fn wait(&self) {
         let shared = &*self.shared;
         let mut val = shared.futex.load(Acquire);
 
@@ -90,16 +73,16 @@ impl<M> Sender<M> {
 
         let ptr = shared.msg.swap(ptr::null_mut(), Relaxed);
         if !ptr.is_null() {
-            // SAFETY: Created by Box::into_raw in send(); all receivers
-            // have returned from recv (outstanding count is zero).
+            // SAFETY: send created this with Box::into_raw, and zero outstanding
+            // receivers means no handler still borrows it.
             unsafe {
                 drop(Box::from_raw(ptr));
             }
         }
     }
 
-    /// After this, every parked `recv` returns `None` and receivers should terminate.
-    pub fn wake(&self) {
+    /// Shuts the channel down and wakes every receiver.
+    pub(super) fn wake(&self) {
         let shared = &*self.shared;
         shared.exit.store(true, Release);
         wake_all(&shared.futex);
@@ -107,9 +90,8 @@ impl<M> Sender<M> {
 }
 
 impl<M> Receiver<M> {
-    /// Blocks until `send` delivers a message this receiver has not seen, or returns `None`
-    /// once the channel has been shut down via [`Sender::wake`].
-    pub fn recv<R>(&mut self, handler: impl FnOnce(&M) -> R) -> Option<R> {
+    /// Waits for the next unseen message, or returns `None` after shutdown.
+    pub(super) fn recv<R>(&mut self, handler: impl FnOnce(&M) -> R) -> Option<R> {
         let shared = &*self.shared;
 
         loop {
@@ -127,19 +109,17 @@ impl<M> Receiver<M> {
 
         self.generation = !self.generation;
 
-        // SAFETY: The Acquire loads above establish that send()'s
-        // msg store (happens-before the Release store on ready/futex)
-        // is visible here.
+        // SAFETY: send publishes the pointer with the generation's Release store,
+        // acquired above; wait cannot free it until this handler returns.
         let msg_ref = unsafe { &*shared.msg.load(Relaxed) };
         let result = handler(msg_ref);
-        // fetch_sub hands back the value before the decrement, so 1 means this
-        // receiver was the last one out and the sender is parked in wait().
         let (outstanding, _) = unpack(shared.futex.fetch_sub(1, Release));
         debug_assert!(outstanding > 0, "a decrement past zero borrows into the generation bit");
 
         if outstanding == 1 {
             wake_all(&shared.futex);
         }
+
         Some(result)
     }
 }
@@ -147,6 +127,13 @@ impl<M> Receiver<M> {
 // SAFETY: Single-producer design. Each receiver is used from one thread.
 // The msg pointer is guarded by the futex + generation protocol.
 unsafe impl<M: Send> Send for Sender<M> {}
-unsafe impl<M: Send> Send for Receiver<M> {}
 unsafe impl<M: Sync> Sync for Sender<M> {}
+unsafe impl<M: Send> Send for Receiver<M> {}
 unsafe impl<M: Sync> Sync for Receiver<M> {}
+
+fn pack(remaining: u32, generation: bool) -> u32 {
+    debug_assert!(remaining < u32::MAX >> 1);
+    remaining | (generation as u32) << 31
+}
+
+fn unpack(v: u32) -> (u32, bool) { (v & (u32::MAX >> 1), (v >> 31) != 0) }

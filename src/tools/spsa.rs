@@ -1,19 +1,17 @@
-//! The `spsa` subcommand: print the tuning table, or fold a finished tune's values
-//! back into the declared defaults.
+//! Print the search param table, or overwrite defaults with a finished tune's
+//! values.
 
 use std::{fs, io, io::IsTerminal, process};
 
-use crate::engine::search_params::{frozen_param_defs, spsa_table, tunable_param_defs};
+use crate::engine::search_params::{ParamDef, frozen_param_defs, spsa_table, tunable_param_defs};
 
 const PARAMS_FILE: &str = "src/engine/search_params.rs";
+const TABLE_FILE: &str = "spsa.txt";
 const SCREENFUL: usize = 70;
 
 struct Change {
-    name: &'static str,
-    old: i32,
+    param: &'static ParamDef,
     new: i32,
-    min: i32,
-    max: i32,
 }
 
 pub fn run(args: &[&str]) {
@@ -26,10 +24,11 @@ pub fn run(args: &[&str]) {
 
 fn print_table() {
     let table = spsa_table();
-    if table.lines().count() > SCREENFUL && io::stdout().is_terminal() {
-        match fs::write("spsa.txt", &table) {
-            Ok(()) => println!("{} params written to spsa.txt", table.lines().count()),
-            Err(e) => fail(&format!("spsa.txt: {e}")),
+    let params = table.lines().count();
+    if params > SCREENFUL && io::stdout().is_terminal() {
+        match fs::write(TABLE_FILE, &table) {
+            Ok(()) => println!("{params} params written to {TABLE_FILE}"),
+            Err(e) => fail(&format!("{TABLE_FILE}: {e}")),
         }
     } else {
         print!("{table}");
@@ -55,7 +54,6 @@ fn apply(report: &str, flags: &[&str]) {
     let text = fs::read_to_string(report).unwrap_or_else(|e| fail(&format!("{report}: {e}")));
     let changes = read_report(&text);
 
-    // A name frozen since the tune ran would otherwise be dropped without a word.
     for def in frozen_param_defs() {
         if find_value(&text, def.name).is_some() {
             eprintln!("spsa: {} is frozen; its reported value is ignored", def.name);
@@ -63,7 +61,11 @@ fn apply(report: &str, flags: &[&str]) {
     }
 
     if changes.is_empty() {
-        fail(&format!("{report} names no tunable parameter"));
+        fail(&format!("{report} contains no tunable changes"));
+    }
+
+    if let Err(message) = validate_changes(&changes) {
+        fail(&message);
     }
 
     report_changes(&changes);
@@ -88,55 +90,64 @@ fn apply(report: &str, flags: &[&str]) {
 
 fn read_report(text: &str) -> Vec<Change> {
     tunable_param_defs()
-        .iter()
         .filter_map(|def| {
             let new = find_value(text, def.name)?;
-            let old = def.default as i32;
-            (new != old).then_some(Change { name: def.name, old, new, min: def.min as i32, max: def.max as i32 })
+            (new != def.default).then_some(Change { param: def, new })
         })
         .collect()
 }
 
-/// The first integer following a whole-word `name`, so the `int` of a table row is skipped.
+fn validate_changes(changes: &[Change]) -> Result<(), String> {
+    for change in changes {
+        let param = change.param;
+        if !(param.min..=param.max).contains(&change.new) {
+            return Err(format!("{} = {} is outside {}..={}", param.name, change.new, param.min, param.max));
+        }
+    }
+    Ok(())
+}
+
 fn find_value(text: &str, name: &str) -> Option<i32> {
     for (at, _) in text.match_indices(name) {
         let before = text[..at].chars().next_back();
         let tail = &text[at + name.len()..];
+
         if before.is_some_and(is_name_char) || tail.starts_with(is_name_char) {
             continue;
         }
 
         if let Some(value) = tail
-            .split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '=' | '"' | '(' | ')'))
+            .split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '=' | '"' | '(' | ')' | '[' | ']' | '{' | '}'))
             .filter(|token| !token.is_empty())
             .find_map(|token| token.parse::<i32>().ok())
         {
             return Some(value);
         }
     }
+
     None
 }
 
 fn is_name_char(c: char) -> bool { c.is_alphanumeric() || c == '_' }
 
 fn report_changes(changes: &[Change]) {
-    let width = changes.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let width = changes.iter().map(|c| c.param.name.len()).max().unwrap_or(0);
 
     for change in changes {
-        let delta = change.new - change.old;
-        // Pinned to an edge means the range fenced the tune in, not that this is the value.
-        let pinned = if change.new == change.min || change.new == change.max { "  (at bound)" } else { "" };
-        println!("{:<width$}  {:>7} -> {:<7} {delta:+}{pinned}", change.name, change.old, change.new);
+        let param = change.param;
+        let delta = change.new - param.default;
+        // A bound value means the range limited the tune, not that the value is right.
+        let pinned = if change.new == param.min || change.new == param.max { "  (at bound)" } else { "" };
+        println!("{:<width$}  {:>7} -> {:<7} {delta:+}{pinned}", param.name, param.default, change.new);
     }
 }
 
-/// Replaces each named default, holding the column after it still where padding allows.
 fn rewrite(source: &str, changes: &[Change]) -> (String, usize) {
     let mut out = String::with_capacity(source.len());
     let mut applied = 0;
 
     for line in source.split_inclusive('\n') {
-        match changes.iter().find(|c| declares(line, c.name)) {
+        match changes.iter().find(|c| declares(line, c.param.name)) {
             Some(change) => {
                 out.push_str(&replace_default(line, change.new));
                 applied += 1;
@@ -179,11 +190,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_value_is_read_out_of_every_report_format() {
+    fn a_value_is_read_out_of_common_report_formats() {
         for report in [
             "lmr_base, int, 117, 10, 160, 7, 0.002",
             "lmr_base=117",
             "\"lmr_base\": 117,",
+            "{\"lmr_base\": 117}",
             "lmr_base 117",
             "param_lmr_base 9\nlmr_base 117",
         ] {
@@ -193,11 +205,18 @@ mod tests {
     }
 
     #[test]
+    fn an_out_of_range_value_is_rejected() {
+        let param = tunable_param_defs().find(|p| p.name == "lmr_base").unwrap();
+        assert!(validate_changes(&[Change { param, new: param.min }]).is_ok());
+        assert!(validate_changes(&[Change { param, new: param.max }]).is_ok());
+        assert!(validate_changes(&[Change { param, new: param.max + 1 }]).is_err());
+    }
+
+    #[test]
     fn a_rewrite_holds_the_column() {
         let source = "        T (lmr_base,          100,  10),\n        T (lmr_divisor,       225,   1,  350),\n";
-        let change = |name, new| Change { name, old: 0, new, min: 1, max: 350 };
+        let change = |name, new| Change { param: tunable_param_defs().find(|p| p.name == name).unwrap(), new };
         let changes = vec![change("lmr_base", 7), change("lmr_divisor", 1234)];
-
         let (out, applied) = rewrite(source, &changes);
         assert_eq!(applied, 2);
         assert_eq!(out, "        T (lmr_base,            7,  10),\n        T (lmr_divisor,      1234,   1,  350),\n");

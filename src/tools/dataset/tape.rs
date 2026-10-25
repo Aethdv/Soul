@@ -1,27 +1,27 @@
-//! Forward-mode automatic differentiation (AD) using dual numbers.
-//!
-//! Tracks partial derivatives alongside evaluation values using dual numbers.
-//! Serves as an exact ground-truth oracle for verifying analytic linear gradient routines.
+//! f64 evaluation and the dual-number gradient oracle.
 
+use super::compute_phase_f64;
+#[cfg(test)]
+use crate::engine::{
+    autograd::dual::{DualNode, DualVec8},
+    combiner::{self, CombinerParams},
+    eval::{evaluate_buckets, scatter_all_terms},
+    wdl::sigmoid,
+};
 use crate::{
     core::{
         board::Position as Board,
-        defs::{Color, PieceType, TOTAL_PHASE},
-        phase::compute_phase_f64,
+        defs::{Color, PieceType},
         psqt,
     },
     engine::{
-        autograd::{
-            EnvVec8, EvalMath,
-            dual::{DUAL_N, DualNode, DualVec8},
-        },
-        combiner::{Combiner, CombinerParams, LinearCombiner},
-        eval::{EvalParams, SharedFeatures, evaluate_generic, fill_accumulators, scatter_all_terms},
+        autograd::{EvalMath, EvalVec8},
+        eval::{EvalParams, SharedFeatures, evaluate_generic},
         eval_params::LAYOUT,
-        wdl::sigmoid,
     },
 };
 
+#[cfg(test)]
 mod scatter {
     #[inline(always)]
     pub(super) fn scatter_scalar(grad: &[f32], slot: &mut usize, outer: f64, out: &mut [f64], offset: usize) {
@@ -44,77 +44,55 @@ mod scatter {
     contiguous!(scatter_vec4 = 4, scatter_array6 = 6);
 }
 
+#[cfg(test)]
 macro_rules! impl_scatter {
     ($( ($name:ident, $ty:ident, $offset_field:ident, $extra:expr, $konst:expr) ),* $(,)?) => {
         paste::paste! {
-            impl DualEvalResult {
-                pub fn scatter_dynamic(&self, outer_deriv: f64, param_grads: &mut [f64]) {
-                    let mut slot = 2; // Slots 0 and 1 are reserved for MG and EG accumulator lanes
-                    $(
-                        scatter::[<scatter_ $ty:lower>](
-                            &self.grad,
-                            &mut slot,
-                            outer_deriv,
-                            param_grads,
-                            LAYOUT.$offset_field + $extra,
-                        );
-                    )*
-                }
+            fn scatter_dual(grad: &[f32], outer_deriv: f64, param_grads: &mut [f64]) {
+                let mut slot = 2; // Slots 0 and 1 are reserved for MG and EG accumulator lanes
+                $(
+                    scatter::[<scatter_ $ty:lower>](
+                        grad,
+                        &mut slot,
+                        outer_deriv,
+                        param_grads,
+                        LAYOUT.$offset_field + $extra,
+                    );
+                )*
             }
         }
     };
 }
 
+#[cfg(test)]
 crate::define_tunables!(impl_scatter);
 
-/// Output derivatives from a forward-mode dual number evaluation pass.
-pub struct DualEvalResult {
-    /// Partial derivatives per tracked parameter, zero-padded to `DUAL_N`.
-    pub grad: [f32; DUAL_N],
-}
-
-/// Evaluates a position and accumulates parameter gradients using forward-mode AD.
-///
-/// Serves as the ground-truth oracle for `eval_linear_grad`. Returns squared error loss.
+#[cfg(test)]
 #[inline]
-pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
+fn eval_dual_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    let mut phase_dual = DualNode::zero();
-    for (pt, count) in piece_counts.iter().enumerate().take(6) {
-        let phase_idx = LAYOUT.phase_offset + pt;
-        if phase_idx < values.len() {
-            phase_dual += DualNode::constant(*count) * DualNode::constant(values[phase_idx]);
-        }
-    }
-
-    let phase = phase_dual
-        .math_clamp(DualNode::zero(), DualNode::constant(f64::from(TOTAL_PHASE)))
-        .trunc();
+    // The phase weights are constants, so no gradient flows through the phase.
+    let phase = DualNode::constant(compute_phase_f64(&piece_counts, values));
 
     let mut dual_acc = DualVec8::zero();
     dual_acc.0[0] = DualNode::seed(lane_vals[0], 0);
     dual_acc.0[1] = DualNode::seed(lane_vals[1], 1);
 
-    for (dual, &val) in dual_acc.0[2..8].iter_mut().zip(&lane_vals[2..8]) {
-        *dual = DualNode::constant(val);
-    }
-
     let params = EvalParams::<DualNode>::load_tunable(values);
     let features = SharedFeatures::compute(board);
 
-    let result = evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, Some(&features));
+    let result = evaluate_generic::<DualNode>(board, &dual_acc, phase, &params, &features);
     let score = result.val;
 
     let sig = sigmoid(score, k);
     let err = sig - target;
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
 
-    let eval_result = DualEvalResult { grad: result.grad };
-    eval_result.scatter_dynamic(outer_deriv, param_grads);
+    scatter_dual(&result.grad, outer_deriv, param_grads);
 
     let d_mg = outer_deriv * f64::from(result.grad[0]);
     let d_eg = outer_deriv * f64::from(result.grad[1]);
@@ -123,31 +101,24 @@ pub fn eval_dual_fused(board: &Board, values: &[f64], target: f64, k: f64, param
     err * err
 }
 
-/// Evaluates a position and accumulates parameter gradients using analytic linear derivatives.
-///
-/// Every parameter enters the eval as `param · feature`, so its gradient is that feature's
-/// coefficient and can be written straight out: one f64 per slot, against `DUAL_N` f32 ops
-/// per arithmetic op on the dual path. The dual path stays as the oracle for this one.
-///
-/// Returns squared error loss.
+#[cfg(test)]
 #[inline]
-pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
+fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_grads: &mut [f64]) -> f64 {
     let mut lane_vals = [0.0f64; 8];
     let mut piece_counts = [0.0f64; 6];
 
     accumulate_lane_vals(board, values, &mut lane_vals, &mut piece_counts);
 
-    // Phase weights are kept fixed; game phase definition must not drift during tuning.
     let phase = compute_phase_f64(&piece_counts, values);
-
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
+
     let mut acc = <f64 as EvalMath>::Vec8::zero();
     acc.0 = lane_vals;
 
-    let buckets = fill_accumulators::<f64>(&acc, phase, &features, &params);
-    let combiner = CombinerParams::from_eval(&params);
-    let white_score = LinearCombiner::forward(&buckets, phase, &combiner);
+    let buckets = evaluate_buckets::<f64>(&acc, phase, &features, &params);
+    let combiner_params = CombinerParams::from_eval(&params);
+    let white_score = combiner::combine(&buckets, phase, &combiner_params);
     let stm_sign: f64 = if board.stm == Color::White { 1.0 } else { -1.0 };
     let score = white_score * stm_sign;
 
@@ -156,10 +127,10 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
     let outer_deriv = 2.0 * err * sig * (1.0 - sig) * k;
     let stm_outer_deriv = outer_deriv * stm_sign;
 
-    let upstreams = LinearCombiner::backward(&buckets, phase, &combiner, stm_outer_deriv, param_grads);
+    let upstreams = combiner::backward(&buckets, phase, &combiner_params, stm_outer_deriv, param_grads);
 
-    let d_mg = upstreams.mg_eg.d_mg;
-    let d_eg = upstreams.mg_eg.d_eg;
+    let d_mg = upstreams.material_psqt.d_mg;
+    let d_eg = upstreams.material_psqt.d_eg;
 
     scatter_psqt(board, d_mg, d_eg, param_grads);
     scatter_all_terms(&features, &upstreams, param_grads);
@@ -168,26 +139,18 @@ pub fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, para
 
 /// Evaluates a board using 64-bit floating point weights.
 #[inline(always)]
-pub fn eval_f64(board: &Board, values: &[f64]) -> f64 { eval_f64_with_acc(board, values).0 }
-
-/// Evaluates a board and returns the final score along with accumulator lane sums and piece counts.
-pub fn eval_f64_with_acc(board: &Board, values: &[f64]) -> (f64, [f64; 8], [f64; 6]) {
+pub fn eval_f64(board: &Board, values: &[f64]) -> f64 {
     let mut accum = <f64 as EvalMath>::Vec8::zero();
     let mut piece_counts = [0.0f64; 6];
-
     accumulate_lane_vals(board, values, &mut accum.0, &mut piece_counts);
 
     let phase = compute_phase_f64(&piece_counts, values);
     let params = EvalParams::<f64>::load_tunable(values);
     let features = SharedFeatures::compute(board);
-
-    (evaluate_generic::<f64>(board, &accum, phase, &params, Some(&features)), accum.0, piece_counts)
+    evaluate_generic::<f64>(board, &accum, phase, &params, &features)
 }
 
-/// Scatters material and PSQT parameter gradients across all active pieces on the board.
-///
-/// Both gradient paths end here. A copy of this loop in each would let one bug sit in
-/// both, and the oracle would agree with itself.
+#[cfg(test)]
 #[inline(always)]
 fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
     debug_assert!(
@@ -213,12 +176,14 @@ fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
             let mirror_idx = psqt::mirror_sq(usize::from(sq.flip_rank()));
             let mg_idx = pt * 64 + mirror_idx;
             let eg_idx = pt * 64 + 32 + mirror_idx;
+
             param_grads[mg_idx] += d_mg;
             param_grads[eg_idx] += d_eg;
         }
 
         let mut bb_b = board.pieces(piece, Color::Black);
         let count_b = bb_b.popcount() as f64;
+
         param_grads[mat_mg_idx] -= d_mg * count_b;
         param_grads[mat_eg_idx] -= d_eg * count_b;
 
@@ -227,13 +192,13 @@ fn scatter_psqt(board: &Board, d_mg: f64, d_eg: f64, param_grads: &mut [f64]) {
             let mirror_idx = psqt::mirror_sq(usize::from(sq));
             let mg_idx = pt * 64 + mirror_idx;
             let eg_idx = pt * 64 + 32 + mirror_idx;
+
             param_grads[mg_idx] -= d_mg;
             param_grads[eg_idx] -= d_eg;
         }
     }
 }
 
-/// Accumulates material and PSQT contributions into middlegame (lane 0) and endgame (lane 1) totals.
 #[inline(always)]
 fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], piece_counts: &mut [f64; 6]) {
     debug_assert!(
@@ -243,8 +208,8 @@ fn accumulate_lane_vals(board: &Board, values: &[f64], lane_vals: &mut [f64], pi
         LAYOUT.mobility_open_offset
     );
 
-    // Lanes 2-7 exist to mirror the SIMD accumulator's layout; the f64 path never
-    // reads them, so only MG and EG get written here.
+    // Lanes 2-7 exist to mirror the SIMD accumulator's layout.
+    // The f64 path never reads them, so only MG and EG get written here.
     for piece in PieceType::ALL {
         let pt = piece.as_usize();
         piece_counts[pt] = f64::from(board.role_bb[pt].popcount());
@@ -330,28 +295,28 @@ mod tests {
     const TARGET: f64 = 0.5;
     const K: f64 = 0.005;
 
-    fn term_for(slot: usize) -> &'static str { BLOCKS.iter().rev().find(|b| slot >= b.offset).map_or("out of range", |b| b.name) }
+    fn block_name(slot: usize) -> &'static str { BLOCKS.iter().rev().find(|b| slot >= b.offset).map_or("out of range", |b| b.name) }
 
-    fn assert_oracle_matches(context: &str, values: &[f64]) {
+    fn assert_linear_matches_dual(context: &str, values: &[f64]) {
         for fen in FENS {
             let pos = Position::from_fen(fen);
 
             let mut linear_grad = vec![0.0f64; values.len()];
-            let linear_eval = eval_linear_grad(&pos, values, TARGET, K, &mut linear_grad);
+            let linear_loss = eval_linear_grad(&pos, values, TARGET, K, &mut linear_grad);
 
             let mut dual_grad = vec![0.0f64; values.len()];
-            let dual_eval = eval_dual_fused(&pos, values, TARGET, K, &mut dual_grad);
+            let dual_loss = eval_dual_grad(&pos, values, TARGET, K, &mut dual_grad);
 
             assert!(
-                (linear_eval - dual_eval).abs() < 1e-4,
-                "[{context}] eval mismatch on '{fen}': linear={linear_eval} dual={dual_eval}",
+                (linear_loss - dual_loss).abs() < 1e-4,
+                "[{context}] loss mismatch on '{fen}': linear={linear_loss} dual={dual_loss}",
             );
 
             for (i, (&lg, &dg)) in linear_grad.iter().zip(dual_grad.iter()).enumerate() {
                 assert!(
                     (lg - dg).abs() < 1e-3,
                     "[{context}] {} scatter drift at slot {i} on '{fen}': linear={lg} dual={dg}",
-                    term_for(i),
+                    block_name(i),
                 );
             }
         }
@@ -380,23 +345,23 @@ mod tests {
         with_phase(values)
     }
 
-    fn danger_buckets(danger_us: f64, danger_them: f64) -> Accumulators<f64> {
+    fn pressure_buckets(pressure_us: f64, pressure_them: f64) -> Accumulators<f64> {
         Accumulators::<f64> {
-            mg_eg: 0.0,
+            material_psqt: 0.0,
             mobility: 0.0,
             bonus_mg: 0.0,
             bonus_eg: 0.0,
             safety_us: 0.0,
             safety_them: 0.0,
-            danger_us,
-            danger_them,
+            pressure_us,
+            pressure_them,
             xray: 0.0,
         }
     }
 
     const TEST_CURVE: f64 = 32.0;
 
-    fn curvature(c: f64) -> CombinerParams<f64> { CombinerParams { king_danger: c } }
+    fn curvature(c: f64) -> CombinerParams<f64> { CombinerParams { danger_curvature: c } }
 
     #[test]
     fn test_king_danger_slope_oracle() {
@@ -406,13 +371,13 @@ mod tests {
 
         for p in [0.0, 64.0, 150.0, 300.0, 465.0] {
             let mut grads = vec![0.0f64; LAYOUT.total];
-            let analytic = LinearCombiner::backward(&danger_buckets(p, 0.0), phase, &shipped, 1.0, &mut grads)
+            let analytic = combiner::backward(&pressure_buckets(p, 0.0), phase, &shipped, 1.0, &mut grads)
                 .king_safety
-                .danger_us;
+                .pressure_us;
 
-            let (hi, lo) = (danger_buckets(p + h, 0.0), danger_buckets((p - h).max(0.0), 0.0));
-            let rise = LinearCombiner::forward(&hi, phase, &shipped) - LinearCombiner::forward(&lo, phase, &shipped);
-            let measured = rise / (hi.danger_us - lo.danger_us);
+            let (hi, lo) = (pressure_buckets(p + h, 0.0), pressure_buckets((p - h).max(0.0), 0.0));
+            let rise = combiner::combine(&hi, phase, &shipped) - combiner::combine(&lo, phase, &shipped);
+            let measured = rise / (hi.pressure_us - lo.pressure_us);
             assert!((analytic - measured).abs() < 0.05, "danger slope at {p}: analytic {analytic}, finite difference {measured}");
         }
     }
@@ -423,14 +388,14 @@ mod tests {
         let span = 64.0;
 
         for (us, them) in [(0.0, 0.0), (150.0, 0.0), (0.0, 300.0), (465.0, 150.0)] {
-            let buckets = danger_buckets(us, them);
+            let buckets = pressure_buckets(us, them);
             let mut grads = vec![0.0f64; LAYOUT.total];
 
-            LinearCombiner::backward(&buckets, phase, &curvature(TEST_CURVE), 1.0, &mut grads);
+            combiner::backward(&buckets, phase, &curvature(TEST_CURVE), 1.0, &mut grads);
             let analytic = grads[LAYOUT.king_danger_offset];
 
-            let hi = LinearCombiner::forward(&buckets, phase, &curvature(span));
-            let lo = LinearCombiner::forward(&buckets, phase, &curvature(0.0));
+            let hi = combiner::combine(&buckets, phase, &curvature(span));
+            let lo = combiner::combine(&buckets, phase, &curvature(0.0));
             let measured = (hi - lo) / span;
             assert!(
                 (analytic - measured).abs() < 0.05,
@@ -439,7 +404,7 @@ mod tests {
         }
     }
 
-    const ROUND_SITES: f64 = 9.0;
+    const ROUNDING_SLACK: f64 = 9.0;
 
     #[test]
     fn test_score_is_homogeneous_in_its_weights_oracle() {
@@ -468,7 +433,7 @@ mod tests {
                     let (want, got) = (f * plain, eval_f64(&pos, &scaled));
                     asserted += 1;
 
-                    let bound = ROUND_SITES * (1.0 + f);
+                    let bound = ROUNDING_SLACK * (1.0 + f);
                     assert!((got - want).abs() <= bound, "curve {curve}, scale {f} on '{fen}': got {got}, want {want}");
                 }
             }
@@ -481,7 +446,7 @@ mod tests {
         let values = default_values(&collect_parameters());
         for fen in FENS {
             let pos = Position::from_fen(fen);
-            let engine = f64::from(evaluate(&pos, &pos.initial_accumulator()));
+            let engine = f64::from(evaluate(&pos, &pos.psqt_accumulator()));
             let tuner = eval_f64(&pos, &values);
             assert!((engine - tuner).abs() < 1e-9, "engine {engine} vs tuner {tuner} on '{fen}'");
         }
@@ -490,25 +455,25 @@ mod tests {
     #[test]
     fn test_shipped_values_oracle() {
         let values = default_values(&collect_parameters());
-        assert_oracle_matches("shipped defaults", &values);
+        assert_linear_matches_dual("shipped defaults", &values);
     }
 
     #[test]
-    fn test_linear_oracle_verification() { assert_oracle_matches("pipeline", &full_values()); }
+    fn test_full_values_oracle() { assert_linear_matches_dual("pipeline", &full_values()); }
 
     #[test]
     fn test_mobility_term_oracle() {
-        assert_oracle_matches("MobilityTerm alone", &values_in_range(LAYOUT.mobility_open_offset..LAYOUT.king_safety_offset));
+        assert_linear_matches_dual("MobilityTerm alone", &values_in_range(LAYOUT.mobility_open_offset..LAYOUT.king_safety_offset));
     }
 
     #[test]
     fn test_king_safety_term_oracle() {
-        assert_oracle_matches("KingSafetyTerm alone", &values_in_range(LAYOUT.king_safety_offset..LAYOUT.xray_offset));
+        assert_linear_matches_dual("KingSafetyTerm alone", &values_in_range(LAYOUT.king_safety_offset..LAYOUT.xray_offset));
     }
 
     #[test]
     fn test_xray_term_oracle() {
-        assert_oracle_matches("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + LAYOUT.xray_len));
+        assert_linear_matches_dual("XrayTerm alone", &values_in_range(LAYOUT.xray_offset..LAYOUT.xray_offset + LAYOUT.xray_len));
     }
 
     macro_rules! bonus_term_oracles {
@@ -521,7 +486,7 @@ mod tests {
 
         (@one scalar $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident) => {
             paste::paste! {
-                assert_oracle_matches(
+                assert_linear_matches_dual(
                     concat!(stringify!($term), " alone"),
                     &values_in_range(LAYOUT.[<$block _offset>]..LAYOUT.[<$block _offset>] + 2),
                 )
@@ -530,7 +495,7 @@ mod tests {
 
         (@one array $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
             paste::paste! {
-                assert_oracle_matches(
+                assert_linear_matches_dual(
                     concat!(stringify!($term), " alone"),
                     &values_in_range(LAYOUT.[<$block _mg_offset>]..LAYOUT.[<$block _eg_offset>] + $n),
                 )
@@ -568,31 +533,31 @@ mod tests {
             );
 
             let mut dual_grads = vec![0.0f64; n_params];
-            let dual_loss = eval_dual_fused(&pos, &values, TARGET, K, &mut dual_grads);
+            let dual_loss = eval_dual_grad(&pos, &values, TARGET, K, &mut dual_grads);
 
             let sig = sigmoid(entry_score, K);
             let err = sig - TARGET;
             let outer = 2.0 * err * sig * (1.0 - sig) * K;
 
-            let mut encoded_grads = vec![0.0f64; n_params];
+            let mut encoded_grads = vec![0.5f64; n_params];
             accumulate_record_grad(&record, &record_eval, outer, &mut encoded_grads);
 
             let enc_loss = err * err;
             assert!((dual_loss - enc_loss).abs() < 1e-4, "Loss mismatch on '{fen}': dual={dual_loss} encoded={enc_loss}");
 
             for (i, (&dual, &encoded)) in dual_grads.iter().zip(encoded_grads.iter()).enumerate() {
-                let diff = (dual - encoded).abs();
+                let diff = (dual - (encoded - 0.5)).abs();
                 assert!(
                     diff < 1e-3,
                     "[encoded] {} scatter drift at slot {i} on '{fen}': dual={dual} encoded={encoded} diff={diff}",
-                    term_for(i),
+                    block_name(i),
                 );
             }
         }
     }
 
     #[test]
-    fn test_encoded_block_coverage_oracle() {
+    fn test_every_block_changes_cached_eval() {
         let base = default_values(&collect_parameters());
         let records: Vec<FeatureRecord> = FENS
             .iter()
@@ -615,20 +580,8 @@ mod tests {
     }
 
     #[test]
-    fn test_encoded_matches_board_at_defaults_oracle() {
-        let values = default_values(&collect_parameters());
-        for fen in FENS {
-            let pos = Position::from_fen(fen);
-            let record = FeatureRecord::from_entry(&SoulEntry::from_board(&pos, TARGET, Some(20)));
-            let board = eval_f64(&pos, &values);
-            let cached = eval_record(&record, &values);
-            assert!((board - cached).abs() < 1e-9, "board {board} vs cached {cached} on '{fen}'");
-        }
-    }
-
-    #[test]
     #[ignore]
-    fn measure_gradient_ops() {
+    fn bench_gradient_cost() {
         const BENCH: &str = include_str!("../../data/bench.fens");
 
         let iters: usize = env::var("SOUL_OPS_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
@@ -673,6 +626,7 @@ mod tests {
         };
 
         black_box(sink);
-        println!("positions {}", iters * boards.len());
+        let path = if mode.is_empty() { "eval" } else { mode.as_str() };
+        println!("positions {} mode {path}", iters * boards.len());
     }
 }

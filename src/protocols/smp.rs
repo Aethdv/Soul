@@ -1,12 +1,9 @@
 //! Lazy SMP thread pool.
-//!
-//! Helpers are persistent, parked on an SPMC broadcast channel between
-//! searches. `launch` sends one payload to all helpers; each receives it
-//! inside a handler that runs the search, and the channel auto-signals
-//! completion when the handler returns. `wait` blocks until every helper
-//! has finished. `wake` (via `Drop`) shuts them down.
 
-use std::{sync::Arc, thread};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    thread,
+};
 
 use crate::{
     core::board::Position,
@@ -18,32 +15,83 @@ use crate::{
     protocols::spmc,
 };
 
-pub struct LazySmpPool {
-    tx: spmc::Sender<(SearchConfig, Position, Vec<u64>)>,
+pub(super) const DEFAULT_HASH_MB: usize = 16;
+pub(super) const MAX_HASH_MB: usize = 524288;
+pub(super) const MAX_THREADS: usize = 1024;
+
+type SearchJob = (SearchConfig, Position, Vec<u64>);
+
+#[derive(Clone)]
+pub(super) struct TableAndPool {
+    tt: Arc<TranspositionTable>,
+    pool: Arc<LazySmpPool>,
+    hash_mb: usize,
+    threads: usize,
+}
+
+struct LazySmpPool {
+    tx: spmc::Sender<SearchJob>,
     handles: Vec<thread::JoinHandle<()>>,
 }
 
-/// A table sized to `hash_mb`, and a pool bound to it.
-///
-/// Both come back together because every helper captures the table by `Arc` for
-/// the pool's lifetime: replace one without the other and the helpers go on
-/// probing the old table while main writes the new one, neither side seeing what
-/// the other stores.
-pub fn table_and_pool(hash_mb: usize, threads: usize) -> (Arc<TranspositionTable>, Arc<LazySmpPool>) {
-    let tt = Arc::new(TranspositionTable::new(hash_mb, threads));
-    let pool = LazySmpPool::new(threads, tt.clone());
-    (tt, pool)
+impl Default for TableAndPool {
+    fn default() -> Self {
+        let tt = Arc::new(TranspositionTable::new(DEFAULT_HASH_MB, 1));
+        let pool = LazySmpPool::new(1, tt.clone());
+        Self { tt, pool, hash_mb: DEFAULT_HASH_MB, threads: 1 }
+    }
+}
+
+impl TableAndPool {
+    pub(super) fn tt(&self) -> &TranspositionTable { &self.tt }
+    pub(super) fn threads(&self) -> usize { self.threads }
+
+    pub(super) fn set_hash(&mut self, mb: usize) {
+        self.hash_mb = mb.clamp(1, MAX_HASH_MB);
+        self.tt = Arc::new(TranspositionTable::new(self.hash_mb, self.threads));
+        self.pool = LazySmpPool::new(self.threads, self.tt.clone());
+    }
+
+    pub(super) fn set_threads(&mut self, threads: usize) {
+        let threads = threads.clamp(1, MAX_THREADS);
+        if threads == self.threads {
+            return;
+        }
+
+        self.threads = threads;
+
+        // The table's placement on the nodes depends on the thread count.
+        if self.tt.spans_nodes() {
+            self.tt = Arc::new(TranspositionTable::new(self.hash_mb, threads));
+        }
+
+        self.pool = LazySmpPool::new(threads, self.tt.clone());
+    }
+
+    /// Runs the main search alongside the helpers and waits for them to finish.
+    pub(super) fn search(&self, cfg: &SearchConfig, board: Position, trail: &[u64], history: &mut History) {
+        if !self.pool.handles.is_empty() {
+            let mut helper_cfg = cfg.clone();
+            helper_cfg.limits.silent = true;
+            self.pool.tx.send((helper_cfg, board, trail.to_vec()));
+        }
+
+        self.tt.bind_search_thread(0, cfg.threads);
+        Searcher::new(cfg, &board, trail, self.tt.clone()).iterative_deepening(history);
+
+        cfg.stop.store(true, Ordering::Relaxed);
+        if !self.pool.handles.is_empty() {
+            self.pool.tx.wait();
+        }
+
+        cfg.stop.store(false, Ordering::Relaxed);
+    }
 }
 
 impl LazySmpPool {
-    pub fn new(threads: usize, tt: Arc<TranspositionTable>) -> Arc<Self> {
-        if threads <= 1 {
-            let (tx, _) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(0);
-            return Arc::new(Self { tx, handles: Vec::new() });
-        }
-
+    fn new(threads: usize, tt: Arc<TranspositionTable>) -> Arc<Self> {
         let n = threads - 1;
-        let (tx, rxs) = spmc::channel::<(SearchConfig, Position, Vec<u64>)>(n as u32);
+        let (tx, rxs) = spmc::channel::<SearchJob>(n as u32);
         let mut handles = Vec::with_capacity(n);
 
         for (i, mut rx) in rxs.into_iter().enumerate() {
@@ -51,41 +99,22 @@ impl LazySmpPool {
             let tt = Arc::clone(&tt);
 
             handles.push(thread::spawn(move || {
-                // Pin before the recv loop so the per-search History allocated below
-                // lands on this thread's own node by first-touch, local not remote.
+                // Pin before the loop so each search's History is first-touched on the helper's NUMA node.
                 tt.bind_search_thread(helper_id, threads);
 
                 while rx
-                    .recv(|(config, board, history)| {
+                    .recv(|(config, board, trail)| {
                         let mut local_cfg = config.clone();
                         local_cfg.thread_id = helper_id;
-                        let mut history_table = History::new();
-                        let mut ctx = Searcher::new(&local_cfg, board, history, tt.clone());
-                        ctx.iterative_deepening(&mut history_table);
+                        let mut history = History::new();
+                        let mut searcher = Searcher::new(&local_cfg, board, trail, tt.clone());
+                        searcher.iterative_deepening(&mut history);
                     })
                     .is_some()
                 {}
             }));
         }
         Arc::new(Self { tx, handles })
-    }
-
-    pub fn launch(&self, cfg: &SearchConfig, board: Position, history: &[u64]) {
-        if self.handles.is_empty() {
-            return;
-        }
-
-        let mut helper_cfg = (*cfg).clone();
-
-        helper_cfg.limits.silent = true;
-        self.tx.send((helper_cfg, board, history.to_vec()));
-    }
-
-    pub fn wait(&self) {
-        if self.handles.is_empty() {
-            return;
-        }
-        self.tx.wait();
     }
 }
 

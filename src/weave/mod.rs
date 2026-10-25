@@ -45,7 +45,7 @@ mod fills;
 mod mask;
 mod sse;
 
-pub use avx2::*;
-pub use fills::*;
-pub use mask::*;
-pub use sse::*;
+pub(crate) use avx2::*;
+pub(crate) use fills::*;
+pub(crate) use mask::*;
+pub(crate) use sse::*;

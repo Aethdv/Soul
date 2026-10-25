@@ -287,7 +287,7 @@ impl TunableData for EpdEntry {
     #[inline]
     fn eval(&self, values: &[f64]) -> f64 { eval_f64(&self.board, values) }
     #[inline]
-    fn result(&self) -> f64 { flip_wdl(self.result, self.board.stm) }
+    fn result(&self) -> f64 { flip_wdl(self.result, self.board.stm()) }
 }
 
 /// Applies an EMA step, initializing directly to `loss` if the trail is unseeded (`NaN`).

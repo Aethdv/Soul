@@ -24,7 +24,7 @@ use crate::{
     alarm,
     config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
     engine::{
-        Color, FeatureRecord, LAYOUT, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record,
+        FeatureRecord, LAYOUT, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record,
         eval_record_full, flip_wdl,
     },
     groups::{self, GROUP_NAMES, build_masks, group_ranges},
@@ -452,10 +452,7 @@ fn train_entries(
     }
 
     let (entry_train, entry_val) = entries.split_at(train_count);
-    print_dataset_stats(entry_train, entry_val, total, |e: &SoulEntry| {
-        let stm = if (e.stm_and_ep & 0x80) == 0 { Color::White } else { Color::Black };
-        flip_wdl(f64::from(e.result) / 2.0, stm)
-    });
+    print_dataset_stats(entry_train, entry_val, total, |e: &SoulEntry| flip_wdl(f64::from(e.result) / 2.0, e.stm()));
     drop(entries);
 
     let (train, val) = records.split_at(train_count);
@@ -1146,7 +1143,12 @@ mod tests {
 
     #[test]
     fn the_volatility_filter_scales_with_complexity() {
-        let rec = |pieces: u8, static_eval: i16| FeatureRecord { piece_count: pieces, static_eval, ..Default::default() };
+        let rec = |pieces: u8, static_eval: i16| {
+            let mut record = FeatureRecord::default();
+            record.piece_count = pieces;
+            record.static_eval = static_eval;
+            record
+        };
         let ctx = vol_ctx(40, true);
         assert!(ctx.passes_vol_filter(&rec(32, 80)), "occ 32: t = 84 accepts an 80 cp disagreement");
         assert!(!ctx.passes_vol_filter(&rec(32, 100)), "occ 32: t = 84 rejects a 100 cp disagreement");
@@ -1160,7 +1162,12 @@ mod tests {
     #[test]
     fn the_volatility_filter_floor_never_rejects_a_whole_position_class() {
         let ctx = vol_ctx(8, true);
-        let rec = |pieces: u8, static_eval: i16| FeatureRecord { piece_count: pieces, static_eval, ..Default::default() };
+        let rec = |pieces: u8, static_eval: i16| {
+            let mut record = FeatureRecord::default();
+            record.piece_count = pieces;
+            record.static_eval = static_eval;
+            record
+        };
         assert!(ctx.passes_vol_filter(&rec(6, 0)), "a floored threshold passes a perfect match");
         assert!(!ctx.passes_vol_filter(&rec(6, 1)), "a floored threshold rejects any disagreement");
         let ctx_dense = TrainerContext { vol_threshold: 40, ..ctx };
@@ -1172,11 +1179,12 @@ mod tests {
     #[test]
     fn a_huge_volatility_threshold_saturates_instead_of_overflowing() {
         let ctx = vol_ctx(i16::MAX, true);
-        let rec = |pieces: u8, score: i16, static_eval: i16| FeatureRecord {
-            piece_count: pieces,
-            score,
-            static_eval,
-            ..Default::default()
+        let rec = |pieces: u8, score: i16, static_eval: i16| {
+            let mut record = FeatureRecord::default();
+            record.piece_count = pieces;
+            record.score = score;
+            record.static_eval = static_eval;
+            record
         };
         assert!(ctx.passes_vol_filter(&rec(2, 0, 30_000)), "a sparse position saturates the add");
         assert!(ctx.passes_vol_filter(&rec(32, 0, 30_000)), "a dense position saturates the add");
@@ -1191,7 +1199,7 @@ mod tests {
         let values = eval_params::default_values(&params);
         let entry = SoulEntry::from_board(
             &Position::from_fen("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"),
-            2.0,
+            1.0,
             Some(55),
         );
         let record = FeatureRecord::from_entry(&entry);

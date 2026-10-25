@@ -1,38 +1,82 @@
-//! Regression tests for board state, move application, and game logic.
-
 use crate::{
     core::{
-        board::{BLACK_OO, BLACK_OOO, Position, STARTPOS, WHITE_OO, WHITE_OOO},
+        board::{BLACK_OO, BLACK_OOO, Position, ROOK_W_KS, ROOK_W_QS, STARTPOS, WHITE_OO, WHITE_OOO},
         defs::{Bitboard, Color, PieceType, Square, TOTAL_PHASE},
+        error::FenError,
         moves::Move,
     },
     engine::movegen::gen_legal_moves,
+    tools::perft::perft,
 };
 
 #[test]
-fn fen_roundtrip_startpos() {
-    let pos = Position::from_fen(STARTPOS);
-    let fen = pos.as_fen();
-    let pos2 = Position::from_fen(&fen);
-    assert_eq!(pos.hash, pos2.hash, "FEN round-trip changed the Zobrist hash");
-    assert_eq!(pos.occ, pos2.occ, "FEN round-trip changed occupancy");
-}
-
-#[test]
-fn fen_roundtrip_complex() {
+fn fen_roundtrip() {
     let fens = [
+        STARTPOS,
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -",
         "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq -",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ -",
-        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/3P1N1P/PPP1NPP1/R2Q1RK1 w - -",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/3P1N1P/PPP1NPP1/R2Q1RK1 w - - 37 81",
+        "4k3/8/8/8/3Pp3/8/8/4K3 b - d3 0 81",
+        "r1k2r2/8/8/8/8/8/8/R1K2R2 w FAfa - 9 12",
     ];
 
     for fen in fens {
         let pos = Position::from_fen(fen);
-        let roundtrip = pos.as_fen();
-        let pos2 = Position::from_fen(&roundtrip);
-        assert_eq!(pos.hash, pos2.hash, "FEN round-trip hash mismatch for: {fen}");
+        let roundtrip = pos.to_fen();
+        let decoded = Position::from_fen(&roundtrip);
+        assert_eq!(decoded.side_bb, pos.side_bb, "{fen}");
+        assert_eq!(decoded.role_bb, pos.role_bb, "{fen}");
+        assert_eq!(decoded.occ, pos.occ, "{fen}");
+        assert_eq!(decoded.pieces, pos.pieces, "{fen}");
+        assert_eq!(decoded.stm, pos.stm, "{fen}");
+        assert_eq!(decoded.castling_rights, pos.castling_rights, "{fen}");
+        assert_eq!(decoded.castling_rooks, pos.castling_rooks, "{fen}");
+        assert_eq!(decoded.en_passant, pos.en_passant, "{fen}");
+        assert_eq!(decoded.halfmove_clock, pos.halfmove_clock, "{fen}");
+        assert_eq!(decoded.fullmove_number, pos.fullmove_number, "{fen}");
+        assert_eq!(decoded.frc_notation, pos.frc_notation, "{fen}");
+        assert_eq!(decoded.hash, pos.hash, "{fen}");
+        assert_eq!(decoded.pawn_key, pos.pawn_key, "{fen}");
+        assert_eq!(decoded.minor_key, pos.minor_key, "{fen}");
+        assert_eq!(decoded.major_key, pos.major_key, "{fen}");
+    }
+}
+
+#[test]
+fn fen_castling_rights_are_strict() {
+    for fen in [
+        "4k3/8/8/8/8/8/8/4K2r w H - 0 1",
+        "4k3/8/8/8/8/8/8/4K3 w K - 0 1",
+        "4k3/8/8/8/8/8/8/4K3 w Z - 0 1",
+        "4k3/8/8/8/8/8/8/R3K3 w K - 0 1",
+    ] {
+        assert!(matches!(Position::try_from_fen(fen), Err(FenError::InvalidCastlingRight { .. })), "{fen}");
+    }
+    assert!(matches!(Position::try_from_fen("4k3/8/8/8/8/8/4K3/7R w H - 0 1"), Err(FenError::InvalidCastlingRight { .. })));
+
+    let frc = Position::from_fen("4k3/8/8/8/8/8/8/R1K2R2 w FA - 0 1");
+    assert_eq!(frc.castling_rights, WHITE_OO | WHITE_OOO);
+    assert_eq!((frc.castling_rooks[ROOK_W_KS], frc.castling_rooks[ROOK_W_QS]), (Square(5), Square(0)));
+}
+
+#[test]
+fn fen_en_passant_rank() {
+    for fen in ["4k3/8/8/8/p7/8/1P6/4K3 w - a3 0 1", "4k3/1p6/8/P7/8/8/8/4K3 b - a6 0 1"] {
+        assert!(matches!(Position::try_from_fen(fen), Err(FenError::InvalidEnPassant { .. })), "{fen}");
+    }
+}
+
+#[test]
+fn fen_en_passant_normalization() {
+    for (fen, ep) in [
+        ("4k3/8/8/pP6/8/8/8/4K3 w - a6 0 1", Some(Square(40))),
+        ("4k3/8/8/PP6/8/8/8/4K3 w - a6 0 1", None),
+        ("4k3/8/N7/pP6/8/8/8/4K3 w - a6 0 1", None),
+        ("k2r4/8/8/3Pp3/8/8/8/3K4 w - e6 0 1", Some(Square(44))),
+    ] {
+        assert_eq!(Position::from_fen(fen).en_passant, ep, "{fen}");
     }
 }
 
@@ -46,10 +90,10 @@ fn zobrist_make_unmake_identity() {
 
     for fen in positions {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.initial_accumulator();
+        let mut acc = pos.psqt_accumulator();
 
         let original_hash = pos.hash;
-        let original_fen = pos.as_fen();
+        let original_fen = pos.to_fen();
         let moves = gen_legal_moves(&pos);
         for mv in &moves {
             let saved_acc = acc;
@@ -57,31 +101,16 @@ fn zobrist_make_unmake_identity() {
             pos.unmake_move(*mv, &undo);
             acc = saved_acc;
             assert_eq!(pos.hash, original_hash, "Zobrist hash not restored after make/unmake {} in {fen}", mv.to_uci(false));
-            assert_eq!(pos.as_fen(), original_fen, "FEN not restored after make/unmake {} in {fen}", mv.to_uci(false));
+            assert_eq!(pos.to_fen(), original_fen, "FEN not restored after make/unmake {} in {fen}", mv.to_uci(false));
         }
-    }
-}
-
-#[test]
-fn zobrist_incremental_matches_full() {
-    let mut pos = Position::from_fen(STARTPOS);
-    let mut acc = pos.initial_accumulator();
-
-    let moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"];
-    for uci in moves {
-        let mv = find_uci_move(&pos, uci);
-        pos.make_move(mv, &mut acc);
-        let expected = pos.calc_zobrist();
-        assert_eq!(pos.hash, expected, "Incremental hash diverged after {uci}: got {:#x}, expected {:#x}", pos.hash, expected);
     }
 }
 
 #[test]
 fn zobrist_long_sequence() {
     let mut pos = Position::from_fen(STARTPOS);
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
-    // Ruy Lopez: Exchange Variation line
     let game = [
         "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6", "e1g1", "f7f6", "d2d4", "e5d4", "f3d4", "c6c5", "d4b3",
         "d8d1", "f1d1",
@@ -90,11 +119,11 @@ fn zobrist_long_sequence() {
     for uci in game {
         let mv = find_uci_move(&pos, uci);
         pos.make_move(mv, &mut acc);
-        assert_eq!(pos.hash, pos.calc_zobrist(), "Hash diverged after move {uci}. Position: {}", pos.as_fen());
-        assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after move {uci}. Position: {}", pos.as_fen());
-        assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after move {uci}. Position: {}", pos.as_fen());
-        assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after move {uci}. Position: {}", pos.as_fen());
-        let fresh_acc = pos.initial_accumulator();
+        assert_eq!(pos.hash, pos.calc_zobrist(), "Hash diverged after move {uci}. Position: {}", pos.to_fen());
+        assert_eq!(pos.pawn_key, pos.calc_pawn_hash(), "Pawn key diverged after move {uci}. Position: {}", pos.to_fen());
+        assert_eq!(pos.minor_key, pos.calc_minor_hash(), "Minor key diverged after move {uci}. Position: {}", pos.to_fen());
+        assert_eq!(pos.major_key, pos.calc_major_hash(), "Major key diverged after move {uci}. Position: {}", pos.to_fen());
+        let fresh_acc = pos.psqt_accumulator();
         assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator diverged after move {uci}");
     }
 }
@@ -102,14 +131,14 @@ fn zobrist_long_sequence() {
 #[test]
 fn correction_keys_promotion_and_en_passant() {
     let cases = [
-        ("8/P7/8/8/8/8/k7/7K w - - 0 1", "a7a8q"),     // queen promotion → major_key
-        ("8/P7/8/8/8/8/k7/7K w - - 0 1", "a7a8n"),     // knight underpromotion → minor_key
-        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"), // en passant → pawn_key
+        ("8/P7/8/8/8/8/k7/7K w - - 0 1", "a7a8q"),
+        ("8/P7/8/8/8/8/k7/7K w - - 0 1", "a7a8n"),
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"),
     ];
 
     for (fen, uci) in cases {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.initial_accumulator();
+        let mut acc = pos.psqt_accumulator();
         let before = (pos.pawn_key, pos.minor_key, pos.major_key);
         let mv = find_uci_move(&pos, uci);
         let undo = pos.make_move(mv, &mut acc);
@@ -126,13 +155,13 @@ fn accumulator_incremental_matches_full() {
     let positions = [STARTPOS, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -"];
     for fen in positions {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.initial_accumulator();
+        let mut acc = pos.psqt_accumulator();
 
         let moves = gen_legal_moves(&pos);
         for mv in &moves {
             let saved_acc = acc;
             let undo = pos.make_move(*mv, &mut acc);
-            let fresh_acc = pos.initial_accumulator();
+            let fresh_acc = pos.psqt_accumulator();
             assert_eq!(acc.to_array(), fresh_acc.to_array(), "Accumulator mismatch after {} in {fen}", mv.to_uci(false));
             pos.unmake_move(*mv, &undo);
             acc = saved_acc;
@@ -143,7 +172,7 @@ fn accumulator_incremental_matches_full() {
 #[test]
 fn castling_kingside_white() {
     let mut pos = Position::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq -");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
     let mv = Move::new(Square(4), Square(7), Move::CASTLE);
     let undo = pos.make_move(mv, &mut acc);
@@ -161,7 +190,7 @@ fn castling_kingside_white() {
 #[test]
 fn castling_queenside_black() {
     let mut pos = Position::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq -");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
     let mv = Move::new(Square(60), Square(56), Move::CASTLE);
     let undo = pos.make_move(mv, &mut acc);
@@ -177,7 +206,7 @@ fn castling_queenside_black() {
 #[test]
 fn en_passant_capture() {
     let mut pos = Position::from_fen("4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
     let original_hash = pos.hash;
     let mv = Move::new(Square::from_coords(3, 4), Square::from_coords(4, 5), Move::EP_CAPTURE);
@@ -194,7 +223,7 @@ fn en_passant_capture() {
 #[test]
 fn promotion_queen() {
     let mut pos = Position::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
     let mv = Move::new(Square::from_coords(0, 6), Square::from_coords(0, 7), Move::PROM_Q);
     let undo = pos.make_move(mv, &mut acc);
@@ -207,35 +236,25 @@ fn promotion_queen() {
 }
 
 #[test]
-fn draw_by_material_kvk() {
-    let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-    assert!(pos.is_draw_by_material(), "K vs K should be a draw");
-}
-
-#[test]
-fn draw_by_material_kn_vs_k() {
-    let pos = Position::from_fen("4k3/8/8/8/8/8/8/3NK3 w - - 0 1");
-    assert!(pos.is_draw_by_material(), "KN vs K should be a draw");
-}
-
-#[test]
-fn not_draw_knn_vs_k() {
-    let pos = Position::from_fen("4k3/8/8/8/8/8/8/2NNK3 w - - 0 1");
-    assert!(!pos.is_draw_by_material(), "KNN vs K should NOT be a material draw (50mr handles it)");
-}
-
-#[test]
-fn not_draw_with_pawns() {
-    let pos = Position::from_fen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1");
-    assert!(!pos.is_draw_by_material(), "Any pawns → not a material draw");
+fn draw_by_material() {
+    for (fen, draw) in [
+        ("4k3/8/8/8/8/8/8/4K3 w - - 0 1", true),
+        ("4k3/8/8/8/8/8/8/3NK3 w - - 0 1", true),
+        ("4k3/8/8/8/8/8/8/2BK4 w - - 0 1", true),
+        ("4k3/8/8/8/8/8/8/2NNK3 w - - 0 1", false),
+        ("4k3/8/8/8/8/8/8/2RK4 w - - 0 1", false),
+        ("4k3/8/8/8/8/8/P7/4K3 w - - 0 1", false),
+    ] {
+        assert_eq!(Position::from_fen(fen).is_draw_by_material(), draw, "{fen}");
+    }
 }
 
 #[test]
 fn threefold_repetition() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 10 1");
-    let history = vec![pos.hash, 999, pos.hash, 888, pos.hash];
+    let history = [pos.hash, 999, pos.hash, 888, pos.hash];
     assert!(pos.is_threefold_repetition(&history));
-    let twice = vec![pos.hash, 999, 777, 888, pos.hash];
+    let twice = [pos.hash, 999, 777, 888, pos.hash];
     assert!(!pos.is_threefold_repetition(&twice), "two occurrences is not threefold");
     assert!(!pos.is_threefold_repetition(&[pos.hash, 999, pos.hash]), "a history this short cannot hold three");
 }
@@ -244,7 +263,7 @@ fn threefold_repetition() {
 fn move_encoding_roundtrip() {
     for from in 0..64u8 {
         for to in 0..64u8 {
-            for flag in [Move::QUIET, Move::CAPTURE, Move::PROM_Q, Move::CASTLE, Move::EP_CAPTURE, Move::DOUBLE_PUSH] {
+            for flag in 0..16 {
                 let mv = Move::new(Square(from), Square(to), flag);
                 assert_eq!(mv.from().0, from, "from mismatch");
                 assert_eq!(mv.to().0, to, "to mismatch");
@@ -292,15 +311,16 @@ fn move_flag_predicates() {
 
 #[test]
 fn move_promotion_piece_types() {
-    let n = Move::new(Square(0), Square(8), Move::PROM_N);
-    let b = Move::new(Square(0), Square(8), Move::PROM_B);
-    let r = Move::new(Square(0), Square(8), Move::PROM_R);
-    let q = Move::new(Square(0), Square(8), Move::PROM_Q);
-
-    assert_eq!(n.promo(), Some(PieceType::Knight));
-    assert_eq!(b.promo(), Some(PieceType::Bishop));
-    assert_eq!(r.promo(), Some(PieceType::Rook));
-    assert_eq!(q.promo(), Some(PieceType::Queen));
+    for (quiet, capture, piece) in [
+        (Move::PROM_N, Move::PROM_N_CAPTURE, PieceType::Knight),
+        (Move::PROM_B, Move::PROM_B_CAPTURE, PieceType::Bishop),
+        (Move::PROM_R, Move::PROM_R_CAPTURE, PieceType::Rook),
+        (Move::PROM_Q, Move::PROM_Q_CAPTURE, PieceType::Queen),
+    ] {
+        for flag in [quiet, capture] {
+            assert_eq!(Move::new(Square(0), Square(8), flag).promo(), Some(piece), "flag {flag}");
+        }
+    }
 
     let quiet = Move::new(Square(0), Square(8), Move::QUIET);
     assert_eq!(quiet.promo(), None);
@@ -309,7 +329,6 @@ fn move_promotion_piece_types() {
 #[test]
 fn material_count_startpos() {
     let pos = Position::from_fen(STARTPOS);
-    // 16P + 4N + 4B + 4R + 2Q = 16·1 + 4·3 + 4·3 + 4·5 + 2·9 = 78
     assert_eq!(pos.material_count(), 78);
 }
 
@@ -323,6 +342,7 @@ fn material_count_bare_kings() {
 fn startpos_piece_layout() {
     let pos = Position::from_fen(STARTPOS);
 
+    assert_eq!(pos.piece_count(PieceType::None), 0);
     assert_eq!(pos.piece_at(Square(0)), PieceType::Rook); // a1
     assert_eq!(pos.piece_at(Square(4)), PieceType::King); // e1
     assert_eq!(pos.piece_at(Square(12)), PieceType::Pawn); // e2
@@ -340,7 +360,7 @@ fn eval_startpos_tempo_only() {
     use crate::engine::{eval::evaluate, eval_params::TEMPO};
 
     let pos = Position::from_fen(STARTPOS);
-    let acc = pos.initial_accumulator();
+    let acc = pos.psqt_accumulator();
     let score = evaluate(&pos, &acc);
     assert_eq!(score, TEMPO[0], "got {score}");
 }
@@ -351,8 +371,8 @@ fn eval_stm_symmetry() {
 
     let w = Position::from_fen("rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq e6 0 1");
     let b = Position::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
-    let w_acc = w.initial_accumulator();
-    let b_acc = b.initial_accumulator();
+    let w_acc = w.psqt_accumulator();
+    let b_acc = b.psqt_accumulator();
     let w_score = evaluate(&w, &w_acc);
     let b_score = evaluate(&b, &b_acc);
     assert_eq!(w_score, b_score, "Mirror positions should eval identically, got w={w_score}, b={b_score}");
@@ -364,77 +384,39 @@ fn eval_strict_symmetry() {
 
     let w = Position::from_fen(STARTPOS);
     let b = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
-    let w_acc = w.initial_accumulator();
-    let b_acc = b.initial_accumulator();
+    let w_acc = w.psqt_accumulator();
+    let b_acc = b.psqt_accumulator();
     let w_score = evaluate(&w, &w_acc);
     let b_score = evaluate(&b, &b_acc);
     assert_eq!(w_score, b_score);
 }
 
 #[test]
-fn history_gravity_bounds() {
+fn history_gravity_reaches_caps() {
     use crate::engine::history::{ContContext, History};
 
     let mut hist = History::new();
 
     let stm = Color::White;
     let pt = PieceType::Knight;
+    let from = Square(0);
     let to = Square(28);
+    let threats = Bitboard::EMPTY;
+    let cont = ContContext::default();
+    let cap = hist.params.quiet_cap + hist.params.butterfly_cap;
 
-    // Slam it with huge bonuses; should converge toward +16384 without overflow.
     for _ in 0..10_000 {
-        hist.update(
-            stm,
-            pt,
-            Square(0),
-            to,
-            Bitboard(0),
-            ContContext::default(),
-            ContContext::default(),
-            ContContext::default(),
-            400,
-        );
+        hist.update_quiet(stm, pt, from, to, threats, cont, cont, cont, 400);
     }
-    let score = hist.score_quiet(
-        stm,
-        pt,
-        Square(0),
-        to,
-        Bitboard(0),
-        ContContext::default(),
-        ContContext::default(),
-        ContContext::default(),
-    );
 
-    assert!(score > 0, "After massive positive bonus, score should be positive: {score}");
-    assert!(score <= 32768, "Score should not exceed combined gravity bound (16384 * 2): {score}");
+    let score = hist.score_quiet(stm, pt, from, to, threats, cont, cont, cont);
+    assert_eq!(score, cap);
 
-    // Now slam it negative; should converge toward -16384.
     for _ in 0..20_000 {
-        hist.update(
-            stm,
-            pt,
-            Square(0),
-            to,
-            Bitboard(0),
-            ContContext::default(),
-            ContContext::default(),
-            ContContext::default(),
-            -400,
-        );
+        hist.update_quiet(stm, pt, from, to, threats, cont, cont, cont, -400);
     }
-    let score = hist.score_quiet(
-        stm,
-        pt,
-        Square(0),
-        to,
-        Bitboard(0),
-        ContContext::default(),
-        ContContext::default(),
-        ContContext::default(),
-    );
-    assert!(score < 0, "After massive negative bonus, score should be negative: {score}");
-    assert!(score >= -32768, "Score should not go below -32768: {score}");
+    let score = hist.score_quiet(stm, pt, from, to, threats, cont, cont, cont);
+    assert_eq!(score, -cap);
 }
 
 #[test]
@@ -442,46 +424,18 @@ fn history_clear() {
     use crate::engine::history::{ContContext, History};
 
     let mut hist = History::new();
+    let stm = Color::White;
+    let pt = PieceType::Knight;
+    let from = Square(0);
+    let to = Square(28);
+    let threats = Bitboard::EMPTY;
+    let cont = ContContext::default();
 
-    hist.update(
-        Color::White,
-        PieceType::Knight,
-        Square(0),
-        Square(28),
-        Bitboard(0),
-        ContContext::default(),
-        ContContext::default(),
-        ContContext::default(),
-        400,
-    );
-    assert!(
-        hist.score_quiet(
-            Color::White,
-            PieceType::Knight,
-            Square(0),
-            Square(28),
-            Bitboard(0),
-            ContContext::default(),
-            ContContext::default(),
-            ContContext::default()
-        ) > 0
-    );
+    hist.update_quiet(stm, pt, from, to, threats, cont, cont, cont, 400);
+    assert!(hist.score_quiet(stm, pt, from, to, threats, cont, cont, cont) > 0);
 
     hist.clear();
-    assert_eq!(
-        hist.score_quiet(
-            Color::White,
-            PieceType::Knight,
-            Square(0),
-            Square(28),
-            Bitboard(0),
-            ContContext::default(),
-            ContContext::default(),
-            ContContext::default()
-        ),
-        0,
-        "Clear should zero out"
-    );
+    assert_eq!(hist.score_quiet(stm, pt, from, to, threats, cont, cont, cont), 0);
 }
 
 #[test]
@@ -489,7 +443,7 @@ fn phase_startpos() {
     use crate::engine::eval::extract_phase;
 
     let pos = Position::from_fen(STARTPOS);
-    let acc = pos.initial_accumulator();
+    let acc = pos.psqt_accumulator();
     let phase = extract_phase(&acc);
     assert_eq!(phase, TOTAL_PHASE, "Startpos should have full phase (24)");
 }
@@ -499,7 +453,7 @@ fn phase_endgame() {
     use crate::engine::eval::extract_phase;
 
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-    let acc = pos.initial_accumulator();
+    let acc = pos.psqt_accumulator();
     let phase = extract_phase(&acc);
     assert_eq!(phase, 0, "Bare kings should have phase 0");
 }
@@ -508,10 +462,9 @@ fn phase_endgame() {
 fn wdl_monotonicity() {
     use crate::engine::wdl::wdl_model;
 
-    let material = 78; // Full material
+    let material = 78;
     let (mut last_w, _, mut last_l) = wdl_model(-2000, material);
 
-    // As score increases, win prob should increase, loss prob should decrease.
     for score in (-1500..=2000).step_by(500) {
         let (w, d, l) = wdl_model(score, material);
         assert!(w >= last_w, "Win prob decreased at score {score}");
@@ -524,46 +477,27 @@ fn wdl_monotonicity() {
 
 #[test]
 fn square_coordinate_mapping() {
-    // Square 0 = A1
-    let a1 = Square::from_coords(0, 0);
-    assert_eq!(a1.0, 0);
-    assert_eq!(a1.rank(), 0);
-    assert_eq!(a1.file(), 0);
-    // Square 63 = H8
-    let h8 = Square::from_coords(7, 7);
-    assert_eq!(h8.0, 63);
-    assert_eq!(h8.rank(), 7);
-    assert_eq!(h8.file(), 7);
-    // Mirroring/Flipping
-    assert_eq!(a1.flip_rank().0, 56); // a8
-    assert_eq!(a1.flip_file().0, 7); // h1
+    for rank in 0..8 {
+        for file in 0..8 {
+            let sq = Square::from_coords(file, rank);
+            assert_eq!(sq.0, rank * 8 + file);
+            assert_eq!(sq.rank(), rank);
+            assert_eq!(sq.file(), file);
+            assert_eq!(sq.flip_rank().0, (7 - rank) * 8 + file);
+        }
+    }
 }
 
 #[test]
 fn pinned_pieces_detection() {
-    // 1. Orthogonal Pin
     let pos = Position::from_fen("k3r3/8/8/8/8/8/4P3/4K3 w - - 0 1");
     let pinned = pos.pinned_pieces(Color::White);
     assert!(pinned.check_bit(Square::from_coords(4, 1)), "Pawn on e2 should be pinned orthogonally");
-    // 2. Diagonal Pin
     let pos = Position::from_fen("4k3/8/8/b7/8/2P5/8/4K3 w - - 0 1");
     let pinned = pos.pinned_pieces(Color::White);
     assert!(pinned.check_bit(Square::from_coords(2, 2)), "Pawn on c3 should be pinned diagonally");
-    // 3. Verify pins don't apply to the other side
     let pinned_b = pos.pinned_pieces(Color::Black);
     assert!(pinned_b.is_empty(), "Black should have no pinned pieces");
-}
-
-#[test]
-fn draw_by_material_kb_vs_k() {
-    let pos = Position::from_fen("4k3/8/8/8/8/8/8/2BK4 w - - 0 1");
-    assert!(pos.is_draw_by_material(), "K+B vs K should be a draw");
-}
-
-#[test]
-fn not_draw_rook_vs_king() {
-    let pos = Position::from_fen("4k3/8/8/8/8/8/8/2RK4 w - - 0 1");
-    assert!(!pos.is_draw_by_material(), "R vs K is NOT a material draw");
 }
 
 #[test]
@@ -577,7 +511,7 @@ fn fifty_move_draw_detection() {
 #[test]
 fn double_push_sets_en_passant() {
     let mut pos = Position::from_fen("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
     let mv = find_uci_move(&pos, "e2e4");
     pos.make_move(mv, &mut acc);
     assert_eq!(pos.en_passant, Some(Square(20)), "e2e4 double push should set EP square e3 when capture is possible");
@@ -586,8 +520,8 @@ fn double_push_sets_en_passant() {
 #[test]
 fn promotion_capture_and_undo() {
     let mut pos = Position::from_fen("2r1k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
-    let mut acc = pos.initial_accumulator();
-    // b7c8=Q
+    let mut acc = pos.psqt_accumulator();
+
     let mv = Move::new(Square::from_coords(1, 6), Square::from_coords(2, 7), Move::PROM_Q_CAPTURE);
     let original_hash = pos.hash;
     let undo = pos.make_move(mv, &mut acc);
@@ -628,16 +562,17 @@ fn double_check_only_king_moves() {
 }
 
 #[test]
-fn knight_under_promotion_check() {
-    let mut pos = Position::from_fen("8/1kP5/8/8/8/8/8/4K3 w - - 0 1");
-    let mut acc = pos.initial_accumulator();
-    let mv = Move::new(Square::from_coords(2, 6), Square::from_coords(3, 7), Move::PROM_N); // c7d8=N
+fn knight_underpromotion_gives_check() {
+    let mut pos = Position::from_fen("8/1k1P4/8/8/8/8/8/4K3 w - - 0 1");
+    let mut acc = pos.psqt_accumulator();
+
+    let mv = find_uci_move(&pos, "d7d8n");
     let undo = pos.make_move(mv, &mut acc);
     assert_eq!(pos.piece_at(Square::from_coords(3, 7)), PieceType::Knight);
     assert!(!pos.checkers().is_empty(), "Promoted knight to d8 should check king on b7");
     pos.unmake_move(mv, &undo);
     assert!(pos.checkers().is_empty(), "Unmaking promotion should remove check");
-    assert_eq!(pos.piece_at(Square::from_coords(2, 6)), PieceType::Pawn);
+    assert_eq!(pos.piece_at(Square::from_coords(3, 6)), PieceType::Pawn);
 }
 
 #[test]
@@ -661,37 +596,15 @@ fn perft_suite() {
 
     for (fen, depth, nodes) in cases {
         let mut pos = Position::from_fen(fen);
-        let mut acc = pos.initial_accumulator();
-        assert_eq!(perft_recursive(&mut pos, depth, &mut acc), nodes, "Perft mismatch for {fen} at depth {depth}");
+        let mut acc = pos.psqt_accumulator();
+        assert_eq!(perft(&mut pos, depth, &mut acc, true), nodes, "Perft mismatch for {fen} at depth {depth}");
     }
-}
-
-fn perft_recursive(pos: &mut Position, depth: u32, acc: &mut crate::weave::I16x8) -> u64 {
-    if depth == 0 {
-        return 1;
-    }
-
-    let moves = gen_legal_moves(pos);
-    if depth == 1 {
-        return moves.len() as u64;
-    }
-
-    let mut total = 0u64;
-
-    for &mv in &moves {
-        let saved_acc = *acc;
-        let undo = pos.make_move(mv, acc);
-        total += perft_recursive(pos, depth - 1, acc);
-        pos.unmake_move(mv, &undo);
-        *acc = saved_acc;
-    }
-    total
 }
 
 #[test]
 fn king_move_removes_castling_rights() {
     let mut pos = Position::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
     let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "e1d1");
@@ -705,7 +618,7 @@ fn king_move_removes_castling_rights() {
 #[test]
 fn rook_capture_removes_castling_rights() {
     let mut pos = Position::from_fen("r3k2r/6B1/8/8/8/8/8/R3K2R w KQkq - 0 1");
-    let mut acc = pos.initial_accumulator();
+    let mut acc = pos.psqt_accumulator();
 
     let original_rights = pos.castling_rights;
     let mv = find_uci_move(&pos, "g7h8");
@@ -718,15 +631,14 @@ fn rook_capture_removes_castling_rights() {
 
 #[test]
 fn castling_legality_checks() {
-    // 1. Cannot castle out of check
     let pos = Position::from_fen("1k2r3/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
     assert!(!moves.iter().any(|m| m.is_castling()), "Should not be able to castle out of check");
-    // 2. Cannot castle through check
+
     let pos = Position::from_fen("1k3r2/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
     assert!(!moves.iter().any(|m| m.is_castling() && m.to().0 == 7), "Should not castle through check on f1");
-    // 3. Cannot castle into check
+
     let pos = Position::from_fen("1k4r1/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
     assert!(!moves.iter().any(|m| m.is_castling() && m.to().0 == 7), "Should not castle into check on g1");
@@ -735,9 +647,9 @@ fn castling_legality_checks() {
 fn find_uci_move(pos: &Position, uci: &str) -> Move {
     let moves = gen_legal_moves(pos);
     for mv in &moves {
-        if mv.to_uci(pos.is_frc) == uci {
+        if mv.to_uci(pos.frc_notation) == uci {
             return *mv;
         }
     }
-    panic!("Move {uci} not found in position {}", pos.as_fen());
+    panic!("Move {uci} not found in position {}", pos.to_fen());
 }
