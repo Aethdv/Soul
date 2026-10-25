@@ -27,6 +27,7 @@ evaltune_log.txt
 sensitivity-report.txt
 correlation-report.txt
 bounds_report.txt
+spsa.txt
 
 # Neovim
 .nvim/
