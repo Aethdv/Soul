@@ -1,11 +1,10 @@
 # <img src="assets/tetosing.png" alt="TetoSing" width="32" height="32" /> Soul
 
 Soul is a contemporary, Hand-Crafted Evaluation (HCE) alpha-beta chess engine written in Rust.
+Supports the UCI and XBoard/CECP protocols, plus full Chess960 (Fischer Random)
 
 Rather than relying on black-box Neural Networks, Soul pushes traditional algorithmic evaluation to its
 absolute limit with SIMD, zero-cost abstractions, and a custom tuning framework built from scratch.
-
-It supports the UCI and XBoard/CECP protocols, plus full Chess960 (Fischer Random)
 
 ## <img src="assets/rocket.gif" alt="Rocket" width="20" height="20" /> Quick Start
 
@@ -25,37 +24,6 @@ make native  # Optimized specifically for your host CPU
 make avx512
 make avx2-bmi2
 make avx2
-```
-
-### Development
-
-```bash
-make debug   # Debug build
-make test    # Run test suite
-make clippy  # Lint with clippy
-make fmt     # Format with rustfmt
-make seefmt  # See format changes
-```
-
-## <img src="assets/thonk.gif" alt="ThonkTriangle" width="22" height="22" /> Tuning & Datasets
-
-### Generating Data
-
-Generate self-play data for evaluation tuning:
-
-```bash
-./soul datagen -t <N> -n <N>
-```
-
-*Inspect generated datasets with the built-in utilities (`./soul dataset help`).*
-
-### Evaluation Tuning
-
-Tune the hand-crafted evaluation parameters with the Lion optimizer:
-
-```bash
-make evaltune
-./eval --dataset data/data.vf.zst --epochs <N>
 ```
 
 ## 🎮 Configuration (UCI / XBoard Options)
