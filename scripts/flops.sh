@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# What the gradient costs on top of the eval: one run of `measure_gradient_ops`
+# What the gradient costs on top of the eval: one run of `bench_gradient_cost`
 # per mode, differenced on a retired-FLOP counter and task-clock.
 # Needs perf and jq.
 #
@@ -17,14 +17,9 @@ bin=$(RUSTFLAGS="-C target-cpu=native" cargo test --release -p soul --features d
 
 [[ -n $bin ]] || { echo "no lib test binary; cargo test --no-run built nothing" >&2; exit 1; }
 
-# Four fields for one mode: retired ops, cycles, elapsed ms, positions.
-#
-# Cycles carry the comparison. Wall time on aeth's laptop drifts 10% with boost
-# state alone, enough to read a thermal change as a code change, while cycles
-# per position hold within about a percent.
 measure() {
     for _ in $(seq "${SOUL_OPS_RUNS:-3}"); do
-        SOUL_OPS_MODE=$1 perf stat -x, -e "$event",cycles,task-clock "$bin" measure_gradient_ops --ignored --nocapture 2>&1
+        SOUL_OPS_MODE=$1 perf stat -x, -e "$event",cycles,task-clock "$bin" bench_gradient_cost --ignored --nocapture 2>&1
     done | awk -F, -v event="$event" '
         $0 ~ event { ops = $1 }
         /,cycles/ { if (cyc == "" || $1 + 0 < cyc + 0) cyc = $1 }
