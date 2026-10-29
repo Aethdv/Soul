@@ -77,7 +77,7 @@ impl Drop for Progress {
 pub fn run(depth: i32, hash_mb: usize) {
     let start = Instant::now();
     let stop_signal = Arc::new(AtomicBool::new(false));
-    let fens: Vec<&str> = FENS.lines().collect();
+    let fens: Vec<&str> = parse_fens(FENS).collect();
     let total = fens.len();
     let done = Arc::new(AtomicUsize::new(0));
     let nodes = Arc::new(AtomicU64::new(0));
@@ -128,4 +128,11 @@ pub fn run(depth: i32, hash_mb: usize) {
 
     #[cfg(feature = "corrstats")]
     crate::engine::corrstats::report();
+}
+
+fn parse_fens(suite: &str) -> impl Iterator<Item = &str> {
+    suite.lines().filter_map(|line| {
+        let fen = line.split_once("//").map_or(line, |(fen, _)| fen).trim();
+        (!fen.is_empty()).then_some(fen)
+    })
 }
