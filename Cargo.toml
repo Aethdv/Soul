@@ -4,7 +4,7 @@ version = "0.6.1"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 authors = ["Aethdv (aethrdv@gmail.com)"]
-description = "A modern alpha-beta chess engine, featuring Hand-Crafted Evaluation with SIMD."
+description = "A contemporary HCE alpha-beta chess engine"
 repository = "https://github.com/Aethdv/Soul"
 keywords = [
     "chess",
@@ -16,7 +16,6 @@ keywords = [
 ]
 categories = ["games", "simulation"]
 edition = "2024"
-rust-version = "1.97.0"
 include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [workspace]
@@ -41,17 +40,12 @@ zerocopy = { version = "0.8.52", default-features = false, features = ["derive",
 atomic-wait = "1.1"
 
 [features]
-# Reading and writing .vf and EPD, and the cached gradient path evaltune trains on.
 dataset = ["dep:serde", "dep:serde_json", "dep:zerocopy"]
-# Self-play generation and its opening books, which write viriformat.
 datagen = ["dataset", "dep:ctrlc", "dep:fastrand"]
-# Measurement rigs: byteboard, the store pricing, and the nps speedtest.
 rigs = []
 corrstats = []
 mvpstats = []
-# Builds without XorBoard, so the store can be priced against its own absence.
 nostore = []
-# Builds without correction history, so the tables can be priced against their absence.
 nocorr = []
 
 [profile.release]
