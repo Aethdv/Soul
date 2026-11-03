@@ -1,112 +1,90 @@
-//! HCE training: gradient descent on Soul's weights against WDL-labeled positions.
+//! Gradient descent on weights against WDL-labeled positions.
 //!
-//! Features are extracted to `FeatureRecord`s once at startup; epochs are sequential
-//! reads over the cached SoA path (`eval_record` + `accumulate_record_grad`, not the
-//! dual-number oracle the tuner tests use). An initial golden-section search fixes
-//! the sigmoid's centipawn→winrate scale; `k_ref` stays frozen so the reference loss
-//! is comparable across runs.
-//!
-//! The split is cut on whole games, so a held-out ply cannot sit one move from its
-//! own siblings in train. Best-loss captures track validation and training separately,
-//! so both parameter vectors are there to inspect.
+//! Features are extracted to `FeatureRecord`s once at startup; epochs read the cached
+//! SoA path (`eval_record` + `accumulate_record_grad`). An initial golden-section search
+//! fixes the sigmoid's centipawn-to-winrate scale; `k_ref` stays frozen so reference loss
+//! compares across runs.
 
 use std::{
-    fs,
+    env, fs,
     io::{BufWriter, Write},
     path::PathBuf,
+    process,
     time::Instant,
 };
 
-use palette::{DIM, LAB, RESET, VAL};
 use rayon::prelude::*;
 
 use crate::{
     alarm,
-    config::{EvalTuneConfig, Init, LossFn, LrScheduleConfig, RANDOM_INIT_SPREAD},
+    config::{EvalTuneConfig, Init, LossFn, RANDOM_INIT_SPREAD},
     engine::{
-        FeatureRecord, LAYOUT, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record,
-        eval_record_full, flip_wdl,
+        FeatureRecord, ReplayFilter, SoulEntry, Tunable, accumulate_record_grad, color, eval_params, eval_record, eval_record_full,
+        flip_wdl,
     },
-    groups::{self, GROUP_NAMES, build_masks, group_ranges},
-    lion::{GateCensus, Lion},
-    loader::{dataset_fingerprint, load_datasets, resolve_dataset_paths},
-    logger::JsonLogger,
-    palette,
+    lion::{GateTally, Lion},
+    loader::{LoadedDataset, dataset_fingerprint, is_viri_path, load_datasets, resolve_dataset_paths},
     probes::{batch_size_report, curvature_report, gather_cost, momentum_report, val_cost},
-    report::*,
+    report::{
+        BRAND, BestSnapshots, DIM, EpochStats, LAB, RESET, VAL, calibration_report, clamped_k_warning, clip_report, gate_columns,
+        gate_tally_report, off_scale_warning, print_dataset_stats, print_loss_history, print_params, print_results, quantize,
+        sensitivity_report,
+    },
     scale::{GAUGE_PROBE, Gauge, KController, canonicalize},
+    schedule::LrSchedule,
     shuffle::Shuffler,
-    storage::*,
-    training::*,
+    storage::{JsonLog, RunState, TrainerState, load_checkpoint, peek_checkpoint, save_checkpoint},
+    training::{
+        DivergenceMonitor, GROUP_NAMES, GradientStats, Progress, beta2_for_lr, describe_beta2, group_ranges, merge_sample_weights,
+        phase_balance_weights, sigmoid, slot_masks, wdl_target,
+    },
 };
 
-/// Fixes which tenth of a dataset is held out.
-const VAL_SPLIT_SEED: u64 = 0x5350_4C49_5432_3736;
+pub(crate) const ARTIFACT_DIR: &str = "EVALTUNE_ARTIFACT_DIR";
 
-/// Positions a K fit reads when the run holds nothing out.
-/// Bounded because the golden search reads it some thirty times.
+const VAL_SPLIT_SEED: u64 = 0x5350_4C49_5432_3736;
 const K_FIT_PROBE: usize = 65_536;
 
-pub const ARTIFACT_DIR: &str = "EVALTUNE_ARTIFACT_DIR";
-
-/// What a loaded dataset is for.
-///
-/// Both arms want every step up to `TrainerContext`, feature extraction included, so the choice
-/// travels through the loader rather than growing a second copy of it.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Task {
+pub(crate) enum Task {
     Train,
-    /// Time the gradient pass over shuffled indices against sequential ones. Identical arithmetic
-    /// over identical records, so the difference is the cost of the random gathers, which is the
-    /// measurement that says whether the epoch loop is bound by memory or by math.
     GatherCost,
-    /// Build the objective's exact Hessian at the shipped parameters and report what the data
-    /// constrains, what it leaves free, and which parameters merely restate each other.
     Curvature,
-    /// Time one fused validation traversal against the two separate ones it replaced, in a
-    /// single process, since the val column's run-to-run spread swallows the difference.
     ValCost,
-    /// What one step needs: the batch size past which averaging stops buying signal, and how
-    /// much of a batch that size points the wrong way. From one large draw, not a run sweep.
     BatchSize,
-    /// What the step direction should remember: the β₂ balancing momentum's variance against the
-    /// staleness of the gradients it still holds.
     Momentum,
 }
 
-pub struct TrainerContext<'a> {
-    pub train: &'a [FeatureRecord],
-    pub val: &'a [FeatureRecord],
-    pub train_count: usize,
-    pub phase_weights: &'a [f64],
+pub(crate) struct Objective<'a> {
+    pub(crate) train: &'a [FeatureRecord],
+    pub(crate) val: &'a [FeatureRecord],
+    pub(crate) sample_weights: &'a [f64],
     loss_fn: LossFn,
-    vol_threshold: i16,
-    vol_adaptive: bool,
+    volatility_threshold: i16,
+    volatility_adaptive: bool,
 }
 
-impl TrainerContext<'_> {
-    /// The configured loss, for probes that read its Hessian.
+impl Objective<'_> {
     #[inline]
-    #[must_use]
-    pub const fn loss_fn(&self) -> LossFn { self.loss_fn }
+    pub(crate) const fn loss_fn(&self) -> LossFn { self.loss_fn }
 
-    pub fn passes_vol_filter(&self, record: &FeatureRecord) -> bool {
-        if self.vol_threshold == 0 || record.score == SoulEntry::NO_SCORE {
+    pub(crate) fn passes_volatility_filter(&self, record: &FeatureRecord) -> bool {
+        if self.volatility_threshold == 0 || record.score == SoulEntry::NO_SCORE {
             return true;
         }
 
-        let threshold = if self.vol_adaptive {
+        let threshold = if self.volatility_adaptive {
             let occ = i16::from(record.piece_count);
-            self.vol_threshold.saturating_add((occ - 10).saturating_mul(2))
+            self.volatility_threshold.saturating_add((occ - 10).saturating_mul(2))
         } else {
-            self.vol_threshold
+            self.volatility_threshold
         }
         .max(0);
 
-        (i32::from(record.static_eval) - i32::from(record.score)).abs() <= threshold as i32
+        (i32::from(record.static_eval) - i32::from(record.score)).abs() <= i32::from(threshold)
     }
 
-    pub fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
+    pub(crate) fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
         batch_indices
             .par_chunks(256)
             .fold(
@@ -115,19 +93,20 @@ impl TrainerContext<'_> {
                     for &idx in chunk {
                         let i = idx as usize;
                         let record = &self.train[i];
-                        if !self.passes_vol_filter(record) {
+                        if !self.passes_volatility_filter(record) {
                             continue;
                         }
 
                         let (target, dt_dk) = wdl_target(record, k, blend);
                         let eval = eval_record_full(record, values);
                         let p = sigmoid(eval.score, k);
-                        let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[i] };
+                        let w = if self.sample_weights.is_empty() { 1.0 } else { self.sample_weights[i] };
                         let gs = self.loss_fn.grad_scale(p, target, k);
+                        let k_term = if dt_dk == 0.0 { 0.0 } else { self.loss_fn.grad_target(p, target) * dt_dk };
 
                         loss_acc += w * self.loss_fn.loss(p, target);
                         accumulate_record_grad(record, &eval, gs * w, &mut grad_acc);
-                        k_grad_acc += ((gs / k) * eval.score + self.loss_fn.grad_target(p, target) * dt_dk) * w;
+                        k_grad_acc += ((gs / k) * eval.score + k_term) * w;
                         count += 1;
                     }
                     (grad_acc, k_grad_acc, loss_acc, count)
@@ -135,20 +114,20 @@ impl TrainerContext<'_> {
             )
             .reduce(
                 || (vec![0.0; values.len()], 0.0f64, 0.0f64, 0usize),
-                |(g1, kg1, l1, c1), (g2, kg2, l2, c2)| {
-                    let (g, l) = combine_grads((g1, l1), (g2, l2));
-                    (g, kg1 + kg2, l, c1 + c2)
+                |(mut g1, kg1, l1, c1), (g2, kg2, l2, c2)| {
+                    for (a, b) in g1.iter_mut().zip(g2) {
+                        *a += b;
+                    }
+                    (g1, kg1 + kg2, l1 + l2, c1 + c2)
                 },
             )
     }
 
-    /// Validation loss at each `(k, blend)` probe, over one pass of the split.
-    pub fn val_eval<const N: usize>(&self, values: &[f64], probes: [(f64, f64); N]) -> [f64; N] {
-        self.split_eval(self.val, self.train_count, values, probes)
+    pub(crate) fn val_eval<const N: usize>(&self, values: &[f64], probes: [(f64, f64); N]) -> [f64; N] {
+        self.split_eval(self.val, self.train.len(), values, probes)
     }
 
-    /// Loss at one probe over whichever split a K fit can read.
-    pub fn k_fit_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
+    pub(crate) fn k_fit_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
         if self.val.is_empty() {
             let probe = &self.train[..self.train.len().min(K_FIT_PROBE)];
             return self.split_eval(probe, 0, values, [(k, blend)])[0];
@@ -156,7 +135,6 @@ impl TrainerContext<'_> {
         self.val_eval(values, [(k, blend)])[0]
     }
 
-    /// One weighted pass over `records`, whose phase weights start at `offset`.
     fn split_eval<const N: usize>(
         &self,
         records: &[FeatureRecord],
@@ -170,17 +148,19 @@ impl TrainerContext<'_> {
             .fold(
                 || ([0.0_f64; N], 0.0_f64),
                 |(mut sums, mut weight_acc), (idx, record)| {
-                    if !self.passes_vol_filter(record) {
+                    if !self.passes_volatility_filter(record) {
                         return (sums, weight_acc);
                     }
 
                     let score = eval_record(record, values);
-                    let w = if self.phase_weights.is_empty() { 1.0 } else { self.phase_weights[offset + idx] };
+                    let w = if self.sample_weights.is_empty() { 1.0 } else { self.sample_weights[offset + idx] };
+
                     for (sum, &(k, blend)) in sums.iter_mut().zip(&probes) {
                         let p = sigmoid(score, k);
                         let (target, _) = wdl_target(record, k, blend);
                         *sum += w * self.loss_fn.loss(p, target);
                     }
+
                     weight_acc += w;
                     (sums, weight_acc)
                 },
@@ -199,17 +179,30 @@ impl TrainerContext<'_> {
     }
 }
 
-/// Batch order and the validation holdout draw from separate seeds,
-/// so a retune moves one without moving the other.
-#[derive(Clone, Copy)]
-struct Seeds {
-    rng_seed: u64,
-    split_seed: u64,
+pub(crate) fn artifact(name: &str) -> String {
+    match env::var_os(ARTIFACT_DIR) {
+        Some(dir) => PathBuf::from(dir).join(name).display().to_string(),
+        None => name.to_string(),
+    }
 }
 
-/// The starting parameter vector for a fresh run; a resume overrides it with the
-/// checkpoint's. Fixed slots hold their declared values under every mode.
-pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
+pub(crate) fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
+    let Some(path) = config.replay_filter.as_deref() else {
+        return ReplayFilter::UNRESTRICTED;
+    };
+    let text = fs::read_to_string(path).unwrap_or_else(|e| {
+        alarm!("Cannot read replay filter {path}: {e}");
+        process::exit(1);
+    });
+    let filter: ReplayFilter = toml::from_str(&text).unwrap_or_else(|e| {
+        alarm!("Cannot parse replay filter {path}: {e}");
+        process::exit(1);
+    });
+    println!("Replay filter: {path}");
+    filter
+}
+
+pub(crate) fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
     let mut rng = fastrand::Rng::with_seed(seed);
     params
         .iter()
@@ -222,31 +215,7 @@ pub fn seed_values(params: &[Tunable], init: Init, seed: u64) -> Vec<f64> {
         .collect()
 }
 
-/// A run's artifact by name, under [`ARTIFACT_DIR`] when a parent named one.
-pub fn artifact(name: &str) -> String {
-    match std::env::var_os(ARTIFACT_DIR) {
-        Some(dir) => PathBuf::from(dir).join(name).display().to_string(),
-        None => name.to_string(),
-    }
-}
-
-/// What a run leaves behind for a caller that ranks runs.
-pub enum Outcome {
-    Ranked(f64),
-    /// Trained, on a dataset with no tenth to spare, so no figure ranks it.
-    Unranked,
-    /// Nothing trained: the dataset never loaded, or the task reports to stdout instead.
-    NotTrained,
-}
-
-impl Outcome {
-    #[inline]
-    #[must_use]
-    pub const fn trained(&self) -> bool { !matches!(self, Self::NotTrained) }
-}
-
-/// Trains on `dataset_path`, or on the dataset the `resume_path` checkpoint names.
-pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> Outcome {
+pub(crate) fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Option<&str>, task: Task) -> bool {
     let total_start = Instant::now();
     let effective_dataset = match (dataset_path, resume_path) {
         (Some(path), _) => path.to_string(),
@@ -260,31 +229,36 @@ pub fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_path: Opt
 
     let Some(paths) = resolve_dataset_paths(&effective_dataset) else {
         alarm!("Error: No dataset found. Use --dataset <path> or place .vf files in data/.");
-        return Outcome::NotTrained;
+        return false;
     };
 
     let filter = replay_filter(config);
-    let is_replay_dataset = paths.iter().any(|p| p.ends_with(".vf") || p.ends_with(".viri"));
+    let is_replay_dataset = paths.iter().any(|p| is_viri_path(p));
     if is_replay_dataset && config.replay_filter.is_none() {
         alarm!("No replay_filter named: every replayed position trains, tactical and in-check ones included.");
     }
 
-    let (all_entries, sample_weights, groups) = load_datasets(&paths, &filter);
-    if all_entries.is_empty() {
+    let loaded = load_datasets(&paths, &filter);
+    if loaded.entries.is_empty() {
         eprintln!("Error: No positions loaded.");
-        return Outcome::NotTrained;
+        return false;
     }
 
     let dataset_label = paths.join(", ");
     let keep_fraction = epoch_keep_fraction(config, &filter, is_replay_dataset);
-    let outcome = train_entries(all_entries, sample_weights, groups, &dataset_label, config, resume_path, task, keep_fraction);
+    let trained = train_entries(loaded, &dataset_label, config, resume_path, task, keep_fraction);
     let elapsed = total_start.elapsed().as_secs_f32();
-    println!("\n{}Done in {elapsed:.2}s{RESET}", palette::BRAND);
-    outcome
+    println!("\n{BRAND}Done in {elapsed:.2}s{RESET}");
+    trained
 }
 
-/// Permutes whole groups, so a game leaves for the holdout entire,
-/// and returns the group sizes in their new order.
+// Keeps batch-order and validation-split u64 seeds distinct across call boundaries.
+#[derive(Clone, Copy)]
+struct Seeds {
+    rng_seed: u64,
+    split_seed: u64,
+}
+
 fn shuffle_groups(
     mut entries: Vec<SoulEntry>,
     mut weights: Vec<f32>,
@@ -325,8 +299,7 @@ fn shuffle_groups(
     (shuffled_entries, shuffled_weights, shuffled_sizes)
 }
 
-/// Holdout positions and the groups they came from, taking whole groups off the tail.
-/// One group always stays behind, since a run needs something to train on.
+// Takes whole groups off the tail while always leaving at least one group to train on.
 fn holdout(sizes: &[u32], total: usize, target: usize) -> (usize, usize) {
     let mut positions = 0usize;
     let mut groups = 0usize;
@@ -336,16 +309,18 @@ fn holdout(sizes: &[u32], total: usize, target: usize) -> (usize, usize) {
         if positions >= target || taken >= total {
             break;
         }
+
         if taken > target && taken - target > target - positions {
             break;
         }
+
         positions = taken;
         groups += 1;
     }
+
     (positions, groups)
 }
 
-/// The share of the training split one epoch draws.
 fn epoch_keep_fraction(config: &EvalTuneConfig, filter: &ReplayFilter, is_replay_dataset: bool) -> f64 {
     if let Some(sample) = config.epoch_sample {
         return sample.clamp(0.0, 1.0);
@@ -364,38 +339,21 @@ fn epoch_sample_len(train_len: usize, keep: f64) -> usize {
     ((train_len as f64 * keep).round() as usize).clamp(1, train_len)
 }
 
-pub fn replay_filter(config: &EvalTuneConfig) -> ReplayFilter {
-    let Some(path) = config.replay_filter.as_deref() else {
-        return ReplayFilter::UNRESTRICTED;
-    };
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        alarm!("Cannot read replay filter {path}: {e}");
-        std::process::exit(1);
-    });
-    let filter: ReplayFilter = toml::from_str(&text).unwrap_or_else(|e| {
-        alarm!("Cannot parse replay filter {path}: {e}");
-        std::process::exit(1);
-    });
-    println!("Replay filter: {path}");
-    filter
-}
-
 fn train_entries(
-    entries: Vec<SoulEntry>,
-    sample_weights: Vec<f32>,
-    groups: Vec<u32>,
+    loaded: LoadedDataset,
     dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     task: Task,
     epoch_keep: f64,
-) -> Outcome {
+) -> bool {
+    let LoadedDataset { entries, sample_weights, group_sizes } = loaded;
     let dataset_fnv = dataset_fingerprint(&entries);
     let (rng_seed, split_seed) = match resume_path {
         Some(path) => {
             let cp = peek_checkpoint(path).unwrap_or_else(|e| {
                 eprintln!("Failed to read checkpoint: {e}");
-                std::process::exit(1);
+                process::exit(1);
             });
 
             if let Some(seed) = config.seed
@@ -416,15 +374,15 @@ fn train_entries(
         None => (config.seed.unwrap_or_else(|| fastrand::u64(..)), config.split_seed.unwrap_or(VAL_SPLIT_SEED)),
     };
 
-    let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &groups, split_seed);
+    let (entries, sample_weights, sizes) = shuffle_groups(entries, sample_weights, &group_sizes, split_seed);
     let total = entries.len();
 
-    // One time cost
-    println!("Extracting features ({} entries)...", entries.len());
+    println!("Extracting features ({total} entries)...");
     let records: Vec<FeatureRecord> = entries.par_iter().map(FeatureRecord::from_entry).collect();
 
     let target = (entries.len() / 10).min(config.val_max.unwrap_or(usize::MAX));
     let (mut val_count, val_groups) = holdout(&sizes, entries.len(), target);
+
     if val_groups < val_count {
         println!("Holding out {val_groups} whole games ({val_count} positions)");
     }
@@ -446,7 +404,6 @@ fn train_entries(
     }
 
     let train_count = total - val_count;
-
     if val_count * 2 < target {
         alarm!("The holdout came to {val_count} positions against a target of {target}: too few games to cut a tenth.");
     }
@@ -456,98 +413,85 @@ fn train_entries(
     drop(entries);
 
     let (train, val) = records.split_at(train_count);
-
-    let phase_weights = if config.phase_balance {
-        build_phase_weights(&records, config.phase_balance_cap, config.phase_target.as_deref())
+    let balance_weights = if config.phase_balance {
+        phase_balance_weights(&records, config.phase_balance_cap, config.phase_target.as_deref())
     } else {
         Vec::new()
     };
-
-    let phase_weights = merge_weights(phase_weights, &sample_weights);
-    let ctx = TrainerContext {
+    let sample_weights = merge_sample_weights(balance_weights, &sample_weights);
+    let obj = Objective {
         train,
         val,
-        train_count,
-        phase_weights: &phase_weights,
+        sample_weights: &sample_weights,
         loss_fn: config.loss,
-        vol_threshold: config.volatility_threshold,
-        vol_adaptive: config.volatility_adaptive,
+        volatility_threshold: config.volatility_threshold,
+        volatility_adaptive: config.volatility_adaptive,
     };
 
     match task {
         Task::GatherCost => {
-            gather_cost(&ctx, config);
-            return Outcome::NotTrained;
+            gather_cost(&obj, config);
+            return false;
         },
         Task::Curvature => {
-            curvature_report(&ctx, config);
-            return Outcome::NotTrained;
+            curvature_report(&obj, config);
+            return false;
         },
         Task::ValCost => {
-            val_cost(&ctx, config);
-            return Outcome::NotTrained;
+            val_cost(&obj, config);
+            return false;
         },
         Task::BatchSize => {
-            batch_size_report(&ctx, config);
-            return Outcome::NotTrained;
+            batch_size_report(&obj, config);
+            return false;
         },
         Task::Momentum => {
-            momentum_report(&ctx, config);
-            return Outcome::NotTrained;
+            momentum_report(&obj, config);
+            return false;
         },
         Task::Train => {},
     }
 
     let seeds = Seeds { rng_seed, split_seed };
-    train_loop(train.len(), epoch_keep, "SoulEntry", dataset_label, config, resume_path, seeds, dataset_fnv, &ctx)
+    train_loop(epoch_keep, dataset_label, config, resume_path, seeds, dataset_fnv, &obj);
+    true
 }
 
-/// `Name (detail)` with the name in the value color. Both schedulers and `KMode`
-/// describe themselves in that shape, so the header paints them the same way.
-fn paint_head(text: &str) -> String {
-    match text.find('(') {
-        Some(op) => format!("{VAL}{}{RESET} ({})", text[..op].trim_end(), &text[op + 1..text.len() - 1]),
-        None => format!("{VAL}{text}{RESET}"),
+fn format_labeled_value(text: &str) -> String {
+    if let Some(inner) = text.strip_suffix(')')
+        && let Some((head, detail)) = inner.split_once(" (")
+    {
+        format!("{VAL}{head}{RESET} ({detail})")
+    } else {
+        format!("{VAL}{text}{RESET}")
     }
-}
-
-fn combine_grads((mut g1, l1): (Vec<f64>, f64), (g2, l2): (Vec<f64>, f64)) -> (Vec<f64>, f64) {
-    for (a, b) in g1.iter_mut().zip(g2) {
-        *a += b;
-    }
-    (g1, l1 + l2)
 }
 
 fn train_loop(
-    train_len: usize,
     epoch_keep: f64,
-    mode_label: &str,
     dataset_label: &str,
     config: &EvalTuneConfig,
     resume_path: Option<&str>,
     seeds: Seeds,
     dataset_fnv: u64,
-    ctx: &TrainerContext,
-) -> Outcome {
+    obj: &Objective,
+) {
     let Seeds { rng_seed, split_seed } = seeds;
+    let train_len = obj.train.len();
 
-    let has_val = !ctx.val.is_empty();
-    let all_params = eval_params::collect_parameters();
-    let default_values = eval_params::default_values(&all_params);
-    let slots = all_params.len();
+    let has_val = !obj.val.is_empty();
+    let params = eval_params::collect_parameters();
+    let defaults = eval_params::default_values(&params);
+    let slots = params.len();
 
     let resume = resume_path.map(|path| {
-        println!("Resuming from checkpoint: {}{path}{RESET}", palette::VAL);
-        let data = load_checkpoint(path, &all_params, &default_values).unwrap_or_else(|e| {
+        println!("Resuming from checkpoint: {VAL}{path}{RESET}");
+        let data = load_checkpoint(path, &params, &defaults).unwrap_or_else(|e| {
             eprintln!("Failed to load checkpoint: {e}");
-            std::process::exit(1);
+            process::exit(1);
         });
         if data.fresh_params > 0 {
-            println!(
-                "{}{}{RESET} parameters are newer than the checkpoint, starting from code defaults",
-                palette::VAL,
-                data.fresh_params
-            );
+            println!("{VAL}{}{RESET} parameters are newer than the checkpoint, starting from code defaults", data.fresh_params);
         }
         data
     });
@@ -555,20 +499,20 @@ fn train_loop(
     let (start_epoch, mut lr_scale) = resume.as_ref().map_or((1, 1.0), |d| (d.run.epoch, d.run.lr_scale));
     let mut values = match resume.as_ref() {
         Some(d) => d.values.clone(),
-        None => seed_values(&all_params, config.init, rng_seed),
+        None => seed_values(&params, config.init, rng_seed),
     };
 
-    let is_constant_schedule = matches!(config.lr_schedule, LrScheduleConfig::Constant { .. });
-    let lr_scheduler = config.lr_schedule.clone().into_scheduler();
-    let wdl_scheduler = config.wdl_schedule.clone().into_scheduler();
-    let init_blend = wdl_scheduler.blend(1, config.epochs);
+    let lr_schedule = config.lr_schedule;
+    let wdl_schedule = config.wdl_schedule;
+    let is_constant_schedule = matches!(lr_schedule, LrSchedule::Constant { .. });
+    let init_blend = wdl_schedule.blend(1, config.epochs);
 
-    let mut k_ctrl = KController::bootstrap(config, ctx, &values, &default_values, init_blend, resume.as_ref());
+    let mut k_ctrl = KController::bootstrap(config, obj, &values, &defaults, init_blend, resume.as_ref());
     let k = k_ctrl.k();
     let win_rate_100cp = sigmoid(100.0, k);
 
     println!("{LAB}K Factor:{RESET}   {VAL}{k:.6}{RESET} (100cp -> {:.1}%)", win_rate_100cp * 100.0);
-    println!("{LAB}K Mode:{RESET}     {}", paint_head(&config.k_mode.to_string()));
+    println!("{LAB}K Mode:{RESET}     {}", format_labeled_value(&config.k_mode.to_string()));
 
     let seed_label = if resume.is_some() {
         " (checkpoint)"
@@ -581,6 +525,7 @@ fn train_loop(
     if split_seed != VAL_SPLIT_SEED {
         println!("{LAB}Split seed:{RESET} {VAL}{split_seed}{RESET} (L_val not comparable to default-split runs)");
     }
+
     if config.init != Init::Default && resume.is_none() {
         println!(
             "{LAB}Init:{RESET}       {VAL}{:?}{RESET} (cold start; K meaningless until material scale emerges)",
@@ -589,51 +534,51 @@ fn train_loop(
     }
 
     let initial_values = values.clone();
-    let stride = (ctx.train.len() / GAUGE_PROBE).max(1);
-    let probe: Vec<&FeatureRecord> = ctx.train.iter().step_by(stride).take(GAUGE_PROBE).collect();
-    let mut gauge = Gauge::new(probe, &default_values);
+    let stride = (train_len / GAUGE_PROBE).max(1);
+    let probe: Vec<&FeatureRecord> = obj.train.iter().step_by(stride).take(GAUGE_PROBE).collect();
+    let mut gauge = Gauge::new(probe, &defaults);
     let hold_scale = gauge.holds(&values);
 
-    let mut masks = build_masks(&all_params, config);
-
+    let mut masks = slot_masks(&params, config);
     let mut grad_ema = resume.as_ref().map_or_else(|| vec![0.0_f64; slots], |d| d.grad_ema.clone());
     let mut stagnant_counts = resume.as_ref().map_or_else(|| vec![0usize; slots], |d| d.stagnant.clone());
 
     println!("{LAB}Parameters:{RESET} {VAL}{slots}{RESET}");
-    println!("{LAB}Mode:{RESET}       {VAL}{mode_label}{RESET}");
-    println!("{LAB}LR Sched:{RESET}   {}", paint_head(&lr_scheduler.describe()));
-    println!("{LAB}WDL Sched:{RESET}  {}", paint_head(&wdl_scheduler.describe()));
-    println!("{LAB}Beta2:{RESET}      {}", paint_head(&groups::describe_beta2(config)));
+    println!("{LAB}Mode:{RESET}       {VAL}SoulEntry{RESET}");
+    println!("{LAB}LR Sched:{RESET}   {}", format_labeled_value(&lr_schedule.describe()));
+    println!("{LAB}WDL Sched:{RESET}  {}", format_labeled_value(&wdl_schedule.describe()));
+    println!("{LAB}Beta2:{RESET}      {}", format_labeled_value(&describe_beta2(config)));
     println!("{LAB}Optimizer:{RESET}  {VAL}Lion{RESET} (Batch: {}, WD: {})", config.batch_size, config.weight_decay);
 
     let log_file = fs::OpenOptions::new().create(true).append(true).open(artifact("evaltune_log.txt")).ok();
-    let mut logger = log_file.map(BufWriter::new);
-    if let Some(ref mut w) = logger {
+    let mut text_log = log_file.map(BufWriter::new);
+
+    if let Some(ref mut w) = text_log {
         writeln!(w).ok();
         writeln!(w, "Seed:      {rng_seed}").ok();
         if split_seed != VAL_SPLIT_SEED {
             writeln!(w, "Split:     {split_seed}").ok();
         }
-        writeln!(w, "Mode:      {mode_label}").ok();
+        writeln!(w, "Mode:      SoulEntry").ok();
         writeln!(w, "Dataset:   {dataset_label}").ok();
         writeln!(w, "K:         {k:.6} (100cp → {:.1}%)", win_rate_100cp * 100.0).ok();
         writeln!(w, "K mode:    {}", config.k_mode).ok();
         writeln!(w, "Epochs:    {}", config.epochs).ok();
         writeln!(w, "Params:    {slots}").ok();
-        writeln!(w, "LR:        {}", lr_scheduler.describe()).ok();
-        writeln!(w, "WDL:       {}", wdl_scheduler.describe()).ok();
-        writeln!(w, "Beta2:     {}", groups::describe_beta2(config)).ok();
+        writeln!(w, "LR:        {}", lr_schedule.describe()).ok();
+        writeln!(w, "WDL:       {}", wdl_schedule.describe()).ok();
+        writeln!(w, "Beta2:     {}", describe_beta2(config)).ok();
         writeln!(w, "Optimizer: Lion (batch: {}, WD: {})", config.batch_size, config.weight_decay).ok();
         writeln!(w).ok();
         writeln!(w, "{}", EpochStats::log_header()).ok();
     }
 
-    let mut json_logger = JsonLogger::new(&config.log_path)
-        .inspect_err(|e| eprintln!("{}[!] Cannot open the run log at {}: {e}{RESET}", palette::ALARM, config.log_path))
+    let mut json_log = JsonLog::open(&config.log_path)
+        .inspect_err(|e| alarm!("Cannot open the run log at {}: {e}", config.log_path))
         .ok();
 
-    if let Some(ref l) = json_logger {
-        l.log(
+    if let Some(ref mut l) = json_log {
+        l.write(
             "run",
             &serde_json::json!({
                 "seed": rng_seed,
@@ -648,7 +593,7 @@ fn train_loop(
     }
 
     let mut rng = fastrand::Rng::with_seed(rng_seed);
-    let mut optimizer = Lion::new(slots, config.beta1, lr_scheduler.rate(start_epoch, config.epochs), config.weight_decay);
+    let mut optimizer = Lion::new(slots, config.beta1, lr_schedule.rate(start_epoch, config.epochs), config.weight_decay);
 
     if let Some(d) = &resume {
         optimizer.restore_momentum(&d.momentum);
@@ -661,9 +606,11 @@ fn train_loop(
 
     let epoch_sample = epoch_sample_len(train_len, epoch_keep);
     let steps_per_epoch = epoch_sample.div_ceil(config.batch_size);
+
     if epoch_sample < train_len {
         println!("Sampling {epoch_sample} of {train_len} training positions per epoch, redrawn each one");
     }
+
     println!(
         "{LAB}Steps:{RESET}      {VAL}{}{RESET} over {} epochs, {steps_per_epoch} per epoch",
         steps_per_epoch * config.epochs,
@@ -671,7 +618,8 @@ fn train_loop(
     );
 
     let mut ema_values = resume.as_ref().map_or_else(|| values.clone(), |d| d.ema.clone());
-    let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_scheduler.rate(e, config.epochs)));
+    let lr_peak = (1..=config.epochs).fold(0.0f64, |m, e| m.max(lr_schedule.rate(e, config.epochs)));
+
     // Constant schedule has no tail → uniform Polyak instead of tail EMA.
     let mut ema_active = is_constant_schedule;
     let ema_threshold = if is_constant_schedule { 0.0 } else { 0.3 * lr_peak };
@@ -685,6 +633,7 @@ fn train_loop(
     let mut divergence = DivergenceMonitor::default();
     let mut prev_quantized = vec![0i32; slots];
     let mut quantized = vec![0i32; slots];
+
     quantize(&ema_values, &mut prev_quantized);
 
     let mut epochs_run = 0usize;
@@ -696,47 +645,40 @@ fn train_loop(
     let mut val_seconds = 0.0f64;
     let mut epoch_positions = 0u64;
 
-    let psqt_end = LAYOUT.material_offset;
-    let base_end = psqt_end + LAYOUT.material_len;
-    let mob_start = LAYOUT.mobility_open_offset;
-    let mob_end = LAYOUT.mobility_closed_offset + LAYOUT.mobility_closed_len;
     let group_ranges = group_ranges(slots);
-    let mut run_census = [GateCensus::default(); GROUP_NAMES.len()];
+    let mut run_tally = [GateTally::default(); GROUP_NAMES.len()];
 
     if let Some(d) = &resume {
         masks.fixed.copy_from_slice(&d.frozen);
     } else if config.unfreeze_epoch > 0 {
-        for f in &mut masks.fixed[base_end..] {
-            *f = true;
-        }
+        let base_end = group_ranges[1].end;
+        masks.fixed[base_end..].fill(true);
         println!("Progressive unfreeze: params {base_end}+ frozen until epoch {}", config.unfreeze_epoch);
     }
 
     for epoch in start_epoch..=config.epochs {
         let t0 = Instant::now();
-        let blend = wdl_scheduler.blend(epoch, config.epochs);
-        let mut epoch_census = [GateCensus::default(); GROUP_NAMES.len()];
+        let blend = wdl_schedule.blend(epoch, config.epochs);
+        let mut epoch_tally = [GateTally::default(); GROUP_NAMES.len()];
 
-        if let Some(new_k) = k_ctrl.on_epoch(epoch, ctx, &ema_values, blend) {
+        if let Some(new_k) = k_ctrl.on_epoch(epoch, obj, &ema_values, blend) {
             println!("  Reoptimized K: {new_k:.6}");
-            if let Some(ref mut w) = logger {
+            if let Some(ref mut w) = text_log {
                 writeln!(w, "# K re-opt @ epoch {epoch}: {new_k:.6}").ok();
             }
         }
 
-        let scheduled_lr = lr_scheduler.rate(epoch, config.epochs) * lr_scale;
-        let lr = scheduled_lr.max(0.00001);
-
+        let lr = (lr_schedule.rate(epoch, config.epochs) * lr_scale).max(0.00001);
         if !ema_active && lr < ema_threshold {
             println!("  EMA activated at epoch {epoch} (lr {lr:.6} < {ema_threshold:.6})");
             ema_active = true;
         }
 
-        let is_restart = lr_scheduler.is_restart_boundary(epoch, config.epochs);
-
+        let is_restart = lr_schedule.is_restart(epoch, config.epochs);
         optimizer.set_lr(lr);
+
         if config.beta2_tracks_lr {
-            masks.beta2.fill(groups::beta2_for_lr(config.beta2_lr_coefficient, lr));
+            masks.beta2.fill(beta2_for_lr(config.beta2_lr_coefficient, lr));
         }
 
         if is_restart {
@@ -753,6 +695,7 @@ fn train_loop(
         }
 
         let shuffle_secs = t_shuffle.elapsed().as_secs_f32();
+
         let mut train_loss = 0.0;
         let mut train_count = 0usize;
         let mut epoch_grads = vec![0.0; slots];
@@ -761,8 +704,7 @@ fn train_loop(
         for batch in indices[..epoch_sample].chunks(config.batch_size) {
             batches_run += 1;
 
-            let (mut grads, k_grad, batch_loss, batch_count) = ctx.batch_grad(batch, &values, k_ctrl.k(), blend);
-
+            let (mut grads, k_grad, batch_loss, batch_count) = obj.batch_grad(batch, &values, k_ctrl.k(), blend);
             train_loss += batch_loss;
             train_count += batch_count;
 
@@ -771,28 +713,27 @@ fn train_loop(
             grad_stats.update(norm / n);
 
             let threshold = grad_stats.clip_threshold(config.grad_clip) * n;
-            let scale = if norm > threshold { threshold / norm } else { 1.0 };
+            let clip_scale = if norm > threshold { threshold / norm } else { 1.0 };
             for (i, g) in grads.iter_mut().enumerate() {
-                *g = *g / n * scale;
+                *g = *g / n * clip_scale;
                 epoch_grads[i] += *g;
             }
 
             // Before the update, while momentum still holds what the gate is about to read.
-            if config.gate_census {
-                for (census, range) in epoch_census.iter_mut().zip(&group_ranges) {
-                    census.absorb(optimizer.census(range.clone(), &grads, &masks.fixed));
+            if config.gate_tally {
+                for (tally, range) in epoch_tally.iter_mut().zip(&group_ranges) {
+                    tally.absorb(optimizer.tally(range.clone(), &grads, &masks.fixed));
                 }
             }
 
             optimizer.update(&mut values, &grads, &masks);
-            k_ctrl.on_batch(k_grad, batch_count, lr, scale, config.weight_decay);
-            canonicalize(&mut values, &all_params);
+            k_ctrl.on_batch(k_grad, batch_count, lr, clip_scale, config.weight_decay);
+            canonicalize(&mut values, &params);
 
             if hold_scale {
                 gauge.restore(&mut values, &mut optimizer, &mut k_ctrl);
             }
 
-            // The |gradient| trail the auto-freeze below reads.
             for i in 0..slots {
                 if !masks.fixed[i] {
                     grad_ema[i] = 0.99_f64.mul_add(grad_ema[i], 0.01 * grads[i].abs());
@@ -817,16 +758,20 @@ fn train_loop(
         clipped_seen = clipped_total;
 
         if config.unfreeze_epoch > 0 && epoch == config.unfreeze_epoch {
-            for (i, p) in all_params.iter().enumerate() {
+            for (i, p) in params.iter().enumerate() {
                 masks.fixed[i] = p.is_fixed;
             }
             println!("  Unfrozen all remaining parameters at epoch {epoch}");
         }
 
-        if config.auto_freeze && epoch > config.freeze_start_epoch && epoch % config.freeze_cadence == 0 {
+        if config.auto_freeze
+            && epoch > config.freeze_start_epoch
+            && config.freeze_cadence > 0
+            && epoch.is_multiple_of(config.freeze_cadence)
+        {
             let mut frozen = 0;
             for i in 0..slots {
-                if !masks.fixed[i] && grad_ema[i] < config.freeze_threshold && !all_params[i].freeze_resistant {
+                if !masks.fixed[i] && grad_ema[i] < config.freeze_threshold && !params[i].freeze_resistant {
                     stagnant_counts[i] += 1;
                     if stagnant_counts[i] >= config.freeze_consecutive {
                         masks.fixed[i] = true;
@@ -842,15 +787,15 @@ fn train_loop(
         }
 
         let t_val = Instant::now();
-
         let [val_loss, ref_loss] = if has_val {
-            ctx.val_eval(&ema_values, [(k_ctrl.k(), blend), (k_ctrl.k_ref(), 0.0)])
+            obj.val_eval(&ema_values, [(k_ctrl.k(), blend), (k_ctrl.k_ref(), 0.0)])
         } else {
             [f64::NAN, f64::NAN]
         };
         let val_secs = t_val.elapsed().as_secs_f32();
         let train_loss = train_loss / train_count.max(1) as f64;
         let improved_train = progress.record_train(epoch, train_loss);
+
         if improved_train {
             best_train_params.copy_from_slice(&ema_values);
         }
@@ -859,12 +804,10 @@ fn train_loop(
             let improved = progress.record_val(epoch, val_loss);
             if improved {
                 best_val_params.copy_from_slice(&ema_values);
-            } else {
-                if is_constant_schedule && progress.plateau_count >= config.patience {
-                    lr_scale *= 0.5;
-                    progress.plateau_count = 0;
-                    println!("  Plateau detected, LR scale → {lr_scale:.3}");
-                }
+            } else if is_constant_schedule && progress.plateau_count >= config.patience {
+                lr_scale *= 0.5;
+                progress.plateau_count = 0;
+                println!("  Plateau detected, LR scale → {lr_scale:.3}");
             }
             improved
         } else {
@@ -874,8 +817,9 @@ fn train_loop(
             improved_train
         };
 
-        let overfit = if has_val { divergence.update(train_loss, val_loss) } else { false };
+        let overfit = has_val && divergence.update(train_loss, val_loss);
         let drifted = val_history.first().is_some_and(|&opening| progress.val_smooth > opening);
+
         quantize(&ema_values, &mut quantized);
         let moved = quantized.iter().zip(&prev_quantized).filter(|(q, p)| q != p).count();
         prev_quantized.copy_from_slice(&quantized);
@@ -887,8 +831,8 @@ fn train_loop(
             ref_loss,
             lr,
             is_best,
-            psqt_norm: epoch_grads[..psqt_end].iter().map(|g| g * g).sum::<f64>().sqrt(),
-            mob_norm: epoch_grads[mob_start..mob_end].iter().map(|g| g * g).sum::<f64>().sqrt(),
+            psqt_norm: epoch_grads[group_ranges[0].clone()].iter().map(|g| g * g).sum::<f64>().sqrt(),
+            mobility_norm: epoch_grads[group_ranges[2].clone()].iter().map(|g| g * g).sum::<f64>().sqrt(),
             overfit,
             drifted,
             moved,
@@ -897,15 +841,14 @@ fn train_loop(
             clipped: clipped_epoch,
         };
 
-        if let Some(ref mut w) = logger {
+        if let Some(ref mut w) = text_log {
             writeln!(w, "{}", stats.log_row()).ok();
         }
-
-        if let Some(ref mut l) = json_logger {
+        if let Some(ref mut l) = json_log {
             if is_restart {
-                l.log("restart", &serde_json::json!({ "epoch": epoch }));
+                l.write("restart", &serde_json::json!({ "epoch": epoch }));
             }
-            l.log("epoch", &stats);
+            l.write("epoch", &stats);
         }
 
         let elapsed = t0.elapsed().as_secs_f32();
@@ -920,28 +863,29 @@ fn train_loop(
 
         println!("{}", stats.status_line(config.epochs, prev_val_loss, elapsed, mpos));
 
-        if config.gate_census {
-            let mut total_census = GateCensus::default();
-            for (total, epoch_stat) in run_census.iter_mut().zip(&epoch_census) {
+        if config.gate_tally {
+            let mut total_tally = GateTally::default();
+            for (total, epoch_stat) in run_tally.iter_mut().zip(&epoch_tally) {
                 total.absorb(*epoch_stat);
-                total_census.absorb(*epoch_stat);
+                total_tally.absorb(*epoch_stat);
             }
-            println!("  {LAB}gate{RESET}      {}  {DIM}step{RESET} {VAL}{step_l1:.1}{RESET}", gate_columns(&total_census));
+            println!("  {LAB}gate{RESET}      {}  {DIM}step{RESET} {VAL}{step_l1:.1}{RESET}", gate_columns(&total_tally));
         }
 
         if has_val {
             val_history.push(val_loss);
             prev_val_loss = val_loss;
         }
+
         train_history.push(train_loss);
 
-        if epoch % 20 == 0 || epoch == config.epochs {
+        if epoch.is_multiple_of(20) || epoch == config.epochs {
             print_loss_history(&val_history, &train_history);
             if epoch != config.epochs {
-                print_params(&all_params, &initial_values, &ema_values);
+                print_params(&params, &initial_values, &ema_values);
             }
 
-            if let Err(e) = save_checkpoint(&artifact("evaltune_checkpoint.json"), &all_params, &TrainerState {
+            if let Err(e) = save_checkpoint(&artifact("evaltune_checkpoint.json"), &params, &TrainerState {
                 run: RunState {
                     epoch: epoch + 1,
                     lr_scale,
@@ -969,7 +913,7 @@ fn train_loop(
     }
 
     let off_scale_ratio = Gauge::measure(&gauge.probe, &ema_values) / gauge.reference;
-    let (landed, report_k) = if hold_scale {
+    let (gauge_scale, report_k) = if hold_scale {
         (1.0 / gauge.applied, k_ctrl.k())
     } else {
         gauge.normalize(&mut ema_values);
@@ -978,9 +922,9 @@ fn train_loop(
         (1.0 / factor, k_ctrl.k() / factor)
     };
 
-    if let Some(ref l) = json_logger {
+    if let Some(ref mut l) = json_log {
         quantize(&best_val_params, &mut quantized);
-        l.log(
+        l.write(
             "final",
             &serde_json::json!({
                 "seed": rng_seed,
@@ -998,43 +942,39 @@ fn train_loop(
     }
 
     let how = if hold_scale { "held through the run" } else { "normalized on the way out" };
-    let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{landed:.3}×{RESET} pull on the eval's scale, {how}\n");
+    let gauge_line = format!("\n{LAB}Gauge:{RESET}      {VAL}{gauge_scale:.3}×{RESET} pull on the eval's scale, {how}\n");
     let off_scale = off_scale_warning(off_scale_ratio);
     let clamped_k = clamped_k_warning(config, k_ctrl.k());
-
-    // Without a split a calibration table would print empty.
-    let calibration = if has_val { calibration_report(ctx, &best_val_params, report_k) } else { String::new() };
-    let census = if config.gate_census { gate_census_report(&run_census) } else { String::new() };
-    let clip = clip_report(&all_params, optimizer.clipped(), batches_run);
+    let calibration = if has_val { calibration_report(obj, &best_val_params, report_k) } else { String::new() };
+    let tally = if config.gate_tally { gate_tally_report(&run_tally) } else { String::new() };
+    let clip = clip_report(&params, optimizer.clipped(), batches_run);
 
     print!("{gauge_line}");
     eprint!("{off_scale}{clamped_k}");
-    print!("{calibration}{census}{clip}");
+    print!("{calibration}{tally}{clip}");
 
-    if let Some(ref mut w) = logger {
-        for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &census, &clip] {
+    if let Some(ref mut w) = text_log {
+        for part in [&gauge_line, &off_scale, &clamped_k, &calibration, &tally, &clip] {
             write!(w, "{}", color::strip(part)).ok();
         }
     }
 
-    drop(logger);
-    sensitivity_report(&all_params, &grad_ema, &masks.fixed);
+    drop(text_log);
+    sensitivity_report(&params, &grad_ema, &masks.fixed);
 
-    let last_val = val_history.last().copied();
-    let last_train = train_history.last().copied();
     print_results(
-        &all_params,
+        &params,
         &initial_values,
         &ema_values,
-        &BestEpochs {
+        &BestSnapshots {
             best_val_params: &best_val_params,
             best_val_loss: if has_val { Some(progress.best_val_loss) } else { None },
             best_val_epoch: progress.best_val_epoch,
             best_train_params: &best_train_params,
             best_train_loss: progress.best_train_loss,
             best_train_epoch: progress.best_train_epoch,
-            last_val,
-            last_train,
+            last_val: val_history.last().copied(),
+            last_train: train_history.last().copied(),
         },
         config.epochs,
     );
@@ -1048,153 +988,121 @@ fn train_loop(
              {avg_mpos:.1}M pos/s"
         );
     }
-
-    if has_val { Outcome::Ranked(progress.best_val_loss) } else { Outcome::Unranked }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::TunerConfig,
+        engine::{LAYOUT, Position},
+    };
 
-    #[test]
-    fn a_holdout_takes_whole_groups_and_lands_nearest_the_target() {
-        assert_eq!(holdout(&[100, 80, 40], 220, 100), (120, 2));
-        assert_eq!(holdout(&[100, 200, 40], 340, 100), (40, 1));
-        assert_eq!(holdout(&[1; 100], 100, 10), (10, 10));
-        assert_eq!(holdout(&[95, 5], 100, 10), (5, 1));
-        assert_eq!(holdout(&[18, 6], 24, 3), (6, 1));
+    fn vol_obj(threshold: i16, adaptive: bool) -> Objective<'static> {
+        Objective {
+            train: &[],
+            val: &[],
+            sample_weights: &[],
+            loss_fn: LossFn::CrossEntropy,
+            volatility_threshold: threshold,
+            volatility_adaptive: adaptive,
+        }
     }
 
     #[test]
-    fn one_seed_permutes_two_slices_alike() {
-        let mut left: Vec<u32> = (0..5000).collect();
-        let mut right: Vec<u32> = (0..5000).collect();
-        fastrand::Rng::with_seed(0xA11CE).shuffle(&mut left);
-        fastrand::Rng::with_seed(0xA11CE).shuffle(&mut right);
-        assert_eq!(left, right);
-        assert_ne!(left, (0..5000).collect::<Vec<u32>>(), "the shuffle did nothing");
+    fn holdout_takes_whole_groups_nearest_target() {
+        for (sizes, total, target, want) in [
+            (&[100u32, 80, 40][..], 220, 100, (120, 2)),
+            (&[100, 200, 40], 340, 100, (40, 1)),
+            (&[1; 100], 100, 10, (10, 10)),
+            (&[95, 5], 100, 10, (5, 1)),
+            (&[18, 6], 24, 3, (6, 1)),
+        ] {
+            assert_eq!(holdout(sizes, total, target), want);
+        }
     }
 
     #[test]
-    fn merged_weights_keep_the_gradient_scale() {
+    fn merged_weights_preserve_ratios_and_unit_mean() {
         let sample = vec![0.25f32, 0.75, 1.0, 0.5];
-        let merged = merge_weights(Vec::new(), &sample);
+        let merged = merge_sample_weights(Vec::new(), &sample);
         let mean = merged.iter().sum::<f64>() / merged.len() as f64;
-        assert!((mean - 1.0).abs() < 1e-12, "mean {mean} is not one");
-        assert!((merged[1] / merged[0] - 3.0).abs() < 1e-12, "the ratio between two weights moved");
+        assert!((mean - 1.0).abs() < 1e-12);
+        assert!((merged[1] / merged[0] - 3.0).abs() < 1e-12);
+
         let phase = vec![2.0, 2.0, 1.0, 1.0];
-        let both = merge_weights(phase.clone(), &sample);
-        let both_mean = both.iter().sum::<f64>() / both.len() as f64;
-        assert!((both_mean - 1.0).abs() < 1e-12);
-        assert_eq!(merge_weights(phase.clone(), &[]), phase, "no sampling weights leaves the phase ones alone");
-        assert!(merge_weights(Vec::new(), &[]).is_empty());
+        let both = merge_sample_weights(phase.clone(), &sample);
+        assert!((both.iter().sum::<f64>() / both.len() as f64 - 1.0).abs() < 1e-12);
+        assert_eq!(merge_sample_weights(phase.clone(), &[]), phase);
+        assert!(merge_sample_weights(Vec::new(), &[]).is_empty());
     }
 
     #[test]
-    fn decimation_thins_the_epoch_and_not_the_dataset() {
-        let mut config = crate::config::TunerConfig::default().evaltune;
+    fn decimation_thins_epoch_without_emptying_it() {
+        let mut config = TunerConfig::default().evaltune;
         let ninety = ReplayFilter { random_fen_skipping: true, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
         let off = ReplayFilter { random_fen_skipping: false, random_fen_skip_probability: 0.9, ..ReplayFilter::UNRESTRICTED };
         assert!((epoch_keep_fraction(&config, &ninety, true) - 0.1).abs() < 1e-12);
-        assert!((epoch_keep_fraction(&config, &off, true) - 1.0).abs() < 1e-12, "the flag gates the probability");
+        assert!((epoch_keep_fraction(&config, &off, true) - 1.0).abs() < 1e-12);
         assert!((epoch_keep_fraction(&config, &ninety, false) - 1.0).abs() < 1e-12);
         config.epoch_sample = Some(0.25);
         for replays in [true, false] {
-            assert!((epoch_keep_fraction(&config, &ninety, replays) - 0.25).abs() < 1e-12, "the config knob wins");
+            assert!((epoch_keep_fraction(&config, &ninety, replays) - 0.25).abs() < 1e-12);
         }
         assert_eq!(epoch_sample_len(32_800_000, 0.1), 3_280_000);
         assert_eq!(epoch_sample_len(32_800_000, 1.0), 32_800_000);
-        assert_eq!(epoch_sample_len(4, 0.0), 1, "rounding must not empty an epoch");
+        assert_eq!(epoch_sample_len(4, 0.0), 1);
         assert_eq!(epoch_sample_len(0, 0.5), 0);
     }
 
     #[test]
-    fn the_shipped_filter_file_names_only_real_fields() {
-        let text = std::fs::read_to_string("replay_filter.toml").expect("replay_filter.toml must exist");
-        let shipped: toml::Table = toml::from_str(&text).expect("replay_filter.toml must parse");
-        let rendered = toml::to_string(&ReplayFilter::default()).expect("the filter must serialize");
-        let known: toml::Table = toml::from_str(&rendered).expect("its own render must parse");
-        let _: ReplayFilter = toml::from_str(&text).expect("replay_filter.toml must parse as a filter");
+    fn replay_filter_toml_parses_shipped_and_partial_files() {
+        let text = fs::read_to_string("replay_filter.toml").expect("replay_filter.toml must exist");
+        let shipped: toml::Table = toml::from_str(&text).unwrap();
+        let known: toml::Table = toml::from_str(&toml::to_string(&ReplayFilter::default()).unwrap()).unwrap();
+        let _: ReplayFilter = toml::from_str(&text).unwrap();
         for key in shipped.keys() {
-            assert!(known.contains_key(key), "`{key}` is not a ReplayFilter field");
+            assert!(known.contains_key(key), "unknown ReplayFilter field {key}");
         }
+
+        let partial: ReplayFilter = toml::from_str("min_ply = 24\nfilter_castling = true\n").unwrap();
+        assert_eq!(partial.min_ply, 24);
+        assert!(partial.filter_castling);
+        assert_eq!(partial.min_pieces, 4);
+        assert!(partial.filter_tactical);
     }
 
     #[test]
-    fn a_partial_filter_file_fills_from_the_defaults() {
-        let filter: ReplayFilter = toml::from_str("min_ply = 24\nfilter_castling = true\n").expect("a partial filter file parses");
-        assert_eq!(filter.min_ply, 24);
-        assert!(filter.filter_castling);
-        assert_eq!(filter.min_pieces, 4, "an unnamed field keeps viriformat's default");
-        assert!(filter.filter_tactical, "and so does an unnamed flag");
-    }
-
-    fn vol_ctx(threshold: i16, adaptive: bool) -> TrainerContext<'static> {
-        TrainerContext {
-            train: &[],
-            val: &[],
-            train_count: 0,
-            phase_weights: &[],
-            loss_fn: LossFn::CrossEntropy,
-            vol_threshold: threshold,
-            vol_adaptive: adaptive,
-        }
-    }
-
-    #[test]
-    fn the_volatility_filter_scales_with_complexity() {
-        let rec = |pieces: u8, static_eval: i16| {
-            let mut record = FeatureRecord::default();
-            record.piece_count = pieces;
-            record.static_eval = static_eval;
-            record
-        };
-        let ctx = vol_ctx(40, true);
-        assert!(ctx.passes_vol_filter(&rec(32, 80)), "occ 32: t = 84 accepts an 80 cp disagreement");
-        assert!(!ctx.passes_vol_filter(&rec(32, 100)), "occ 32: t = 84 rejects a 100 cp disagreement");
-        assert!(ctx.passes_vol_filter(&rec(8, 30)), "occ 8: t = 36 accepts a 30 cp disagreement");
-        assert!(!ctx.passes_vol_filter(&rec(8, 50)), "occ 8: t = 36 rejects a 50 cp disagreement");
-        let ctx_fixed = vol_ctx(40, false);
-        assert!(ctx_fixed.passes_vol_filter(&rec(32, 40)), "fixed: the threshold ignores occupancy");
-        assert!(!ctx_fixed.passes_vol_filter(&rec(32, 41)), "fixed: the threshold ignores occupancy");
-    }
-
-    #[test]
-    fn the_volatility_filter_floor_never_rejects_a_whole_position_class() {
-        let ctx = vol_ctx(8, true);
-        let rec = |pieces: u8, static_eval: i16| {
-            let mut record = FeatureRecord::default();
-            record.piece_count = pieces;
-            record.static_eval = static_eval;
-            record
-        };
-        assert!(ctx.passes_vol_filter(&rec(6, 0)), "a floored threshold passes a perfect match");
-        assert!(!ctx.passes_vol_filter(&rec(6, 1)), "a floored threshold rejects any disagreement");
-        let ctx_dense = TrainerContext { vol_threshold: 40, ..ctx };
-        assert!(ctx_dense.passes_vol_filter(&rec(31, 0)), "a dense position passes a perfect match");
-        assert!(ctx_dense.passes_vol_filter(&rec(31, 80)), "occ 31: t = 82 accepts an 80 cp disagreement");
-        assert!(!ctx_dense.passes_vol_filter(&rec(31, 100)), "occ 31: t = 82 rejects a 100 cp disagreement");
-    }
-
-    #[test]
-    fn a_huge_volatility_threshold_saturates_instead_of_overflowing() {
-        let ctx = vol_ctx(i16::MAX, true);
-        let rec = |pieces: u8, score: i16, static_eval: i16| {
+    fn volatility_filter_bounds() {
+        for (thresh, adaptive, pieces, score, static_eval, want) in [
+            (40i16, true, 32u8, 0i16, 80i16, true),
+            (40, true, 32, 0, 100, false),
+            (40, true, 31, 0, 80, true),
+            (40, true, 31, 0, 100, false),
+            (40, true, 8, 0, 30, true),
+            (40, true, 8, 0, 50, false),
+            (40, false, 32, 0, 40, true),
+            (40, false, 32, 0, 41, false),
+            (8, true, 6, 0, 0, true),
+            (8, true, 6, 0, 1, false),
+            (i16::MAX, true, 2, 0, 30_000, true),
+            (i16::MAX, true, 32, 0, 30_000, true),
+            (i16::MAX, true, 32, -1, 32_767, false),
+        ] {
             let mut record = FeatureRecord::default();
             record.piece_count = pieces;
             record.score = score;
             record.static_eval = static_eval;
-            record
-        };
-        assert!(ctx.passes_vol_filter(&rec(2, 0, 30_000)), "a sparse position saturates the add");
-        assert!(ctx.passes_vol_filter(&rec(32, 0, 30_000)), "a dense position saturates the add");
-        assert!(!ctx.passes_vol_filter(&rec(32, -1, 32_767)), "32768 is past the saturated 32767");
+            assert_eq!(
+                vol_obj(thresh, adaptive).passes_volatility_filter(&record),
+                want,
+                "thresh={thresh} adaptive={adaptive} pieces={pieces} score={score} static={static_eval}"
+            );
+        }
     }
 
     #[test]
-    fn the_k_gradient_matches_a_finite_difference_of_the_batch_loss() {
-        use super::super::engine::{Position, SoulEntry};
-
+    fn k_gradient_matches_batch_loss_finite_difference() {
         let params = eval_params::collect_parameters();
         let values = eval_params::default_values(&params);
         let entry = SoulEntry::from_board(
@@ -1203,31 +1111,26 @@ mod tests {
             Some(55),
         );
         let record = FeatureRecord::from_entry(&entry);
-        let ctx = TrainerContext {
+        let obj = Objective {
             train: std::slice::from_ref(&record),
             val: &[],
-            train_count: 1,
-            phase_weights: &[],
+            sample_weights: &[],
             loss_fn: LossFn::CrossEntropy,
-            vol_threshold: 0,
-            vol_adaptive: true,
+            volatility_threshold: 0,
+            volatility_adaptive: true,
         };
-        let k = 0.005;
-        let blend = 0.3;
-        let (_, k_g, ..) = ctx.batch_grad(&[0], &values, k, blend);
-
+        let (k, blend, h) = (0.005, 0.3, 1e-6);
+        let (_, k_g, ..) = obj.batch_grad(&[0], &values, k, blend);
         let loss_at = |kk: f64| {
             let (target, _) = wdl_target(&record, kk, blend);
-            let eval = eval_record_full(&record, &values);
-            ctx.loss_fn.loss(sigmoid(eval.score, kk), target)
+            obj.loss_fn.loss(sigmoid(eval_record_full(&record, &values).score, kk), target)
         };
-        let h = 1e-6;
         let numeric = (loss_at(k + h) - loss_at(k - h)) / (2.0 * h);
-        assert!((k_g - numeric).abs() < 1e-6 * (1.0 + numeric.abs()), "batch k_g {k_g} against FD {numeric}");
+        assert!((k_g - numeric).abs() < 1e-6 * (1.0 + numeric.abs()), "k_g {k_g} vs FD {numeric}");
     }
 
     #[test]
-    fn a_cold_start_leaves_the_fixed_slots_alone() {
+    fn cold_start_preserves_fixed_slots() {
         let params = eval_params::collect_parameters();
         for init in [Init::Zero, Init::Random] {
             let values = seed_values(&params, init, 7);
@@ -1241,6 +1144,6 @@ mod tests {
         }
         let phase = LAYOUT.phase_offset;
         let zeroed = seed_values(&params, Init::Zero, 7);
-        assert!(zeroed[phase..phase + LAYOUT.phase_len].iter().any(|w| *w > 0.0), "phase taper zeroed");
+        assert!(zeroed[phase..phase + LAYOUT.phase_len].iter().any(|w| *w > 0.0));
     }
 }

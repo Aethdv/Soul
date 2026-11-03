@@ -53,11 +53,11 @@ lr_other = 1.0
 
 # ── Diagnostics
 
-# Per-group tally of Lion's gate; the columns are the `GateCensus` fields. One pass a batch.
-gate_census = false
+# Per-group tally of Lion's gate; the columns are the `GateTally` fields. One pass a batch.
+gate_tally = false
 
 [evaltune.lr_schedule]
-type = "sd"
+type = "stable-decay"
 base = 0.03
 min = 0.0001
 stable_ratio = 0.75

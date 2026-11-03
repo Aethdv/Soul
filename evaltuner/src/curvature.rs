@@ -15,55 +15,41 @@
 
 use crate::{
     engine::Tunable,
-    palette::{DIM, LAB, RESET, VAL},
+    report::{DIM, LAB, RESET, VAL},
 };
 
-/// Maximum cyclic Jacobi sweeps before terminating.
 const MAX_SWEEPS: usize = 40;
-
-/// Number of top entries to display in summary reports.
 const REPORT_LIMIT: usize = 6;
-
 const LOADINGS: usize = 3;
 
-/// Relative eigenvalue threshold below which a direction is treated as unconstrained (null space).
-///
-/// The rotation leaves −8e−16 behind on a positive semi-definite matrix, so the cutoff sits four
-/// orders above that rounding rather than on top of it.
+// Jacobi rotation leaves −8e−16 behind on a positive semi-definite matrix, so the null-space
+// cutoff sits four orders above rounding noise.
 const RELATIVE_NULL_THRESHOLD: f64 = 1e-12;
 
-/// Dense, row-major symmetric curvature (Hessian) matrix over engine parameters.
-pub struct Curvature {
+pub(crate) struct Curvature {
     dim: usize,
     data: Vec<f64>,
 }
 
-/// Eigendecomposition of the parameter correlation matrix, sorted descending by eigenvalue.
-///
-/// Decomposition is performed on the correlation matrix (`C_ij = H_ij / √(H_ii · H_jj)`)
-/// rather than the raw Hessian to evaluate parameter interactions independent of their physical units.
-pub struct Spectrum {
+/// Eigendecomposition of `C_ij = H_ij / √(H_ii · H_jj)`, sorted descending by eigenvalue so
+/// parameter interactions are compared free of physical units.
+pub(crate) struct Spectrum {
     values: Vec<f64>,
-    /// Column-major eigenvectors: component `i` of eigenvector `j` is at `i * live.len() + j`.
+    // Column-major eigenvectors: component i of eigenvector j is at i * live.len() + j.
     vectors: Vec<f64>,
-    /// Indices of parameters with strictly positive diagonal curvature.
     live: Vec<usize>,
-    /// Raw Hessian diagonal across all parameters.
     diagonal: Vec<f64>,
-    /// Parameters in the considered set with zero or negative diagonal curvature. Negative occurs
-    /// under `MeanSquaredError`, whose residual cross-term can outweigh `S(1 − S)`.
+    // Parameters in the considered set with zero or negative diagonal curvature. Negative occurs
+    // under MeanSquaredError, whose residual cross-term can outweigh S(1 − S).
     untouched: Vec<usize>,
 }
 
 impl Curvature {
-    #[must_use]
-    pub fn zeros(dim: usize) -> Self { Self { dim, data: vec![0.0; dim * dim] } }
+    pub(crate) fn zeros(dim: usize) -> Self { Self { dim, data: vec![0.0; dim * dim] } }
 
-    /// Accumulates `weight · a aᵀ` for a sparse gradient vector `a`.
-    ///
-    /// Requires `nonzeros` to be sorted by parameter index in ascending order.
-    /// Updates only the upper triangle; call [`Self::symmetrized`] once after accumulation completes.
-    pub fn add_outer(&mut self, weight: f64, nonzeros: &[(usize, f64)]) {
+    /// Accumulates `weight · a aᵀ` into the upper triangle; requires `nonzeros` sorted ascending
+    /// by parameter index, followed by one [`Self::symmetrized`] call after reduction.
+    pub(crate) fn add_outer(&mut self, weight: f64, nonzeros: &[(usize, f64)]) {
         debug_assert!(nonzeros.windows(2).all(|w| w[0].0 < w[1].0), "nonzeros must be in ascending index order");
 
         for (col, &(j, aj)) in nonzeros.iter().enumerate() {
@@ -74,16 +60,13 @@ impl Curvature {
         }
     }
 
-    /// Accumulates another curvature matrix elementwise.
-    pub fn merge(&mut self, other: &Self) {
+    pub(crate) fn merge(&mut self, other: &Self) {
         for (lhs, rhs) in self.data.iter_mut().zip(&other.data) {
             *lhs += rhs;
         }
     }
 
-    /// Copies the upper triangle into the lower triangle, producing a full symmetric matrix.
-    #[must_use]
-    pub fn symmetrized(mut self) -> Self {
+    pub(crate) fn symmetrized(mut self) -> Self {
         for i in 0..self.dim {
             for j in i + 1..self.dim {
                 self.data[j * self.dim + i] = self.data[i * self.dim + j];
@@ -92,16 +75,15 @@ impl Curvature {
         self
     }
 
-    /// Computes the eigendecomposition of the correlation matrix for the active parameter subset.
-    /// Parameters with non-positive diagonal curvature are excluded to avoid zero division.
-    #[must_use]
-    pub fn spectrum(&self, considered: &[usize]) -> Spectrum {
+    pub(crate) fn spectrum(&self, considered: &[usize]) -> Spectrum {
         let diagonal: Vec<f64> = (0..self.dim).map(|i| self.data[i * self.dim + i]).collect();
         let live: Vec<usize> = considered.iter().copied().filter(|&i| diagonal[i] > 0.0).collect();
         let untouched: Vec<usize> = considered.iter().copied().filter(|&i| diagonal[i] <= 0.0).collect();
         let m = live.len();
         let scales: Vec<f64> = live.iter().map(|&i| diagonal[i].sqrt()).collect();
+
         let mut corr = vec![0.0; m * m];
+
         for (row, &i) in live.iter().enumerate() {
             for (col, &j) in live.iter().enumerate() {
                 corr[row * m + col] = self.data[i * self.dim + j] / (scales[row] * scales[col]);
@@ -119,60 +101,18 @@ impl Curvature {
         order.sort_unstable_by(|&x, &y| corr[y * m + y].total_cmp(&corr[x * m + x]));
 
         let values: Vec<f64> = order.iter().map(|&j| corr[j * m + j]).collect();
-        let sorted_vectors = {
-            let mut v = vec![0.0; m * m];
-            for (col, &j) in order.iter().enumerate() {
-                for row in 0..m {
-                    v[row * m + col] = vectors[row * m + j];
-                }
+        let mut sorted_vectors = vec![0.0; m * m];
+        for (col, &j) in order.iter().enumerate() {
+            for row in 0..m {
+                sorted_vectors[row * m + col] = vectors[row * m + j];
             }
-            v
-        };
+        }
         Spectrum { values, vectors: sorted_vectors, live, diagonal, untouched }
     }
 }
 
 impl Spectrum {
-    /// Number of constrained directions with correlation eigenvalues above `RELATIVE_NULL_THRESHOLD · λ_max`.
-    fn determined(&self) -> usize {
-        let cutoff = self.values.first().copied().unwrap_or(0.0) * RELATIVE_NULL_THRESHOLD;
-        self.values.iter().filter(|&&x| x > cutoff).count()
-    }
-
-    /// Fraction of each parameter's variance lying in the null space (`Σ_k V_jk²` for `k >= determined`).
-    /// Invariant under orthogonal rotations of the null subspace.
-    fn participation(&self) -> Vec<f64> {
-        let m = self.live.len();
-        let determined = self.determined();
-        (0..m).map(|j| (determined..m).map(|k| self.vectors[j * m + k].powi(2)).sum()).collect()
-    }
-
-    /// Variance inflation factor (VIF) for each parameter across determined directions:
-    /// `(C⁻¹)_jj = Σ_k (V_jk² / λ_k)`.
-    ///
-    /// Null directions are excluded: a parameter there is unidentifiable rather than
-    /// ill-conditioned, and `1/λ` would report an arbitrarily large number for it.
-    fn inflation(&self) -> Vec<f64> {
-        let m = self.live.len();
-        let determined = self.determined();
-        (0..m)
-            .map(|j| (0..determined).map(|k| self.vectors[j * m + k].powi(2) / self.values[k]).sum())
-            .collect()
-    }
-
-    /// Pairs metric values with parameter names, sorted in descending order.
-    fn ranked<'a>(&self, figures: &[f64], params: &'a [Tunable]) -> Vec<(f64, &'a str)> {
-        let mut ranked: Vec<(f64, &str)> = figures
-            .iter()
-            .zip(&self.live)
-            .map(|(&figure, &i)| (figure, params.get(i).map_or("?", |p| p.name.as_str())))
-            .collect();
-
-        ranked.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-        ranked
-    }
-
-    pub fn report(&self, params: &[Tunable], positions: usize, k: f64) {
+    pub(crate) fn report(&self, params: &[Tunable], positions: usize, k: f64) {
         let m = self.live.len();
         let name = |i: usize| params.get(i).map_or("?", |p| p.name.as_str());
 
@@ -181,7 +121,7 @@ impl Spectrum {
             return;
         };
 
-        // Correlation matrix trace equals `m`, guaranteeing λ_max >= 1.0. Asserted because the
+        // Correlation matrix trace equals m, guaranteeing λ_max >= 1.0. Asserted because the
         // index below underflows if the threshold is ever raised past every eigenvalue.
         let determined = self.determined();
         assert!(determined > 0, "active parameters must have at least one determined direction");
@@ -209,10 +149,11 @@ impl Spectrum {
             rank(1e-9)
         );
 
-        // Per position, since `add_outer` sums over the split and the other probes report means.
+        // Per position, since add_outer sums over the split and the other probes report means.
         let per_position = 1.0 / positions as f64;
         let raw_max = self.diagonal.iter().copied().fold(0.0_f64, f64::max) * per_position;
         let raw_min = self.diagonal.iter().copied().filter(|&x| x > 0.0).fold(f64::MAX, f64::min) * per_position;
+
         println!(
             "  {LAB}raw diagonal{RESET}    max {VAL}{raw_max:.3e}{RESET}  min {VAL}{raw_min:.3e}{RESET} {DIM}per position{RESET}"
         );
@@ -268,10 +209,61 @@ impl Spectrum {
             println!("  {VAL}{factor:9.3e}{RESET}  {name}");
         }
     }
+
+    fn determined(&self) -> usize {
+        let cutoff = self.values.first().copied().unwrap_or(0.0) * RELATIVE_NULL_THRESHOLD;
+        self.values.iter().filter(|&&x| x > cutoff).count()
+    }
+
+    // Fraction of each parameter's variance lying in the null space (Σ_k V_jk² for k >= determined),
+    // invariant under orthogonal rotations of the null subspace.
+    fn participation(&self) -> Vec<f64> {
+        let m = self.live.len();
+        let determined = self.determined();
+        (0..m).map(|j| (determined..m).map(|k| self.vectors[j * m + k].powi(2)).sum()).collect()
+    }
+
+    // Variance inflation factor (C⁻¹)_jj = Σ_k (V_jk² / λ_k) across determined directions.
+    // Null directions are excluded: a parameter there is unidentifiable rather than
+    // ill-conditioned, and 1/λ would report an arbitrarily large number for it.
+    fn inflation(&self) -> Vec<f64> {
+        let m = self.live.len();
+        let determined = self.determined();
+        (0..m)
+            .map(|j| (0..determined).map(|k| self.vectors[j * m + k].powi(2) / self.values[k]).sum())
+            .collect()
+    }
+
+    fn ranked<'a>(&self, figures: &[f64], params: &'a [Tunable]) -> Vec<(f64, &'a str)> {
+        let mut ranked: Vec<(f64, &str)> = figures
+            .iter()
+            .zip(&self.live)
+            .map(|(&figure, &i)| (figure, params.get(i).map_or("?", |p| p.name.as_str())))
+            .collect();
+
+        ranked.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        ranked
+    }
 }
 
-/// Cyclic Jacobi rotation diagonalizing a symmetric matrix in-place.
-/// Accumulates orthonormal eigenvectors into `vectors`.
+#[inline]
+fn rotate_cols(mat: &mut [f64], p: usize, q: usize, n: usize, c: f64, s: f64) {
+    for k in 0..n {
+        let (kp, kq) = (mat[k * n + p], mat[k * n + q]);
+        mat[k * n + p] = c * kp - s * kq;
+        mat[k * n + q] = s * kp + c * kq;
+    }
+}
+
+#[inline]
+fn rotate_rows(mat: &mut [f64], p: usize, q: usize, n: usize, c: f64, s: f64) {
+    for k in 0..n {
+        let (pk, qk) = (mat[p * n + k], mat[q * n + k]);
+        mat[p * n + k] = c * pk - s * qk;
+        mat[q * n + k] = s * pk + c * qk;
+    }
+}
+
 fn jacobi(matrix: &mut [f64], vectors: &mut [f64], n: usize) {
     let tolerance = 1e-14 * matrix.iter().map(|x| x * x).sum::<f64>().max(f64::MIN_POSITIVE);
     for _ in 0..MAX_SWEEPS {
@@ -297,21 +289,9 @@ fn jacobi(matrix: &mut [f64], vectors: &mut [f64], n: usize) {
                 let c = 1.0 / t.mul_add(t, 1.0).sqrt();
                 let s = t * c;
 
-                for k in 0..n {
-                    let (kp, kq) = (matrix[k * n + p], matrix[k * n + q]);
-                    matrix[k * n + p] = c * kp - s * kq;
-                    matrix[k * n + q] = s * kp + c * kq;
-                }
-                for k in 0..n {
-                    let (pk, qk) = (matrix[p * n + k], matrix[q * n + k]);
-                    matrix[p * n + k] = c * pk - s * qk;
-                    matrix[q * n + k] = s * pk + c * qk;
-                }
-                for k in 0..n {
-                    let (kp, kq) = (vectors[k * n + p], vectors[k * n + q]);
-                    vectors[k * n + p] = c * kp - s * kq;
-                    vectors[k * n + q] = s * kp + c * kq;
-                }
+                rotate_cols(matrix, p, q, n, c, s);
+                rotate_rows(matrix, p, q, n, c, s);
+                rotate_cols(vectors, p, q, n, c, s);
             }
         }
     }
@@ -324,8 +304,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn jacobi_diagonalizes_a_known_matrix() {
-        // [[2, 1], [1, 2]] has eigenvalues 3 and 1 on (1, 1)/√2 and (1, −1)/√2.
+    fn jacobi_diagonalizes_known_matrix() {
         let mut a = vec![2.0, 1.0, 1.0, 2.0];
         let mut v = vec![1.0, 0.0, 0.0, 1.0];
 
@@ -338,28 +317,26 @@ mod tests {
 
         for col in 0..2 {
             let norm = (v[col].powi(2) + v[2 + col].powi(2)).sqrt();
-            assert!((norm - 1.0).abs() < 1e-12, "eigenvector {col} is not a unit vector: {norm}");
+            assert!((norm - 1.0).abs() < 1e-12, "eigenvector {col} norm: {norm}");
         }
     }
 
     #[test]
-    fn a_duplicated_column_leaves_one_flat_direction() {
+    fn duplicated_column_leaves_one_null_direction() {
         let mut curvature = Curvature::zeros(3);
-        // a = (1, 1, x): parameters 0 and 1 are perfectly collinear.
         for x in [-2.0, -1.0, 1.0, 3.0] {
             curvature.add_outer(1.0, &[(0, 1.0), (1, 1.0), (2, x)]);
         }
 
         let spectrum = curvature.symmetrized().spectrum(&[0, 1, 2]);
-        assert!(spectrum.untouched.is_empty(), "every parameter here has positive curvature");
+        assert!(spectrum.untouched.is_empty());
         assert_eq!(spectrum.values.len(), 3);
         let smallest = *spectrum.values.last().unwrap();
         assert!(smallest < 1e-12, "aliased pair must leave a null direction, got {smallest}");
-        let m = 3;
-        let col = m - 1;
-        let (first, second, third) = (spectrum.vectors[col], spectrum.vectors[m + col], spectrum.vectors[2 * m + col]);
+
+        let (first, second, third) = (spectrum.vectors[2], spectrum.vectors[5], spectrum.vectors[8]);
         assert!((first + second).abs() < 1e-9, "loadings must cancel: {first} and {second}");
-        assert!(first.abs() > 0.5, "aliased pair must dominate the direction: {first}");
-        assert!(third.abs() < 1e-9, "independent parameter must not load in the null direction: {third}");
+        assert!(first.abs() > 0.5, "aliased pair must dominate: {first}");
+        assert!(third.abs() < 1e-9, "independent parameter must not load: {third}");
     }
 }

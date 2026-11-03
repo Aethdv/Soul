@@ -1,47 +1,51 @@
-//! Lion: "Evolved Sign Momentum".
+//! Lion ("Evolved Sign Momentum") with a momentum-gradient disagreement gate.
 //!
-//! Adam scales every step by tracked variance; Lion takes the sign of a blend of momentum
-//! and gradient, so every parameter moves the same distance whatever the gradient's size.
-//! This implementation holds that step where momentum and gradient disagree.
+//! AdamW carries first and second gradient moments (`m` and `v`) and scales each coordinate by
+//! `m / √v`. Lion drops `v` and moves every active parameter by `±lr` along `sign(c)`, where
+//! `c = β₁·m + (1 − β₁)·g` blends stored momentum with the current batch gradient before
+//! `m ← β₂·m + (1 − β₂)·g` folds the gradient into history. Updating `m` second is what keeps
+//! the two betas distinct: a smaller `β₁` lets one batch flip the step's sign while `β₂` holds
+//! a longer window. Dropping `1 / √v` is also why sparse or wide-range groups have explicit
+//! `lr` multipliers in [`Masks`].
 //!
-//! Chen et al., Symbolic Discovery of Optimization Algorithms. NeurIPS 2023.
+//! Cautious AdamW and cautious Lion mask the step when the update opposes the gradient (`c · g ≤ 0`).
+//! Here the gate tests pre-blend momentum instead (`m · g ≤ 0` once `|m| > 1e-6`): a noisy batch with
+//! `|g| > (β₁ / (1 − β₁))·|m|` pulls `c` onto `g`'s sign and would step under `c · g ≤ 0`, whereas
+//! `m · g ≤ 0` withholds the sign step (decoupled weight decay still runs) until `m` turns with it.
+//!
+//! Chen et al. Symbolic Discovery of Optimization Algorithms. NeurIPS 2023.
 //! <https://arxiv.org/abs/2302.06675v4>
+//!
+//! Liang et al. Cautious Optimizers: Improving Training with One Line of Code. 2024.
+//! <https://arxiv.org/abs/2411.16085>
 
 use std::ops::Range;
 
 use crate::engine::pct;
 
-/// Magnitude below which a blend or a gradient is floating-point residue rather than a direction.
 const DEAD_ZONE: f64 = 1e-9;
-
-/// Momentum below this cannot outvote a fresh gradient.
 const MOMENTUM_EPSILON: f64 = 1e-6;
 
-pub struct Lion {
+pub(crate) struct Lion {
     beta1: f64,
     lr: f64,
     wd: f64,
-    /// Exponential moving average of past gradients per parameter slot.
     momentum: Vec<f64>,
-    /// Cumulative boundary clipping events per parameter slot.
     clipped: Vec<u64>,
-    /// Cumulative L1 distance traversed by active sign updates since the last query.
     step_l1: f64,
 }
 
-/// The per-parameter masks an update reads, one entry per slot in every field.
-pub struct Masks {
-    pub decay: Vec<f64>,
-    pub fixed: Vec<bool>,
-    pub beta2: Vec<f64>,
-    pub lr: Vec<f64>,
-    pub clip: Vec<(f64, f64)>,
+pub(crate) struct Masks {
+    pub(crate) decay: Vec<f64>,
+    pub(crate) fixed: Vec<bool>,
+    pub(crate) beta2: Vec<f64>,
+    pub(crate) lr: Vec<f64>,
+    pub(crate) clip: Vec<(f64, f64)>,
 }
 
+#[cfg(test)]
 impl Masks {
-    /// Every slot at the same setting: none fixed, none clipped, unit decay and rate.
-    #[must_use]
-    pub fn uniform(slots: usize, beta2: f64) -> Self {
+    pub(crate) fn uniform(slots: usize, beta2: f64) -> Self {
         Self {
             decay: vec![1.0; slots],
             fixed: vec![false; slots],
@@ -52,120 +56,103 @@ impl Masks {
     }
 }
 
-/// Gating diagnostic counts aggregated over parameter-update events.
 #[derive(Clone, Copy, Default)]
-pub struct GateCensus {
-    pub total: u64,
-    /// Gated: gradient opposes momentum above the noise floor (`m · g ≤ 0` and `|m| > 1e-6`).
-    pub skipped: u64,
-    /// Gated: update magnitude below the deadband threshold (`|c| < 1e-9`).
-    pub dead: u64,
-    /// Stepped: gradient opposes momentum, but low momentum (`|m| ≤ 1e-6`) waived the gate.
-    pub epsilon_waived: u64,
-    /// Canonical cautious criterion would have held the step (`c · g ≤ 0`).
-    pub canonical: u64,
-    /// Gated by momentum conflict (`m · g ≤ 0`) where the canonical criterion would have stepped (`c · g > 0`).
-    pub band: u64,
-    /// Held by canonical condition (`c · g ≤ 0`), but stepped under momentum waiver (`|m| ≤ 1e-6`).
-    pub canonical_only: u64,
-    /// Zero or sub-threshold gradient (`|g| < 1e-9`).
-    pub absent: u64,
+pub(crate) struct GateTally {
+    pub(crate) total: u64,
+    /// Held because `m · g ≤ 0` with `|m| > 1e-6`.
+    pub(crate) skipped: u64,
+    /// Held because `|c| < 1e-9`.
+    pub(crate) dead: u64,
+    /// Stepped despite `m · g ≤ 0` because `|m| ≤ 1e-6`.
+    pub(crate) epsilon_waived: u64,
+    /// Liang's cautious mask (`c · g ≤ 0`) would have held the step.
+    pub(crate) canonical: u64,
+    /// Held by `m · g ≤ 0` where `c · g > 0` would have stepped.
+    pub(crate) band: u64,
+    /// Held by `c · g ≤ 0` but stepped under the `|m| ≤ 1e-6` waiver.
+    pub(crate) canonical_only: u64,
+    /// `|g| < 1e-9`.
+    pub(crate) absent: u64,
 }
 
 impl Lion {
-    #[must_use]
-    pub fn new(slots: usize, beta1: f64, lr: f64, wd: f64) -> Self {
+    pub(crate) fn new(slots: usize, beta1: f64, lr: f64, wd: f64) -> Self {
         Self { beta1, lr, wd, momentum: vec![0.0; slots], clipped: vec![0; slots], step_l1: 0.0 }
     }
 
-    #[must_use]
-    pub fn momentum(&self) -> &[f64] { &self.momentum }
+    pub(crate) fn momentum(&self) -> &[f64] { &self.momentum }
+    pub(crate) fn clipped(&self) -> &[u64] { &self.clipped }
 
-    #[must_use]
-    pub fn clipped(&self) -> &[u64] { &self.clipped }
+    /// Drains accumulated L1 sign-step travel (excluding decoupled weight decay).
+    pub(crate) fn take_step_l1(&mut self) -> f64 { std::mem::take(&mut self.step_l1) }
 
-    /// Returns and resets the accumulated L1 distance of sign updates since the previous call.
-    /// Decoupled weight decay is excluded.
-    pub fn take_step_l1(&mut self) -> f64 { std::mem::take(&mut self.step_l1) }
-
-    pub fn restore_momentum(&mut self, momentum: &[f64]) {
+    pub(crate) fn restore_momentum(&mut self, momentum: &[f64]) {
         debug_assert_eq!(self.momentum.len(), momentum.len());
         self.momentum.copy_from_slice(momentum);
     }
 
-    /// Divides momentum by the factor its parameters were scaled by. Momentum is carried in
-    /// parameter units, so skipping it leaves every later step wrong by that factor.
-    pub fn rescale<F: Fn(usize) -> f64>(&mut self, slot_scale: F) {
+    /// Rescales momentum contravariantly when parameter slot `i` is multiplied by `slot_scale(i)`
+    /// at fixed `K · score`, since `∂L / ∂(s · θ) = (1 / s) · ∂L / ∂θ`.
+    pub(crate) fn rescale<F: Fn(usize) -> f64>(&mut self, slot_scale: F) {
         for (i, m) in self.momentum.iter_mut().enumerate() {
             *m /= slot_scale(i);
         }
     }
 
     #[inline]
-    pub const fn set_lr(&mut self, lr: f64) { self.lr = lr; }
+    pub(crate) const fn set_lr(&mut self, lr: f64) { self.lr = lr; }
 
-    /// Tallies gating decisions over a parameter slice without modifying state.
-    #[must_use]
-    pub fn census(&self, range: Range<usize>, gradients: &[f64], fixed_mask: &[bool]) -> GateCensus {
-        let momentum = &self.momentum[range.clone()];
-        let gradients = &gradients[range.clone()];
-        let fixed_mask = &fixed_mask[range];
+    pub(crate) fn tally(&self, range: Range<usize>, grads: &[f64], fixed: &[bool]) -> GateTally {
+        let mut c = GateTally::default();
 
-        let mut census = GateCensus::default();
-
-        for i in 0..momentum.len() {
-            if fixed_mask[i] {
+        for i in range {
+            if fixed[i] {
                 continue;
             }
 
-            let (m, g) = (momentum[i], gradients[i]);
-            let (c, verdict) = self.gate(m, g);
-            let disagrees = m * g <= 0.0;
+            let (m, g) = (self.momentum[i], grads[i]);
+            let (blend, verdict) = self.gate(m, g);
 
-            census.total += 1;
-            census.absent += u64::from(g.abs() < DEAD_ZONE);
-            census.canonical += u64::from(c * g <= 0.0);
+            c.total += 1;
+            c.absent += u64::from(g.abs() < DEAD_ZONE);
+            c.canonical += u64::from(blend * g <= 0.0);
 
             match verdict {
-                Gate::Dead => census.dead += 1,
+                Gate::Dead => c.dead += 1,
                 Gate::Held => {
-                    census.skipped += 1;
-                    census.band += u64::from(c * g > 0.0);
+                    c.skipped += 1;
+                    c.band += u64::from(blend * g > 0.0);
                 },
                 Gate::Step => {
-                    census.epsilon_waived += u64::from(disagrees);
-                    census.canonical_only += u64::from(c * g <= 0.0);
+                    c.epsilon_waived += u64::from(m * g <= 0.0);
+                    c.canonical_only += u64::from(blend * g <= 0.0);
                 },
             }
         }
-        census
+        c
     }
 
-    pub fn update(&mut self, params: &mut [f64], gradients: &[f64], masks: &Masks) {
-        debug_assert_eq!(params.len(), self.momentum.len());
-        debug_assert_eq!(params.len(), gradients.len());
-        debug_assert_eq!(params.len(), masks.decay.len());
-        debug_assert_eq!(params.len(), masks.fixed.len());
-        debug_assert_eq!(params.len(), masks.beta2.len());
-        debug_assert_eq!(params.len(), masks.lr.len());
-        debug_assert_eq!(params.len(), masks.clip.len());
+    pub(crate) fn update(&mut self, values: &mut [f64], grads: &[f64], masks: &Masks) {
+        let n = values.len();
+        debug_assert!(
+            n == self.momentum.len()
+                && n == grads.len()
+                && n == masks.decay.len()
+                && n == masks.fixed.len()
+                && n == masks.beta2.len()
+                && n == masks.lr.len()
+                && n == masks.clip.len()
+        );
 
-        for i in 0..params.len() {
+        for i in 0..n {
             if masks.fixed[i] {
                 continue;
             }
 
-            let param = params[i];
-            let momentum = self.momentum[i];
-            let gradient = gradients[i];
-            let decay = masks.decay[i];
-            let eff_lr = self.lr * masks.lr[i];
+            let (v, m, g, eff_lr) = (values[i], self.momentum[i], grads[i], self.lr * masks.lr[i]);
+            let (c, verdict) = self.gate(m, g);
+            let decayed = eff_lr.mul_add(-self.wd * masks.decay[i] * v, v);
 
-            // 1. Blended search direction and gate decision.
-            let (c, verdict) = self.gate(momentum, gradient);
-
-            // 2. Decoupled weight decay and directional sign step.
-            let decayed = eff_lr.mul_add(-self.wd * decay * param, param);
             let updated = if verdict == Gate::Step {
                 self.step_l1 += eff_lr;
                 decayed - eff_lr * c.signum()
@@ -173,33 +160,26 @@ impl Lion {
                 decayed
             };
 
-            // 3. Bounds, counting the truncations: a pinned parameter otherwise reads as converged.
             let (min, max) = masks.clip[i];
             let clamped = updated.clamp(min, max);
             self.clipped[i] += u64::from(clamped != updated);
-            params[i] = clamped;
+            values[i] = clamped;
 
-            // 4. Momentum tracking: m = β₂ · m + (1 − β₂) · g.
-            // Flush near-zero state to prevent accumulation of floating-point residue.
-            self.momentum[i] = if gradient.abs() < DEAD_ZONE && momentum.abs() < DEAD_ZONE {
+            // Flush sub-threshold residue so untouched slots stay at exact 0.0 instead of subnormals.
+            self.momentum[i] = if g.abs() < DEAD_ZONE && m.abs() < DEAD_ZONE {
                 0.0
             } else {
-                masks.beta2[i].mul_add(momentum, (1.0 - masks.beta2[i]) * gradient)
+                masks.beta2[i].mul_add(m, (1.0 - masks.beta2[i]) * g)
             };
         }
     }
 
-    /// Evaluates blended direction `c = β₁ · m + (1 − β₁) · g` and gating status.
-    ///
-    /// - `Dead`: `|c| < 1e-9` prevents updates driven by floating-point sign ambiguity.
-    /// - `Held`: `m · g ≤ 0` and `|m| > 1e-6` skips updates during local oscillation.
-    /// - `Step`: Direction confirmed, or momentum too small to outvote the gradient (`|m| ≤ 1e-6`).
     #[inline(always)]
-    fn gate(&self, momentum: f64, gradient: f64) -> (f64, Gate) {
-        let c = self.beta1.mul_add(momentum, (1.0 - self.beta1) * gradient);
+    fn gate(&self, m: f64, g: f64) -> (f64, Gate) {
+        let c = self.beta1.mul_add(m, (1.0 - self.beta1) * g);
         let verdict = if c.abs() < DEAD_ZONE {
             Gate::Dead
-        } else if momentum * gradient <= 0.0 && momentum.abs() > MOMENTUM_EPSILON {
+        } else if m * g <= 0.0 && m.abs() > MOMENTUM_EPSILON {
             Gate::Held
         } else {
             Gate::Step
@@ -208,8 +188,8 @@ impl Lion {
     }
 }
 
-impl GateCensus {
-    pub fn absorb(&mut self, other: Self) {
+impl GateTally {
+    pub(crate) fn absorb(&mut self, other: Self) {
         self.total += other.total;
         self.skipped += other.skipped;
         self.dead += other.dead;
@@ -220,23 +200,21 @@ impl GateCensus {
         self.absent += other.absent;
     }
 
-    #[must_use]
-    pub fn share(&self, count: u64) -> f64 { if self.total == 0 { 0.0 } else { count as f64 / self.total as f64 } }
-    #[must_use]
-    pub fn percent(&self, count: u64) -> f64 { pct(count, self.total) }
-    /// Fraction of updates that executed a sign step (`1 - (skipped + dead) / total`).
-    #[must_use]
-    pub fn active_share(&self) -> f64 { self.share(self.total.saturating_sub(self.skipped + self.dead)) }
+    pub(crate) fn percent(&self, count: u64) -> f64 { pct(count, self.total) }
+
+    pub(crate) fn active_share(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.total.saturating_sub(self.skipped + self.dead) as f64 / self.total as f64
+        }
+    }
 }
 
-/// Gating verdict for a single coordinate update.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Gate {
-    /// Update magnitude below noise floor (`|c| < 1e-9`).
     Dead,
-    /// Momentum and gradient directionally conflict (`m · g ≤ 0`) with `|m| > 1e-6`.
     Held,
-    /// Step allowed along `sign(c)`.
     Step,
 }
 
@@ -245,95 +223,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn census_separates_every_gate_outcome() {
+    fn tally_separates_gate_outcomes() {
         let momentum = [0.5, 0.5, 0.001, 1e-9, 0.0, -1e-6, 0.5];
-        let gradients = [1.0, -1.0, -1.0, -1.0, 0.0, 1e-6, -1.0];
-        let fixed_mask = [false, false, false, false, false, false, true];
+        let grads = [1.0, -1.0, -1.0, -1.0, 0.0, 1e-6, -1.0];
+        let fixed = [false, false, false, false, false, false, true];
         let mut lion = Lion::new(momentum.len(), 0.9, 1.0, 0.0);
         lion.restore_momentum(&momentum);
-        let census = lion.census(0..momentum.len(), &gradients, &fixed_mask);
-        assert_eq!(census.total, 6, "fixed parameter must be excluded");
-        assert_eq!(census.skipped, 2, "gated: momentum above threshold opposing gradient");
-        assert_eq!(census.band, 1, "in-band: gated by m·g <= 0 while c·g > 0");
-        assert_eq!(census.epsilon_waived, 2, "momentum under threshold steps despite conflict");
-        assert_eq!(census.canonical_only, 1, "waived coordinate where c·g <= 0");
-        assert_eq!(census.dead, 1);
-        assert_eq!(census.absent, 1);
-        assert_eq!(census.canonical, 3);
+        let c = lion.tally(0..momentum.len(), &grads, &fixed);
+        assert_eq!(
+            (c.total, c.skipped, c.band, c.epsilon_waived, c.canonical_only, c.dead, c.absent, c.canonical),
+            (6, 2, 1, 2, 1, 1, 1, 3)
+        );
     }
 
     #[test]
-    fn lion_clipping_works() {
-        let mut params = vec![1.5];
-        let grads_neg = vec![-1.0];
-        let masks = Masks { decay: vec![0.0], clip: vec![(-2.0, 2.0)], ..Masks::uniform(1, 0.99) };
-        let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
-        opt.restore_momentum(&[-0.5]);
-        opt.update(&mut params, &grads_neg, &masks);
-        assert!((params[0] - 2.0).abs() < 1e-9, "parameter must clamp to upper bound: {}", params[0]);
-        let mut params_sparse = vec![10.0];
-        let grads_sparse = vec![0.0];
-        let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
-        opt.update(&mut params_sparse, &grads_sparse, &masks);
-        assert!((params_sparse[0] - 2.0).abs() < 1e-9, "sparse update must enforce clamp bounds: {}", params_sparse[0]);
-    }
+    fn update_invariants() {
+        let mut p = [1.0];
+        Lion::new(1, 0.9, 0.2, 0.01).update(&mut p, &[1.0], &Masks { decay: vec![0.5], ..Masks::uniform(1, 0.99) });
+        assert!((p[0] - 0.799).abs() < 1e-12, "got {}", p[0]);
 
-    #[test]
-    fn lion_zero_gradient_does_not_step() {
-        let masks = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
+        let no_decay = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
         let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
         for m0 in [0.5, -0.5] {
-            let mut params = vec![1.0];
+            let mut p = [1.0];
             opt.restore_momentum(&[m0]);
-            opt.update(&mut params, &[0.0], &masks);
-            assert!((params[0] - 1.0).abs() < 1e-12, "zero gradient must not take sign step (m={m0}): {}", params[0]);
+            opt.update(&mut p, &[0.0], &no_decay);
+            assert_eq!(p[0], 1.0, "zero gradient stepped at m={m0}");
         }
-    }
+        let mut p = [10.0];
+        Lion::new(1, 0.9, 1.0, 0.05).update(&mut p, &[0.0], &Masks::uniform(1, 0.99));
+        assert!((p[0] - 9.5).abs() < 1e-12);
 
-    #[test]
-    fn lion_no_clipping_by_default() {
-        let mut params = vec![100.0];
-        let grads = vec![0.0];
-        let masks = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
-        let mut opt = Lion::new(1, 0.9, 0.1, 0.0);
-        opt.update(&mut params, &grads, &masks);
-        assert!((params[0] - 100.0).abs() < 0.01, "unbounded parameter must not clamp: {}", params[0]);
-    }
-
-    #[test]
-    fn lion_zero_gradient_still_applies_weight_decay() {
-        let mut params = vec![10.0];
-        let grads = vec![0.0];
-        // decay = lr · wd · d · p = 1.0 · 0.05 · 1.0 · 10.0 = 0.5
-        let mut opt = Lion::new(1, 0.9, 1.0, 0.05);
-        opt.update(&mut params, &grads, &Masks::uniform(1, 0.99));
-        let expected = 10.0 - 0.5;
-        assert!((params[0] - expected).abs() < 1e-6, "expected {expected}, got {}", params[0]);
-    }
-
-    #[test]
-    fn lion_sign_update_unchanged() {
-        let mut params = vec![1.0];
-        let grads = vec![1.0]; // g = 1.0, m = 0.0 → c = 0.1
-        let masks = Masks { decay: vec![0.5], ..Masks::uniform(1, 0.99) };
-        // decay = 0.2 · 0.01 · 0.5 · 1.0 = 0.001
-        // sign update = 0.2 · sign(0.1) = 0.2
-        // net: 1.0 - 0.001 - 0.2 = 0.799
-        let mut opt = Lion::new(1, 0.9, 0.2, 0.01);
-        opt.update(&mut params, &grads, &masks);
-        let expected = 1.0 - 0.001 - 0.2;
-        assert!((params[0] - expected).abs() < 1e-6, "expected {expected}, got {}", params[0]);
-    }
-
-    #[test]
-    fn lion_skips_sign_update_on_momentum_gradient_disagreement() {
-        let mut params = vec![5.0];
-        let grads = vec![-1.0];
-        let masks = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
-        // c = 0.9 · 0.5 + 0.1 · (-1.0) = 0.35 (> 0), standard Lion would step.
+        // Opposing gradient holds the step even when c = 0.9 * 0.5 - 0.1 = 0.35 > 0.
+        let mut p = [5.0];
         let mut opt = Lion::new(1, 0.9, 0.1, 0.0);
         opt.restore_momentum(&[0.5]);
-        opt.update(&mut params, &grads, &masks);
-        assert!((params[0] - 5.0).abs() < 1e-9, "directional conflict must hold step: {}", params[0]);
+        opt.update(&mut p, &[-1.0], &no_decay);
+        assert_eq!(p[0], 5.0);
+
+        let mut p = [1.5, 10.0, 100.0, 2.0];
+        let masks = Masks {
+            decay: vec![0.0; 4],
+            fixed: vec![false, false, false, true],
+            clip: vec![(-2.0, 2.0), (-2.0, 2.0), (f64::NEG_INFINITY, f64::INFINITY), (-2.0, 2.0)],
+            ..Masks::uniform(4, 0.99)
+        };
+        let mut opt = Lion::new(4, 0.9, 1.0, 0.0);
+        opt.restore_momentum(&[-0.5, 0.0, 0.0, 0.0]);
+        opt.update(&mut p, &[-1.0, 0.0, 0.0, 1.0], &masks);
+        assert_eq!((p, opt.clipped()), ([2.0, 2.0, 100.0, 2.0], &[1, 1, 0, 0][..]));
+    }
+
+    #[test]
+    fn rescale_transforms_momentum_contravariantly() {
+        let mut lion = Lion::new(3, 0.9, 0.1, 0.0);
+        lion.restore_momentum(&[1.0, 2.0, 3.0]);
+        lion.rescale(|i| match i {
+            0 => 2.0,
+            1 => 0.5,
+            _ => 1.0,
+        });
+        assert_eq!(lion.momentum(), [0.5, 4.0, 3.0]);
+    }
+
+    #[test]
+    fn converges_on_quadratic() {
+        let (mut params, masks, mut opt) = (vec![10.0; 10], Masks::uniform(10, 0.99), Lion::new(10, 0.9, 0.1, 0.0));
+        for iter in 0..200 {
+            let grads: Vec<f64> = params.iter().map(|&p| 2.0 * p).collect();
+            opt.set_lr(0.1 * (1.0 - iter as f64 / 200.0).max(0.05));
+            opt.update(&mut params, &grads, &masks);
+        }
+        let norm = params.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(norm < 0.5, "did not converge from norm 31.6: {norm}");
     }
 }

@@ -1,7 +1,7 @@
 //! Piece-Square Table (PSQT) spatial continuity analysis.
 //!
-//! Each 4 by 8 mirrored half-board is compared pair by adjacent pair against its own mean
-//! step. A step far above the rest can be a square the data barely reached.
+//! Each 4-by-8 mirrored half-board is compared pair by adjacent pair against its own mean
+//! step. A step far above the rest flags a square the data barely reached.
 
 use std::{
     fs::File,
@@ -9,35 +9,34 @@ use std::{
 };
 
 use crate::{
-    engine::{Tunable, eval_params},
+    engine::{TABLE_SQUARES, Tunable, eval_params},
     report::PIECE_NAMES,
 };
 
 const PHASES: [&str; 2] = ["MG", "EG"];
 const RANKS: usize = 8;
-const FILES: usize = 4; // Horizontally mirrored half-board (A–D files)
-const HALF_BOARD: usize = RANKS * FILES; // 32
-const ADJACENT_PAIRS_PER_SLICE: usize = RANKS * (FILES - 1) + (RANKS - 1) * FILES; // 52
+const FILES: usize = 4;
 
-/// Multiplier over the mean step size defining an adjacency outlier.
+const _: () = assert!(RANKS * FILES == TABLE_SQUARES);
+const ADJACENT_PAIRS: usize = RANKS * (FILES - 1) + (RANKS - 1) * FILES;
+
 const OUTLIER_MULT: f64 = 1.5;
-/// Minimum threshold floor in centipawns to prevent flagging negligible noise on flat tables.
+// Centipawn floor so flat tables do not flag rounding jitter as outliers.
+// TODO: We might need to rethink this, does not seem to work as intended and kind of goes to shit.
 const OUTLIER_FLOOR: f64 = 5.0;
-
 const REPORT_PATH: &str = "correlation-report.txt";
 
-/// Analyzes PSQT spatial continuity across all pieces and writes results to `REPORT_PATH`.
-pub fn run_correlation() {
+pub(crate) fn run_correlation() {
     let params = eval_params::collect_parameters();
     let values = eval_params::default_values(&params);
-    let slices = analyze_all(&values, &params);
+    let tables = analyze_tables(&values, &params);
 
-    if let Err(e) = write_report(&slices) {
+    if let Err(e) = write_report(&tables) {
         eprintln!("Failed to write {REPORT_PATH}: {e}");
         return;
     }
 
-    let total_outliers: usize = slices.iter().map(|s| s.outliers.len()).sum();
+    let total_outliers: usize = tables.iter().map(|t| t.outliers.len()).sum();
     if total_outliers > 0 {
         println!("{REPORT_PATH} written: {total_outliers} outlier pairs found.");
     } else {
@@ -51,7 +50,7 @@ struct AdjacentPair {
     diff: i32,
 }
 
-struct PsqtSliceStats {
+struct TableRoughness {
     piece: &'static str,
     phase: &'static str,
     mean: f64,
@@ -59,38 +58,35 @@ struct PsqtSliceStats {
     outliers: Vec<AdjacentPair>,
 }
 
-fn analyze_all(values: &[f64], params: &[Tunable]) -> Vec<PsqtSliceStats> {
-    let mut slices = Vec::with_capacity(PIECE_NAMES.len() * PHASES.len());
+fn analyze_tables(values: &[f64], params: &[Tunable]) -> Vec<TableRoughness> {
+    let mut tables = Vec::with_capacity(PIECE_NAMES.len() * PHASES.len());
 
     for (p_idx, &piece) in PIECE_NAMES.iter().enumerate() {
-        let base = p_idx * PHASES.len() * HALF_BOARD;
+        let base = p_idx * PHASES.len() * TABLE_SQUARES;
 
         for (ph_idx, &phase) in PHASES.iter().enumerate() {
-            let offset = base + ph_idx * HALF_BOARD;
-            let range = offset..offset + HALF_BOARD;
-            slices.push(analyze_slice(&values[range.clone()], &params[range], piece, phase));
+            let offset = base + ph_idx * TABLE_SQUARES;
+            let range = offset..offset + TABLE_SQUARES;
+            tables.push(analyze_table(&values[range.clone()], &params[range], piece, phase));
         }
     }
-    slices
+    tables
 }
 
-fn analyze_slice(v: &[f64], params: &[Tunable], piece: &'static str, phase: &'static str) -> PsqtSliceStats {
-    let mut pairs = Vec::with_capacity(ADJACENT_PAIRS_PER_SLICE);
-    let mut push = |a: usize, b: usize| {
-        if !params[a].is_fixed && !params[b].is_fixed {
-            pairs.push(make_pair(v, a, b));
+fn analyze_table(v: &[f64], params: &[Tunable], piece: &'static str, phase: &'static str) -> TableRoughness {
+    let mut pairs = Vec::with_capacity(ADJACENT_PAIRS);
+    let mut push = |sq_a: usize, sq_b: usize| {
+        if !params[sq_a].is_fixed && !params[sq_b].is_fixed {
+            pairs.push(AdjacentPair { sq_a, sq_b, diff: (v[sq_a] - v[sq_b]).round().abs() as i32 });
         }
     };
 
     for rank in 0..RANKS {
         for file in 0..FILES {
             let idx = rank * FILES + file;
-
-            // Horizontal step (E-W)
             if file + 1 < FILES {
                 push(idx, idx + 1);
             }
-            // Vertical step (N-S)
             if rank + 1 < RANKS {
                 push(idx, idx + FILES);
             }
@@ -103,31 +99,27 @@ fn analyze_slice(v: &[f64], params: &[Tunable], piece: &'static str, phase: &'st
     let threshold = (mean * OUTLIER_MULT).max(OUTLIER_FLOOR) as i32;
     let outliers: Vec<AdjacentPair> = pairs.into_iter().filter(|p| p.diff > threshold).collect();
 
-    PsqtSliceStats { piece, phase, mean, max, outliers }
+    TableRoughness { piece, phase, mean, max, outliers }
 }
 
-fn make_pair(v: &[f64], sq_a: usize, sq_b: usize) -> AdjacentPair {
-    AdjacentPair { sq_a, sq_b, diff: (v[sq_a] - v[sq_b]).round().abs() as i32 }
-}
-
-fn write_report(slices: &[PsqtSliceStats]) -> io::Result<()> {
+fn write_report(tables: &[TableRoughness]) -> io::Result<()> {
     let file = File::create(REPORT_PATH)?;
     let mut w = BufWriter::new(file);
 
     writeln!(w, "PSQT Adjacency Analysis")?;
     writeln!(w, "Outlier: a step over {OUTLIER_MULT}× the slice mean, and over {OUTLIER_FLOOR}cp\n")?;
 
-    for s in slices {
-        writeln!(w, "  {:>7} {}  mean_diff: {:5.1}  max_diff: {:3}", s.piece, s.phase, s.mean, s.max)?;
-
-        for p in &s.outliers {
+    for t in tables {
+        writeln!(w, "  {:>7} {}  mean_diff: {:5.1}  max_diff: {:3}", t.piece, t.phase, t.mean, t.max)?;
+        for p in &t.outliers {
             writeln!(w, "    {}↔{}  {:4}", square_name(p.sq_a), square_name(p.sq_b), p.diff)?;
         }
     }
 
-    if slices.iter().all(|s| s.outliers.is_empty()) {
+    if tables.iter().all(|t| t.outliers.is_empty()) {
         writeln!(w, "\nNo significant outliers: PSQT surface appears smooth.")?;
     }
+
     w.flush()
 }
 
@@ -143,9 +135,8 @@ mod tests {
 
     #[test]
     fn square_name_coordinates() {
-        assert_eq!(square_name(0), "A1");
-        assert_eq!(square_name(3), "D1");
-        assert_eq!(square_name(4), "A2");
-        assert_eq!(square_name(31), "D8");
+        for (idx, want) in [(0, "A1"), (3, "D1"), (4, "A2"), (31, "D8")] {
+            assert_eq!(square_name(idx), want);
+        }
     }
 }
