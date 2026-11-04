@@ -160,7 +160,7 @@ impl Piece {
         unsafe { std::mem::transmute(((pt as u8) << 1) | (color as u8)) }
     }
 
-    /// Pawn (0, 1) -> 0; Minor (2, 3, 4, 5) -> 1; Major (6, 7, 8, 9) -> 2; King (10, 11) -> 3.
+    /// Pawn → 0, minor → 1, major → 2, king → 3.
     #[inline(always)]
     pub(crate) const fn corr_group(self) -> usize { ((self as usize) + 2) >> 2 }
 }
