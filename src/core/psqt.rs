@@ -3,7 +3,7 @@
 use std::arch;
 
 use crate::{
-    core::defs::{Color, PieceType, Square},
+    core::defs::{Piece, Square},
     engine::eval_params::{
         EG_BISHOP, EG_KING, EG_KNIGHT, EG_MATERIAL, EG_PAWN, EG_QUEEN, EG_ROOK, MG_BISHOP, MG_KING, MG_KNIGHT, MG_MATERIAL,
         MG_PAWN, MG_QUEEN, MG_ROOK, PHASE,
@@ -11,8 +11,8 @@ use crate::{
     weave::I16x8,
 };
 
-/// `[piece type + 7 · color][square]` with lanes `[MG, EG, phase, 0, 0, 0, 0, 0]`.
-pub(crate) static PSQT: [AlignedTable; 14] = init_psqt();
+/// `[piece][square]` with lanes `[MG, EG, phase, 0, 0, 0, 0, 0]`.
+pub(crate) static PSQT: [AlignedTable; 12] = init_psqt();
 
 /// 32-byte aligned so every `[i16; 8]` entry is valid for `_mm_load_si128`.
 #[repr(align(32))]
@@ -20,15 +20,10 @@ pub(crate) static PSQT: [AlignedTable; 14] = init_psqt();
 pub(crate) struct AlignedTable([[i16; 8]; 64]);
 
 #[inline(always)]
-pub(crate) fn entry(pt: PieceType, sq: Square, c: Color) -> I16x8 {
-    let idx = usize::from(pt) + usize::from(c) * 7;
-
-    // SAFETY: PieceType <= 6 and Color <= 1, so idx <= 13.
-    let table = unsafe { PSQT.get_unchecked(idx) };
-    let lanes = &table.0[usize::from(sq)];
-
+pub(crate) fn entry(piece: Piece, sq: Square) -> I16x8 {
+    let lanes = &PSQT[piece].0[sq];
     // SAFETY: AlignedTable's 32-byte alignment makes every [i16; 8] entry 16-byte aligned.
-    I16x8(unsafe { arch::x86_64::_mm_load_si128(lanes.as_ptr() as *const _) })
+    I16x8(unsafe { arch::x86_64::_mm_load_si128(lanes.as_ptr().cast()) })
 }
 
 /// Folds files e-h onto d-a, mapping square indices 0..=63 to 0..=31.
@@ -41,8 +36,8 @@ pub(crate) const fn mirror_sq(sq: usize) -> usize {
     (rank << 2) + MIRROR_FILE[file]
 }
 
-const fn init_psqt() -> [AlignedTable; 14] {
-    let mut tables = [AlignedTable([[0; 8]; 64]); 14];
+const fn init_psqt() -> [AlignedTable; 12] {
+    let mut tables = [AlignedTable([[0; 8]; 64]); 12];
     let mut pt = 0;
     while pt < 6 {
         let mg_w = MG_MATERIAL[pt];
@@ -58,14 +53,14 @@ const fn init_psqt() -> [AlignedTable; 14] {
             let mg_val = clamp_i16(mg_w + mg);
             let eg_val = clamp_i16(eg_w + eg);
 
-            tables[pt].0[sq] = [mg_val, eg_val, ph_w as i16, 0, 0, 0, 0, 0];
+            tables[2 * pt].0[sq] = [mg_val, eg_val, ph_w as i16, 0, 0, 0, 0, 0];
 
             let b_visual_idx = sq;
             let (mg, eg) = raw_psqt(pt, b_visual_idx);
             let mg_val_b = clamp_i16(-(mg_w + mg));
             let eg_val_b = clamp_i16(-(eg_w + eg));
 
-            tables[pt + 7].0[sq] = [mg_val_b, eg_val_b, ph_w as i16, 0, 0, 0, 0, 0];
+            tables[2 * pt + 1].0[sq] = [mg_val_b, eg_val_b, ph_w as i16, 0, 0, 0, 0, 0];
             sq += 1;
         }
         pt += 1;

@@ -6,7 +6,7 @@ use std::iter;
 use crate::weave::U64x4;
 use crate::{
     core::{
-        defs::{Bitboard, Color, Direction, PieceType, Square},
+        defs::{Bitboard, Color, Direction, Piece, PieceType, Square},
         error::FenError,
         moves::Move,
         psqt, zobrist,
@@ -203,7 +203,7 @@ impl Position {
     pub(crate) fn psqt_accumulator(&self) -> I16x8 {
         let mut acc = I16x8::splat(0);
         for sq in self.occ {
-            acc += psqt::entry(self.piece_at(sq), sq, self.color_at(sq));
+            acc += psqt::entry(Piece::new(self.piece_at(sq), self.color_at(sq)), sq);
         }
         acc
     }
@@ -496,7 +496,7 @@ impl Position {
     fn calc_subset_hash(&self, pieces: Bitboard) -> u64 {
         let mut key = 0u64;
         for sq in pieces {
-            key ^= zobrist::key_piece(self.piece_at(sq), self.color_at(sq), sq);
+            key ^= zobrist::key_piece(Piece::new(self.piece_at(sq), self.color_at(sq)), sq);
         }
         key
     }
