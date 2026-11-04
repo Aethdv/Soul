@@ -83,7 +83,7 @@ pub(crate) fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
         return false;
     }
 
-    if piece != PieceType::Pawn && (mv.is_promotion() || mv.is_en_passant() || mv.is_double_push()) {
+    if piece != PieceType::Pawn && !mv.is_ordinary() {
         return false;
     }
 
@@ -92,7 +92,11 @@ pub(crate) fn is_pseudo_legal(board: &Position, mv: Move) -> bool {
             let fwd = stm.forward_dir().delta();
             let (start_rank, last_rank) = if stm == Color::White { (1u8, 7u8) } else { (6u8, 0u8) };
 
-            if mv.is_promotion() != (to.rank() == last_rank) {
+            if to.rank() == last_rank {
+                if !mv.is_promotion() {
+                    return false;
+                }
+            } else if (mv.inner() & 0xA000) != 0 {
                 return false;
             }
 
@@ -442,11 +446,6 @@ mod tests {
         let mut nodes = 0;
 
         for raw in 0..=u16::MAX {
-            // Unused flags 8, 9, 13 alias quiet/capture moves and would double-count them.
-            if matches!(raw >> 12, 8 | 9 | 13) {
-                continue;
-            }
-
             let mv = Move::from_u16(raw);
             if !is_pseudo_legal(pos, mv) || !is_legal(pos, mv, ksq, pinned, checkers, opp) {
                 continue;
@@ -574,4 +573,23 @@ mod tests {
     }
 
     fn context(pos: &Position, mv: Move) -> String { format!("after {} from {}", mv.to_uci(pos.frc_notation), pos.to_fen()) }
+
+    #[test]
+    fn pseudo_legality_rejects_reserved_flags() {
+        let positions = [
+            Position::from_fen(STARTPOS),
+            Position::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
+            Position::from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"),
+        ];
+
+        for pos in &positions {
+            for raw in 0..=u16::MAX {
+                let flag = raw >> 12;
+                if matches!(flag, 8 | 9 | 13) {
+                    let mv = Move::from_u16(raw);
+                    assert!(!is_pseudo_legal(pos, mv), "Reserved flag {flag} was accepted as pseudo-legal on {}", pos.to_fen());
+                }
+            }
+        }
+    }
 }

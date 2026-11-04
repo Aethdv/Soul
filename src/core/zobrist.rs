@@ -1,6 +1,6 @@
 //! Incremental Zobrist hashing for pieces, en passant, castling rights and side to move.
 
-use crate::core::defs::{Color, PieceType, Square};
+use crate::core::defs::{Color, Piece, PieceType, Square};
 
 /// Marsaglia xorshift64 RNG usable in const evaluation.
 pub(crate) struct ConstRng {
@@ -22,7 +22,7 @@ impl ConstRng {
 }
 
 struct ZobristKeys {
-    pieces: [u64; 64 * 7 * 2],
+    pieces: [[u64; 64]; 12],
     en_passant: [u64; 8],
     castling: [u64; 1 << 4],
     side: u64,
@@ -31,11 +31,7 @@ struct ZobristKeys {
 static KEYS: ZobristKeys = init_keys();
 
 #[inline(always)]
-pub(super) fn key_piece(pt: PieceType, color: Color, sq: Square) -> u64 {
-    // The seventh slot keeps PieceType::None mapped to a zero key.
-    let pt_idx = usize::from(pt) + usize::from(color) * 7;
-    KEYS.pieces[pt_idx * 64 + usize::from(sq)]
-}
+pub(super) fn key_piece(piece: Piece, sq: Square) -> u64 { KEYS.pieces[piece][sq] }
 
 /// Keyed by file.
 #[inline(always)]
@@ -54,14 +50,14 @@ pub(crate) fn key_side() -> u64 { KEYS.side }
 const fn init_keys() -> ZobristKeys {
     // Seed: a nod to Tord Romstad's birthday (7 Oct 1972).
     let mut rng = ConstRng::new(1_070_372);
-    let mut pieces = [0; 64 * 7 * 2];
-    let mut pt = 0;
+    let mut pieces = [[0; 64]; 12];
+    let mut pt = 0u8;
 
     while pt < 6 {
         let mut sq = 0;
         while sq < 64 {
-            pieces[(pt + Color::White as usize * 7) * 64 + sq] = rng.next();
-            pieces[(pt + Color::Black as usize * 7) * 64 + sq] = rng.next();
+            pieces[Piece::new(PieceType::from(pt), Color::White) as usize][sq] = rng.next();
+            pieces[Piece::new(PieceType::from(pt), Color::Black) as usize][sq] = rng.next();
             sq += 1;
         }
         pt += 1;

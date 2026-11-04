@@ -135,6 +135,41 @@ const impl From<PieceType> for usize {
     fn from(val: PieceType) -> Self { val as usize }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug, std::marker::ConstParamTy)]
+#[repr(u8)]
+pub enum Piece {
+    WhitePawn = 0,
+    BlackPawn = 1,
+    WhiteKnight = 2,
+    BlackKnight = 3,
+    WhiteBishop = 4,
+    BlackBishop = 5,
+    WhiteRook = 6,
+    BlackRook = 7,
+    WhiteQueen = 8,
+    BlackQueen = 9,
+    WhiteKing = 10,
+    BlackKing = 11,
+}
+
+impl Piece {
+    #[inline(always)]
+    pub(crate) const fn new(pt: PieceType, color: Color) -> Self {
+        assert!((pt as u8) < PieceType::None as u8, "PieceType::None cannot be colored");
+        // SAFETY: (0..6 << 1) | (0..1) produces 0..11, matching the 12 Piece variants exactly.
+        unsafe { std::mem::transmute(((pt as u8) << 1) | (color as u8)) }
+    }
+
+    /// Pawn → 0, minor → 1, major → 2, king → 3.
+    #[inline(always)]
+    pub(crate) const fn corr_group(self) -> usize { ((self as usize) + 2) >> 2 }
+}
+
+const impl From<Piece> for usize {
+    #[inline(always)]
+    fn from(val: Piece) -> Self { val as usize }
+}
+
 /// Compass directions clockwise from North; opposites differ by 4.
 ///
 /// ```text
@@ -288,13 +323,51 @@ macro_rules! soul_index {
 soul_index!(Color, 2);
 soul_index_checked!(PieceType, 6);
 soul_index!(PieceType, 8);
-soul_index!(PieceType, 12);
-soul_index!(PieceType, 14);
+soul_index!(Piece, 12);
 soul_index!(Square, 64);
+
+const fn omd(o: u8, d: u8, t: u8) -> u8 { (o << 2) | ((o ^ t) << 1) | d }
+
+const _: () = {
+    assert!(omd(0, 0, 0) == 0);
+    assert!(omd(0, 1, 0) == PieceType::Pawn as u8 + 1);
+    assert!(omd(0, 0, 1) == PieceType::Knight as u8 + 1);
+    assert!(omd(0, 1, 1) == PieceType::Bishop as u8 + 1);
+    assert!(omd(1, 0, 1) == PieceType::Rook as u8 + 1);
+    assert!(omd(1, 1, 1) == PieceType::Queen as u8 + 1);
+    assert!(omd(1, 0, 0) == 6);
+    assert!(omd(1, 1, 0) == 7);
+
+    assert!(Piece::WhitePawn as u8 == (PieceType::Pawn as u8) * 2 + Color::White as u8);
+    assert!(Piece::BlackPawn as u8 == (PieceType::Pawn as u8) * 2 + Color::Black as u8);
+    assert!(Piece::WhiteKnight as u8 == (PieceType::Knight as u8) * 2 + Color::White as u8);
+    assert!(Piece::BlackKnight as u8 == (PieceType::Knight as u8) * 2 + Color::Black as u8);
+    assert!(Piece::WhiteBishop as u8 == (PieceType::Bishop as u8) * 2 + Color::White as u8);
+    assert!(Piece::BlackBishop as u8 == (PieceType::Bishop as u8) * 2 + Color::Black as u8);
+    assert!(Piece::WhiteRook as u8 == (PieceType::Rook as u8) * 2 + Color::White as u8);
+    assert!(Piece::BlackRook as u8 == (PieceType::Rook as u8) * 2 + Color::Black as u8);
+    assert!(Piece::WhiteQueen as u8 == (PieceType::Queen as u8) * 2 + Color::White as u8);
+    assert!(Piece::BlackQueen as u8 == (PieceType::Queen as u8) * 2 + Color::Black as u8);
+    assert!(Piece::WhiteKing as u8 == (PieceType::King as u8) * 2 + Color::White as u8);
+    assert!(Piece::BlackKing as u8 == (PieceType::King as u8) * 2 + Color::Black as u8);
+
+    assert!(Piece::WhitePawn.corr_group() == 0);
+    assert!(Piece::BlackPawn.corr_group() == 0);
+    assert!(Piece::WhiteKnight.corr_group() == 1);
+    assert!(Piece::BlackKnight.corr_group() == 1);
+    assert!(Piece::WhiteBishop.corr_group() == 1);
+    assert!(Piece::BlackBishop.corr_group() == 1);
+    assert!(Piece::WhiteRook.corr_group() == 2);
+    assert!(Piece::BlackRook.corr_group() == 2);
+    assert!(Piece::WhiteQueen.corr_group() == 2);
+    assert!(Piece::BlackQueen.corr_group() == 2);
+    assert!(Piece::WhiteKing.corr_group() == 3);
+    assert!(Piece::BlackKing.corr_group() == 3);
+};
 
 #[cfg(test)]
 mod tests {
-    use super::PieceType;
+    use super::*;
 
     #[test]
     #[should_panic(expected = "Domain-typed index out of bounds")]
@@ -302,4 +375,8 @@ mod tests {
         let slots = [0u8; 6];
         let _ = slots[PieceType::None];
     }
+
+    #[test]
+    #[should_panic(expected = "PieceType::None cannot be colored")]
+    fn piece_new_rejects_none() { let _ = Piece::new(PieceType::None, Color::White); }
 }
