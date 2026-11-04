@@ -58,23 +58,23 @@ const _: () = {
     use std::mem::{align_of, offset_of, size_of};
 
     assert!(size_of::<Position>() == 192, "Position must be exactly 192 bytes");
-    assert!(align_of::<Position>() == 32, "Position must be 32-byte aligned");
+    assert!(align_of::<Position>() == 64, "Position must be 64-byte aligned");
 
-    assert!(offset_of!(Position, side_bb) == 0);
-    assert!(offset_of!(Position, role_bb) == 16);
-    assert!(offset_of!(Position, occ) == 64);
-    assert!(offset_of!(Position, hash) == 72);
-    assert!(offset_of!(Position, pawn_key) == 80);
-    assert!(offset_of!(Position, minor_key) == 88);
-    assert!(offset_of!(Position, major_key) == 96);
-    assert!(offset_of!(Position, pieces) == 104);
-    assert!(offset_of!(Position, castling_rooks) == 168);
-    assert!(offset_of!(Position, castling_rights) == 172);
-    assert!(offset_of!(Position, stm) == 173);
-    assert!(offset_of!(Position, halfmove_clock) == 174);
-    assert!(offset_of!(Position, en_passant) == 175);
-    assert!(offset_of!(Position, frc_notation) == 177);
-    assert!(offset_of!(Position, fullmove_number) == 178);
+    assert!(offset_of!(Position, role_bb) == 0);
+    assert!(offset_of!(Position, side_bb) == 48);
+    assert!(offset_of!(Position, hash) == 64);
+    assert!(offset_of!(Position, pawn_key) == 72);
+    assert!(offset_of!(Position, minor_key) == 80);
+    assert!(offset_of!(Position, major_key) == 88);
+    assert!(offset_of!(Position, occ) == 96);
+    assert!(offset_of!(Position, castling_rooks) == 104);
+    assert!(offset_of!(Position, castling_rights) == 108);
+    assert!(offset_of!(Position, stm) == 109);
+    assert!(offset_of!(Position, halfmove_clock) == 110);
+    assert!(offset_of!(Position, frc_notation) == 111);
+    assert!(offset_of!(Position, en_passant) == 112);
+    assert!(offset_of!(Position, fullmove_number) == 114);
+    assert!(offset_of!(Position, pieces) == 128);
 
     assert!(size_of::<StateInfo>() == 40, "StateInfo must be exactly 40 bytes");
     assert!(align_of::<StateInfo>() == 8);
@@ -82,23 +82,24 @@ const _: () = {
 
 #[rustfmt::skip]
 #[derive(Clone, Copy, Debug)]
-#[repr(C, align(32))]
-pub struct Position { // 180 B + 12 B tail padding
-    pub(crate) side_bb: [Bitboard; 2],      // 16 B
-    pub(crate) role_bb: [Bitboard; 6],      // 48 B
-    pub(crate) occ: Bitboard,               // 8 B
-    pub(crate) hash: u64,                   // 8 B
-    pub(crate) pawn_key: u64,               // 8 B
-    pub(crate) minor_key: u64,              // 8 B
-    pub(crate) major_key: u64,              // 8 B
-    pub(crate) pieces: [PieceType; 64],     // 64 B
-    pub(crate) castling_rooks: [Square; 4], // 4 B
-    pub(crate) castling_rights: u8,         // 1 B
-    pub(crate) stm: Color,                  // 1 B
-    pub(crate) halfmove_clock: u8,          // 1 B
-    pub(crate) en_passant: Option<Square>,  // 2 B
-    pub(crate) frc_notation: bool,          // 1 B
-    pub(crate) fullmove_number: u16,        // 2 B
+#[repr(C, align(64))]
+pub struct Position {
+    pub(crate) role_bb: [Bitboard; 6],      // 48 B, offset 0..48
+    pub(crate) side_bb: [Bitboard; 2],      // 16 B, offset 48..64
+    pub(crate) hash: u64,                   // 8 B,  offset 64..72
+    pub(crate) pawn_key: u64,               // 8 B,  offset 72..80
+    pub(crate) minor_key: u64,              // 8 B,  offset 80..88
+    pub(crate) major_key: u64,              // 8 B,  offset 88..96
+    pub(crate) occ: Bitboard,               // 8 B,  offset 96..104
+    pub(crate) castling_rooks: [Square; 4], // 4 B,  offset 104..108
+    pub(crate) castling_rights: u8,         // 1 B,  offset 108
+    pub(crate) stm: Color,                  // 1 B,  offset 109
+    pub(crate) halfmove_clock: u8,          // 1 B,  offset 110
+    pub(crate) frc_notation: bool,          // 1 B,  offset 111
+    pub(crate) en_passant: Option<Square>,  // 2 B,  offset 112..114
+    pub(crate) fullmove_number: u16,        // 2 B,  offset 114..116
+    pub(crate) _pad: [u8; 12],              // 12 B, offset 116..128
+    pub(crate) pieces: [PieceType; 64],     // 64 B, offset 128..192
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -132,6 +133,7 @@ impl Position {
             en_passant: None,
             frc_notation: false,
             fullmove_number: 1,
+            _pad: [0; 12],
         };
 
         pos.hash = pos.calc_zobrist();

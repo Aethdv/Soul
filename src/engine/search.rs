@@ -66,7 +66,7 @@ pub(crate) struct Searcher<'cfg> {
     tt: Arc<TranspositionTable>,
 }
 
-#[repr(align(32))]
+#[repr(align(64))]
 struct Worker<'h> {
     pos: Position,
     accumulator: I16x8,
