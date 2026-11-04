@@ -347,18 +347,14 @@ impl TranspositionTable {
         for slot in &cluster.slots {
             let (key, packed) = slot.scan_read();
             if key == key16 {
-                if stored_outranks(packed, depth, pv, bound, cur_age) {
+                if (QS && packed_depth(packed) > 0) || stored_outranks(packed, depth, pv, bound, cur_age) {
                     if !mv.is_null() {
                         slot.mv.store(mv.inner(), Ordering::Relaxed);
                     }
                     return;
                 }
 
-                let store_mv = if mv.is_null() && !QS {
-                    slot.mv.load(Ordering::Relaxed)
-                } else {
-                    mv.inner()
-                };
+                let store_mv = if mv.is_null() && !QS { slot.mv.load(Ordering::Relaxed) } else { mv.inner() };
 
                 let store_pv = pv | packed_pv(packed);
 
