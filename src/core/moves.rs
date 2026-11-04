@@ -81,16 +81,6 @@ impl Move {
     }
 
     #[inline(always)]
-    pub(crate) const fn promotion(from: Square, to: Square, promo: PieceType, capture: bool) -> Self {
-        assert!(
-            promo as u8 >= PieceType::Knight as u8 && promo as u8 <= PieceType::Queen as u8,
-            "promotion target must be Knight..=Queen"
-        );
-        let flag = ((promo as u16 - PieceType::Knight as u16) << 2) | Self::T | (capture as u16);
-        Self::new(from, to, flag)
-    }
-
-    #[inline(always)]
     pub(crate) const fn null() -> Self { Self(0) }
 
     #[inline(always)]
@@ -108,6 +98,7 @@ impl Move {
     #[inline(always)]
     pub(crate) const fn to(self) -> Square { Square(((self.0 >> Self::SHIFT_TO) & Self::MASK_SQ) as u8) }
 
+    #[cfg(test)]
     #[inline(always)]
     pub(crate) const fn flag(self) -> u16 { (self.0 >> Self::SHIFT_FLAG) & Self::MASK_FLAG }
 
@@ -143,7 +134,7 @@ impl Move {
     pub(crate) const fn is_double_push(self) -> bool { (self.0 & 0xF000) == 0x4000 }
 
     #[inline(always)]
-    pub(crate) const fn promo_piece(self) -> PieceType {
+    const fn promo_piece(self) -> PieceType {
         assert!(self.is_promotion(), "promo_piece called on non-promotion move");
         PieceType::from(((self.0 >> 14) as u8) + 1)
     }

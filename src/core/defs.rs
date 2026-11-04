@@ -160,17 +160,6 @@ impl Piece {
         unsafe { std::mem::transmute(((pt as u8) << 1) | (color as u8)) }
     }
 
-    #[inline(always)]
-    pub(crate) const fn piece_type(self) -> PieceType {
-        // SAFETY: self <= 11, so self >> 1 <= 5 (Pawn..King).
-        unsafe { std::mem::transmute((self as u8) >> 1) }
-    }
-
-    #[cfg_attr(not(test), expect(dead_code, reason = "completeness API: color extraction pairs with piece_type"))]
-    #[inline(always)]
-    pub(crate) const fn color(self) -> Color { Color::from(self as u8 & 1) }
-
-    /// Arithmetic correction history bucket:
     /// Pawn (0, 1) -> 0; Minor (2, 3, 4, 5) -> 1; Major (6, 7, 8, 9) -> 2; King (10, 11) -> 3.
     #[inline(always)]
     pub(crate) const fn corr_group(self) -> usize { ((self as usize) + 2) >> 2 }
@@ -334,14 +323,10 @@ macro_rules! soul_index {
 soul_index!(Color, 2);
 soul_index_checked!(PieceType, 6);
 soul_index!(PieceType, 8);
-soul_index!(PieceType, 12);
-soul_index!(PieceType, 14);
 soul_index!(Piece, 12);
 soul_index!(Square, 64);
 
-const fn omd(o: u8, d: u8, t: u8) -> u8 {
-    (o << 2) | ((o ^ t) << 1) | d
-}
+const fn omd(o: u8, d: u8, t: u8) -> u8 { (o << 2) | ((o ^ t) << 1) | d }
 
 const _: () = {
     assert!(omd(0, 0, 0) == 0);
@@ -393,25 +378,5 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "PieceType::None cannot be colored")]
-    fn piece_new_rejects_none() {
-        let _ = Piece::new(PieceType::None, Color::White);
-    }
-
-    #[test]
-    fn piece_roundtrip_and_properties() {
-        for pt in [
-            PieceType::Pawn,
-            PieceType::Knight,
-            PieceType::Bishop,
-            PieceType::Rook,
-            PieceType::Queen,
-            PieceType::King,
-        ] {
-            for color in [Color::White, Color::Black] {
-                let piece = Piece::new(pt, color);
-                assert_eq!(piece.piece_type(), pt);
-                assert_eq!(piece.color(), color);
-            }
-        }
-    }
+    fn piece_new_rejects_none() { let _ = Piece::new(PieceType::None, Color::White); }
 }

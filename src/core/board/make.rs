@@ -40,25 +40,51 @@ pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateI
     pos.halfmove_clock =
         if pt == PieceType::Pawn || captured != PieceType::None { 0 } else { pos.halfmove_clock.saturating_add(1) };
 
-    if captured != PieceType::None {
-        toggle_piece_keys(pos, Piece::new(captured, opp), to);
-        pos.remove_piece(to, captured, opp);
+    if mv.is_castling() {
+        apply_castling(pos, from, to, stm);
     } else if mv.is_en_passant() {
         // The captured pawn stands on to's file one rank back: flipping bit 3 steps
         // rank 6 to 5 for White and rank 3 to 4 for Black.
         let victim_sq = to ^ 8;
-        toggle_piece_keys(pos, Piece::new(PieceType::Pawn, opp), victim_sq);
+        let us_pawn = Piece::new(PieceType::Pawn, stm);
+        let them_pawn = Piece::new(PieceType::Pawn, opp);
+        let ep_delta =
+            zobrist::key_piece(us_pawn, from) ^ zobrist::key_piece(us_pawn, to) ^ zobrist::key_piece(them_pawn, victim_sq);
+        pos.hash ^= ep_delta;
+        pos.pawn_key ^= ep_delta;
+
         pos.remove_piece(victim_sq, PieceType::Pawn, opp);
-    }
-
-    if mv.is_castling() {
-        apply_castling(pos, from, to, stm);
+        pos.remove_piece(from, PieceType::Pawn, stm);
+        pos.add_piece(to, PieceType::Pawn, stm);
     } else {
-        pos.remove_piece(from, pt, stm);
-        toggle_piece_keys(pos, Piece::new(pt, stm), from);
+        if captured != PieceType::None {
+            let victim = Piece::new(captured, opp);
+            let victim_key = zobrist::key_piece(victim, to);
+            pos.hash ^= victim_key;
+            xor_corr_key(pos, victim, victim_key);
+            pos.remove_piece(to, captured, opp);
+        }
 
+        pos.remove_piece(from, pt, stm);
         pos.add_piece(to, placed, stm);
-        toggle_piece_keys(pos, Piece::new(placed, stm), to);
+
+        let moving_piece = Piece::new(pt, stm);
+        let from_key = zobrist::key_piece(moving_piece, from);
+        if !mv.is_promotion() {
+            let delta_key = from_key ^ zobrist::key_piece(moving_piece, to);
+            pos.hash ^= delta_key;
+            xor_corr_key(pos, moving_piece, delta_key);
+        } else {
+            let promo_piece = Piece::new(placed, stm);
+            let to_key = zobrist::key_piece(promo_piece, to);
+            pos.hash ^= from_key ^ to_key;
+            pos.pawn_key ^= from_key;
+            if (mv.inner() & 0x8000) != 0 {
+                pos.major_key ^= to_key;
+            } else {
+                pos.minor_key ^= to_key;
+            }
+        }
     }
 
     pos.stm = opp;
@@ -157,15 +183,12 @@ pub(super) fn update_piece<const ADD: bool>(pos: &mut Position, sq: Square, pt: 
 }
 
 #[inline(always)]
-fn toggle_piece_keys(pos: &mut Position, piece: Piece, sq: Square) {
-    let key = zobrist::key_piece(piece, sq);
-    pos.hash ^= key;
-
-    match piece.piece_type() {
-        PieceType::Pawn => pos.pawn_key ^= key,
-        PieceType::Knight | PieceType::Bishop => pos.minor_key ^= key,
-        PieceType::Rook | PieceType::Queen => pos.major_key ^= key,
-        PieceType::King | PieceType::None => {},
+fn xor_corr_key(pos: &mut Position, piece: Piece, delta_key: u64) {
+    match piece.corr_group() {
+        0 => pos.pawn_key ^= delta_key,
+        1 => pos.minor_key ^= delta_key,
+        2 => pos.major_key ^= delta_key,
+        _ => {},
     }
 }
 
@@ -199,15 +222,17 @@ pub(crate) fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Squ
 fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm: Color) {
     let (king_to, rook_to) = castling_targets(king_from, rook_from);
 
-    pos.remove_piece(king_from, PieceType::King, stm);
-    toggle_piece_keys(pos, Piece::new(PieceType::King, stm), king_from);
-    pos.remove_piece(rook_from, PieceType::Rook, stm);
-    toggle_piece_keys(pos, Piece::new(PieceType::Rook, stm), rook_from);
+    let king = Piece::new(PieceType::King, stm);
+    let rook = Piece::new(PieceType::Rook, stm);
+    let king_delta = zobrist::key_piece(king, king_from) ^ zobrist::key_piece(king, king_to);
+    let rook_delta = zobrist::key_piece(rook, rook_from) ^ zobrist::key_piece(rook, rook_to);
+    pos.hash ^= king_delta ^ rook_delta;
+    pos.major_key ^= rook_delta;
 
+    pos.remove_piece(king_from, PieceType::King, stm);
+    pos.remove_piece(rook_from, PieceType::Rook, stm);
     pos.add_piece(king_to, PieceType::King, stm);
-    toggle_piece_keys(pos, Piece::new(PieceType::King, stm), king_to);
     pos.add_piece(rook_to, PieceType::Rook, stm);
-    toggle_piece_keys(pos, Piece::new(PieceType::Rook, stm), rook_to);
 }
 
 #[inline]
