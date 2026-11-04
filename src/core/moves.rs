@@ -38,25 +38,30 @@ const _: () = assert!(std::mem::size_of::<Move>() == 2);
 const _: () = assert!(std::mem::size_of::<Option<Move>>() == 4);
 
 impl Move {
+    const C: u16 = 0b0001; // Capture
+    const T: u16 = 0b0010; // Promotion target (N, B, R, Q)
+    const D: u16 = 0b0100; // Diagonal attack capability (P, B, K, Q)
+    const O: u16 = 0b1000; // Orthogonal attack capability (R, K, Q)
+
     pub(crate) const QUIET: u16 = 0;
-    pub(crate) const CAPTURE: u16 = 1;
+    pub(crate) const CAPTURE: u16 = Self::C;
 
-    pub(crate) const PROM_N: u16 = 2;
-    pub(crate) const PROM_N_CAPTURE: u16 = 3;
+    pub(crate) const PROM_N: u16 = Self::T;
+    pub(crate) const PROM_N_CAPTURE: u16 = Self::T | Self::C;
 
-    pub(crate) const DOUBLE_PUSH: u16 = 4;
-    pub(crate) const EP_CAPTURE: u16 = 5;
+    pub(crate) const DOUBLE_PUSH: u16 = Self::D;
+    pub(crate) const EP_CAPTURE: u16 = Self::D | Self::C;
 
-    pub(crate) const PROM_B: u16 = 6;
-    pub(crate) const PROM_B_CAPTURE: u16 = 7;
+    pub(crate) const PROM_B: u16 = Self::D | Self::T;
+    pub(crate) const PROM_B_CAPTURE: u16 = Self::D | Self::T | Self::C;
 
-    pub(crate) const PROM_R: u16 = 10;
-    pub(crate) const PROM_R_CAPTURE: u16 = 11;
+    pub(crate) const PROM_R: u16 = Self::O | Self::T;
+    pub(crate) const PROM_R_CAPTURE: u16 = Self::O | Self::T | Self::C;
 
-    pub(crate) const CASTLE: u16 = 12;
+    pub(crate) const CASTLE: u16 = Self::O | Self::D;
 
-    pub(crate) const PROM_Q: u16 = 14;
-    pub(crate) const PROM_Q_CAPTURE: u16 = 15;
+    pub(crate) const PROM_Q: u16 = Self::O | Self::D | Self::T;
+    pub(crate) const PROM_Q_CAPTURE: u16 = Self::O | Self::D | Self::T | Self::C;
 
     const MASK_SQ: u16 = 0x3F;
     const MASK_FLAG: u16 = 0xF;
@@ -64,15 +69,25 @@ impl Move {
     const SHIFT_FLAG: u16 = 12;
 
     #[inline(always)]
-    pub(crate) fn new(from: Square, to: Square, flag: u16) -> Self {
-        debug_assert!(from.0 < 64, "Invalid from square: {from} (max 63)");
-        debug_assert!(to.0 < 64, "Invalid to square: {to} (max 63)");
-        debug_assert!(flag < 16, "Invalid flags: {flag} (max 15)");
+    pub(crate) const fn new(from: Square, to: Square, flag: u16) -> Self {
+        assert!(from.0 < 64, "Invalid from square (max 63)");
+        assert!(to.0 < 64, "Invalid to square (max 63)");
+        assert!(flag < 16, "Invalid flags (max 15)");
 
-        let f = u16::from(from.0) & Self::MASK_SQ;
-        let t = (u16::from(to.0) & Self::MASK_SQ) << Self::SHIFT_TO;
+        let f = (from.0 as u16) & Self::MASK_SQ;
+        let t = ((to.0 as u16) & Self::MASK_SQ) << Self::SHIFT_TO;
         let fl = (flag & Self::MASK_FLAG) << Self::SHIFT_FLAG;
         Self(f | t | fl)
+    }
+
+    #[inline(always)]
+    pub(crate) const fn promotion(from: Square, to: Square, promo: PieceType, capture: bool) -> Self {
+        assert!(
+            promo as u8 >= PieceType::Knight as u8 && promo as u8 <= PieceType::Queen as u8,
+            "promotion target must be Knight..=Queen"
+        );
+        let flag = ((promo as u16 - PieceType::Knight as u16) << 2) | Self::T | (capture as u16);
+        Self::new(from, to, flag)
     }
 
     #[inline(always)]
@@ -96,6 +111,10 @@ impl Move {
     #[inline(always)]
     pub(crate) const fn flag(self) -> u16 { (self.0 >> Self::SHIFT_FLAG) & Self::MASK_FLAG }
 
+    /// True for ordinary quiet and capture moves (O = 0, D = 0, T = 0).
+    #[inline(always)]
+    pub(crate) const fn is_ordinary(self) -> bool { self.0 < 0x2000 }
+
     #[inline(always)]
     pub(crate) const fn is_capture(self) -> bool { (self.0 & 0x1000) != 0 }
 
@@ -116,25 +135,21 @@ impl Move {
     #[inline(always)]
     pub(crate) const fn is_history_quiet(self) -> bool { self.is_quiet() && !self.is_castling() }
 
+    /// Single bitmask testing adjacent bits T (0x2000) and C (0x1000).
     #[inline(always)]
-    pub(crate) const fn is_tactical(self) -> bool { self.is_capture() || self.is_promotion() }
+    pub(crate) const fn is_tactical(self) -> bool { (self.0 & 0x3000) != 0 }
 
     #[inline(always)]
     pub(crate) const fn is_double_push(self) -> bool { (self.0 & 0xF000) == 0x4000 }
 
     #[inline(always)]
-    pub(crate) fn promo(self) -> Option<PieceType> {
-        if !self.is_promotion() {
-            return None;
-        }
-
-        match self.flag() {
-            Self::PROM_N | Self::PROM_N_CAPTURE => Some(PieceType::Knight),
-            Self::PROM_B | Self::PROM_B_CAPTURE => Some(PieceType::Bishop),
-            Self::PROM_R | Self::PROM_R_CAPTURE => Some(PieceType::Rook),
-            _ => Some(PieceType::Queen),
-        }
+    pub(crate) const fn promo_piece(self) -> PieceType {
+        assert!(self.is_promotion(), "promo_piece called on non-promotion move");
+        PieceType::from(((self.0 >> 14) as u8) + 1)
     }
+
+    #[inline(always)]
+    pub(crate) const fn promo(self) -> Option<PieceType> { if self.is_promotion() { Some(self.promo_piece()) } else { None } }
 
     pub(crate) fn to_uci(self, frc_notation: bool) -> String {
         if self.is_null() {
@@ -157,6 +172,13 @@ impl Move {
         s
     }
 }
+
+const _: () = {
+    assert!((Move::PROM_N >> 2) == PieceType::Knight as u16 - PieceType::Knight as u16);
+    assert!((Move::PROM_B >> 2) == PieceType::Bishop as u16 - PieceType::Knight as u16);
+    assert!((Move::PROM_R >> 2) == PieceType::Rook as u16 - PieceType::Knight as u16);
+    assert!((Move::PROM_Q >> 2) == PieceType::Queen as u16 - PieceType::Knight as u16);
+};
 
 impl fmt::Debug for Move {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.to_uci(false)) }
