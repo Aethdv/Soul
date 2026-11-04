@@ -190,7 +190,10 @@ impl TtEntry {
     }
 
     #[inline(always)]
-    fn is_occupied(&self) -> bool { packed_bound(self.packed.load(Ordering::Relaxed)) != Bound::None }
+    fn is_occupied_in(&self, cur_age: u8) -> bool {
+        let packed = self.packed.load(Ordering::Relaxed);
+        packed_bound(packed) != Bound::None && packed_age(packed) == cur_age
+    }
 
     /// The Acquire on `key` is the read half of the store's Release.
     #[inline(always)]
@@ -259,18 +262,21 @@ impl TranspositionTable {
         }
     }
 
-    /// Occupancy in permille, sampled from up to the first 1000 slots.
+    /// Occupancy in permille of current-generation entries, sampled up to 1000 clusters.
     pub(super) fn hashfull(&self) -> usize {
-        let total = self.clusters.len() * CLUSTER_SIZE;
-        let sample = total.min(1000);
-        self.clusters
+        let sample = self.clusters.len().min(1000);
+        if sample == 0 {
+            return 0;
+        }
+
+        let cur_age = self.generation.load(Ordering::Relaxed) & AGE_MASK;
+        let hits = self.clusters[..sample]
             .iter()
             .flat_map(|c| c.slots.iter())
-            .take(sample)
-            .filter(|s| s.is_occupied())
-            .count()
-            * 1000
-            / sample
+            .filter(|s| s.is_occupied_in(cur_age))
+            .count();
+
+        hits * 1000 / (sample * CLUSTER_SIZE)
     }
 
     /// Clears the table and resets its generation. On NUMA systems, each slice
