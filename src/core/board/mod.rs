@@ -348,7 +348,7 @@ impl Position {
     pub(crate) fn expect_piece_at(&self, sq: Square) -> PieceType {
         debug_assert!(self.occ.check_bit(sq));
         let pt = self.piece_at(sq);
-        debug_assert!(pt != PieceType::None);
+        assert!(pt != PieceType::None, "expect_piece_at called on an empty square");
         pt
     }
 

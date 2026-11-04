@@ -70,9 +70,9 @@ impl Move {
 
     #[inline(always)]
     pub(crate) const fn new(from: Square, to: Square, flag: u16) -> Self {
-        assert!(from.0 < 64, "Invalid from square (max 63)");
-        assert!(to.0 < 64, "Invalid to square (max 63)");
-        assert!(flag < 16, "Invalid flags (max 15)");
+        debug_assert!(from.0 < 64, "Invalid from square (max 63)");
+        debug_assert!(to.0 < 64, "Invalid to square (max 63)");
+        debug_assert!(flag < 16, "Invalid flags (max 15)");
 
         let f = (from.0 as u16) & Self::MASK_SQ;
         let t = ((to.0 as u16) & Self::MASK_SQ) << Self::SHIFT_TO;
@@ -164,8 +164,9 @@ impl Move {
     }
 }
 
+// PROM_N is the base T: its offset is zero by definition.
+// B/R/Q are the nonzero offsets, so only they need an assertion.
 const _: () = {
-    assert!((Move::PROM_N >> 2) == PieceType::Knight as u16 - PieceType::Knight as u16);
     assert!((Move::PROM_B >> 2) == PieceType::Bishop as u16 - PieceType::Knight as u16);
     assert!((Move::PROM_R >> 2) == PieceType::Rook as u16 - PieceType::Knight as u16);
     assert!((Move::PROM_Q >> 2) == PieceType::Queen as u16 - PieceType::Knight as u16);

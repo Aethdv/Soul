@@ -21,7 +21,7 @@ pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateI
     let captured = if mv.is_castling() { PieceType::None } else { pos.piece_at(to) };
 
     // Written out here and in make_null_move, and restored field by field in both unmakes.
-    // A shared constructor and restorer cost 4.1M more instructions over a 4.4M-node bench.
+    // A shared constructor and restorer cost 4.1M more instructions.
     let state = StateInfo {
         castling_rights: pos.castling_rights,
         hash: pos.hash,
@@ -70,6 +70,7 @@ pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateI
 
         let moving_piece = Piece::new(pt, stm);
         let from_key = zobrist::key_piece(moving_piece, from);
+
         if !mv.is_promotion() {
             let delta_key = from_key ^ zobrist::key_piece(moving_piece, to);
             pos.hash ^= delta_key;
@@ -77,8 +78,10 @@ pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateI
         } else {
             let promo_piece = Piece::new(placed, stm);
             let to_key = zobrist::key_piece(promo_piece, to);
+
             pos.hash ^= from_key ^ to_key;
             pos.pawn_key ^= from_key;
+
             if (mv.inner() & 0x8000) != 0 {
                 pos.major_key ^= to_key;
             } else {
@@ -221,11 +224,11 @@ pub(crate) fn castling_targets(king_sq: Square, rook_sq: Square) -> (Square, Squ
 #[inline]
 fn apply_castling(pos: &mut Position, king_from: Square, rook_from: Square, stm: Color) {
     let (king_to, rook_to) = castling_targets(king_from, rook_from);
-
     let king = Piece::new(PieceType::King, stm);
     let rook = Piece::new(PieceType::Rook, stm);
     let king_delta = zobrist::key_piece(king, king_from) ^ zobrist::key_piece(king, king_to);
     let rook_delta = zobrist::key_piece(rook, rook_from) ^ zobrist::key_piece(rook, rook_to);
+
     pos.hash ^= king_delta ^ rook_delta;
     pos.major_key ^= rook_delta;
 
