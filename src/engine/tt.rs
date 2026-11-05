@@ -344,57 +344,77 @@ impl TranspositionTable {
         let age_factor = self.age_factor.load(Ordering::Relaxed);
         let cluster = self.cluster(self.index(hash));
 
-        let mut victim = (!QS).then_some(0);
-        // QSearch evicts only at quality zero or below, so its bar sits one above it.
-        let mut worst_quality = if QS { 1 } else { i32::MAX };
-        let mut existing = None;
+        for slot in &cluster.slots {
+            let (key, packed) = slot.scan_read();
+            if key == key16 {
+                if (QS && packed_depth(packed) > 0) || stored_outranks(packed, depth, pv, bound, cur_age) {
+                    if !mv.is_null() {
+                        slot.mv.store(mv.inner(), Ordering::Relaxed);
+                    }
+                    return;
+                }
+
+                let store_mv = if mv.is_null() && !QS { slot.mv.load(Ordering::Relaxed) } else { mv.inner() };
+
+                let store_pv = pv | packed_pv(packed);
+
+                slot.store(SlotWrite {
+                    key: key16,
+                    mv: store_mv,
+                    score: score_to_tt(score, ply) as i16,
+                    eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                    depth: depth.clamp(0, u8::MAX as i32) as u8,
+                    bound,
+                    age: cur_age,
+                    pv: store_pv,
+                });
+                return;
+            }
+        }
+
+        let mut empty = None;
+        let mut depth0 = None;
+        let mut worst_slot = 0;
+        let mut worst_quality = i32::MAX;
 
         for (i, slot) in cluster.slots.iter().enumerate() {
-            let (key, packed) = slot.scan_read();
-            if key == key16 || packed_bound(packed) == Bound::None || (QS && packed_depth(packed) == 0) {
-                victim = Some(i);
-                existing = (key == key16).then_some(packed);
+            let packed = slot.packed.load(Ordering::Relaxed);
+            if packed_bound(packed) == Bound::None {
+                empty = Some(i);
                 break;
+            }
+            if QS && packed_depth(packed) == 0 && depth0.is_none() {
+                depth0 = Some(i);
             }
 
             let quality = replacement_quality(packed, cur_age, age_factor);
             if quality < worst_quality {
                 worst_quality = quality;
-                victim = Some(i);
+                worst_slot = i;
             }
         }
 
-        let Some(victim) = victim else { return };
-        let slot = &cluster.slots[victim];
-
-        if existing.is_some_and(|packed| stored_outranks(packed, depth, pv, bound, cur_age)) {
-            if !mv.is_null() {
-                slot.mv.store(mv.inner(), Ordering::Relaxed);
-            }
+        let victim = if let Some(i) = empty {
+            i
+        } else if !QS {
+            worst_slot
+        } else if let Some(i) = depth0 {
+            i
+        } else if worst_quality < 1 {
+            worst_slot
+        } else {
             return;
-        }
+        };
 
-        let mut store_mv = mv.inner();
-        let mut store_pv = pv;
-
-        if existing.is_some() {
-            if mv.is_null() && !QS {
-                // No new move to order by; keep the stored one.
-                store_mv = slot.mv.load(Ordering::Relaxed);
-            }
-            // The probe may have missed this entry; don't clear its PV bit.
-            store_pv |= packed_pv(slot.packed.load(Ordering::Relaxed));
-        }
-
-        slot.store(SlotWrite {
+        cluster.slots[victim].store(SlotWrite {
             key: key16,
-            mv: store_mv,
+            mv: mv.inner(),
             score: score_to_tt(score, ply) as i16,
             eval: eval.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             depth: depth.clamp(0, u8::MAX as i32) as u8,
             bound,
             age: cur_age,
-            pv: store_pv,
+            pv,
         });
     }
 
