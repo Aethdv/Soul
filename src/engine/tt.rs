@@ -348,7 +348,7 @@ impl TranspositionTable {
             let (key, packed) = slot.scan_read();
             if key == key16 {
                 if (QS && packed_depth(packed) > 0) || stored_outranks(packed, depth, pv, bound, cur_age) {
-                    if !mv.is_null() {
+                    if !QS && !mv.is_null() {
                         slot.mv.store(mv.inner(), Ordering::Relaxed);
                     }
                     return;
