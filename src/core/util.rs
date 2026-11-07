@@ -1,30 +1,4 @@
-//! Cache-line alignment, bounded hash indexing and number formatting.
-
-#[cfg(feature = "datagen")] use std::ops::{Deref, DerefMut};
-
-#[cfg(feature = "datagen")]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[repr(C, align(64))]
-pub(crate) struct Align64<T>(pub(crate) T);
-
-#[cfg(feature = "datagen")]
-impl<T> Align64<T> {
-    #[inline]
-    pub(crate) const fn new(val: T) -> Self { Self(val) }
-}
-
-#[cfg(feature = "datagen")]
-impl<T> Deref for Align64<T> {
-    type Target = T;
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target { &self.0 }
-}
-
-#[cfg(feature = "datagen")]
-impl<T> DerefMut for Align64<T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
-}
+//! Bounded hash indexing and number formatting.
 
 #[inline(always)]
 pub(crate) fn mulhi64(value: u64, bound: usize) -> usize { ((value as u128 * bound as u128) >> 64) as usize }
@@ -75,16 +49,5 @@ pub(crate) fn fmt_duration(ms: u64) -> String {
         (0, 0, _) => format!("{mins}m {secs}s"),
         (0, ..) => format!("{hours}h {mins}m {secs}s"),
         _ => format!("{days}d {hours}h {mins}m"),
-    }
-}
-
-#[cfg(all(test, feature = "datagen"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn align64_size() {
-        assert!(std::mem::align_of::<Align64<u8>>() == 64);
-        assert!(std::mem::size_of::<Align64<u8>>() == 64);
     }
 }

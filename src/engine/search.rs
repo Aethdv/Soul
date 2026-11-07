@@ -260,6 +260,15 @@ impl SearchConfig {
         self.node_slots = Self::node_slots(threads);
     }
 
+    #[cfg(feature = "datagen")]
+    pub(crate) fn reset(&mut self) {
+        self.start_time = Instant::now();
+        self.stop.store(false, Ordering::Relaxed);
+        for slot in &*self.node_slots {
+            slot.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Reduction in `LMR_SCALE` units.
     #[inline(always)]
     fn lmr(&self, depth: i32, move_count: usize) -> i32 {

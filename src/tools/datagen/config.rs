@@ -1,9 +1,8 @@
 //! The datagen settings, saved in the working directory for a later resume.
 
 use std::{
-    fs::{File, read_to_string, rename},
-    io::{Error, ErrorKind, Result, Write},
-    path::Path,
+    fs,
+    io::{Error, ErrorKind, Result},
 };
 
 pub(super) const CONFIG_FILENAME: &str = "datagen_config.json";
@@ -46,23 +45,18 @@ impl Default for DatagenConfig {
 
 impl DatagenConfig {
     pub(super) fn load() -> Result<Option<Self>> {
-        let path = Path::new(CONFIG_FILENAME);
-        if !path.exists() {
-            return Ok(None);
+        match fs::read_to_string(CONFIG_FILENAME) {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|e| Error::new(ErrorKind::InvalidData, format!("invalid config: {e}"))),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
         }
-
-        let content = read_to_string(path)?;
-        let config =
-            serde_json::from_str(&content).map_err(|e| Error::new(ErrorKind::InvalidData, format!("invalid config: {e}")))?;
-        Ok(Some(config))
     }
 
     pub(super) fn save(&self) -> Result<()> {
         let tmp_path = format!("{CONFIG_FILENAME}.tmp");
-        let content = serde_json::to_string_pretty(self)?;
-        let mut tmp_file = File::create(&tmp_path)?;
-        tmp_file.write_all(content.as_bytes())?;
-        rename(&tmp_path, CONFIG_FILENAME)?;
-        Ok(())
+        fs::write(&tmp_path, serde_json::to_string_pretty(self)?)?;
+        fs::rename(&tmp_path, CONFIG_FILENAME)
     }
 }

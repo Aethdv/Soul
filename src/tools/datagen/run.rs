@@ -4,12 +4,11 @@ use std::{
     fs::OpenOptions,
     io::{self, Write, stdout},
     num::NonZero,
-    path::Path,
     process,
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc::channel,
     },
     thread::{available_parallelism, sleep, spawn},
@@ -18,7 +17,7 @@ use std::{
 
 use super::{
     config::{CONFIG_FILENAME, DatagenConfig},
-    stats::{RunStats, rss_kib},
+    stats::{RunStats, Snapshot, Termination, rss_kib},
     worker::{Game, SelfPlayWorker},
 };
 use crate::{
@@ -27,7 +26,7 @@ use crate::{
     core::{
         board::STARTPOS,
         defs::MAX_DEPTH,
-        util::{fmt_comma, fmt_duration, pct, ratio},
+        util::{fmt_comma, fmt_duration, pct},
     },
     tools::dataset::{load_epd_fens, scan_viri_games, write_game},
 };
@@ -40,87 +39,44 @@ const DASHBOARD_INTERVAL: Duration = Duration::from_millis(100);
 const DASHBOARD_LINES: usize = 12;
 
 pub fn run(args: &[&str], stop: &Arc<AtomicBool>) -> bool {
-    let (config, resume) = match resolve_config(args) {
-        Ok(parsed) => parsed,
+    let (config, book_fens, existing_positions) = match prepare(args) {
+        Ok(ready) => ready,
         Err(message) => {
             eprintln!("{RED}datagen: {message}{RESET}");
             return false;
         },
     };
 
-    if config.max_plies == 0 {
-        eprintln!("{RED}datagen: --plies must be at least 1{RESET}");
-        return false;
-    }
-    if config.thread_count == Some(0) {
-        eprintln!("{RED}datagen: --threads must be at least 1{RESET}");
-        return false;
-    }
-
-    let existing_positions = if resume {
-        match count_existing_positions(&config.output_path) {
-            Ok(count) => count,
-            Err(message) => {
-                eprintln!("{RED}datagen: {message}{RESET}");
-                return false;
-            },
-        }
-    } else {
-        0
-    };
-
-    let book_fens = if config.startpos {
-        vec![STARTPOS.to_string()]
-    } else {
-        let fens = load_book_fens(&config.book_paths);
-        if fens.is_empty() {
-            eprintln!("{RED}datagen: no opening positions loaded{RESET}");
-            return false;
-        }
-        fens
-    };
-
-    println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len());
-
-    if let Err(e) = config.save() {
-        eprintln!("{RED}datagen: cannot save {CONFIG_FILENAME}: {e}{RESET}");
-        return false;
-    }
-
     let book = Arc::new(book_fens);
     let target_positions = config.target_count;
     let output_path = config.output_path.clone();
-    let save_interval = config.save_interval;
+    let save_interval = config.save_interval as u64;
     let num_threads = config
         .thread_count
         .unwrap_or_else(|| (available_parallelism().map_or(1, NonZero::get) / 2).max(1));
-    let stats = Arc::new(RunStats::new());
+    let stats = Arc::new(RunStats::new(existing_positions, target_positions));
 
     print_banner(&config, num_threads, book.len(), existing_positions);
 
-    let stop_for_handler = stop.clone();
+    let stop_for_handler = Arc::clone(stop);
     let _ = ctrlc::set_handler(move || {
         println!("\n{YELLOW}Interrupt received, stopping workers...{RESET}");
         stop_for_handler.store(true, Ordering::SeqCst);
     });
 
-    let mut total_positions = existing_positions;
     let mut last_saved_positions = existing_positions;
     let mut saving_enabled = true;
-    let mut pending: Vec<u8> = Vec::with_capacity(save_interval * 8);
-    let shared_positions = Arc::new(AtomicUsize::new(total_positions));
+    let mut pending: Vec<u8> = Vec::with_capacity(config.save_interval.saturating_mul(8));
 
     let dashboard = {
-        let stats = stats.clone();
-        let shared_positions = shared_positions.clone();
-        let stop = stop.clone();
+        let stats = Arc::clone(&stats);
+        let stop = Arc::clone(stop);
 
         spawn(move || {
             let mut first_frame = true;
 
             while !stop.load(Ordering::Relaxed) {
-                let snapshot = Snapshot::capture(&stats, &shared_positions, target_positions);
-                render_dashboard(&snapshot, &mut first_frame);
+                render_dashboard(&stats.snapshot(), &mut first_frame);
                 sleep(DASHBOARD_INTERVAL);
             }
         })
@@ -130,13 +86,13 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) -> bool {
     let mut handles = Vec::with_capacity(num_threads);
 
     for _ in 0..num_threads {
-        let mut worker = SelfPlayWorker::new(book.clone(), config.clone(), stats.clone());
+        let mut worker = SelfPlayWorker::new(Arc::clone(&book), &config);
         let tx = tx.clone();
-        let stop = stop.clone();
-        let shared_positions = shared_positions.clone();
+        let stop = Arc::clone(stop);
+        let stats = Arc::clone(&stats);
 
         handles.push(spawn(move || {
-            while !stop.load(Ordering::Relaxed) && shared_positions.load(Ordering::Relaxed) < target_positions as usize {
+            while !stop.load(Ordering::Relaxed) && !stats.is_done() {
                 let game = worker.play_game();
                 if !game.moves.is_empty() && tx.send(game).is_err() {
                     break;
@@ -148,15 +104,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) -> bool {
     drop(tx);
 
     for game in rx {
-        stats.games.fetch_add(1, Ordering::Relaxed);
-        stats.positions.fetch_add(game.moves.len() as u64, Ordering::Relaxed);
-
-        if game.moves.len() == config.max_plies {
-            stats.ply_cap_draws.fetch_add(1, Ordering::Relaxed);
-        }
-
-        total_positions += game.moves.len();
-        shared_positions.store(total_positions, Ordering::Relaxed);
+        let total_positions = stats.record(game.moves.len() as u64, game.termination, game.search_failures);
 
         // The header's eval is the opening position's, the first recorded score.
         let opening_eval = game.moves.first().map_or(0, |&(_, score)| score);
@@ -173,7 +121,7 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) -> bool {
             }
         }
 
-        if total_positions >= target_positions as usize {
+        if total_positions >= target_positions {
             stop.store(true, Ordering::SeqCst);
         }
     }
@@ -186,60 +134,42 @@ pub fn run(args: &[&str], stop: &Arc<AtomicBool>) -> bool {
     let _ = dashboard.join();
 
     let saved = append_pending(&output_path, &mut pending)
-        .map_err(|e| eprintln!("{RED}datagen: cannot save {output_path}: {e}{RESET}"))
+        .inspect_err(|e| eprintln!("{RED}datagen: cannot save {output_path}: {e}{RESET}"))
         .is_ok();
 
     println!();
-    let snapshot = Snapshot::capture(&stats, &AtomicUsize::new(total_positions), target_positions);
-    print_final_report(&snapshot, &output_path, saved);
+    print_final_report(&stats.snapshot(), &output_path, saved);
     saved
 }
 
-struct Snapshot {
-    elapsed: f64,
-    total_positions: u64,
-    target_count: u64,
-    session_games: u64,
-    session_positions: u64,
-    search_failures: u64,
-    checkmates: u64,
-    stalemates: u64,
-    fifty_move_draws: u64,
-    repetition_draws: u64,
-    material_draws: u64,
-    ply_cap_draws: u64,
-    adjudicated_draws: u64,
-    adjudicated_wins: u64,
-}
-
-impl Snapshot {
-    fn capture(stats: &RunStats, shared_positions: &AtomicUsize, target_count: u64) -> Self {
-        Self {
-            elapsed: stats.start_time.elapsed().as_secs_f64(),
-            total_positions: shared_positions.load(Ordering::Relaxed) as u64,
-            target_count,
-            session_games: stats.games.load(Ordering::Relaxed),
-            session_positions: stats.positions.load(Ordering::Relaxed),
-            search_failures: stats.search_failures.load(Ordering::Relaxed),
-            checkmates: stats.checkmates.load(Ordering::Relaxed),
-            stalemates: stats.stalemates.load(Ordering::Relaxed),
-            fifty_move_draws: stats.fifty_move_draws.load(Ordering::Relaxed),
-            repetition_draws: stats.repetition_draws.load(Ordering::Relaxed),
-            material_draws: stats.material_draws.load(Ordering::Relaxed),
-            ply_cap_draws: stats.ply_cap_draws.load(Ordering::Relaxed),
-            adjudicated_draws: stats.adjudicated_draws.load(Ordering::Relaxed),
-            adjudicated_wins: stats.adjudicated_wins.load(Ordering::Relaxed),
-        }
+fn prepare(args: &[&str]) -> Result<(DatagenConfig, Vec<String>, u64), String> {
+    let (config, resume) = resolve_config(args)?;
+    if config.max_plies == 0 {
+        return Err("--plies must be at least 1".into());
+    }
+    if config.thread_count == Some(0) {
+        return Err("--threads must be at least 1".into());
     }
 
-    fn rate(&self) -> f64 { ratio(self.session_positions as f64, self.elapsed) }
-    fn progress_pct(&self) -> f64 { pct(self.total_positions, self.target_count) }
-    fn avg_ply(&self) -> f64 { ratio(self.session_positions as f64, self.session_games as f64) }
-    fn eta_secs(&self) -> f64 { ratio(self.target_count.saturating_sub(self.total_positions) as f64, self.rate()) }
+    let existing_positions = if resume { count_existing_positions(&config.output_path)? } else { 0 };
+
+    let book_fens = if config.startpos {
+        vec![STARTPOS.to_string()]
+    } else {
+        let fens = load_book_fens(&config.book_paths);
+        if fens.is_empty() {
+            return Err("no opening positions loaded".into());
+        }
+        fens
+    };
+
+    println!("Total starting positions: {GREEN}{}{RESET}", book_fens.len());
+    config.save().map_err(|e| format!("cannot save {CONFIG_FILENAME}: {e}"))?;
+    Ok((config, book_fens, existing_positions))
 }
 
 fn render_dashboard(snapshot: &Snapshot, first_frame: &mut bool) {
-    let badge = if snapshot.session_games == 0 {
+    let badge = if snapshot.games == 0 {
         String::new()
     } else if snapshot.avg_ply() > 60.0 {
         format!("{GREEN}[OK]{RESET}")
@@ -265,24 +195,13 @@ fn render_dashboard(snapshot: &Snapshot, first_frame: &mut bool) {
         fmt_comma(snapshot.target_count),
         snapshot.progress_pct(),
     );
-
     println!("\r\x1b[KRate:            {:.3} k/s", snapshot.rate() / 1000.0);
-
-    println!("\r\x1b[KGames:           {}", fmt_comma(snapshot.session_games));
+    println!("\r\x1b[KGames:           {}", fmt_comma(snapshot.games));
     println!("\r\x1b[KAvg ply:         {:.1}", snapshot.avg_ply());
-    println!("\r\x1b[KCheckmate:       {}", fmt_comma(snapshot.checkmates));
-    println!(
-        "\r\x1b[KDraw (rules):    {}",
-        fmt_comma(
-            snapshot.stalemates
-                + snapshot.fifty_move_draws
-                + snapshot.repetition_draws
-                + snapshot.material_draws
-                + snapshot.ply_cap_draws
-        )
-    );
-    println!("\r\x1b[KDraw (adj):      {}", fmt_comma(snapshot.adjudicated_draws));
-    println!("\r\x1b[KWin (adj):       {}", fmt_comma(snapshot.adjudicated_wins));
+    println!("\r\x1b[KCheckmate:       {}", fmt_comma(snapshot.count(Termination::Checkmate)));
+    println!("\r\x1b[KDraw (rules):    {}", fmt_comma(snapshot.rule_draws()));
+    println!("\r\x1b[KDraw (adj):      {}", fmt_comma(snapshot.count(Termination::AdjudicatedDraw)));
+    println!("\r\x1b[KWin (adj):       {}", fmt_comma(snapshot.count(Termination::AdjudicatedWin)));
     println!("\r\x1b[KSearch failures: {}", fmt_comma(snapshot.search_failures));
     println!("\r\x1b[KRSS:             {} MiB", rss_kib() / 1024);
     println!("\r\x1b[KElapsed:         {}", fmt_duration((snapshot.elapsed * 1000.0) as u64));
@@ -292,11 +211,9 @@ fn render_dashboard(snapshot: &Snapshot, first_frame: &mut bool) {
 }
 
 fn print_final_report(snapshot: &Snapshot, output_path: &str, saved: bool) {
-    let session_games = snapshot.session_games;
-
     println!(
         "{GREEN}[OK]{RESET} {} positions in {:.1}s ({:.3}k/s)",
-        fmt_comma(snapshot.session_positions),
+        fmt_comma(snapshot.positions),
         snapshot.elapsed,
         snapshot.rate() / 1000.0,
     );
@@ -309,26 +226,16 @@ fn print_final_report(snapshot: &Snapshot, output_path: &str, saved: bool) {
 
     println!();
     println!("[FINAL STATS]");
-    println!("  Games:            {}", fmt_comma(snapshot.session_games));
+    println!("  Games:            {}", fmt_comma(snapshot.games));
     println!("  Total Positions:  {}", fmt_comma(snapshot.total_positions));
     println!("  Avg Plies/Game:   {:.1}", snapshot.avg_ply());
     println!("  Search Failures:  {}", fmt_comma(snapshot.search_failures));
     println!();
     println!("  Game Terminations:");
 
-    let terminations = [
-        ("Checkmates", snapshot.checkmates),
-        ("Stalemates", snapshot.stalemates),
-        ("50-move draws", snapshot.fifty_move_draws),
-        ("Repetition draws", snapshot.repetition_draws),
-        ("Material draws", snapshot.material_draws),
-        ("Ply-cap draws", snapshot.ply_cap_draws),
-        ("Adjudicated draws", snapshot.adjudicated_draws),
-        ("Adjudicated wins", snapshot.adjudicated_wins),
-    ];
-
-    for (label, count) in terminations {
-        println!("    {label:<17} {} ({:.1}%)", fmt_comma(count), pct(count, session_games),);
+    for t in Termination::ALL {
+        let count = snapshot.count(t);
+        println!("    {:<17} {} ({:.1}%)", t.label(), fmt_comma(count), pct(count, snapshot.games));
     }
 }
 
@@ -359,7 +266,7 @@ fn resolve_config(args: &[&str]) -> Result<(DatagenConfig, bool), String> {
     Ok((config, resume))
 }
 
-fn print_banner(config: &DatagenConfig, num_threads: usize, opening_count: usize, existing_positions: usize) {
+fn print_banner(config: &DatagenConfig, num_threads: usize, opening_count: usize, existing_positions: u64) {
     println!("Starting with {num_threads} threads");
     println!("Target: {} positions", config.target_count);
     println!("Output: {}", config.output_path);
@@ -406,14 +313,12 @@ fn append_pending(output_path: &str, pending: &mut Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 
-fn count_existing_positions(path: &str) -> Result<usize, String> {
-    if !Path::new(path).exists() {
-        return Ok(0);
+fn count_existing_positions(path: &str) -> Result<u64, String> {
+    match scan_viri_games(path) {
+        Ok(scan) => Ok(scan.plies),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(format!("cannot resume {path}: {e}")),
     }
-
-    scan_viri_games(path)
-        .map(|scan| scan.plies as usize)
-        .map_err(|e| format!("cannot resume {path}: {e}"))
 }
 
 fn print_help() {
