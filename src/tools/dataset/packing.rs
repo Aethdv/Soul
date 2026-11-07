@@ -40,6 +40,10 @@ pub(super) fn unpack_pieces(occupancy: u64, pieces: &[u8; 16]) -> impl Iterator<
     })
 }
 
+pub(super) fn pack_stm_and_ep(board: &Position) -> u8 {
+    (u8::from(board.stm == Color::Black) << 7) | (board.en_passant.map_or(64, |sq| sq.0) & 0x7F)
+}
+
 pub(super) fn from_board(board: &Position, result: f64, search_score: Option<i32>) -> SoulEntry {
     assert!(result.is_finite() && (0.0..=1.0).contains(&result), "result must be a finite WDL fraction");
 
@@ -51,7 +55,7 @@ pub(super) fn from_board(board: &Position, result: f64, search_score: Option<i32
         // One short of i16::MAX, so a clamped score cannot land on the NO_SCORE sentinel.
         score: search_score.map_or(SoulEntry::NO_SCORE, |s| s.clamp(i16::MIN as i32, i16::MAX as i32 - 1) as i16),
         result: (result * 2.0) as u8,
-        stm_and_ep: (u8::from(board.stm == Color::Black) << 7) | (board.en_passant.map_or(64, |sq| sq.0) & 0x7F),
+        stm_and_ep: pack_stm_and_ep(board),
         castling_rights: board.castling_rights,
         _pad: [0u8; 3],
     }
@@ -152,14 +156,8 @@ pub(super) fn unpack_board(
 }
 
 fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
-    for slot in 0..4 {
-        let bit = 1u8 << slot;
-        let is_white_slot = slot < 2;
-        if board.castling_rights & bit != 0 && board.castling_rooks[slot] == sq && is_white_slot == (color == Color::White) {
-            return true;
-        }
-    }
-    false
+    let base = if color == Color::White { 0 } else { 2 };
+    (base..base + 2).any(|slot| board.castling_rights & (1 << slot) != 0 && board.castling_rooks[slot] == sq)
 }
 
 pub(crate) fn material_count(entry: &SoulEntry) -> u32 {

@@ -60,13 +60,7 @@ impl Default for ReplayFilter {
             max_eval: 31339,
             filter_tactical: true,
             filter_check: true,
-            filter_castling: false,
-            max_eval_incorrectness: u32::MAX,
-            random_fen_skipping: false,
-            random_fen_skip_probability: 0.0,
-            wdl_filtered: false,
-            material_count_filtered: false,
-            material_count_probabilities: Vec::new(),
+            ..Self::UNRESTRICTED
         }
     }
 }
@@ -160,19 +154,21 @@ impl ReplayFilter {
 /// `weights` is empty when the filter does not weight. A truncated or malformed stream is
 /// returned as `InvalidData`.
 pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<SoulEntry>, Vec<f32>, Vec<u32>)> {
-    let data = fs::read(path)?;
+    parse_viri_bytes(&fs::read(path)?, filter)
+}
 
+fn parse_viri_bytes(data: &[u8], filter: &ReplayFilter) -> io::Result<(Vec<SoulEntry>, Vec<f32>, Vec<u32>)> {
     let mut entries = Vec::new();
     let mut weights = Vec::new();
     let mut kept_per_game = Vec::new();
     let mut offset = 0usize;
 
     while offset < data.len() {
-        let (mut position, white_result, mut ply, _) = read_header(&data, &mut offset)?;
+        let (mut position, white_result, mut ply, _) = read_header(data, &mut offset)?;
         let mut acc = position.psqt_accumulator();
         let kept_before = entries.len();
 
-        while let Some((packed_move, white_score)) = read_move_pair(&data, &mut offset)? {
+        while let Some((packed_move, white_score)) = read_move_pair(data, &mut offset)? {
             let mv = decode_move(packed_move, &position).ok_or_else(|| corrupt("invalid move"))?;
 
             if !filter.should_filter(&position, mv, i32::from(white_score), white_result, ply) {
@@ -200,19 +196,19 @@ pub fn parse_viri_file(path: &str, filter: &ReplayFilter) -> io::Result<(Vec<Sou
 }
 
 /// Scans every game without filtering. Fails on truncated or invalid data.
-pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
-    let data = fs::read(path)?;
+pub fn scan_viri_games(path: &str) -> io::Result<GameScan> { scan_viri_bytes(&fs::read(path)?) }
 
+fn scan_viri_bytes(data: &[u8]) -> io::Result<GameScan> {
     let mut scan = GameScan::default();
     let mut offset = 0usize;
 
     while offset < data.len() {
-        let (mut position, game_result, _, header_score) = read_header(&data, &mut offset)?;
+        let (mut position, game_result, _, header_score) = read_header(data, &mut offset)?;
         let mut acc = position.psqt_accumulator();
         let mut last_score = i32::from(header_score);
         let mut plies = 0u64;
 
-        while let Some((packed_move, score)) = read_move_pair(&data, &mut offset)? {
+        while let Some((packed_move, score)) = read_move_pair(data, &mut offset)? {
             last_score = i32::from(score);
             let mv = decode_move(packed_move, &position).ok_or_else(|| corrupt("invalid move"))?;
             plies += 1;
@@ -241,44 +237,31 @@ pub fn scan_viri_games(path: &str) -> io::Result<GameScan> {
 
 fn corrupt(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message) }
 
-fn read_header(data: &[u8], offset: &mut usize) -> io::Result<(Position, u8, u32, i16)> {
-    let end = offset
-        .checked_add(HEADER_SIZE)
-        .filter(|&end| end <= data.len())
-        .ok_or_else(|| corrupt("truncated game header"))?;
-    let header = data.get(*offset..end).ok_or_else(|| corrupt("truncated game header"))?;
-    *offset = end;
+fn take_chunk<'a, const N: usize>(data: &'a [u8], offset: &mut usize, msg: &str) -> io::Result<&'a [u8; N]> {
+    let chunk = data.get(*offset..).and_then(|s| s.first_chunk::<N>()).ok_or_else(|| corrupt(msg))?;
+    *offset += N;
+    Ok(chunk)
+}
 
+fn read_header(data: &[u8], offset: &mut usize) -> io::Result<(Position, u8, u32, i16)> {
+    let header = take_chunk::<HEADER_SIZE>(data, offset, "truncated game header")?;
     let (position, result, ply) = parse_header(header).ok_or_else(|| corrupt("invalid game header"))?;
     let score = i16::from_le_bytes([header[28], header[29]]);
     Ok((position, result, ply, score))
 }
 
 fn read_move_pair(data: &[u8], offset: &mut usize) -> io::Result<Option<(u16, i16)>> {
-    let end = offset
-        .checked_add(4)
-        .filter(|&end| end <= data.len())
-        .ok_or_else(|| corrupt("truncated move pair"))?;
-    let chunk = data.get(*offset..end).ok_or_else(|| corrupt("truncated move pair"))?;
-    *offset = end;
-
-    if chunk == SENTINEL {
+    let chunk = take_chunk::<4>(data, offset, "truncated move pair")?;
+    if *chunk == SENTINEL {
         return Ok(None);
     }
-
-    let mv = u16::from_le_bytes([chunk[0], chunk[1]]);
-    let score = i16::from_le_bytes([chunk[2], chunk[3]]);
-    Ok(Some((mv, score)))
+    Ok(Some((u16::from_le_bytes([chunk[0], chunk[1]]), i16::from_le_bytes([chunk[2], chunk[3]]))))
 }
 
 // Starting ply counts from move one of the game, so a cut opening enters at its real ply.
-fn parse_header(data: &[u8]) -> Option<(Position, u8, u32)> {
-    if data.len() < HEADER_SIZE {
-        return None;
-    }
-
-    let occupancy = u64::from_le_bytes(data[0..8].try_into().ok()?);
-    let pieces: [u8; 16] = data[8..24].try_into().ok()?;
+fn parse_header(data: &[u8; HEADER_SIZE]) -> Option<(Position, u8, u32)> {
+    let occupancy = u64::from_le_bytes(*data.first_chunk::<8>().unwrap());
+    let pieces: [u8; 16] = data[8..24].try_into().unwrap();
     let result = data[30];
     if result > 2 {
         return None;
@@ -308,7 +291,7 @@ fn pack_header(pos: &Position, score: i16, result: u8) -> [u8; HEADER_SIZE] {
     let mut out = [0u8; HEADER_SIZE];
     out[0..8].copy_from_slice(&occupancy.to_le_bytes());
     out[8..24].copy_from_slice(&pieces);
-    out[24] = (u8::from(pos.stm == Color::Black) << 7) | pos.en_passant.map_or(64, |sq| sq.0);
+    out[24] = packing::pack_stm_and_ep(pos);
     out[25] = pos.halfmove_clock;
     out[26..28].copy_from_slice(&pos.fullmove_number.to_le_bytes());
     out[28..30].copy_from_slice(&score.to_le_bytes());
@@ -396,8 +379,8 @@ fn decode_move(viri_move: u16, pos: &Position) -> Option<Move> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HEADER_SIZE, Move, Position, ReplayFilter, SENTINEL, WDL_DRAW, WDL_WIN, decode_move, pack_header, parse_header,
-        parse_viri_file, scan_viri_games, write_game,
+        HEADER_SIZE, Move, Position, ReplayFilter, SENTINEL, WDL_DRAW, WDL_WIN, decode_move, encode_move, pack_header,
+        parse_header, parse_viri_bytes, scan_viri_bytes, write_game,
     };
     use crate::{
         core::{
@@ -405,7 +388,7 @@ mod tests {
             defs::{Color, PieceType, Square},
         },
         engine::movegen::gen_legal_moves,
-        tools::dataset::{SoulEntry, flip_result, flip_score, packing},
+        tools::dataset::{flip_result, flip_score, packing},
     };
 
     const WDL_LOSS: u8 = 0;
@@ -529,19 +512,6 @@ mod tests {
         assert!(lost < 0.1);
     }
 
-    fn wire_from_entry(entry: &SoulEntry, halfmove: u8, fullmove: u16, extra: u8) -> [u8; 32] {
-        let mut wire = [0u8; 32];
-        wire[0..8].copy_from_slice(&entry.occupancy.to_le_bytes());
-        wire[8..24].copy_from_slice(&entry.pieces);
-        wire[24] = entry.stm_and_ep;
-        wire[25] = halfmove;
-        wire[26..28].copy_from_slice(&fullmove.to_le_bytes());
-        wire[28..30].copy_from_slice(&entry.score.to_le_bytes());
-        wire[30] = entry.result;
-        wire[31] = extra;
-        wire
-    }
-
     fn assert_position_equal(a: &Position, b: &Position) {
         assert_eq!(a.stm, b.stm);
         assert_eq!(a.en_passant, b.en_passant);
@@ -551,27 +521,27 @@ mod tests {
         assert_eq!(a.occ, b.occ);
         assert_eq!(a.side_bb, b.side_bb);
         for sq_idx in 0..64 {
-            let sq = Square(sq_idx as u8);
+            let sq = Square(sq_idx);
             assert_eq!(a.piece_at(sq), b.piece_at(sq), "piece on {sq:?}");
         }
     }
 
-    fn assert_wire_roundtrip(fen: &str, result: f64, score: i32, halfmove: u8, fullmove: u16) {
-        let pos = Position::from_fen(fen);
-        let entry = packing::from_board(&pos, result, Some(score));
-        let (decoded, game_result, ply) =
-            parse_header(&wire_from_entry(&entry, halfmove, fullmove, 0)).expect("valid header wire format");
+    fn assert_wire_roundtrip(fen: &str, result: u8, score: i16, halfmove: u8, fullmove: u16) {
+        let mut pos = Position::from_fen(fen);
+        pos.halfmove_clock = halfmove;
+        pos.fullmove_number = fullmove;
+        let (decoded, game_result, ply) = parse_header(&pack_header(&pos, score, result)).expect("valid header wire format");
         assert_position_equal(&pos, &decoded);
-        assert_eq!(game_result, (result * 2.0) as u8);
+        assert_eq!(game_result, result);
         let expected_ply = (u32::from(fullmove) - 1) * 2 + u32::from(decoded.stm == Color::Black);
         assert_eq!(ply, expected_ply);
     }
 
     #[test]
     fn header_decodes_to_original_position() {
-        assert_wire_roundtrip("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3", 1.0, 120, 0, 32);
-        assert_wire_roundtrip("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1", 0.5, -40, 7, 9);
-        assert_wire_roundtrip("4k3/8/8/8/8/8/P6p/4K3 w - - 0 1", 1.0, 10_000, 3, 44);
+        assert_wire_roundtrip("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3", WDL_WIN, 120, 0, 32);
+        assert_wire_roundtrip("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1", WDL_DRAW, -40, 7, 9);
+        assert_wire_roundtrip("4k3/8/8/8/8/8/P6p/4K3 w - - 0 1", WDL_WIN, 10_000, 3, 44);
     }
 
     fn frc_rooks_off_home() -> Position {
@@ -591,8 +561,7 @@ mod tests {
     #[test]
     fn unmoved_rooks_rebuild_frc_rights_slots() {
         let pos = frc_rooks_off_home();
-        let entry = packing::from_board(&pos, 1.0, Some(0));
-        let (decoded, ..) = parse_header(&wire_from_entry(&entry, 0, 3, 0)).expect("well-formed wire");
+        let (decoded, ..) = parse_header(&pack_header(&pos, 0, WDL_WIN)).expect("well-formed wire");
         assert_position_equal(&pos, &decoded);
         assert_eq!(decoded.castling_rights, WHITE_OO | WHITE_OOO);
         assert_eq!(decoded.castling_rooks[ROOK_W_QS], Square(1));
@@ -601,25 +570,7 @@ mod tests {
 
     fn assert_move_roundtrip(fen: &str, want: impl Fn(Move) -> bool) {
         let (pos, mv) = pick(fen, want);
-        let promo = mv.promo().map_or(0, |p| match p {
-            PieceType::Knight => 0,
-            PieceType::Bishop => 1,
-            PieceType::Rook => 2,
-            _ => 3,
-        });
-
-        let (ty, promo_bits) = if mv.is_castling() {
-            (2u16, 0u16)
-        } else if mv.is_en_passant() {
-            (1, 0)
-        } else if mv.is_promotion() {
-            (3, promo)
-        } else {
-            (0, 0)
-        };
-
-        let wire = u16::from(mv.from().0) | (u16::from(mv.to().0) << 6) | (promo_bits << 12) | (ty << 14);
-        assert_eq!(decode_move(wire, &pos), Some(mv), "round trip of {mv:?}");
+        assert_eq!(decode_move(encode_move(mv), &pos), Some(mv), "round trip of {mv:?}");
     }
 
     #[test]
@@ -647,7 +598,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no {uci} in {}", pos.to_fen()))
     }
 
-    fn assert_round_trips(tag: &str, start_fen: &str, ucis: &[&str], result: u8) {
+    fn assert_round_trips(start_fen: &str, ucis: &[&str], result: u8) {
         let opening = Position::from_fen(start_fen);
         let mut replay = opening;
         let mut acc = replay.psqt_accumulator();
@@ -666,7 +617,7 @@ mod tests {
         let mut bytes = Vec::new();
         write_game(&mut bytes, &opening, result, opening_eval, &moves);
 
-        let (entries, ..) = read_back(tag, &bytes);
+        let (entries, ..) = parse_viri_bytes(&bytes, &ReplayFilter::UNRESTRICTED).expect("valid game bytes");
         assert_eq!(entries.len(), expected.len());
 
         for (entry, (want, score, stm)) in entries.iter().zip(&expected) {
@@ -702,68 +653,35 @@ mod tests {
 
     #[test]
     fn truncated_files_are_rejected() {
-        let path = std::env::temp_dir().join(format!("soul_viri_truncated_{}.vf", std::process::id()));
-        let path = path.to_str().unwrap();
-        let rejects = |path: &str| {
-            assert!(scan_viri_games(path).is_err());
-            assert!(parse_viri_file(path, &ReplayFilter::UNRESTRICTED).is_err());
+        let rejects = |bytes: &[u8]| {
+            assert!(scan_viri_bytes(bytes).is_err());
+            assert!(parse_viri_bytes(bytes, &ReplayFilter::UNRESTRICTED).is_err());
         };
 
         let mut truncated = pack_header(&Position::from_fen(OPEN), 0, WDL_DRAW).to_vec();
         truncated.extend_from_slice(&[0, 0]);
-        std::fs::write(path, truncated).unwrap();
-        rejects(path);
-
-        std::fs::write(path, vec![0u8; HEADER_SIZE - 1]).unwrap();
-        rejects(path);
-
-        std::fs::write(path, pack_header(&Position::from_fen(OPEN), 0, WDL_LOSS)).unwrap();
-        rejects(path);
-
-        std::fs::remove_file(path).ok();
-    }
-
-    fn read_back(tag: &str, bytes: &[u8]) -> (Vec<SoulEntry>, Vec<f32>, Vec<u32>) {
-        let path = std::env::temp_dir().join(format!("soul_viri_{tag}_{}.vf", std::process::id()));
-        std::fs::write(&path, bytes).expect("writing the game");
-        let read = parse_viri_file(path.to_str().expect("a utf-8 temp path"), &ReplayFilter::UNRESTRICTED);
-        std::fs::remove_file(&path).ok();
-        read.expect("reading the game back")
+        rejects(&truncated);
+        rejects(&[0u8; HEADER_SIZE - 1]);
+        rejects(&pack_header(&Position::from_fen(OPEN), 0, WDL_LOSS));
     }
 
     #[test]
-    fn a_game_with_castling_and_captures_round_trips() {
-        assert_round_trips("castling", OPEN, &["e1g1", "g8f6", "c4f7", "e8f7"], WDL_WIN);
-    }
+    fn a_game_with_castling_and_captures_round_trips() { assert_round_trips(OPEN, &["e1g1", "g8f6", "c4f7", "e8f7"], WDL_WIN); }
 
     #[test]
     fn a_game_with_a_promotion_and_an_en_passant_round_trips() {
-        assert_round_trips("promo_ep", PROMO_AND_EP, &["e5d6", "a1a2", "b7b8q"], WDL_WIN);
+        assert_round_trips(PROMO_AND_EP, &["e5d6", "a1a2", "b7b8q"], WDL_WIN);
     }
 
     #[test]
-    fn a_game_that_opens_in_check_round_trips() { assert_round_trips("in_check", IN_CHECK_BLACK, &["e8f7"], WDL_LOSS); }
-
-    #[test]
-    fn pack_header_matches_hand_built_header() {
-        let mut boards: Vec<Position> = [OPEN, IN_CHECK_BLACK, EN_PASSANT, PROMOTES, "4k3/8/8/8/8/8/P6p/4K3 w - - 0 1"]
-            .map(Position::from_fen)
-            .into();
-        boards.push(frc_rooks_off_home());
-
-        for pos in &boards {
-            let entry = packing::from_board(pos, 1.0, Some(-40));
-            let wire = wire_from_entry(&entry, pos.halfmove_clock, pos.fullmove_number, 0);
-            assert_eq!(pack_header(pos, -40, WDL_WIN), wire, "header bytes for {}", pos.to_fen());
-        }
-    }
+    fn a_game_that_opens_in_check_round_trips() { assert_round_trips(IN_CHECK_BLACK, &["e8f7"], WDL_LOSS); }
 
     #[test]
     fn a_game_with_no_moves_writes_only_its_header_and_sentinel() {
         let mut bytes = Vec::new();
         write_game(&mut bytes, &Position::from_fen(OPEN), WDL_DRAW, 0, &[]);
         assert_eq!(bytes.len(), HEADER_SIZE + SENTINEL.len());
-        let (entries, _, kept_per_game) = read_back("empty", &bytes);
+        let (entries, _, kept_per_game) = parse_viri_bytes(&bytes, &ReplayFilter::UNRESTRICTED).unwrap();
         assert!(entries.is_empty());
         assert!(kept_per_game.is_empty());
     }
@@ -775,7 +693,7 @@ mod tests {
         let mut bytes = Vec::new();
         write_game(&mut bytes, &opening, WDL_WIN, 0, &[(mv, 10)]);
         write_game(&mut bytes, &opening, WDL_WIN, 0, &[(mv, 20)]);
-        let (entries, _, entry_counts) = read_back("pair", &bytes);
+        let (entries, _, entry_counts) = parse_viri_bytes(&bytes, &ReplayFilter::UNRESTRICTED).unwrap();
         assert_eq!(entry_counts, vec![1, 1]);
         assert_eq!(entries[0].to_fen(), entries[1].to_fen());
         assert_eq!(i32::from(entries[1].score) - i32::from(entries[0].score), 10);

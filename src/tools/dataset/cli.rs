@@ -1,6 +1,9 @@
 //! `soul dataset`: inspect a viriformat file, summarize it, or dump its scores.
 
-use std::io::{self, BufWriter, Write};
+use std::{
+    fs::File,
+    io::{self, BufWriter, Write},
+};
 
 use crate::{
     cli::Help,
@@ -78,12 +81,8 @@ fn help() {
 }
 
 fn inspect(path: &str, count: usize) -> bool {
-    let entries = match load_entries(path) {
-        Ok(entries) => entries,
-        Err(e) => {
-            eprintln!("Error loading dataset: {e}");
-            return false;
-        },
+    let Ok(entries) = load_entries(path).inspect_err(|e| eprintln!("Error loading dataset: {e}")) else {
+        return false;
     };
 
     let display_count = count.min(entries.len());
@@ -109,15 +108,11 @@ fn inspect(path: &str, count: usize) -> bool {
 }
 
 fn info(path: &str) -> bool {
-    let entries = match load_entries(path) {
-        Ok(entries) => entries,
-        Err(e) => {
-            eprintln!("Error loading dataset: {e}");
-            return false;
-        },
+    let Ok(entries) = load_entries(path).inspect_err(|e| eprintln!("Error loading dataset: {e}")) else {
+        return false;
     };
 
-    let entry_size = std::mem::size_of::<SoulEntry>();
+    let entry_size = size_of::<SoulEntry>();
     let record_bytes = entries.len() * entry_size;
 
     let mut total_search = 0i64;
@@ -165,7 +160,7 @@ fn info(path: &str) -> bool {
 fn write_scores_csv(path: &str) -> io::Result<()> {
     let entries = load_entries(path)?;
     let out_path = format!("{path}.scores.csv");
-    let mut out = BufWriter::new(std::fs::File::create(&out_path)?);
+    let mut out = BufWriter::new(File::create(&out_path)?);
 
     writeln!(out, "result,score")?;
     for entry in &entries {
