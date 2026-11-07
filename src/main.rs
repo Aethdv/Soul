@@ -2,12 +2,7 @@
 
 #[cfg(feature = "datagen")]
 use std::sync::{Arc, atomic::AtomicBool};
-use std::{
-    env,
-    io::{self, BufRead},
-    process,
-    str::FromStr,
-};
+use std::{env, io, process, str::FromStr};
 
 use soul::{
     core::board::{Position, STARTPOS},
@@ -72,15 +67,22 @@ fn protocol_session() {
     soul::cli::banner();
 
     let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
-    let Some(Ok(first)) = lines.next() else { return };
+    let mut lock = stdin.lock();
+    let mut raw = Vec::new();
 
-    if first.trim() == "xboard" {
-        protocols::xboard::main_loop(&mut lines);
+    let first = loop {
+        let Some(line) = protocols::read_line(&mut lock, &mut raw) else { return };
+        if !line.is_empty() {
+            break line;
+        }
+    };
+
+    if first == "xboard" {
+        protocols::xboard::main_loop(&mut lock);
         return;
     }
 
     // UCI starts its own stdin listener.
-    drop(lines);
+    drop(lock);
     protocols::uci::main_loop(Some(first));
 }

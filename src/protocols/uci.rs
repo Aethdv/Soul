@@ -146,7 +146,7 @@ pub fn main_loop(initial_command: Option<String>) {
     }
 
     while let Ok(line) = rx.recv() {
-        if !process_command(&mut state, line.trim()) {
+        if !process_command(&mut state, &line) {
             break;
         }
     }
@@ -310,21 +310,15 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
 
     thread::spawn(move || {
         let stdin = io::stdin();
+        let mut lock = stdin.lock();
+        let mut raw = Vec::new();
 
-        loop {
-            let mut line = String::new();
-
-            match stdin.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {},
-            }
-
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+        while let Some(line) = super::read_line(&mut lock, &mut raw) {
+            let Some(cmd) = line.split_whitespace().next() else {
                 continue;
-            }
+            };
 
-            match trimmed {
+            match cmd {
                 "isready" => {
                     println!("readyok");
                     let _ = io::stdout().flush();

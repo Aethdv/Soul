@@ -1,7 +1,7 @@
 //! XBoard / CECP protocol handling.
 
 use std::{
-    io::{self, StdinLock, Write},
+    io::{self, BufRead, Write},
     str::FromStr,
     sync::{
         Arc,
@@ -54,10 +54,11 @@ struct XBoardState {
     nps: Option<u64>,
 }
 
-pub fn main_loop(lines: &mut io::Lines<StdinLock>) {
+pub fn main_loop(stdin: &mut impl BufRead) {
     let mut state = XBoardState::new();
+    let mut raw = Vec::new();
 
-    while let Some(Ok(line)) = lines.next() {
+    while let Some(line) = super::read_line(stdin, &mut raw) {
         let mut tokens = line.split_whitespace();
         let Some(cmd) = tokens.next() else {
             continue;
