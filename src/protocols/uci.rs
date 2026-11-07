@@ -71,7 +71,6 @@ struct UciState {
     stop: Arc<AtomicBool>,
     search_tx: Sender<SearchRequest>,
     history_rx: mpsc::Receiver<Box<History>>,
-    is_searching: Arc<AtomicBool>,
     overhead: u64,
     search_params: SearchParams,
     display: SearchDisplay,
@@ -84,16 +83,13 @@ impl UciState {
         let board = Position::from_fen(STARTPOS);
         let trail = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
-        let is_searching = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel::<SearchRequest>();
         let (h_tx, h_rx) = mpsc::channel::<Box<History>>();
-        let is_searching_worker = is_searching.clone();
 
         thread::spawn(move || {
             while let Ok(mut req) = rx.recv() {
                 req.search.search(&req.cfg, req.board, &req.trail, &mut req.history);
                 let _ = h_tx.send(req.history);
-                is_searching_worker.store(false, Ordering::Relaxed);
             }
         });
 
@@ -106,7 +102,6 @@ impl UciState {
             stop,
             search_tx: tx,
             history_rx: h_rx,
-            is_searching,
             overhead: DEFAULT_OVERHEAD_MS,
             search_params: SearchParams::default(),
             display: SearchDisplay::DEFAULT,
@@ -115,22 +110,15 @@ impl UciState {
         }
     }
 
-    fn absorb_history(&mut self) {
-        while let Ok(table) = self.history_rx.try_recv() {
-            self.history = Some(table);
-        }
-    }
-
     fn stop_search(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.wait_for_search();
         self.stop.store(false, Ordering::Relaxed);
-        self.absorb_history();
     }
 
-    fn wait_for_search(&self) {
-        while self.is_searching.load(Ordering::Relaxed) {
-            thread::yield_now();
+    fn wait_for_search(&mut self) {
+        if self.history.is_none() {
+            self.history = self.history_rx.recv().ok();
         }
     }
 
@@ -158,7 +146,6 @@ pub fn main_loop(initial_command: Option<String>) {
     }
 
     while let Ok(line) = rx.recv() {
-        state.absorb_history();
         if !process_command(&mut state, line.trim()) {
             break;
         }
@@ -174,7 +161,6 @@ pub fn run_commands(lines: &[String]) {
 
         // go returns while its search is still running, so the batch waits for it here.
         state.wait_for_search();
-        state.absorb_history();
     }
 }
 
@@ -195,13 +181,12 @@ pub fn run_cli_pretty(depth: Option<i32>) {
 }
 
 fn dispatch_search(state: &mut UciState, limits: Limits) {
-    state.absorb_history();
+    state.wait_for_search();
     state.search.tt().set_age_factor(state.search_params.tt_age_factor);
     let mut cfg =
         SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, state.display, state.search_params);
     cfg.set_threads(state.search.threads());
     let history = state.history.take().unwrap_or_else(|| Box::new(History::new()));
-    state.is_searching.store(true, Ordering::Relaxed);
 
     state
         .search_tx
