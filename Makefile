@@ -56,14 +56,14 @@ endef
 
 define local_build
 	@echo "Building $(2)..."
-	@RUSTFLAGS="$(1)" cargo build --release --target $(RUST_HOST) $(CARGO_FEATURES)
+	@$(if $(1),RUSTFLAGS="$(1)" )cargo build --release --target $(RUST_HOST) $(CARGO_FEATURES)
 	@cp target/$(RUST_HOST)/release/$(EXE_NAME) $(EXE)
 	@echo "Done: ./$(EXE)"
 endef
 
 define stats_build
 	@echo "Building $(EXE_NAME)-$(2)..."
-	@RUSTFLAGS="-C target-cpu=native" cargo build --release --features $(1)
+	@cargo build --release --features $(1)
 	@cp target/release/$(EXE_NAME) $(EXE)-$(2)
 	@echo "Done: ./$(EXE)-$(2)"
 	@./$(EXE)-$(2) bench $(DEPTH)
@@ -112,7 +112,7 @@ endef
 # ── Binaries
 
 native: ## Build optimized for your CPU
-	$(call local_build,-C target-cpu=native,native)
+	$(call local_build,,native)
 
 pgo: check-pgo ## PGO build (recommended)
 	@$(call pgo_build,Standard)
@@ -167,7 +167,7 @@ else
 		$(MAKE) --no-print-directory openbench; \
 	else \
 		echo "cargo-pgo unavailable — native build."; \
-		CC=cc RUSTFLAGS="-C target-cpu=native" cargo build --release --quiet; \
+		CC=cc cargo build --release --quiet; \
 		cp target/release/$(EXE_NAME) $(EXE); \
 		echo "Done: ./$(EXE)"; \
 	fi
@@ -175,12 +175,12 @@ endif
 
 debug: ## Build for development
 	@echo "Building debug..."
-	@RUSTFLAGS="-C target-cpu=native" cargo build $(CARGO_FEATURES)
+	@cargo build $(CARGO_FEATURES)
 	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
 	@echo "Done: ./$(DEBUG_EXE)"
 
 bench: ## Fast compile w/ bench (DEPTH=12)
-	@RUSTFLAGS="-C target-cpu=native" cargo build --profile quick --quiet
+	@cargo build --profile quick --quiet
 	@./target/quick/$(EXE_NAME) bench $(DEPTH)
 
 tools: #@ Native build with datagen, dataset and the measurement rigs
@@ -191,20 +191,19 @@ datagen: #@ Native build with self-play generation and the dataset pipeline
 
 evaltune: #@ Build the eval tuner
 	@echo "Building evaltune..."
-	@RUSTFLAGS="-C target-cpu=native" \
-		cargo build --release -p evaltuner --bin evaltune --quiet --target $(RUST_HOST)
+	@cargo build --release -p evaltuner --bin evaltune --quiet --target $(RUST_HOST)
 	@cp target/$(RUST_HOST)/release/evaltune eval$(EXE_EXT)
 	@echo "Done: ./eval$(EXE_EXT)"
 
 test: #@ Run test suite
-	@RUSTDOCFLAGS="-C target-cpu=native" RUSTFLAGS="-C target-cpu=native" cargo test --workspace -- --nocapture
+	@cargo test --workspace -- --nocapture
 
 oracle: #@ Run the eval gradient oracle tests
-	@RUSTFLAGS="-C target-cpu=native" cargo test --workspace --release oracle
+	@cargo test --workspace --release oracle
 
 clippy: #@ Lint with Clippy (-D warnings, whole workspace + features)
-	@RUSTFLAGS="-C target-cpu=native" cargo clippy --workspace --all-features --all-targets --quiet -- -D warnings
-	@RUSTFLAGS="-C target-cpu=native" cargo clippy -p soul --all-targets --quiet -- -D warnings
+	@cargo clippy --workspace --all-features --all-targets --quiet -- -D warnings
+	@cargo clippy -p soul --all-targets --quiet -- -D warnings
 
 seefmt: #@ Check formatting
 	@cargo fmt --check

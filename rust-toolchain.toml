@@ -2,6 +2,3 @@
 channel = "nightly-2026-07-12"
 components = ["clippy", "rustfmt", "llvm-tools"]
 profile = "minimal"
-
-[alias]
-pgo = "cargo pgo"
