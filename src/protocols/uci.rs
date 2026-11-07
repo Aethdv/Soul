@@ -54,30 +54,28 @@ static LICENSE_NOTICE: &str = concat!(
     "Source code: <https://github.com/Aethdv/Soul>"
 );
 
-#[allow(clippy::large_enum_variant)]
-enum SearchCommand {
-    Go { cfg: Box<SearchConfig>, board: Position, trail: Vec<u64>, history: History, search: TableAndPool },
-    Quit,
+struct SearchRequest {
+    cfg: Box<SearchConfig>,
+    board: Position,
+    trail: Vec<u64>,
+    history: Box<History>,
+    search: TableAndPool,
 }
 
 struct UciState {
     board: Position,
     accumulator: I16x8,
     trail: Vec<u64>,
-    persistent_history: History,
+    history: Option<Box<History>>,
     search: TableAndPool,
     stop: Arc<AtomicBool>,
-    search_tx: Sender<SearchCommand>,
-    history_rx: mpsc::Receiver<History>,
+    search_tx: Sender<SearchRequest>,
+    history_rx: mpsc::Receiver<Box<History>>,
     is_searching: Arc<AtomicBool>,
     overhead: u64,
     search_params: SearchParams,
-    show_wdl: bool,
-    go_pretty: bool,
-    pretty_print: bool,
-    show_currmove: bool,
+    display: SearchDisplay,
     soft_nodes: bool,
-    stdout_isatty: Option<bool>,
     frc_notation: bool,
 }
 
@@ -87,20 +85,15 @@ impl UciState {
         let trail = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let is_searching = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel::<SearchCommand>();
-        let (h_tx, h_rx) = mpsc::channel::<History>();
+        let (tx, rx) = mpsc::channel::<SearchRequest>();
+        let (h_tx, h_rx) = mpsc::channel::<Box<History>>();
         let is_searching_worker = is_searching.clone();
 
         thread::spawn(move || {
-            while let Ok(cmd) = rx.recv() {
-                match cmd {
-                    SearchCommand::Go { cfg, board, trail, mut history, search } => {
-                        search.search(&cfg, board, &trail, &mut history);
-                        let _ = h_tx.send(history);
-                        is_searching_worker.store(false, Ordering::Relaxed);
-                    },
-                    SearchCommand::Quit => break,
-                }
+            while let Ok(mut req) = rx.recv() {
+                req.search.search(&req.cfg, req.board, &req.trail, &mut req.history);
+                let _ = h_tx.send(req.history);
+                is_searching_worker.store(false, Ordering::Relaxed);
             }
         });
 
@@ -108,7 +101,7 @@ impl UciState {
             accumulator: board.psqt_accumulator(),
             board,
             trail,
-            persistent_history: History::new(),
+            history: Some(Box::new(History::new())),
             search: TableAndPool::default(),
             stop,
             search_tx: tx,
@@ -116,19 +109,15 @@ impl UciState {
             is_searching,
             overhead: DEFAULT_OVERHEAD_MS,
             search_params: SearchParams::default(),
-            show_wdl: false,
-            go_pretty: false,
-            pretty_print: false,
-            show_currmove: true,
+            display: SearchDisplay::DEFAULT,
             soft_nodes: false,
-            stdout_isatty: None,
             frc_notation: false,
         }
     }
 
     fn absorb_history(&mut self) {
         while let Ok(table) = self.history_rx.try_recv() {
-            self.persistent_history = table;
+            self.history = Some(table);
         }
     }
 
@@ -136,6 +125,7 @@ impl UciState {
         self.stop.store(true, Ordering::Relaxed);
         self.wait_for_search();
         self.stop.store(false, Ordering::Relaxed);
+        self.absorb_history();
     }
 
     fn wait_for_search(&self) {
@@ -150,16 +140,6 @@ impl UciState {
         self.accumulator = self.board.psqt_accumulator();
         self.trail.clear();
         self.trail.push(self.board.hash);
-    }
-
-    fn search_display(&self) -> SearchDisplay {
-        SearchDisplay {
-            show_wdl: self.show_wdl,
-            go_pretty: self.go_pretty,
-            pretty_print: self.pretty_print,
-            show_currmove: self.show_currmove,
-            use_ansi: self.stdout_isatty.unwrap_or(true),
-        }
     }
 }
 
@@ -199,35 +179,37 @@ pub fn run_commands(lines: &[String]) {
 }
 
 pub fn run_cli_go(args: &[&str]) {
-    let state = UciState::new();
+    let mut state = UciState::new();
     let mut iter = args.iter().copied().peekable();
     let limits = parse_go_limits(&state.board, &mut iter);
-    dispatch_search(&state, limits);
+    dispatch_search(&mut state, limits);
     state.wait_for_search();
 }
 
 pub fn run_cli_pretty(depth: Option<i32>) {
     let mut state = UciState::new();
-    state.show_wdl = true;
-    state.go_pretty = true;
-    dispatch_search(&state, Limits { depth: depth.unwrap_or(MAX_DEPTH), protocol: Protocol::Uci, ..Default::default() });
+    state.display.show_wdl = true;
+    state.display.go_pretty = true;
+    dispatch_search(&mut state, Limits { depth: depth.unwrap_or(MAX_DEPTH), protocol: Protocol::Uci, ..Default::default() });
     state.wait_for_search();
 }
 
-fn dispatch_search(state: &UciState, limits: Limits) {
-    let display = state.search_display();
+fn dispatch_search(state: &mut UciState, limits: Limits) {
+    state.absorb_history();
     state.search.tt().set_age_factor(state.search_params.tt_age_factor);
-    let mut cfg = SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, display, state.search_params);
+    let mut cfg =
+        SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, state.display, state.search_params);
     cfg.set_threads(state.search.threads());
+    let history = state.history.take().unwrap_or_else(|| Box::new(History::new()));
     state.is_searching.store(true, Ordering::Relaxed);
 
     state
         .search_tx
-        .send(SearchCommand::Go {
+        .send(SearchRequest {
             cfg: Box::new(cfg),
             board: state.board,
             trail: state.trail.clone(),
-            history: state.persistent_history.clone(),
+            history,
             search: state.search.clone(),
         })
         .unwrap();
@@ -390,11 +372,10 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
     match cmd {
         "quit" => {
             state.stop_search();
-            let _ = state.search_tx.send(SearchCommand::Quit);
             return false;
         },
         "uci" => {
-            state.pretty_print = false;
+            state.display.pretty_print = false;
             print_id();
             print_options();
             println!("info string numa: {}", NumaTopology::detect());
@@ -404,8 +385,9 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "isready" => println!("readyok"),
         "ucinewgame" => {
             state.stop_search();
-            state.absorb_history();
-            state.persistent_history.clear();
+            if let Some(history) = &mut state.history {
+                history.clear();
+            }
             // SAFETY: stop_search waits for search() to return with all helpers parked.
             unsafe { state.search.tt().clear(state.search.threads()) };
             state.load_position(Position::from_fen(STARTPOS));
@@ -445,12 +427,12 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "genfens" => tools::genfens::run(&tokens.collect::<Vec<_>>()),
 
         "gopretty" => {
-            state.go_pretty = !state.go_pretty;
-            println!("GoPretty: {}", state.go_pretty);
+            state.display.go_pretty = !state.display.go_pretty;
+            println!("GoPretty: {}", state.display.go_pretty);
         },
         "prettyprint" | "pp" => {
-            state.pretty_print = !state.pretty_print;
-            println!("PrettyPrint: {}", state.pretty_print);
+            state.display.pretty_print = !state.display.pretty_print;
+            println!("PrettyPrint: {}", state.display.pretty_print);
         },
 
         "flip" => {
@@ -459,7 +441,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             println!("Side to move: {:?}", state.board.stm);
         },
         "key" => println!("Zobrist: 0x{:016X}", state.board.hash),
-        "help" => print_help(state.stdout_isatty.unwrap_or(true)),
+        "help" => print_help(state.display.use_ansi),
         _ => {},
     }
     let _ = io::stdout().flush();
@@ -564,8 +546,8 @@ where I: Iterator<Item = &'a str> {
             }
         },
         "uci_showwdl" => {
-            state.show_wdl = parse_bool(&value);
-            if state.show_wdl {
+            state.display.show_wdl = parse_bool(&value);
+            if state.display.show_wdl {
                 println!(
                     "info string note: WDL output uses Stockfish coefficients on a different eval scale and will be inaccurate"
                 );
@@ -573,12 +555,8 @@ where I: Iterator<Item = &'a str> {
         },
         "softnodes" => state.soft_nodes = parse_bool(&value),
         "uci_chess960" => state.frc_notation = parse_bool(&value),
-        "uci_showcurrmove" => {
-            state.show_currmove = parse_bool(&value);
-        },
-        "prettyprint" => {
-            state.pretty_print = parse_bool(&value);
-        },
+        "uci_showcurrmove" => state.display.show_currmove = parse_bool(&value),
+        "prettyprint" => state.display.pretty_print = parse_bool(&value),
         "threads" => state.search.set_threads(value.parse().unwrap_or(1)),
         _ => {
             if let Ok(v) = value.parse::<i32>() {
@@ -614,6 +592,6 @@ where I: Iterator<Item = &'a str> {
     };
 
     if let Some(value) = value {
-        state.stdout_isatty = Some(parse_bool(value));
+        state.display.use_ansi = parse_bool(value);
     }
 }

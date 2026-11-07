@@ -30,7 +30,7 @@ struct Shared<M> {
     num_receivers: u32,
 }
 
-pub(crate) fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
+pub(super) fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
     let shared = Arc::new(Shared {
         msg: AtomicPtr::new(ptr::null_mut()),
         ready: AtomicBool::new(false),
@@ -48,7 +48,7 @@ pub(crate) fn channel<M>(num_receivers: u32) -> (Sender<M>, Vec<Receiver<M>>) {
 }
 
 impl<M> Sender<M> {
-    pub(crate) fn send(&self, msg: M) {
+    pub(super) fn send(&self, msg: M) {
         let shared = &*self.shared;
         let boxed = Box::new(msg);
         shared.msg.store(Box::into_raw(boxed), Relaxed);

@@ -2,10 +2,10 @@
 
 use std::{
     io::{self, StdinLock, Write},
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        nonpoison::Mutex,
     },
     thread::{self, JoinHandle},
     time::Instant,
@@ -41,11 +41,11 @@ struct XBoardState {
     board: Position,
     accumulator: I16x8,
     trail: Vec<u64>,
-    persistent_history: Arc<Mutex<History>>,
+    history: Option<Box<History>>,
     search: TableAndPool,
     mode: Mode,
     stop: Arc<AtomicBool>,
-    search_thread: Option<JoinHandle<()>>,
+    search_thread: Option<JoinHandle<Box<History>>>,
     limits: Limits,
     overhead: u64,
     show_wdl: bool,
@@ -81,7 +81,7 @@ impl XBoardState {
             accumulator: board.psqt_accumulator(),
             board,
             trail,
-            persistent_history: Arc::new(Mutex::new(History::new())),
+            history: Some(Box::new(History::new())),
             search: TableAndPool::default(),
             mode: Mode::Normal,
             stop: Arc::new(AtomicBool::new(false)),
@@ -98,15 +98,18 @@ impl XBoardState {
     fn stop_search(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
 
-        if let Some(handle) = self.search_thread.take()
-            && let Err(err) = handle.join()
-        {
-            let message = err
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| err.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic payload");
-            eprintln!("Error: Search thread panicked: {message}");
+        if let Some(handle) = self.search_thread.take() {
+            match handle.join() {
+                Ok(history) => self.history = Some(history),
+                Err(err) => {
+                    let message = err
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| err.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic payload");
+                    eprintln!("Error: Search thread panicked: {message}");
+                },
+            }
         }
 
         self.stop.store(false, Ordering::Relaxed);
@@ -141,17 +144,15 @@ impl XBoardState {
         let trail = self.trail.clone();
         let overhead = self.overhead;
         let show_wdl = self.show_wdl;
-        let shared_history = Arc::clone(&self.persistent_history);
-        let mut history_table = shared_history.lock().clone();
-
+        let mut history = self.history.take().unwrap_or_else(|| Box::new(History::new()));
         let search = self.search.clone();
 
         self.search_thread = Some(thread::spawn(move || {
             let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
             let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             cfg.set_threads(search.threads());
-            search.search(&cfg, board, &trail, &mut history_table);
-            *shared_history.lock() = history_table;
+            search.search(&cfg, board, &trail, &mut history);
+            history
         }));
     }
 }
@@ -168,7 +169,9 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
         "new" => {
             state.stop_search();
-            state.persistent_history.lock().clear();
+            if let Some(history) = &mut state.history {
+                history.clear();
+            }
             state.load_position(Position::from_fen(STARTPOS));
             // SAFETY: stop_search joins the search thread, which waits for all
             // helpers to finish before returning.
@@ -213,9 +216,21 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             }
         },
         "level" => cmd_level(state, args),
-        "st" => cmd_st(state, args),
-        "sd" => cmd_sd(state, args),
-        "nps" => cmd_nps(state, args),
+        "st" => {
+            if let Some(secs) = next_parsed::<u64>(args) {
+                state.limits.movetime = secs * 1000;
+            }
+        },
+        "sd" => {
+            if let Some(depth) = next_parsed(args) {
+                state.limits.depth = depth;
+            }
+        },
+        "nps" => {
+            if let Some(nps) = next_parsed::<u64>(args) {
+                state.nps = (nps > 0).then_some(nps);
+            }
+        },
         "time" => cmd_clock(state, args, true),
         "otim" => cmd_clock(state, args, false),
         "ping" => {
@@ -234,17 +249,15 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 Err(e) => eprintln!("Error (invalid fen): {e}"),
             }
         },
-        "result" => {
-            state.stop_search();
-        },
+        "result" => state.stop_search(),
         "option" => cmd_option(state, args),
         "memory" => {
-            if let Some(mb) = args.next().and_then(|arg| arg.parse().ok()) {
+            if let Some(mb) = next_parsed(args) {
                 state.search.set_hash(mb);
             }
         },
         "cores" => {
-            if let Some(n) = args.next().and_then(|arg| arg.parse().ok()) {
+            if let Some(n) = next_parsed(args) {
                 state.search.set_threads(n);
             }
         },
@@ -310,10 +323,7 @@ fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
 
 // level 40 5 0 (40 moves in 5 mins)
 fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
-    let Some(moves_str) = args.next() else {
-        return;
-    };
-
+    let Some(moves_str) = args.next() else { return };
     if let Ok(moves) = moves_str.parse::<u64>() {
         state.limits.movestogo = moves;
     }
@@ -327,51 +337,26 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
         state.limits.btime = total_ms;
     }
 
-    if let Some(inc) = args.next().and_then(|s| s.parse::<f64>().ok()) {
+    if let Some(inc) = next_parsed::<f64>(args) {
         let inc_ms = (inc * 1000.0) as u64;
         state.limits.winc = inc_ms;
         state.limits.binc = inc_ms;
     }
 }
 
-fn cmd_st<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
-    if let Some(arg) = args.next()
-        && let Ok(secs) = arg.parse::<u64>()
-    {
-        state.limits.movetime = secs * 1000;
-    }
-}
-
-fn cmd_sd<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
-    if let Some(arg) = args.next()
-        && let Ok(depth) = arg.parse::<i32>()
-    {
-        state.limits.depth = depth;
-    }
-}
-
-fn cmd_nps<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
-    if let Some(arg) = args.next()
-        && let Ok(nps) = arg.parse::<u64>()
-    {
-        state.nps = if nps > 0 { Some(nps) } else { None };
-    }
-}
-
 /// XBoard clock values are in centiseconds. `own_clock` selects the engine's or
 /// opponent's clock. Until `engine_side` is known, assume the side to move is the engine.
 fn cmd_clock<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>, own_clock: bool) {
-    if let Some(arg) = args.next()
-        && let Ok(cs) = arg.parse::<u64>()
-    {
-        let engine_is_white = state.engine_side.unwrap_or(state.board.stm) == Color::White;
-        if engine_is_white == own_clock {
-            state.limits.wtime = cs * 10;
-        } else {
-            state.limits.btime = cs * 10;
-        }
+    let Some(cs) = next_parsed::<u64>(args) else { return };
+    let engine_is_white = state.engine_side.unwrap_or(state.board.stm) == Color::White;
+    if engine_is_white == own_clock {
+        state.limits.wtime = cs * 10;
+    } else {
+        state.limits.btime = cs * 10;
     }
 }
+
+fn next_parsed<'a, T: FromStr>(args: &mut impl Iterator<Item = &'a str>) -> Option<T> { args.next()?.parse().ok() }
 
 fn cmd_option<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>) {
     let option = args.collect::<Vec<_>>().join(" ");

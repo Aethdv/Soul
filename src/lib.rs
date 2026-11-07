@@ -6,8 +6,6 @@
 #![feature(const_convert)]
 #![feature(const_ops)]
 #![feature(likely_unlikely)]
-#![feature(sync_nonpoison)]
-#![feature(nonpoison_mutex)]
 // A search function takes the node's state as arguments, and there is a lot of it.
 #![allow(clippy::too_many_arguments)]
 // Domain acronyms keep their capitals.
