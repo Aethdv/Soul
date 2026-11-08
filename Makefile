@@ -191,7 +191,7 @@ datagen: #@ Native build with self-play generation and the dataset pipeline
 
 evaltune: #@ Build the eval tuner
 	@echo "Building evaltune..."
-	@cargo build --release -p evaltuner --bin evaltune --quiet --target $(RUST_HOST)
+	@cargo build --release -p evaltuner --bin evaltune --target $(RUST_HOST)
 	@cp target/$(RUST_HOST)/release/evaltune eval$(EXE_EXT)
 	@echo "Done: ./eval$(EXE_EXT)"
 
