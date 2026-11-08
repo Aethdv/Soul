@@ -32,11 +32,13 @@ use crate::{
         search_params::SearchParams,
         see::{see_ge, see_values},
     },
-    tools::byteboard::{self, PieceId, Place, Wordboard},
+    tools::{
+        bench,
+        byteboard::{self, PieceId, Place, Wordboard},
+    },
     weave::I16x8,
 };
 
-const FENS: &str = include_str!("../data/bench.fens");
 const PLY_CAP: usize = 256;
 const SEE_VALUES: [i32; 8] = see_values(&SearchParams::new());
 
@@ -218,7 +220,7 @@ fn generate(seed: u64, ply_cap: usize) -> Vec<Game> {
     let mut rng = ConstRng::new(seed);
     let mut games = Vec::new();
 
-    for fen in FENS.lines() {
+    for fen in bench::fens() {
         let mut pos = Position::from_fen(fen);
         let mut acc = pos.psqt_accumulator();
         let mut moves = Vec::new();

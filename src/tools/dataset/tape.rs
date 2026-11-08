@@ -255,7 +255,10 @@ mod tests {
             eval::evaluate,
             eval_params::{BLOCKS, LAYOUT, PHASE, collect_parameters, default_values},
         },
-        tools::dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
+        tools::{
+            bench,
+            dataset::{FeatureRecord, SoulEntry, accumulate_record_grad, eval_record, eval_record_full},
+        },
     };
 
     const FENS: &[&str] = &[
@@ -582,12 +585,10 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_gradient_cost() {
-        const BENCH: &str = include_str!("../../data/bench.fens");
-
         let iters: usize = env::var("SOUL_OPS_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
         let mode = env::var("SOUL_OPS_MODE").unwrap_or_default();
         let values = default_values(&collect_parameters());
-        let boards: Vec<Position> = BENCH.lines().filter(|line| !line.trim().is_empty()).map(Position::from_fen).collect();
+        let boards: Vec<Position> = bench::fens().map(Position::from_fen).collect();
         let records: Vec<FeatureRecord> = boards
             .iter()
             .map(|board| FeatureRecord::from_entry(&SoulEntry::from_board(board, TARGET, Some(20))))
