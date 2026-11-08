@@ -10,13 +10,14 @@
 //!     perf stat -e instructions,cycles soul atb run <variant> <path> <repeats>
 //! ```
 
-use core::{arch::x86_64::*, hint::black_box, marker::ConstParamTy};
-use std::{fs, hint};
+use core::{arch::x86_64::*, fmt, hint::black_box, marker::ConstParamTy};
+use std::{fs, hint, process};
 
 use crate::{
     core::{
         board::{
             Position,
+            attacks::Pins,
             bitboard::{atk_bishop, atk_king, atk_knight, atk_pawn, atk_queen, atk_rook, between_bb},
             castling_targets,
             spatial::SliderMaps,
@@ -104,9 +105,22 @@ struct ByteStore {
 }
 
 struct Outcome {
-    variant: &'static str,
     iterations: u64,
     checksum: u64,
+}
+
+impl MovePlan {
+    // Movers and victim are updated directly; probing them as slider candidates would repeat the work.
+    #[inline(always)]
+    fn exclude_participants(&self, mut candidates: u64) -> u64 {
+        for m in 0..self.n_movers {
+            candidates &= !(1u64 << self.movers[m].0);
+        }
+        if let Some((victim, _)) = self.captured {
+            candidates &= !(1u64 << victim);
+        }
+        candidates
+    }
 }
 
 impl ByteStore {
@@ -167,8 +181,7 @@ impl ByteStore {
         }
 
         for m in 0..plan.n_movers {
-            let (_, from, _) = plan.movers[m];
-            self.board.remove_piece(g, from);
+            self.board.remove_piece(g, plan.movers[m].1);
         }
 
         if let Some((victim, _)) = plan.captured.filter(|_| replaced) {
@@ -191,7 +204,14 @@ impl ByteStore {
 }
 
 #[inline(always)]
-fn color(id: usize) -> Color { if id < 16 { Color::White } else { Color::Black } }
+fn side_of(id: usize) -> usize { id >> 4 }
+
+#[inline(always)]
+fn side_color(side: usize) -> Color { if side == 0 { Color::White } else { Color::Black } }
+
+#[inline(always)]
+fn color(id: usize) -> Color { side_color(side_of(id)) }
+
 fn slot(id: usize) -> PieceId { PieceId::new((id & 15) as u8) }
 
 fn generate(seed: u64, ply_cap: usize) -> Vec<Game> {
@@ -269,6 +289,8 @@ fn deserialize(bytes: &[u8]) -> Vec<Game> {
     games
 }
 
+fn read_stream(path: &str) -> Vec<Game> { deserialize(&fs::read(path).expect("read stream")) }
+
 fn take_u16(rest: &mut &[u8]) -> usize {
     let (head, tail) = rest.split_first_chunk::<2>().expect("stream truncated");
     *rest = tail;
@@ -288,33 +310,27 @@ impl PieceIds {
 
     fn seed(pos: &Position) -> Self {
         let mut ids = Self::empty();
-        let mut white_next = 0usize;
-        let mut black_next = 16usize;
+        let mut next = [0usize, 16];
 
-        for pass in 0..2 {
-            for sq in 0..64 {
-                let pt = pos.piece_at(Square(sq as u8));
-                if pt == PieceType::None || is_slider(pt) != (pass == 0) {
+        for slider_pass in [true, false] {
+            for sq in 0..64u8 {
+                let square = Square(sq);
+                let pt = pos.piece_at(square);
+                if pt == PieceType::None || is_slider(pt) != slider_pass {
                     continue;
                 }
 
-                let (id, piece_color) = if pos.side_bb[Color::White].0 & (1u64 << sq) != 0 {
-                    let id = white_next;
-                    white_next += 1;
-                    (id, Color::White)
-                } else {
-                    let id = black_next;
-                    black_next += 1;
-                    (id, Color::Black)
-                };
+                let side = usize::from(pos.color_at(square));
+                let id = next[side];
+                next[side] += 1;
 
-                ids.at[sq] = (id + 1) as u8;
-                ids.squares[id] = sq as u8;
+                ids.at[usize::from(sq)] = (id + 1) as u8;
+                ids.squares[id] = sq;
                 ids.types[id] = pt;
-                ids.type_masks[pt as usize * 2 + piece_color as usize] |= 1u64 << id;
+                ids.type_masks[pt as usize * 2 + side] |= 1u64 << id;
 
-                if pass == 0 {
-                    ids.slider_groups[piece_color as usize] = group_count(id);
+                if slider_pass {
+                    ids.slider_groups[side] = group_count(id);
                 }
             }
         }
@@ -349,17 +365,13 @@ impl PieceIds {
         } else if mv.is_en_passant() {
             let victim_sq = Square(to.0 ^ 8);
             changed[2] = victim_sq;
-            let victim = usize::from(self.at[usize::from(victim_sq)]) - 1;
-            Some((victim, victim_sq))
+            n_changed = 3;
+            Some((usize::from(self.at[usize::from(victim_sq)]) - 1, victim_sq))
         } else if mv.is_capture() {
             Some((usize::from(self.at[usize::from(to)]) - 1, to))
         } else {
             None
         };
-
-        if mv.is_en_passant() {
-            n_changed = 3;
-        }
 
         MovePlan { movers, n_movers, changed, n_changed, captured }
     }
@@ -384,24 +396,30 @@ impl PieceIds {
     }
 
     #[inline(always)]
+    fn set_type(&mut self, id: usize, new_type: PieceType) {
+        let side = side_of(id);
+        let old_type = self.types[id];
+        self.type_masks[old_type as usize * 2 + side] &= !(1u64 << id);
+        self.type_masks[new_type as usize * 2 + side] |= 1u64 << id;
+        self.types[id] = new_type;
+    }
+
+    #[inline(always)]
     fn apply(&mut self, mv: Move, plan: &MovePlan) {
         for m in 0..plan.n_movers {
             self.at[usize::from(plan.movers[m].1)] = 0;
         }
 
         for m in 0..plan.n_movers {
-            self.at[usize::from(plan.movers[m].2)] = (plan.movers[m].0 + 1) as u8;
-            self.squares[plan.movers[m].0] = plan.movers[m].2.0;
+            let (id, _, to) = plan.movers[m];
+            self.at[usize::from(to)] = (id + 1) as u8;
+            self.squares[id] = to.0;
         }
 
         if mv.is_promotion() {
             let id = plan.movers[0].0;
-            let new_type = mv.promo().unwrap_or(PieceType::Queen);
-            let old_type = self.types[id];
+            self.set_type(id, mv.promo().unwrap_or(PieceType::Queen));
             let side = side_of(id);
-            self.type_masks[old_type as usize * 2 + side] &= !(1u64 << id);
-            self.type_masks[new_type as usize * 2 + side] |= 1u64 << id;
-            self.types[id] = new_type;
             self.slider_groups[side] = self.slider_groups[side].max(group_count(id));
         }
     }
@@ -411,20 +429,16 @@ impl PieceIds {
         self.slider_groups = slider_groups;
 
         if mv.is_promotion() {
-            let id = plan.movers[0].0;
-            let new_type = self.types[id];
-            let side = side_of(id);
-            self.type_masks[new_type as usize * 2 + side] &= !(1u64 << id);
-            self.type_masks[PieceType::Pawn as usize * 2 + side] |= 1u64 << id;
-            self.types[id] = PieceType::Pawn;
+            self.set_type(plan.movers[0].0, PieceType::Pawn);
         }
 
         for m in 0..plan.n_movers {
             self.at[usize::from(plan.movers[m].2)] = 0;
         }
         for m in 0..plan.n_movers {
-            self.at[usize::from(plan.movers[m].1)] = (plan.movers[m].0 + 1) as u8;
-            self.squares[plan.movers[m].0] = plan.movers[m].1.0;
+            let (id, from, _) = plan.movers[m];
+            self.at[usize::from(from)] = (id + 1) as u8;
+            self.squares[id] = from.0;
         }
 
         if let Some((victim, victim_sq)) = plan.captured {
@@ -442,9 +456,6 @@ impl PieceIds {
     fn type_mask(&self, pt: PieceType) -> u64 { self.type_masks[pt as usize * 2] | self.type_masks[pt as usize * 2 + 1] }
 }
 
-#[inline(always)]
-fn side_of(id: usize) -> usize { id >> 4 }
-
 /// The number of 4-slot groups up to and including the one holding `id`.
 #[inline(always)]
 fn group_count(id: usize) -> u8 { (id % 16 / 4 + 1) as u8 }
@@ -455,7 +466,7 @@ fn is_slider(pt: PieceType) -> bool { matches!(pt, PieceType::Bishop | PieceType
 #[inline(always)]
 fn attacks_of(pt: PieceType, sq: Square, side: usize, occ: Bitboard) -> Bitboard {
     match pt {
-        PieceType::Pawn => atk_pawn(sq, if side == 0 { Color::White } else { Color::Black }),
+        PieceType::Pawn => atk_pawn(sq, side_color(side)),
         PieceType::Knight => atk_knight(sq),
         PieceType::King => atk_king(sq),
         PieceType::Bishop => atk_bishop(sq, occ),
@@ -503,16 +514,7 @@ impl IncrementalAttackTable {
         for i in 0..plan.n_changed {
             candidates |= u64::from(self.attackers[usize::from(plan.changed[i])]);
         }
-
-        candidates &= self.ids.slider_mask();
-
-        for m in 0..plan.n_movers {
-            candidates &= !(1u64 << plan.movers[m].0);
-        }
-
-        if let Some((victim, _)) = plan.captured {
-            candidates &= !(1u64 << victim);
-        }
+        candidates = plan.exclude_participants(candidates & self.ids.slider_mask());
 
         if let Some((victim, victim_sq)) = plan.captured {
             let row = Bitboard(self.rows[victim]);
@@ -541,14 +543,19 @@ impl IncrementalAttackTable {
             touched |= self.diff_apply(id, fresh);
         }
 
-        // Two pieces can attack one square, so XOR would drop the other's bit.
+        self.refresh_danger(touched);
+    }
+
+    // Two pieces can attack one square, so XOR would drop the other's bit.
+    #[inline(always)]
+    fn refresh_danger(&mut self, touched: Bitboard) {
         let mut white_danger = 0u64;
         let mut black_danger = 0u64;
 
         for s in touched {
             let entry = self.attackers[usize::from(s)];
-            white_danger |= u64::from((entry & 0x0000FFFF) != 0) << s.0;
-            black_danger |= u64::from((entry & 0xFFFF0000) != 0) << s.0;
+            white_danger |= u64::from(entry & 0x0000_FFFF != 0) << s.0;
+            black_danger |= u64::from(entry & 0xFFFF_0000 != 0) << s.0;
         }
         self.danger[0] = (self.danger[0] & !touched.0) | white_danger;
         self.danger[1] = (self.danger[1] & !touched.0) | black_danger;
@@ -587,11 +594,7 @@ impl IncrementalAttackTable {
             }
         }
 
-        for sq in 0..64 {
-            let entry = self.attackers[sq];
-            self.danger[0] |= u64::from((entry & 0x0000FFFF) != 0) << sq;
-            self.danger[1] |= u64::from((entry & 0xFFFF0000) != 0) << sq;
-        }
+        self.refresh_danger(Bitboard(!0));
     }
 }
 
@@ -617,7 +620,7 @@ impl XorBoard {
             changed |= plan.changed[i].bitboard();
         }
 
-        let mut candidates = if G == Gather::None || (VISION && (Bitboard(self.vision) & changed).is_empty()) {
+        let candidates = if G == Gather::None || (VISION && (Bitboard(self.vision) & changed).is_empty()) {
             0
         } else if G == Gather::Probe {
             let mut orth = Bitboard(0);
@@ -638,7 +641,6 @@ impl XorBoard {
             }
 
             let mut hits = 0u64;
-
             for sq in (orth & pre.rq_squares) | (diag & pre.bq_squares) {
                 hits |= 1u64 << (self.ids.at[usize::from(sq)] - 1);
             }
@@ -646,32 +648,20 @@ impl XorBoard {
         } else {
             let white_groups = usize::from(self.ids.slider_groups[0]);
             let black_groups = usize::from(self.ids.slider_groups[1]);
-
-            let mut hits = match G {
-                Gather::Prefix => u64::from(column_prefix(&self.rows, changed, white_groups, black_groups)),
-                Gather::Fixed => u64::from(column_fixed(&self.rows, changed, white_groups, black_groups)),
-                _ => u64::from(column(&self.rows, changed)),
+            let gather = |plane: &[u64; 32]| match G {
+                Gather::Prefix => column_prefix(plane, changed, white_groups, black_groups),
+                Gather::Fixed => column_fixed(plane, changed, white_groups, black_groups),
+                _ => column(plane, changed),
             };
 
+            let mut hits = u64::from(gather(&self.rows));
             if XRAY {
-                hits |= u64::from(match G {
-                    Gather::Prefix => column_prefix(&self.xray, changed, white_groups, black_groups),
-                    Gather::Fixed => column_fixed(&self.xray, changed, white_groups, black_groups),
-                    _ => column(&self.xray, changed),
-                });
+                hits |= u64::from(gather(&self.xray));
             }
-
             hits & self.ids.slider_mask()
         };
 
-        // Movers and victim are updated below; probing them would repeat the work.
-        for m in 0..plan.n_movers {
-            candidates &= !(1u64 << plan.movers[m].0);
-        }
-
-        if let Some((victim, _)) = plan.captured {
-            candidates &= !(1u64 << victim);
-        }
+        let candidates = plan.exclude_participants(candidates);
 
         if RECORD {
             undo.len = 0;
@@ -836,10 +826,29 @@ impl PreMove {
     }
 }
 
+/// # Safety
+/// Every group index in `groups` must be `< 8`.
+#[inline(always)]
+unsafe fn column_avx2(rows: &[u64; 32], mask: Bitboard, groups: impl IntoIterator<Item = usize>) -> u32 {
+    // SAFETY: AVX2 is guaranteed and caller bounds every group to 0..8 inside the 32-element array.
+    unsafe {
+        let m = _mm256_set1_epi64x(mask.0.cast_signed());
+        let zero = _mm256_setzero_si256();
+        let mut live = 0u32;
+
+        for g in groups {
+            let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
+            let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
+            live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
+        }
+
+        live
+    }
+}
+
 #[inline(always)]
 fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
-    // SAFETY: AVX2 is guaranteed, AVX-512 under its own cfg. The AVX-512 path
-    // loads groups 0..4 and the AVX2 path groups 0..8, all of a 32-element array.
+    // SAFETY: AVX-512 loads groups 0..4 and AVX2 loads groups 0..8, all within the 32-element array.
     unsafe {
         #[cfg(target_feature = "avx512f")]
         {
@@ -856,16 +865,7 @@ fn column(rows: &[u64; 32], mask: Bitboard) -> u32 {
 
         #[cfg(not(target_feature = "avx512f"))]
         {
-            let m = _mm256_set1_epi64x(mask.0.cast_signed());
-            let zero = _mm256_setzero_si256();
-            let mut live = 0u32;
-
-            for g in 0..8 {
-                let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
-                let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-                live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
-            }
-            live
+            column_avx2(rows, mask, 0..8)
         }
     }
 }
@@ -877,38 +877,14 @@ fn column_fixed(rows: &[u64; 32], mask: Bitboard, white_groups: usize, black_gro
         return column(rows, mask);
     }
 
-    // SAFETY: as column; the four group indices are constants under 8.
-    unsafe {
-        let m = _mm256_set1_epi64x(mask.0.cast_signed());
-        let zero = _mm256_setzero_si256();
-        let mut live = 0u32;
-
-        for g in [0, 1, 4, 5] {
-            let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
-            let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-            live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
-        }
-
-        live
-    }
+    // SAFETY: group indices are constants under 8.
+    unsafe { column_avx2(rows, mask, [0, 1, 4, 5]) }
 }
 
 #[inline(always)]
 fn column_prefix(rows: &[u64; 32], mask: Bitboard, white_groups: usize, black_groups: usize) -> u32 {
-    // SAFETY: as column; g never exceeds 7.
-    unsafe {
-        let m = _mm256_set1_epi64x(mask.0.cast_signed());
-        let zero = _mm256_setzero_si256();
-        let mut live = 0u32;
-
-        for g in (0..white_groups).chain(4..4 + black_groups) {
-            let v = _mm256_loadu_si256(rows.as_ptr().add(g * 4).cast());
-            let miss = _mm256_cmpeq_epi64(_mm256_and_si256(v, m), zero);
-            live |= (!_mm256_movemask_pd(_mm256_castsi256_pd(miss)).cast_unsigned() & 0xF) << (g * 4);
-        }
-
-        live
-    }
+    // SAFETY: each side has at most 4 groups, so g never exceeds 7.
+    unsafe { column_avx2(rows, mask, (0..white_groups).chain(4..4 + black_groups)) }
 }
 
 struct Stores {
@@ -923,11 +899,11 @@ fn setup(fen: &str) -> (Position, I16x8, Stores) {
     let acc = pos.psqt_accumulator();
     let incremental = black_box(IncrementalAttackTable::from_scratch(&pos));
     let xorboard = black_box(XorBoard::from_scratch(&pos));
-    let byte_store = black_box(ByteStore::from_scratch(&pos));
-    (pos, acc, Stores { incremental, xorboard, byteboard: byte_store })
+    let byteboard = black_box(ByteStore::from_scratch(&pos));
+    (pos, acc, Stores { incremental, xorboard, byteboard })
 }
 
-fn play_stores<F>(stream: &[Game], repeats: usize, variant: &'static str, mut step: F) -> Outcome
+fn play_stores<F>(stream: &[Game], repeats: usize, mut step: F) -> Outcome
 where F: FnMut(&mut Stores, &mut Position, &mut I16x8, Move, u64) -> u64 {
     let mut checksum = 0u64;
     let mut iterations = 0u64;
@@ -943,12 +919,12 @@ where F: FnMut(&mut Stores, &mut Position, &mut I16x8, Move, u64) -> u64 {
         }
     }
 
-    Outcome { variant, iterations, checksum }
+    Outcome { iterations, checksum }
 }
 
 fn play_stream<const AFTER_MOVE: bool, F>(stream: &[Game], repeats: usize, mut per_ply: F) -> Outcome
 where F: FnMut(&Position, Move, PieceType) -> u64 {
-    play_stores(stream, repeats, "", |_, pos, acc, mv, _| {
+    play_stores(stream, repeats, |_, pos, acc, mv, _| {
         let pt = pos.expect_piece_at(mv.from());
         let mut sum = 0;
 
@@ -987,7 +963,7 @@ enum View {
 fn variant_baseline(stream: &[Game], repeats: usize) -> Outcome { play_stream::<true, _>(stream, repeats, |_, _, _| 0) }
 
 fn variant_dest(stream: &[Game], repeats: usize) -> Outcome {
-    play_stores(stream, repeats, "dest", |stores, pos, acc, mv, _| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, _| {
         pos.make_move(mv, acc);
         stores.incremental.make(pos, mv);
         stores.incremental.rows[0] | stores.incremental.rows[31] | stores.incremental.danger[0] | stores.incremental.danger[1]
@@ -1006,17 +982,16 @@ fn variant_hosting(stream: &[Game], repeats: usize) -> Outcome {
         iterations += 1;
     }
 
-    Outcome { variant: "hosting", iterations, checksum }
+    Outcome { iterations, checksum }
 }
 
 fn variant_xorboard<const G: Gather, const VISION: bool, const XRAY: bool, const VIEW: View, const UNDO: bool>(
     stream: &[Game],
     repeats: usize,
-    name: &'static str,
 ) -> Outcome {
     let mut undo = Undo::empty();
 
-    play_stores(stream, repeats, name, |stores, pos, acc, mv, _| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, _| {
         let pre = if G == Gather::Probe { PreMove::of(pos) } else { PreMove::ZERO };
 
         let mut sum = match VIEW {
@@ -1046,7 +1021,7 @@ fn variant_xorboard<const G: Gather, const VISION: bool, const XRAY: bool, const
 fn variant_xorboard_copy(stream: &[Game], repeats: usize) -> Outcome {
     let mut undo = Undo::empty();
 
-    play_stores(stream, repeats, "xorboard_copy", |stores, pos, acc, mv, _| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, _| {
         pos.make_move(mv, acc);
 
         let parent = stores.xorboard;
@@ -1062,7 +1037,7 @@ fn variant_xorboard_copy(stream: &[Game], repeats: usize) -> Outcome {
 fn variant_byteboard_copy(stream: &[Game], repeats: usize) -> Outcome {
     let g = byteboard::Geometry::new();
 
-    play_stores(stream, repeats, "byteboard_copy", |stores, pos, acc, mv, _| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, _| {
         pos.make_move(mv, acc);
 
         let parent = stores.byteboard.board;
@@ -1076,7 +1051,7 @@ fn variant_byteboard_copy(stream: &[Game], repeats: usize) -> Outcome {
 fn variant_byteboard_reads(stream: &[Game], repeats: usize) -> Outcome {
     let g = byteboard::Geometry::new();
 
-    play_stores(stream, repeats, "byteboard_reads", |stores, pos, acc, mv, iterations| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, iterations| {
         pos.make_move(mv, acc);
         stores.byteboard.make(&g, mv);
 
@@ -1095,7 +1070,7 @@ fn variant_byteboard_reads(stream: &[Game], repeats: usize) -> Outcome {
 fn variant_xorboard_reads(stream: &[Game], repeats: usize) -> Outcome {
     let mut undo = Undo::empty();
 
-    play_stores(stream, repeats, "xorboard_reads", |stores, pos, acc, mv, iterations| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, iterations| {
         let pre = PreMove::ZERO;
         pos.make_move(mv, acc);
         stores
@@ -1124,7 +1099,7 @@ fn probe_points(iterations: u64) -> (Square, PieceId) { (Square((iterations % 64
 fn variant_byteboard(stream: &[Game], repeats: usize) -> Outcome {
     let g = byteboard::Geometry::new();
 
-    play_stores(stream, repeats, "byteboard", |stores, pos, acc, mv, _| {
+    play_stores(stream, repeats, |stores, pos, acc, mv, _| {
         pos.make_move(mv, acc);
         stores.byteboard.make(&g, mv);
         u64::from(byteboard_attackers(&stores.byteboard.board, 0, 0) | byteboard_attackers(&stores.byteboard.board, 1, 63))
@@ -1141,46 +1116,24 @@ fn run_variant(name: &str, stream: &[Game], repeats: usize) -> Outcome {
         "xorboard_copy" => variant_xorboard_copy(stream, repeats),
         "xorboard_reads" => variant_xorboard_reads(stream, repeats),
         "hosting" => variant_hosting(stream, repeats),
-        "xorboard" => variant_xorboard::<{ Gather::Column }, false, false, { View::None }, false>(stream, repeats, "xorboard"),
-        "xorboard_probe" => {
-            variant_xorboard::<{ Gather::Probe }, false, false, { View::None }, false>(stream, repeats, "xorboard_probe")
-        },
-        "xorboard_fused" => {
-            variant_xorboard::<{ Gather::Prefix }, true, false, { View::FusedDanger }, false>(stream, repeats, "xorboard_fused")
-        },
-        "xorboard_lag" => {
-            variant_xorboard::<{ Gather::Prefix }, true, false, { View::LaggedDanger }, false>(stream, repeats, "xorboard_lag")
-        },
-        "xorboard_lag1" => {
-            variant_xorboard::<{ Gather::Column }, false, false, { View::LaggedStmDanger }, false>(stream, repeats, "xorboard_lag1")
-        },
-        "xorboard_undo" => {
-            variant_xorboard::<{ Gather::Column }, false, false, { View::None }, true>(stream, repeats, "xorboard_undo")
-        },
-        "xray" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::None }, false>(stream, repeats, "xray"),
-        "xray_pins" => {
-            variant_xorboard::<{ Gather::Prefix }, true, true, { View::LaggedPins }, false>(stream, repeats, "xray_pins")
-        },
-        "xorboard_vision" => {
-            variant_xorboard::<{ Gather::Column }, true, false, { View::None }, false>(stream, repeats, "xorboard_vision")
-        },
+        "xorboard" => variant_xorboard::<{ Gather::Column }, false, false, { View::None }, false>(stream, repeats),
+        "xorboard_probe" => variant_xorboard::<{ Gather::Probe }, false, false, { View::None }, false>(stream, repeats),
+        "xorboard_fused" => variant_xorboard::<{ Gather::Prefix }, true, false, { View::FusedDanger }, false>(stream, repeats),
+        "xorboard_lag" => variant_xorboard::<{ Gather::Prefix }, true, false, { View::LaggedDanger }, false>(stream, repeats),
+        "xorboard_lag1" => variant_xorboard::<{ Gather::Column }, false, false, { View::LaggedStmDanger }, false>(stream, repeats),
+        "xorboard_undo" => variant_xorboard::<{ Gather::Column }, false, false, { View::None }, true>(stream, repeats),
+        "xray" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::None }, false>(stream, repeats),
+        "xray_pins" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::LaggedPins }, false>(stream, repeats),
+        "xorboard_vision" => variant_xorboard::<{ Gather::Column }, true, false, { View::None }, false>(stream, repeats),
         // The prefix gather with vision maintained and never read.
-        "xorboard_pack" => {
-            variant_xorboard::<{ Gather::Prefix }, true, false, { View::None }, false>(stream, repeats, "xorboard_pack")
-        },
-        "xorboard_prefix" => {
-            variant_xorboard::<{ Gather::Prefix }, false, false, { View::None }, false>(stream, repeats, "xorboard_prefix")
-        },
-        "xorboard_fixed" => {
-            variant_xorboard::<{ Gather::Fixed }, false, false, { View::None }, false>(stream, repeats, "xorboard_fixed")
-        },
-        "xorboard_nogather" => {
-            variant_xorboard::<{ Gather::None }, false, false, { View::None }, false>(stream, repeats, "xorboard_nogather")
-        },
-        "xray_undo" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::None }, true>(stream, repeats, "xray_undo"),
+        "xorboard_pack" => variant_xorboard::<{ Gather::Prefix }, true, false, { View::None }, false>(stream, repeats),
+        "xorboard_prefix" => variant_xorboard::<{ Gather::Prefix }, false, false, { View::None }, false>(stream, repeats),
+        "xorboard_fixed" => variant_xorboard::<{ Gather::Fixed }, false, false, { View::None }, false>(stream, repeats),
+        "xorboard_nogather" => variant_xorboard::<{ Gather::None }, false, false, { View::None }, false>(stream, repeats),
+        "xray_undo" => variant_xorboard::<{ Gather::Prefix }, true, true, { View::None }, true>(stream, repeats),
         "threats" => play_stream::<true, _>(stream, repeats, |pos, _, _| pos.threats(pos.stm.opposite()).0),
         "pins" => play_stream::<true, _>(stream, repeats, |pos, _, _| {
-            let pins = crate::core::board::attacks::Pins::new(pos);
+            let pins = Pins::new(pos);
             pins.pinned(Color::White).0 ^ pins.pinned(Color::Black).0
         }),
         "checkers" => play_stream::<true, _>(stream, repeats, |pos, _, _| pos.checkers().0),
@@ -1193,7 +1146,7 @@ fn run_variant(name: &str, stream: &[Game], repeats: usize) -> Outcome {
             (mob.metrics_us.mobility ^ mob.metrics_them.mobility) as u64 ^ (mob.safety_us.weak ^ mob.safety_them.weak) as u64
         }),
         "see" => play_stream::<false, _>(stream, repeats, |pos, mv, _| {
-            let pins = crate::core::board::attacks::Pins::new(pos);
+            let pins = Pins::new(pos);
             u64::from(see_ge(pos, mv, 0, &pins, &SEE_VALUES))
         }),
         "king_legal" => play_stream::<false, _>(stream, repeats, |pos, mv, _| {
@@ -1202,8 +1155,16 @@ fn run_variant(name: &str, stream: &[Game], repeats: usize) -> Outcome {
         }),
         _ => {
             eprintln!("atb: unknown variant '{name}'");
-            std::process::exit(1);
+            process::exit(1);
         },
+    }
+}
+
+fn diff_hex<T: PartialEq + fmt::LowerHex>(label: &str, width: usize, got: &[T], want: &[T]) {
+    for (i, (a, b)) in got.iter().zip(want).enumerate() {
+        if a != b {
+            eprintln!("  {label}[{i}]: got {a:#0width$x} want {b:#0width$x}");
+        }
     }
 }
 
@@ -1285,36 +1246,16 @@ fn validate(stream: &[Game]) -> Option<u64> {
                 eprintln!("atb: attack table mismatch, game {game_index}, move {}", mv.inner());
                 eprintln!("fen: {}", pos.to_fen());
 
-                for (i, (a, b)) in incremental.attackers.iter().zip(want.attackers.iter()).enumerate() {
-                    if a != b {
-                        eprintln!("  attackers[{i}]: got {a:#010x} want {b:#010x}");
-                    }
-                }
-                for (i, (a, b)) in incremental.rows.iter().zip(want.rows.iter()).enumerate() {
-                    if a != b {
-                        eprintln!("  rows[{i}]: got {a:#018x} want {b:#018x}");
-                    }
-                }
-                for (i, (a, b)) in incremental.ids.at.iter().zip(want.ids.at.iter()).enumerate() {
-                    if a != b {
-                        eprintln!("  at[{i}]: got {a:#04x} want {b:#04x}");
-                    }
-                }
-                for (i, (a, b)) in incremental.ids.squares.iter().zip(want.ids.squares.iter()).enumerate() {
-                    if a != b {
-                        eprintln!("  squares[{i}]: got {a:#04x} want {b:#04x}");
-                    }
-                }
-                for (i, (a, b)) in incremental.ids.types.iter().zip(want.ids.types.iter()).enumerate() {
+                diff_hex("attackers", 10, &incremental.attackers, &want.attackers);
+                diff_hex("rows", 18, &incremental.rows, &want.rows);
+                diff_hex("at", 4, &incremental.ids.at, &want.ids.at);
+                diff_hex("squares", 4, &incremental.ids.squares, &want.ids.squares);
+                for (i, (a, b)) in incremental.ids.types.iter().zip(&want.ids.types).enumerate() {
                     if a != b {
                         eprintln!("  types[{i}]: got {a:?} want {b:?}");
                     }
                 }
-                for (i, (a, b)) in incremental.ids.type_masks.iter().zip(want.ids.type_masks.iter()).enumerate() {
-                    if a != b {
-                        eprintln!("  type_masks[{i}]: got {a:#018x} want {b:#018x}");
-                    }
-                }
+                diff_hex("type_masks", 18, &incremental.ids.type_masks, &want.ids.type_masks);
                 return None;
             }
 
@@ -1393,8 +1334,7 @@ fn byteboard_agrees(byte_store: &ByteStore, xorboard: &XorBoard) -> bool {
 }
 
 fn byteboard_attackers(board: &byteboard::ByteBoard, side: usize, sq: usize) -> u16 {
-    let color = if side == 0 { Color::White } else { Color::Black };
-    board.attack_table(color).read(Square(sq as u8)).bits()
+    board.attack_table(side_color(side)).read(Square(sq as u8)).bits()
 }
 
 #[inline]
@@ -1451,11 +1391,11 @@ pub fn run(args: &[&str]) {
     match args.first().copied() {
         Some("count") => {
             let path = args.get(1).copied().expect("atb count <path>");
-            count_writes(&deserialize(&fs::read(path).expect("read stream")));
+            count_writes(&read_stream(path));
         },
         Some("gen") => {
             let path = args.get(1).copied().expect("atb gen <path> [ply_cap]");
-            let cap = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(PLY_CAP);
+            let cap = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(PLY_CAP);
             let stream = generate(0xC0FFEE, cap);
             fs::write(path, serialize(&stream)).expect("write stream");
             let plies: usize = stream.iter().map(|g| g.moves.len()).sum();
@@ -1464,7 +1404,7 @@ pub fn run(args: &[&str]) {
         Some("export") => {
             let path = args.get(1).copied().expect("atb export <stream> <out>");
             let out = args.get(2).copied().expect("atb export <stream> <out>");
-            let stream = deserialize(&fs::read(path).expect("read stream"));
+            let stream = read_stream(path);
             let mut text = String::new();
             for game in &stream {
                 text.push_str(&game.fen);
@@ -1483,26 +1423,20 @@ pub fn run(args: &[&str]) {
         },
         Some("validate") => {
             let path = args.get(1).copied().expect("atb validate <path>");
-            let stream = deserialize(&fs::read(path).expect("read stream"));
-
-            match validate(&stream) {
+            match validate(&read_stream(path)) {
                 Some(plies) => println!("atb validate OK, {plies} plies"),
-                None => std::process::exit(1),
+                None => process::exit(1),
             }
         },
         Some("dump") => {
             let path = args.get(1).copied().expect("atb dump <path> [plies]");
-            let n = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
-            let stream = deserialize(&fs::read(path).expect("read stream"));
+            let n = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+            let stream = read_stream(path);
             let game = &stream[0];
+            let mut pos = Position::from_fen(&game.fen);
+            let mut acc = pos.psqt_accumulator();
+
             for (ply, &mv) in game.moves.iter().take(n).enumerate() {
-                let mut pos = Position::from_fen(&game.fen);
-                let mut acc = pos.psqt_accumulator();
-
-                for &prior in game.moves.iter().take(ply) {
-                    pos.make_move(prior, &mut acc);
-                }
-
                 let pre_stm = pos.stm;
                 let pre_fen = pos.to_fen();
                 let info = pos.make_move(mv, &mut acc);
@@ -1511,21 +1445,19 @@ pub fn run(args: &[&str]) {
                 pos.unmake_move(mv, &info);
                 let restored = pos.to_fen();
                 println!("  restored: {restored}  (match={})", restored == pre_fen);
+                pos.make_move(mv, &mut acc);
             }
         },
         Some("run") => {
             let name = args.get(1).copied().expect("atb run <variant> <path> [repeats]");
             let path = args.get(2).copied().expect("atb run <variant> <path> [repeats]");
-            let repeats = args.get(3).and_then(|s| s.parse::<usize>().ok()).unwrap_or(4);
-            let stream = deserialize(&fs::read(path).expect("read stream"));
-            let outcome = run_variant(name, &stream, repeats);
-            // Label here so the name stays out of the measured loop.
-            let label = if outcome.variant.is_empty() { name } else { outcome.variant };
-            println!("atb {} {} {}", label, outcome.iterations, outcome.checksum);
+            let repeats = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4);
+            let outcome = run_variant(name, &read_stream(path), repeats);
+            println!("atb {name} {} {}", outcome.iterations, outcome.checksum);
         },
         _ => {
             eprintln!("atb: expected 'gen', 'export', 'validate', 'count', 'dump', or 'run'");
-            std::process::exit(1);
+            process::exit(1);
         },
     }
 }
