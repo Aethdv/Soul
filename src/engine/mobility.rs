@@ -14,9 +14,17 @@ use crate::{
         autograd::traits::{EvalMath, EvalVec4, EvalVec8},
         combiner::{Accumulators, taper},
         eval::{EvalParams, SharedFeatures},
-        eval_params::{ATTACKER, LAYOUT},
-        term::{KingSafetyUpstream, LinearTerm, TaperPair, TermSource},
+        eval_params::ATTACKER,
+        term::LinearTerm,
     },
+};
+#[cfg(feature = "dataset")]
+use crate::{
+    engine::{
+        eval_params::LAYOUT,
+        term::{KingSafetyUpstream, TaperPair},
+    },
+    tools::dataset::FeatureRecord,
     weave::F64x4,
 };
 
@@ -26,7 +34,7 @@ const RAM_SCALE: i32 = 82; // 0.08 · 1024
 const PAWN_SCALE: i32 = 20; // 0.02 · 1024
 /// Fixed-point precision (1.0 ≡ 1024).
 pub const OPEN_UNITY: i32 = 1024;
-#[cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "read by the tuner's scatter"))]
+#[cfg(feature = "dataset")]
 const INV_OPEN_UNITY: f64 = 1.0 / OPEN_UNITY as f64;
 
 pub(crate) struct MobilityTerm;
@@ -64,18 +72,6 @@ pub(crate) struct SafetyMetrics {
     pub(crate) ortho_exposure: i32,
     /// Bishop-reachable squares from the king.
     pub(crate) diag_exposure: i32,
-}
-
-#[cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "read by the tuner's scatter"))]
-pub(crate) struct MobilityInput {
-    pub(crate) diff: F64x4,
-    pub(crate) openness: i32,
-}
-
-#[cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "read by the tuner's scatter"))]
-pub(crate) struct KingSafetyInput {
-    pub(crate) us: SafetyMetrics,
-    pub(crate) them: SafetyMetrics,
 }
 
 /// Openness in fixed point, 0 to [`OPEN_UNITY`]. Pawn colors must be absolute;
@@ -122,6 +118,29 @@ impl SafetyMetrics {
             shield: (zone & our_pawns).popcount() as i32,
             ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
             diag_exposure: atk_bishop(ksq, occ).popcount() as i32,
+        }
+    }
+
+    #[cfg(feature = "dataset")]
+    #[inline]
+    pub(crate) fn pack(&self) -> [u8; 4] {
+        [
+            self.attacked_zone as u8,
+            self.weak as u8,
+            self.shield as u8,
+            ((self.ortho_exposure as u8) << 4) | self.diag_exposure as u8,
+        ]
+    }
+
+    #[cfg(feature = "dataset")]
+    #[inline]
+    pub(crate) fn unpack(raw: [u8; 4]) -> Self {
+        Self {
+            attacked_zone: raw[0] as usize,
+            weak: raw[1] as i32,
+            shield: raw[2] as i32,
+            ortho_exposure: (raw[3] >> 4) as i32,
+            diag_exposure: (raw[3] & 0x0F) as i32,
         }
     }
 }
@@ -196,8 +215,8 @@ pub(crate) fn compute_openness(pos: &Position) -> i32 {
 }
 
 impl LinearTerm for MobilityTerm {
+    #[cfg(feature = "dataset")]
     type Upstream = TaperPair;
-    type Input = MobilityInput;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>) {
@@ -208,17 +227,14 @@ impl LinearTerm for MobilityTerm {
     }
 
     // Round each blended weight before tapering, matching the SIMD arithmetic shift.
+    #[cfg(feature = "dataset")]
     #[inline(always)]
-    fn apply_input(input: MobilityInput, values: &[f64], phase: f64, acc: &mut Accumulators<f64>) {
+    fn apply_record(record: &FeatureRecord, values: &[f64], phase: f64, acc: &mut Accumulators<f64>) {
         let open_base = LAYOUT.mobility_open_offset;
         let closed_base = LAYOUT.mobility_closed_offset;
         let unity = f64::from(OPEN_UNITY);
-        let open_raw = f64::from(input.openness);
+        let open_raw = f64::from(record.openness);
         let closed_raw = unity - open_raw;
-
-        let mut diff = [0.0f64; 4];
-        // SAFETY: diff is exactly the 4 lanes storeu writes.
-        unsafe { input.diff.storeu(diff.as_mut_ptr()) };
 
         let blend = |lane: usize| {
             ((values[open_base + lane] * open_raw + values[closed_base + lane] * closed_raw + unity / 2.0) / unity).floor()
@@ -226,7 +242,8 @@ impl LinearTerm for MobilityTerm {
 
         let mut mg_sum = 0.0;
         let mut eg_sum = 0.0;
-        for (i, d) in diff.iter().enumerate() {
+        for (i, &d) in record.mobility_diff.iter().enumerate() {
+            let d = f64::from(d);
             mg_sum += d * blend(i);
             eg_sum += d * blend(4 + i);
         }
@@ -234,46 +251,48 @@ impl LinearTerm for MobilityTerm {
         acc.mobility = taper(mg_sum, eg_sum, phase);
     }
 
-    // Rounding in the weight blend uses a straight-through derivative.
+    #[cfg(feature = "dataset")]
     #[inline(always)]
-    fn scatter(input: MobilityInput, upstream: TaperPair, grads: &mut [f64]) {
-        let open_base = LAYOUT.mobility_open_offset;
-        let closed_base = LAYOUT.mobility_closed_offset;
-        assert!(grads.len() >= open_base.max(closed_base) + 8, "MobilityTerm::scatter: grads too short");
+    fn scatter_record(record: &FeatureRecord, upstream: TaperPair, grads: &mut [f64]) {
+        scatter_mobility(record.mobility_diff.map(i32::from), record.openness, upstream, grads);
+    }
 
-        let open_frac = f64::from(input.openness) * INV_OPEN_UNITY;
-        let closed_frac = 1.0 - open_frac;
-
-        let mut scatter_lanes = |offset: usize, scale: f64| {
-            // SAFETY: grads length verified by assert above and layout invariants.
-            unsafe {
-                let p = grads.as_mut_ptr().add(offset);
-                (F64x4::loadu(p) + input.diff * F64x4::splat(scale)).storeu(p);
-            }
-        };
-
-        scatter_lanes(open_base, upstream.d_mg * open_frac);
-        scatter_lanes(open_base + 4, upstream.d_eg * open_frac);
-        scatter_lanes(closed_base, upstream.d_mg * closed_frac);
-        scatter_lanes(closed_base + 4, upstream.d_eg * closed_frac);
+    #[cfg(all(test, feature = "dataset"))]
+    #[inline(always)]
+    fn scatter_shared(features: &SharedFeatures, upstream: TaperPair, grads: &mut [f64]) {
+        let diff = features.spatial.metrics_us.diff(&features.spatial.metrics_them);
+        scatter_mobility(diff, features.openness, upstream, grads);
     }
 }
 
-impl TermSource<MobilityTerm> for SharedFeatures {
-    type Input = MobilityInput;
+#[cfg(feature = "dataset")]
+#[inline(always)]
+fn scatter_mobility(diff: [i32; 4], openness: i32, upstream: TaperPair, grads: &mut [f64]) {
+    let open_base = LAYOUT.mobility_open_offset;
+    let closed_base = LAYOUT.mobility_closed_offset;
+    assert!(grads.len() >= open_base.max(closed_base) + 8, "scatter_mobility: grads too short");
 
-    #[inline(always)]
-    fn extract(&self) -> MobilityInput {
-        let diff = self.spatial.metrics_us.diff(&self.spatial.metrics_them);
-        MobilityInput { diff: F64x4::from(diff.map(f64::from)), openness: self.openness }
-    }
+    let diff = F64x4::from(diff.map(f64::from));
+    let open_frac = f64::from(openness) * INV_OPEN_UNITY;
+    let closed_frac = 1.0 - open_frac;
+
+    let mut scatter_lanes = |offset: usize, scale: f64| {
+        // SAFETY: grads length verified by assert above and layout invariants.
+        unsafe {
+            let p = grads.as_mut_ptr().add(offset);
+            (F64x4::loadu(p) + diff * F64x4::splat(scale)).storeu(p);
+        }
+    };
+
+    scatter_lanes(open_base, upstream.d_mg * open_frac);
+    scatter_lanes(open_base + 4, upstream.d_eg * open_frac);
+    scatter_lanes(closed_base, upstream.d_mg * closed_frac);
+    scatter_lanes(closed_base + 4, upstream.d_eg * closed_frac);
 }
 
 impl LinearTerm for KingSafetyTerm {
-    /// The combiner's MG taper is folded into every field, and the pressure halves
-    /// arrive already signed, which is why scatter adds both of them.
+    #[cfg(feature = "dataset")]
     type Upstream = KingSafetyUpstream;
-    type Input = KingSafetyInput;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
@@ -285,34 +304,42 @@ impl LinearTerm for KingSafetyTerm {
         acc.pressure_them = them.pressure(params.atk_weights[them.attacked_zone]);
     }
 
+    #[cfg(feature = "dataset")]
     #[inline(always)]
-    fn apply_input(input: KingSafetyInput, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+    fn apply_record(record: &FeatureRecord, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+        let (us, them) = (SafetyMetrics::unpack(record.safety_us), SafetyMetrics::unpack(record.safety_them));
         let ks = LAYOUT.king_safety_offset;
         let ao = LAYOUT.attacker_offset;
-        acc.safety_us = input.us.score(values[ks], values[ks + 1], values[ks + 2]);
-        acc.safety_them = input.them.score(values[ks], values[ks + 1], values[ks + 2]);
-        acc.pressure_us = input.us.pressure(values[ao + input.us.attacked_zone]);
-        acc.pressure_them = input.them.pressure(values[ao + input.them.attacked_zone]);
+        acc.safety_us = us.score(values[ks], values[ks + 1], values[ks + 2]);
+        acc.safety_them = them.score(values[ks], values[ks + 1], values[ks + 2]);
+        acc.pressure_us = us.pressure(values[ao + us.attacked_zone]);
+        acc.pressure_them = them.pressure(values[ao + them.attacked_zone]);
     }
 
+    #[cfg(feature = "dataset")]
     #[inline(always)]
-    fn scatter(input: KingSafetyInput, upstream: KingSafetyUpstream, grads: &mut [f64]) {
-        let ks = LAYOUT.king_safety_offset;
-        let ao = LAYOUT.attacker_offset;
-        grads[ks] += upstream.safety * f64::from(input.us.shield - input.them.shield);
-        grads[ks + 1] -= upstream.safety * f64::from(input.us.ortho_exposure - input.them.ortho_exposure);
-        grads[ks + 2] -= upstream.safety * f64::from(input.us.diag_exposure - input.them.diag_exposure);
+    fn scatter_record(record: &FeatureRecord, upstream: KingSafetyUpstream, grads: &mut [f64]) {
+        scatter_safety(SafetyMetrics::unpack(record.safety_us), SafetyMetrics::unpack(record.safety_them), upstream, grads);
+    }
 
-        grads[ao + input.us.attacked_zone] += upstream.pressure_us * (f64::from(input.us.weak) / 10.0);
-        grads[ao + input.them.attacked_zone] += upstream.pressure_them * (f64::from(input.them.weak) / 10.0);
+    #[cfg(all(test, feature = "dataset"))]
+    #[inline(always)]
+    fn scatter_shared(features: &SharedFeatures, upstream: KingSafetyUpstream, grads: &mut [f64]) {
+        scatter_safety(features.spatial.safety_us, features.spatial.safety_them, upstream, grads);
     }
 }
 
-impl TermSource<KingSafetyTerm> for SharedFeatures {
-    type Input = KingSafetyInput;
+#[cfg(feature = "dataset")]
+#[inline(always)]
+fn scatter_safety(us: SafetyMetrics, them: SafetyMetrics, upstream: KingSafetyUpstream, grads: &mut [f64]) {
+    let ks = LAYOUT.king_safety_offset;
+    let ao = LAYOUT.attacker_offset;
+    grads[ks] += upstream.safety * f64::from(us.shield - them.shield);
+    grads[ks + 1] -= upstream.safety * f64::from(us.ortho_exposure - them.ortho_exposure);
+    grads[ks + 2] -= upstream.safety * f64::from(us.diag_exposure - them.diag_exposure);
 
-    #[inline(always)]
-    fn extract(&self) -> KingSafetyInput { KingSafetyInput { us: self.spatial.safety_us, them: self.spatial.safety_them } }
+    grads[ao + us.attacked_zone] += upstream.pressure_us * (f64::from(us.weak) / 10.0);
+    grads[ao + them.attacked_zone] += upstream.pressure_them * (f64::from(them.weak) / 10.0);
 }
 
 struct EvalAttacks {

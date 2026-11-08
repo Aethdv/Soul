@@ -5,7 +5,7 @@ use super::compute_phase_f64;
 use crate::engine::{
     autograd::dual::{DualNode, DualVec8},
     combiner::{self, CombinerParams},
-    eval::{evaluate_buckets, scatter_all_terms},
+    eval::{evaluate_buckets, scatter_all_shared},
     wdl::sigmoid,
 };
 use crate::{
@@ -133,7 +133,7 @@ fn eval_linear_grad(board: &Board, values: &[f64], target: f64, k: f64, param_gr
     let d_eg = upstreams.material_psqt.d_eg;
 
     scatter_psqt(board, d_mg, d_eg, param_grads);
-    scatter_all_terms(&features, &upstreams, param_grads);
+    scatter_all_shared(&features, &upstreams, param_grads);
     err * err
 }
 
@@ -487,19 +487,19 @@ mod tests {
             }
         };
 
-        (@one scalar $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident) => {
+        (@one scalar $block:ident, $field:ident, $mg:ident, $eg:ident) => {
             paste::paste! {
                 assert_linear_matches_dual(
-                    concat!(stringify!($term), " alone"),
+                    concat!(stringify!($block), " alone"),
                     &values_in_range(LAYOUT.[<$block _offset>]..LAYOUT.[<$block _offset>] + 2),
                 )
             }
         };
 
-        (@one array $block:ident, $term:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
+        (@one array $block:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
             paste::paste! {
                 assert_linear_matches_dual(
-                    concat!(stringify!($term), " alone"),
+                    concat!(stringify!($block), " alone"),
                     &values_in_range(LAYOUT.[<$block _mg_offset>]..LAYOUT.[<$block _eg_offset>] + $n),
                 )
             }

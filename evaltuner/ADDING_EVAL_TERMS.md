@@ -10,8 +10,9 @@ Architecture is in [`EVAL_TUNER.md`](EVAL_TUNER.md).
 A zero-sized type implementing `LinearTerm`:
 
 - `apply<T: EvalMath>` reads `SharedFeatures` and `EvalParams` from a live board, writing into `Accumulators`.
-- `apply_input` writes the same buckets from a packed `FeatureRecord`, which has no board and no `EvalParams`.
-- `scatter` takes the combiner's upstream for the bucket and writes `∂loss/∂param` into the term's slots.
+- `apply_record` writes the same buckets from a packed `FeatureRecord`, which has no board and no `EvalParams`.
+- `scatter_record` takes the combiner's upstream for the bucket and writes `∂loss/∂param` into the term's slots.
+- `scatter_shared` writes `∂loss/∂param` directly from `SharedFeatures` for the gradient oracle.
 - `type Upstream` is whatever the combiner hands that bucket: `TaperPair` for the pre-tapered ones,
   `f64` for `xray`, `KingSafetyUpstream` for king safety, which holds the safety derivative plus one
   pressure derivative per side.
@@ -91,17 +92,17 @@ of the contract.
 
 ```rust
 bonus_terms! {
-    bishop_pair = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
-    passed_pawn = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6);    // ~15 Elo
+    bishop_pair = scalar(bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
+    passed_pawn = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, 6);    // ~15 Elo
 }
 ```
 
-Block name, term type, the `SharedFeatures` field it reads, the two `EvalParams` fields it
+Block name, the `SharedFeatures` field it reads, the two `EvalParams` fields it
 multiplies, and for an array its width. Offsets are not on the row: `paste` emits
 `bishop_pair_offset` from the block name at each use site.
 
-That row writes the term struct and its `LinearTerm` impl, both `TermSource` bridges, the record's
-packing, the `register_terms!` entry, both `define_tunables!` rows with the `EvalParams` fields and
+That row wires the forward pass and record/shared scatter inside `BonusTerms`, the record's
+packing in `FeatureRecord::pack_terms`, both `define_tunables!` rows with the `EvalParams` fields and
 their loaders, the `define_layout!` block name, and the oracle test binding.
 
 ### 4. The packed field, in `gradient.rs`
@@ -159,16 +160,16 @@ When the term is not a plain tapered bonus, everything the roster wrote comes ba
 - **`MobilityTerm`** in `mobility.rs` interpolates the open and closed weight vectors by openness,
   then tapers.
 
-Steps 1, 2, 4 and 5 are unchanged. In place of step 3 you write the `LinearTerm` impl, both
-`TermSource` bridges, a `register_terms!` line inside `register_bonus!`, the `define_tunables!` rows
-each naming the const its field loads from, and the block name in `define_layout!`'s core list in
-slot order.
+Steps 1, 2, 4 and 5 are unchanged. In place of step 3 you write the `LinearTerm` impl
+(`apply`, `apply_record`, `scatter_record`, `scatter_shared`), add a `register_terms!` line
+naming the term and its upstream bucket, the `define_tunables!` rows each naming the const its
+field loads from, and the block name in `define_layout!`'s core list in slot order.
 
 A hand-written term says the same thing three times and the three have to agree. `KingSafetyTerm`'s
-attacker weight is `weak / 10` inside `SideMetrics::pressure`, which `apply` and `apply_input` both
-call, and again as a bare `/ 10.0` in `scatter`, because a derivative cannot go through `pressure`.
-Change the divisor in one place and the forward pass and the gradient disagree, silently, on every
-position with a king attacker.
+attacker weight is `weak / 10` inside `SideMetrics::pressure`, which `apply` and `apply_record` both
+call, and again as a bare `/ 10.0` in `scatter_record` / `scatter_shared`, because a derivative cannot go
+through `pressure`. Change the divisor in one place and the forward pass and the gradient disagree,
+silently, on every position with a king attacker.
 
 ---
 

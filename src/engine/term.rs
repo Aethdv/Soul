@@ -1,32 +1,22 @@
 //! [`LinearTerm`] defines one eval term's forward pass and gradient scatter;
 //! `register_terms!` generates the dispatch over the registered impls.
 
-#![cfg_attr(not(feature = "dataset"), expect(dead_code, reason = "the gradient half of each term is the tuner's"))]
-
 use crate::engine::{
     autograd::EvalMath,
     combiner::Accumulators,
     eval::{EvalParams, SharedFeatures},
 };
+#[cfg(feature = "dataset")]
+use crate::tools::dataset::FeatureRecord;
 
+#[cfg(feature = "dataset")]
 #[derive(Clone, Copy)]
 pub(crate) struct TaperPair {
     pub(crate) d_mg: f64,
     pub(crate) d_eg: f64,
 }
 
-pub(crate) struct BucketUpstreams {
-    #[cfg_attr(
-        all(feature = "dataset", not(test)),
-        expect(dead_code, reason = "Material and PSQT scatter from the phase weights; only the gradient oracle reads this")
-    )]
-    pub(crate) material_psqt: TaperPair,
-    pub(crate) mobility: TaperPair,
-    pub(crate) bonus: TaperPair,
-    pub(crate) king_safety: KingSafetyUpstream,
-    pub(crate) xray: f64,
-}
-
+#[cfg(feature = "dataset")]
 #[derive(Clone, Copy)]
 pub(crate) struct KingSafetyUpstream {
     pub(crate) safety: f64,
@@ -34,24 +24,34 @@ pub(crate) struct KingSafetyUpstream {
     pub(crate) pressure_them: f64,
 }
 
-pub(crate) trait TermSource<Term> {
-    type Input;
-    fn extract(&self) -> Self::Input;
+#[cfg(feature = "dataset")]
+pub(crate) struct BucketUpstreams {
+    pub(crate) material_psqt: TaperPair,
+    pub(crate) mobility: TaperPair,
+    pub(crate) bonus: TaperPair,
+    pub(crate) king_safety: KingSafetyUpstream,
+    pub(crate) xray: f64,
 }
 
 pub(crate) trait LinearTerm {
+    #[cfg(feature = "dataset")]
     type Upstream: Copy;
-    type Input;
+
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, phase: T, acc: &mut Accumulators<T>);
-    fn apply_input(input: Self::Input, values: &[f64], phase: f64, acc: &mut Accumulators<f64>);
-    fn scatter(input: Self::Input, upstream: Self::Upstream, grads: &mut [f64]);
+
+    #[cfg(feature = "dataset")]
+    fn apply_record(record: &FeatureRecord, values: &[f64], phase: f64, acc: &mut Accumulators<f64>);
+
+    #[cfg(feature = "dataset")]
+    fn scatter_record(record: &FeatureRecord, upstream: Self::Upstream, grads: &mut [f64]);
+
+    #[cfg(all(test, feature = "dataset"))]
+    fn scatter_shared(features: &SharedFeatures, upstream: Self::Upstream, grads: &mut [f64]);
 }
 
 #[macro_export]
 macro_rules! register_terms {
-    (
-        $( $term:path => $upstream:ident ),* $(,)?
-    ) => {
+    ($( $term:path => $upstream:ident ),* $(,)?) => {
         #[inline(always)]
         pub(crate) fn apply_all_terms<T: $crate::engine::autograd::EvalMath<Scalar = T>>(
             features: &$crate::engine::eval::SharedFeatures,
@@ -64,40 +64,33 @@ macro_rules! register_terms {
 
         #[cfg(feature = "dataset")]
         #[inline(always)]
-        pub(crate) fn apply_all_inputs<S>(
-            source: &S,
+        pub(crate) fn apply_all_records(
+            record: &$crate::tools::dataset::FeatureRecord,
             values: &[f64],
             phase: f64,
             acc: &mut $crate::engine::combiner::Accumulators<f64>,
-        ) where
-            $( S: $crate::engine::term::TermSource<$term, Input = <$term as $crate::engine::term::LinearTerm>::Input> ),*
-        {
-            $(
-                <$term as $crate::engine::term::LinearTerm>::apply_input(
-                    $crate::engine::term::TermSource::<$term>::extract(source),
-                    values,
-                    phase,
-                    acc,
-                );
-            )*
+        ) {
+            $( <$term as $crate::engine::term::LinearTerm>::apply_record(record, values, phase, acc); )*
         }
 
         #[cfg(feature = "dataset")]
         #[inline(always)]
-        pub(crate) fn scatter_all_terms<S>(
-            source: &S,
+        pub(crate) fn scatter_all_records(
+            record: &$crate::tools::dataset::FeatureRecord,
             upstreams: &$crate::engine::term::BucketUpstreams,
             grads: &mut [f64],
-        ) where
-            $( S: $crate::engine::term::TermSource<$term, Input = <$term as $crate::engine::term::LinearTerm>::Input> ),*
-        {
-            $(
-                <$term as $crate::engine::term::LinearTerm>::scatter(
-                    $crate::engine::term::TermSource::<$term>::extract(source),
-                    upstreams.$upstream,
-                    grads,
-                );
-            )*
+        ) {
+            $( <$term as $crate::engine::term::LinearTerm>::scatter_record(record, upstreams.$upstream, grads); )*
+        }
+
+        #[cfg(all(test, feature = "dataset"))]
+        #[inline(always)]
+        pub(crate) fn scatter_all_shared(
+            features: &$crate::engine::eval::SharedFeatures,
+            upstreams: &$crate::engine::term::BucketUpstreams,
+            grads: &mut [f64],
+        ) {
+            $( <$term as $crate::engine::term::LinearTerm>::scatter_shared(features, upstreams.$upstream, grads); )*
         }
     };
 }

@@ -9,14 +9,18 @@ use crate::{
         autograd::EvalMath,
         combiner::{self, Accumulators, CombinerParams, safety_block, taper},
         eval_params::{
-            self, ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN,
-            XRAY,
+            ATTACKER, EG_MOBILITY_CLOSED, EG_MOBILITY_OPEN, KING_DANGER, KING_SAFETY, MG_MOBILITY_CLOSED, MG_MOBILITY_OPEN, XRAY,
         },
         mobility::{self, SpatialMetrics},
         search_params::SearchParams,
-        term,
+        term::LinearTerm,
     },
     weave::I16x8,
+};
+#[cfg(feature = "dataset")]
+use crate::{
+    engine::{eval_params::LAYOUT, term::TaperPair},
+    tools::dataset::FeatureRecord,
 };
 
 macro_rules! impl_eval_params {
@@ -72,17 +76,17 @@ macro_rules! bonus_terms {
 
     (@emit $mode:ident [$macro:ident] [$($carried:tt)*]) => {
         $crate::bonus_terms! { @$mode [$macro] [$($carried)*]
-            tempo             = scalar(TempoTerm, tempo, tempo_mg, tempo_eg); // ~9 Elo
-            bishop_pair       = scalar(BishopPairTerm, bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
-            rook_open         = scalar(RookOpenTerm, rook_open_diff, rook_open_mg, rook_open_eg); // ~5 Elo
-            minor_behind_pawn = scalar(MinorBehindPawnTerm, minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg); // ~3 Elo
-            doubled_pawn      = scalar(DoubledPawnTerm, doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg); // ~10 Elo
-            isolated_pawn     = scalar(IsolatedPawnTerm, isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg); // ~8 Elo
-            backward_pawn     = scalar(BackwardPawnTerm, backward_pawn_diff, backward_pawn_mg, backward_pawn_eg); // ~13 Elo
-            phalanx           = array(PhalanxTerm, phalanx, phalanx_mg, phalanx_eg, 6); // ~5 Elo
-            defended_pawn     = array(DefendedPawnTerm, defended_pawn, defended_pawn_mg, defended_pawn_eg, 6); // ~10 Elo
-            passed_pawn       = array(PassedPawnTerm, passed_pawn, passed_pawn_mg, passed_pawn_eg, 6); // ~15 Elo
-            enemy_king_dist   = array(EnemyKingDistTerm, enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6); // ~12 Elo
+            tempo             = scalar(tempo, tempo_mg, tempo_eg); // ~9 Elo
+            bishop_pair       = scalar(bishop_pair_diff, bishop_pair_mg, bishop_pair_eg); // ~9 Elo
+            rook_open         = scalar(rook_open_diff, rook_open_mg, rook_open_eg); // ~5 Elo
+            minor_behind_pawn = scalar(minor_behind_pawn_diff, minor_behind_pawn_mg, minor_behind_pawn_eg); // ~3 Elo
+            doubled_pawn      = scalar(doubled_pawn_diff, doubled_pawn_mg, doubled_pawn_eg); // ~10 Elo
+            isolated_pawn     = scalar(isolated_pawn_diff, isolated_pawn_mg, isolated_pawn_eg); // ~8 Elo
+            backward_pawn     = scalar(backward_pawn_diff, backward_pawn_mg, backward_pawn_eg); // ~13 Elo
+            phalanx           = array(phalanx, phalanx_mg, phalanx_eg, 6); // ~5 Elo
+            defended_pawn     = array(defended_pawn, defended_pawn_mg, defended_pawn_eg, 6); // ~10 Elo
+            passed_pawn       = array(passed_pawn, passed_pawn_mg, passed_pawn_eg, 6); // ~15 Elo
+            enemy_king_dist   = array(enemy_king_dist, enemy_king_dist_mg, enemy_king_dist_eg, 6); // ~12 Elo
         }
     };
 
@@ -91,7 +95,7 @@ macro_rules! bonus_terms {
     };
 
     (@rewrite [$macro:ident] [$($out:tt)*]
-        $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
+        $block:ident = scalar($feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
             @rewrite [$macro] [$($out)*
@@ -102,7 +106,7 @@ macro_rules! bonus_terms {
     };
 
     (@rewrite [$macro:ident] [$($out:tt)*]
-        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+        $block:ident = array($feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
     ) => {
         $crate::bonus_terms! {
             @rewrite [$macro] [$($out)*
@@ -115,13 +119,13 @@ macro_rules! bonus_terms {
     (@rewrite [$macro:ident] [$($out:tt)*]) => { paste::paste! { $macro! { $($out)* } } };
 
     (@blocks [$macro:ident] [$($out:tt)*]
-        $block:ident = scalar($term:ident, $feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
+        $block:ident = scalar($feature:ident, $mg:ident, $eg:ident); $($rest:tt)*
     ) => {
         $crate::bonus_terms! { @blocks [$macro] [$($out)* $block,] $($rest)* }
     };
 
     (@blocks [$macro:ident] [$($out:tt)*]
-        $block:ident = array($term:ident, $feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
+        $block:ident = array($feature:ident, $mg:ident, $eg:ident, 6); $($rest:tt)*
     ) => {
         $crate::bonus_terms! { @blocks [$macro] [$($out)* [<$block _mg>], [<$block _eg>],] $($rest)* }
     };
@@ -129,24 +133,15 @@ macro_rules! bonus_terms {
     (@blocks [$macro:ident] [$($out:tt)*]) => { paste::paste! { $macro! { $($out)* } } };
 }
 
-/// Terms outside the bonus list are named here by hand; one left out builds clean and
-/// never evaluates.
-macro_rules! register_bonus {
-    ([] $( $block:ident = $kind:ident ( $term:ident, $($spec:tt)* ) ; )*) => {
-        $( pub(crate) struct $term; )*
-
-        crate::register_terms! {
-            mobility::MobilityTerm   => mobility,
-            mobility::KingSafetyTerm => king_safety,
-            XrayTerm                 => xray,
-            $( $term                 => bonus, )*
-        }
-    };
+crate::register_terms! {
+    mobility::MobilityTerm   => mobility,
+    mobility::KingSafetyTerm => king_safety,
+    XrayTerm                 => xray,
+    BonusTerms               => bonus,
 }
 
-bonus_terms!(register_bonus);
-
 pub(crate) struct XrayTerm;
+pub(crate) struct BonusTerms;
 
 /// Score components from the side-to-move perspective.
 pub(crate) struct DetailedEval {
@@ -234,7 +229,7 @@ pub(super) fn lazy_eval_margin(board: &Position, phase: i32, params: &SearchPara
     params.qs_lazy_margin + scaled
 }
 
-/// [`term::LinearTerm::scatter`] assumes every term is linear in its weights, `y = w · x`.
+/// [`LinearTerm`] scatter assumes every term is linear in its weights, `y = w · x`.
 /// Nonlinearities over aggregate scores belong in [`combiner::combine`].
 #[inline(always)]
 pub(crate) fn evaluate_generic<T: EvalMath<Scalar = T>>(
@@ -461,123 +456,113 @@ pub(crate) fn evaluate_buckets<T: EvalMath<Scalar = T>>(
     buckets
 }
 
-impl term::LinearTerm for XrayTerm {
+impl LinearTerm for XrayTerm {
+    #[cfg(feature = "dataset")]
     type Upstream = f64;
-    type Input = f64;
 
     #[inline(always)]
     fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
         acc.xray = params.w_xray_ortho * T::from_i32(features.xray_ortho);
     }
 
+    #[cfg(feature = "dataset")]
     #[inline(always)]
-    fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
-        acc.xray = values[eval_params::LAYOUT.xray_offset] * feature;
+    fn apply_record(record: &FeatureRecord, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+        acc.xray = values[LAYOUT.xray_offset] * f64::from(record.xray_ortho);
     }
 
+    #[cfg(feature = "dataset")]
     #[inline(always)]
-    fn scatter(feature: f64, upstream: f64, grads: &mut [f64]) {
-        let off = eval_params::LAYOUT.xray_offset;
-        grads[off] += upstream * feature;
+    fn scatter_record(record: &FeatureRecord, upstream: f64, grads: &mut [f64]) {
+        grads[LAYOUT.xray_offset] += upstream * f64::from(record.xray_ortho);
     }
-}
 
-impl term::TermSource<XrayTerm> for SharedFeatures {
-    type Input = f64;
-
+    #[cfg(all(test, feature = "dataset"))]
     #[inline(always)]
-    fn extract(&self) -> f64 { self.xray_ortho as f64 }
+    fn scatter_shared(features: &SharedFeatures, upstream: f64, grads: &mut [f64]) {
+        grads[LAYOUT.xray_offset] += upstream * f64::from(features.xray_ortho);
+    }
 }
 
 macro_rules! impl_bonus_terms {
     ( [] $( $block:ident = $kind:ident ( $($spec:tt)* ) ; )* ) => {
-        $( impl_bonus_terms!(@$kind $block, $($spec)*); )*
-    };
-
-    (@scalar $block:ident, $term:ident, $sf_field:ident, $mg:ident, $eg:ident) => {
-        impl term::LinearTerm for $term {
-            type Upstream = term::TaperPair;
-            type Input = f64;
+        impl LinearTerm for BonusTerms {
+            #[cfg(feature = "dataset")]
+            type Upstream = TaperPair;
 
             #[inline(always)]
             fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-                let feature = T::from_i32(features.$sf_field);
-                acc.bonus_mg += params.$mg * feature;
-                acc.bonus_eg += params.$eg * feature;
+                $( impl_bonus_terms!(@eval $kind features, params, acc, $($spec)*); )*
             }
 
+            #[cfg(feature = "dataset")]
             #[inline(always)]
-            fn apply_input(feature: f64, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
-                let off = paste::paste!(eval_params::LAYOUT.[<$block _offset>]);
-                acc.bonus_mg += values[off] * feature;
-                acc.bonus_eg += values[off + 1] * feature;
+            fn apply_record(rec: &FeatureRecord, values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
+                $( impl_bonus_terms!(@record $kind $block, rec, values, acc, $($spec)*); )*
             }
 
+            #[cfg(feature = "dataset")]
             #[inline(always)]
-            fn scatter(feature: f64, upstream: term::TaperPair, grads: &mut [f64]) {
-                let off = paste::paste!(eval_params::LAYOUT.[<$block _offset>]);
-                grads[off] += upstream.d_mg * feature;
-                grads[off + 1] += upstream.d_eg * feature;
+            fn scatter_record(rec: &FeatureRecord, up: TaperPair, grads: &mut [f64]) {
+                $( impl_bonus_terms!(@scatter $kind $block, rec, up, grads, $($spec)*); )*
             }
-        }
 
-        impl term::TermSource<$term> for SharedFeatures {
-            type Input = f64;
-
+            #[cfg(all(test, feature = "dataset"))]
             #[inline(always)]
-            fn extract(&self) -> f64 { self.$sf_field as f64 }
+            fn scatter_shared(sf: &SharedFeatures, up: TaperPair, grads: &mut [f64]) {
+                $( impl_bonus_terms!(@scatter $kind $block, sf, up, grads, $($spec)*); )*
+            }
         }
     };
 
-    (@array $block:ident, $term:ident, $sf_field:ident, $mg:ident, $eg:ident, $n:literal) => {
-        impl term::LinearTerm for $term {
-            type Upstream = term::TaperPair;
-            type Input = [f64; $n];
+    (@eval scalar $sf:ident, $params:ident, $acc:ident, $field:ident, $mg:ident, $eg:ident) => {{
+        let feature = T::from_i32($sf.$field);
+        $acc.bonus_mg += $params.$mg * feature;
+        $acc.bonus_eg += $params.$eg * feature;
+    }};
 
-            #[inline(always)]
-            fn apply<T: EvalMath<Scalar = T>>(features: &SharedFeatures, params: &EvalParams<T>, _phase: T, acc: &mut Accumulators<T>) {
-                for i in 0..$n {
-                    let feature = T::from_i32(features.$sf_field[i]);
-                    acc.bonus_mg += params.$mg[i] * feature;
-                    acc.bonus_eg += params.$eg[i] * feature;
-                }
-            }
+    (@eval array $sf:ident, $params:ident, $acc:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
+        for i in 0..$n {
+            let feature = T::from_i32($sf.$field[i]);
+            $acc.bonus_mg += $params.$mg[i] * feature;
+            $acc.bonus_eg += $params.$eg[i] * feature;
+        }
+    };
 
-            #[inline(always)]
-            fn apply_input(features: [f64; $n], values: &[f64], _phase: f64, acc: &mut Accumulators<f64>) {
-                if features.iter().all(|f| *f == 0.0) {
-                    return;
-                }
+    (@record scalar $block:ident, $rec:ident, $values:ident, $acc:ident, $field:ident, $($rest:tt)*) => {{
+        let feature = f64::from($rec.$field);
+        let off = paste::paste!(LAYOUT.[<$block _offset>]);
+        $acc.bonus_mg += $values[off] * feature;
+        $acc.bonus_eg += $values[off + 1] * feature;
+    }};
 
-                let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
-                let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
-                for i in 0..$n {
-                    acc.bonus_mg += values[mg + i] * features[i];
-                    acc.bonus_eg += values[eg + i] * features[i];
-                }
-            }
-
-            #[inline(always)]
-            fn scatter(features: [f64; $n], upstream: term::TaperPair, grads: &mut [f64]) {
-                if features.iter().all(|f| *f == 0.0) {
-                    return;
-                }
-
-                let mg = paste::paste!(eval_params::LAYOUT.[<$block _mg_offset>]);
-                let eg = paste::paste!(eval_params::LAYOUT.[<$block _eg_offset>]);
-                for i in 0..$n {
-                    grads[mg + i] += upstream.d_mg * features[i];
-                    grads[eg + i] += upstream.d_eg * features[i];
-                }
+    (@record array $block:ident, $rec:ident, $values:ident, $acc:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
+        if $rec.$field != [0; $n] {
+            let mg = paste::paste!(LAYOUT.[<$block _mg_offset>]);
+            let eg = paste::paste!(LAYOUT.[<$block _eg_offset>]);
+            for i in 0..$n {
+                let feature = f64::from($rec.$field[i]);
+                $acc.bonus_mg += $values[mg + i] * feature;
+                $acc.bonus_eg += $values[eg + i] * feature;
             }
         }
+    };
 
-        impl term::TermSource<$term> for SharedFeatures {
-            type Input = [f64; $n];
+    (@scatter scalar $block:ident, $src:ident, $up:expr, $grads:ident, $field:ident, $($rest:tt)*) => {{
+        let feature = f64::from($src.$field);
+        let off = paste::paste!(LAYOUT.[<$block _offset>]);
+        $grads[off] += $up.d_mg * feature;
+        $grads[off + 1] += $up.d_eg * feature;
+    }};
 
-            #[inline(always)]
-            fn extract(&self) -> [f64; $n] {
-                std::array::from_fn(|i| self.$sf_field[i] as f64)
+    (@scatter array $block:ident, $src:ident, $up:expr, $grads:ident, $field:ident, $mg:ident, $eg:ident, $n:literal) => {
+        if $src.$field != [0; $n] {
+            let mg = paste::paste!(LAYOUT.[<$block _mg_offset>]);
+            let eg = paste::paste!(LAYOUT.[<$block _eg_offset>]);
+            for i in 0..$n {
+                let feature = f64::from($src.$field[i]);
+                $grads[mg + i] += $up.d_mg * feature;
+                $grads[eg + i] += $up.d_eg * feature;
             }
         }
     };

@@ -9,12 +9,11 @@ The recipe for adding a term is [ADDING_EVAL_TERMS.md](ADDING_EVAL_TERMS.md).
 
 The eval is a weighted sum, `score = Σ featureᵢ · weightᵢ`, and the tuner minimizes
 `L(σ(K·score), target)` over millions of positions, K converting a centipawn to a win probability.
-Cross-entropy by default; MSE, focal and label-smoothed CE are config options. `wdl_target` sets
-the target between the game result and `σ(K·search_score)`, leaning on the search where it was
-decisive and on the result where it was not.
+label-smoothed CE by default; MSE, focal and CE are config options. `wdl_target` sets the target
+between the game result and `σ(K·search_score)`, leaning on the search where it was decisive
+and on the result where it was not.
 
-Because the eval is linear in its parameters, a weight's gradient is the feature standing next to
-it:
+Because the eval is linear in its parameters, a weight's gradient is the feature standing next to it:
 
 ```text
 ∂score/∂wᵢ = featureᵢ
