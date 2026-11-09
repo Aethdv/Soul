@@ -154,6 +154,7 @@ pub struct Tunable {
 /// V(v)       flat weight
 ///
 /// The `C` prefix pins a slot; the tuner reads it as `is_fixed` and never steps it.
+#[derive(Clone, Copy)]
 enum Param {
     S(i32, i32),
     CS(i32, i32),
@@ -161,18 +162,40 @@ enum Param {
     Const(i32),
 }
 
-fn collect_tapered_params<const N: usize>(name: &str, mg: &[i32; N], eg: &[i32; N], declarations: &[Param; N]) -> Vec<Tunable> {
-    let mut params = Vec::with_capacity(2 * N);
+impl Param {
+    const fn mg(self) -> i32 {
+        match self {
+            Self::S(mg, _) | Self::CS(mg, _) => mg,
+            _ => panic!("tapered params must be S or CS"),
+        }
+    }
 
-    for (prefix, values) in [("MG", mg), ("EG", eg)] {
-        for (i, &value) in values.iter().enumerate() {
-            let is_fixed = matches!(declarations[i], Param::CS(..));
+    const fn eg(self) -> i32 {
+        match self {
+            Self::S(_, eg) | Self::CS(_, eg) => eg,
+            _ => panic!("tapered params must be S or CS"),
+        }
+    }
 
+    const fn val(self) -> i32 {
+        match self {
+            Self::Val(v) | Self::Const(v) => v,
+            _ => 0,
+        }
+    }
+}
+
+fn collect_tapered_params(name: &str, declarations: &[Param]) -> Vec<Tunable> {
+    let mut params = Vec::with_capacity(2 * declarations.len());
+
+    for (prefix, is_eg) in [("MG", false), ("EG", true)] {
+        for (i, &param) in declarations.iter().enumerate() {
+            let value = if is_eg { param.eg() } else { param.mg() };
             params.push(Tunable {
                 value: f64::from(value),
                 name: format!("{prefix}_{name}[{i}]"),
                 idx: 0,
-                is_fixed,
+                is_fixed: matches!(param, Param::CS(..)),
                 freeze_resistant: false,
             });
         }
@@ -182,64 +205,40 @@ fn collect_tapered_params<const N: usize>(name: &str, mg: &[i32; N], eg: &[i32; 
 
 const FREEZE_RESISTANT_BLOCKS: &[&str] = &["ATTACKER"];
 
-fn collect_scalar_params<const N: usize>(name: &str, arr: &[Param; N]) -> Vec<Tunable> {
-    let mut params = Vec::new();
+fn collect_scalar_params(name: &str, arr: &[Param]) -> Vec<Tunable> {
     let freeze_resistant = FREEZE_RESISTANT_BLOCKS.contains(&name);
 
-    for (i, param) in arr.iter().enumerate() {
-        let (val, is_fixed) = match param {
-            Param::Val(v) => (*v, false),
-            Param::Const(v) => (*v, true),
-            Param::S(..) | Param::CS(..) => (0, true),
-        };
-        params.push(Tunable { value: val as f64, name: format!("{name}[{i}]"), idx: i, is_fixed, freeze_resistant });
-    }
-    params
+    arr.iter()
+        .enumerate()
+        .map(|(i, &param)| Tunable {
+            value: f64::from(param.val()),
+            name: format!("{name}[{i}]"),
+            idx: i,
+            is_fixed: !matches!(param, Param::Val(..)),
+            freeze_resistant,
+        })
+        .collect()
 }
 
 macro_rules! define_psqt_params {
     ($($name:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
         paste::paste! {
             $(
-                pub(crate) const [<MG_ $name>]: [i32; { [$($val),*].len() }] = [
-                    $(
-                        match $val {
-                            Param::S(mg, _) | Param::CS(mg, _) => mg,
-                            _ => panic!("PSQT params must be S or CS"),
-                        }
-                    ),*
-                ];
-
-                pub(crate) const [<EG_ $name>]: [i32; { [$($val),*].len() }] = [
-                    $(
-                        match $val {
-                            Param::S(_, eg) | Param::CS(_, eg) => eg,
-                            _ => panic!("PSQT params must be S or CS"),
-                        }
-                    ),*
-                ];
+                pub(crate) const [<MG_ $name:upper>]: [i32; { [$($val),*].len() }] = [$($val.mg()),*];
+                pub(crate) const [<EG_ $name:upper>]: [i32; { [$($val),*].len() }] = [$($val.eg()),*];
             )*
 
-            const PSQT_BLOCKS: SectionDecls = &[&[("psqt", (0 $( + [<MG_ $name>].len() )*) * 2)]];
+            const PSQT_BLOCKS: SectionDecls = &[&[("psqt", (0 $( + [<MG_ $name:upper>].len() )*) * 2)]];
 
             fn collect_psqt_params() -> Vec<Tunable> {
+                assert_eq!(
+                    [$(stringify!($name)),*],
+                    ["PAWN", "KNIGHT", "BISHOP", "ROOK", "QUEEN", "KING"],
+                    "PSQT macro order MUST exactly match PieceType integer values"
+                );
+
                 let mut params = Vec::new();
-                let names = [$(stringify!($name)),*];
-                let expected = ["PAWN", "KNIGHT", "BISHOP", "ROOK", "QUEEN", "KING"];
-                assert_eq!(names.len(), expected.len(), "Must define exactly 6 PSQT arrays");
-
-                for (actual, expected) in names.iter().zip(expected.iter()) {
-                    assert_eq!(actual, expected, "PSQT macro order MUST exactly match PieceType integer values");
-                }
-
-                $(
-                    params.append(&mut collect_tapered_params(
-                        stringify!($name),
-                        &[<MG_ $name>],
-                        &[<EG_ $name>],
-                        &[$($val),*],
-                    ));
-                )*
+                $(params.append(&mut collect_tapered_params(stringify!([<$name:upper>]), &[$($val),*]));)*
                 params
             }
         }
@@ -250,37 +249,15 @@ macro_rules! define_simple_params {
     ($($block:ident = [$($val:expr),* $(,)?]),* $(,)?) => {
         paste::paste! {
             $(
-                pub(crate) const [<MG_ $block:upper>]: [i32; { [$($val),*].len() }] = [
-                    $(
-                        match $val {
-                            Param::S(mg, _) | Param::CS(mg, _) => mg,
-                            _ => panic!("Simple params must be S or CS"),
-                        }
-                    ),*
-                ];
-
-                pub(crate) const [<EG_ $block:upper>]: [i32; { [$($val),*].len() }] = [
-                    $(
-                        match $val {
-                            Param::S(_, eg) | Param::CS(_, eg) => eg,
-                            _ => panic!("Simple params must be S or CS"),
-                        }
-                    ),*
-                ];
+                pub(crate) const [<MG_ $block:upper>]: [i32; { [$($val),*].len() }] = [$($val.mg()),*];
+                pub(crate) const [<EG_ $block:upper>]: [i32; { [$($val),*].len() }] = [$($val.eg()),*];
             )*
 
             const SIMPLE_BLOCKS: SectionDecls = &[&[$( (stringify!($block), [<MG_ $block:upper>].len() * 2) ),*]];
 
             fn collect_simple_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
-                $(
-                    params.append(&mut collect_tapered_params(
-                        stringify!([<$block:upper>]),
-                        &[<MG_ $block:upper>],
-                        &[<EG_ $block:upper>],
-                        &[$($val),*],
-                    ));
-                )*
+                $(params.append(&mut collect_tapered_params(stringify!([<$block:upper>]), &[$($val),*]));)*
                 params
             }
         }
@@ -291,23 +268,8 @@ macro_rules! define_simd_params {
     ($($block:ident { mg = [$($mg:expr),* $(,)?], eg = [$($eg:expr),* $(,)?] $(,)? }),* $(,)?) => {
         paste::paste! {
             $(
-                pub(crate) const [<MG_ $block:upper>]: I32x4 = I32x4::new([
-                    $(
-                        match $mg {
-                            Param::Val(v) | Param::Const(v) => v,
-                            _ => 0,
-                        }
-                    ),*
-                ]);
-
-                pub(crate) const [<EG_ $block:upper>]: I32x4 = I32x4::new([
-                    $(
-                        match $eg {
-                            Param::Val(v) | Param::Const(v) => v,
-                            _ => 0,
-                        }
-                    ),*
-                ]);
+                pub(crate) const [<MG_ $block:upper>]: I32x4 = I32x4::new([$($mg.val()),*]);
+                pub(crate) const [<EG_ $block:upper>]: I32x4 = I32x4::new([$($eg.val()),*]);
             )*
 
             const SIMD_BLOCKS: SectionDecls = &[&[
@@ -317,11 +279,8 @@ macro_rules! define_simd_params {
             fn collect_simd_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
                 $(
-                    let mg = [$($mg),*];
-                    let eg = [$($eg),*];
-
-                    params.append(&mut collect_scalar_params(stringify!([<MG_ $block:upper>]), &mg));
-                    params.append(&mut collect_scalar_params(stringify!([<EG_ $block:upper>]), &eg));
+                    params.append(&mut collect_scalar_params(stringify!([<MG_ $block:upper>]), &[$($mg),*]));
+                    params.append(&mut collect_scalar_params(stringify!([<EG_ $block:upper>]), &[$($eg),*]));
                 )*
                 params
             }
@@ -333,14 +292,7 @@ macro_rules! define_simd_params {
 macro_rules! define_weight_params {
     ($( $($block:ident = [$($val:expr),* $(,)?]),* $(,)? ; )*) => {
         paste::paste! {
-            $($(pub(crate) const [<$block:upper>]: [i32; { [$($val),*].len() }] = [
-                $(
-                    match $val {
-                        Param::Val(v) | Param::Const(v) => v,
-                        _ => 0,
-                    }
-                ),*
-            ];)*)*
+            $($(pub(crate) const [<$block:upper>]: [i32; { [$($val),*].len() }] = [$($val.val()),*];)*)*
 
             const WEIGHT_BLOCKS: SectionDecls = &[
                 $( &[$( (stringify!($block), [<$block:upper>].len()) ),*] ),*
@@ -348,10 +300,7 @@ macro_rules! define_weight_params {
 
             fn collect_weight_params() -> Vec<Tunable> {
                 let mut params = Vec::new();
-                $($(
-                    let arr = [$($val),*];
-                    params.append(&mut collect_scalar_params(stringify!([<$block:upper>]), &arr));
-                )*)*
+                $($(params.append(&mut collect_scalar_params(stringify!([<$block:upper>]), &[$($val),*]));)*)*
                 params
             }
         }
