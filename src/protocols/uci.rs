@@ -227,13 +227,11 @@ where I: Iterator<Item = &'a str> {
                 }
             },
             "searchmoves" => {
-                while let Some(&mv_str) = tokens.peek() {
-                    if let Ok(mv) = parse_uci_move(board, mv_str) {
-                        limits.searchmoves.push(mv);
-                        tokens.next();
-                    } else {
-                        break;
-                    }
+                while let Some(&mv_str) = tokens.peek()
+                    && let Ok(mv) = parse_uci_move(board, mv_str)
+                {
+                    limits.searchmoves.push(mv);
+                    tokens.next();
                 }
             },
             _ => {},
