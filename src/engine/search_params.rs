@@ -28,7 +28,13 @@ pub(crate) struct ParamDef {
     pub(crate) frozen: bool,
 }
 
-const fn auto_max(default: i32) -> i32 {
+impl ParamDef {
+    pub(crate) const fn new(name: &'static str, default: i32, min: i32, max: i32, frozen: bool) -> Self {
+        Self { name, min, max, step: auto_step(max - min), default, frozen }
+    }
+}
+
+pub(crate) const fn auto_max(default: i32) -> i32 {
     let abs_d = default.abs();
     abs_d + 10 + abs_d / 2
 }
@@ -57,40 +63,27 @@ macro_rules! search_params {
         search_params!(@emit $name [$($entries)*]);
     };
 
-    (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, 0, $crate::engine::search_params::auto_max($def),
-             $crate::engine::search_params::auto_step($crate::engine::search_params::auto_max($def)), false)
-        ] $($rest)*);
+    (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
+        search_params!(@collect [$name] [$($entries)* ($field, $def, $min, $max, false)] $($rest)*);
     };
 
     (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, $min, $crate::engine::search_params::auto_max($def),
-             $crate::engine::search_params::auto_step($crate::engine::search_params::auto_max($def) - $min), false)
-        ] $($rest)*);
+        search_params!(@collect [$name] [$($entries)* ($field, $def, $min, $crate::engine::search_params::auto_max($def), false)] $($rest)*);
     };
 
-    (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, $min, $max, $crate::engine::search_params::auto_step($max - $min), false)
-        ] $($rest)*);
-    };
-
-    (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, 0, $crate::engine::search_params::auto_max($def),
-             $crate::engine::search_params::auto_step($crate::engine::search_params::auto_max($def)), true)
-        ] $($rest)*);
+    (@collect [$name:ident] [$($entries:tt)*] T($field:ident, $def:literal) , $($rest:tt)*) => {
+        search_params!(@collect [$name] [$($entries)* ($field, $def, 0, $crate::engine::search_params::auto_max($def), false)] $($rest)*);
     };
 
     (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal, $min:literal, $max:literal) , $($rest:tt)*) => {
-        search_params!(@collect [$name] [$($entries)*
-            ($field, $def, $min, $max, $crate::engine::search_params::auto_step($max - $min), true)
-        ] $($rest)*);
+        search_params!(@collect [$name] [$($entries)* ($field, $def, $min, $max, true)] $($rest)*);
     };
 
-    (@emit $name:ident [$( ($field:ident, $def:literal, $min:expr, $max:expr, $step:expr, $frozen:expr) )*]) => {
+    (@collect [$name:ident] [$($entries:tt)*] NT($field:ident, $def:literal) , $($rest:tt)*) => {
+        search_params!(@collect [$name] [$($entries)* ($field, $def, 0, $crate::engine::search_params::auto_max($def), true)] $($rest)*);
+    };
+
+    (@emit $name:ident [$( ($field:ident, $def:literal, $min:expr, $max:expr, $frozen:expr) )*]) => {
         #[derive(Clone, Copy, Debug)]
         pub(crate) struct $name {
             $( pub(crate) $field: i32, )*
@@ -128,17 +121,10 @@ macro_rules! search_params {
             }
         }
 
-        static PARAM_DEFS: &[ParamDef] = &[
+        static PARAM_DEFS: &[$crate::engine::search_params::ParamDef] = &[
             $(
-                ParamDef {
-                    name: stringify!($field),
-                    min: $min,
-                    max: $max,
-                    step: $step,
-                    default: $def,
-                    frozen: $frozen,
-                }
-            ),*
+                $crate::engine::search_params::ParamDef::new(stringify!($field), $def, $min, $max, $frozen),
+            )*
         ];
 
     };
