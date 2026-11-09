@@ -338,11 +338,11 @@ impl MovePicker {
             let promo = victims & prom_mask;
             let standard = victims & !prom_mask;
             for to in promo {
-                let from = Square((to.0.cast_signed() - delta).cast_unsigned());
+                let from = to.offset_unchecked(-delta);
                 self.add_promo_caps(board, from, to);
             }
             for to in standard {
-                let from = Square((to.0.cast_signed() - delta).cast_unsigned());
+                let from = to.offset_unchecked(-delta);
                 self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn, history);
             }
         }
@@ -443,7 +443,7 @@ impl MovePicker {
         let promo_pushes = all_pushes & prom_mask;
 
         for to in promo_pushes {
-            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
+            let from = to.offset_unchecked(-up_d);
             self.add_quiet(Move::new(from, to, Move::PROM_Q), PieceType::Pawn, stm, history);
         }
     }
@@ -514,17 +514,17 @@ impl MovePicker {
         let quiet_pushes = all_pushes & !prom_mask;
 
         for to in promo_pushes {
-            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
+            let from = to.offset_unchecked(-up_d);
             self.add_promo_quiets(from, to, stm, history);
         }
         for to in quiet_pushes {
-            let from = Square((to.0.cast_signed() - up_d).cast_unsigned());
+            let from = to.offset_unchecked(-up_d);
             self.add_quiet(Move::new(from, to, Move::QUIET), PieceType::Pawn, stm, history);
         }
 
         let doubles = (all_pushes & third_rank).shift(up) & empty;
         for to in doubles {
-            let from = Square((to.0.cast_signed() - up_d * 2).cast_unsigned());
+            let from = to.offset_unchecked(-up_d * 2);
             self.add_quiet(Move::new(from, to, Move::DOUBLE_PUSH), PieceType::Pawn, stm, history);
         }
     }
