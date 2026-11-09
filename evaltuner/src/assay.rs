@@ -40,7 +40,7 @@ const PIECES: [PieceType; 5] = [PieceType::Pawn, PieceType::Knight, PieceType::B
 const MOBILITY_MAX: usize = 28;
 const OPENNESS_BINS: usize = 8;
 const PHASE_BINS: usize = 6;
-const SHAPE_BINS: [u32; 7] = [0, 2, 4, 6, 8, 12, 16];
+const SHAPE_HIGHS: [usize; 6] = [2, 4, 6, 8, 12, 16];
 
 pub(crate) enum Assay {
     Score { params: Vec<String>, loss: LossFn, shipped: String },
@@ -57,14 +57,18 @@ pub(crate) fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, 
     for dataset in datasets {
         let Some(paths) = resolve_dataset_paths(dataset) else { continue };
         let mut entries = load_datasets(&paths, &filter).entries;
+
         if entries.is_empty() {
             alarm!("No positions loaded from {dataset}.");
             continue;
         }
+
         let loaded = entries.len();
+
         if let Some(cap) = sample {
             entries = strided(entries, cap);
         }
+
         println!("  Extracting features ({} entries)...", fmt_comma(entries.len() as u64));
         let records = entries.par_iter().map(FeatureRecord::from_entry).collect();
         sets.push(Dataset { label: label_for(&paths), paths, entries, records, loaded });
@@ -675,21 +679,23 @@ fn spread(sets: &[Dataset]) {
             .collect()
     };
 
-    let mut shape_heads = Vec::new();
-    let mut low = 0u32;
+    let mut lo = 0;
+    let mut shape_bins = Vec::with_capacity(SHAPE_HIGHS.len() + 1);
 
-    for high in SHAPE_BINS.into_iter().skip(1) {
-        shape_heads.push(if low == high { low.to_string() } else { format!("{low}-{high}") });
-        low = high + 1;
+    for hi in SHAPE_HIGHS {
+        let head = if lo == hi { lo.to_string() } else { format!("{lo}-{hi}") };
+        shape_bins.push((lo..hi + 1, head));
+        lo = hi + 1;
     }
-    shape_heads.push(format!("{low}+"));
+
+    shape_bins.push((lo..MOBILITY_MAX, format!("{lo}+")));
 
     for set in sets {
         let stats = fold_dataset(set, FeatureSpread::observe, FeatureSpread::merged);
         println!();
 
         let mut summary = Table::new(&set.label, ["pieces", "mean", "max", "p99", "p99.9", "at 0"]);
-        let mut shape = Table::new("share at count", shape_heads.iter().cloned());
+        let mut shape = Table::new("share at count", shape_bins.iter().map(|(_, h)| h.as_str()));
 
         for (row, piece) in PIECES.iter().enumerate() {
             let counts = &stats.mobility[row];
@@ -712,14 +718,10 @@ fn spread(sets: &[Dataset]) {
                 format!("{:.2}%", pct(counts[0], pieces)),
             ]);
 
-            let (mut cells, mut lo) = (Vec::new(), 0u32);
-
-            for hi in SHAPE_BINS.into_iter().skip(1) {
-                cells.push(format!("{:.1}%", pct(counts[lo as usize..=(hi as usize).min(MOBILITY_MAX - 1)].iter().sum(), pieces)));
-                lo = hi + 1;
-            }
-
-            cells.push(format!("{:.1}%", pct(counts[(lo as usize).min(MOBILITY_MAX - 1)..].iter().sum(), pieces)));
+            let cells: Vec<String> = shape_bins
+                .iter()
+                .map(|(range, _)| format!("{:.1}%", pct(counts[range.clone()].iter().sum(), pieces)))
+                .collect();
             shape.push(&label, cells);
         }
 
