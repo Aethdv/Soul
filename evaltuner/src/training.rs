@@ -267,6 +267,17 @@ pub(crate) fn merge_sample_weights(balance_weights: Vec<f64>, replay_weights: &[
     weights
 }
 
+#[inline]
+pub(crate) fn add_slice<T: std::ops::AddAssign + Copy>(dst: &mut [T], src: &[T]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for (a, &b) in dst.iter_mut().zip(src) {
+        *a += b;
+    }
+}
+
+#[inline]
+pub(crate) fn l2_norm(xs: &[f64]) -> f64 { xs.iter().map(|x| x * x).sum::<f64>().sqrt() }
+
 fn normalize_unit_mean(weights: &mut [f64]) {
     let mean = weights.iter().sum::<f64>() / weights.len() as f64;
     if mean > 0.0 {

@@ -221,6 +221,7 @@ enum Gate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::l2_norm;
 
     #[test]
     fn tally_separates_gate_outcomes() {
@@ -294,7 +295,7 @@ mod tests {
             opt.set_lr(0.1 * (1.0 - iter as f64 / 200.0).max(0.05));
             opt.update(&mut params, &grads, &masks);
         }
-        let norm = params.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let norm = l2_norm(&params);
         assert!(norm < 0.5, "did not converge from norm 31.6: {norm}");
     }
 }

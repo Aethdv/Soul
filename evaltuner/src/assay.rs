@@ -2,7 +2,7 @@
 //!
 //! Assays read a set in its natural order, with no resampling and no holdout.
 
-use std::{f64::consts::LN_2, ops::AddAssign, path::Path};
+use std::{f64::consts::LN_2, path::Path};
 
 use rayon::prelude::*;
 
@@ -19,7 +19,7 @@ use crate::{
     run::replay_filter,
     scale::golden_search_k,
     storage::load_checkpoint,
-    training::{phase_of, piece_phase_weights},
+    training::{add_slice, l2_norm, phase_of, piece_phase_weights},
 };
 
 const COIN_FLIP: f64 = LN_2;
@@ -303,12 +303,6 @@ impl Table {
     }
 }
 
-fn add_slice<T: AddAssign + Copy>(dst: &mut [T], src: &[T]) {
-    for (a, &b) in dst.iter_mut().zip(src) {
-        *a += b;
-    }
-}
-
 fn fold_dataset<T: Default + Send>(
     set: &Dataset,
     observe: impl Fn(&mut T, &SoulEntry, &FeatureRecord, &[f64; 6]) + Sync,
@@ -579,7 +573,7 @@ fn newton_fit(rows: &[([f64; 10], f64)]) -> ([f64; 10], f64, usize) {
             scale *= 0.5;
         }
 
-        if !moved || delta.iter().map(|d| d * d).sum::<f64>().sqrt() * scale < FIT_TOL {
+        if !moved || l2_norm(&delta) * scale < FIT_TOL {
             return (w, loss, step);
         }
     }

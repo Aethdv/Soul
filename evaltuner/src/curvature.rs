@@ -16,6 +16,7 @@
 use crate::{
     engine::Tunable,
     report::{DIM, LAB, RESET, VAL},
+    training::add_slice,
 };
 
 const MAX_SWEEPS: usize = 40;
@@ -60,11 +61,7 @@ impl Curvature {
         }
     }
 
-    pub(crate) fn merge(&mut self, other: &Self) {
-        for (lhs, rhs) in self.data.iter_mut().zip(&other.data) {
-            *lhs += rhs;
-        }
-    }
+    pub(crate) fn merge(&mut self, other: &Self) { add_slice(&mut self.data, &other.data); }
 
     pub(crate) fn symmetrized(mut self) -> Self {
         for i in 0..self.dim {

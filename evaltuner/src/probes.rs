@@ -15,7 +15,7 @@ use crate::{
     run::Objective,
     scale::KController,
     shuffle::Shuffler,
-    training::{lr_mask, sigmoid, wdl_target},
+    training::{add_slice, lr_mask, sigmoid, wdl_target},
 };
 
 const TRIALS: usize = 64;
@@ -335,9 +335,7 @@ fn pool_noise_trials(
             small_sq += grad.iter().map(|g| (g / count as f64).powi(2)).sum::<f64>();
             small_count += count;
 
-            for (acc, g) in union_sum.iter_mut().zip(&grad) {
-                *acc += g;
-            }
+            add_slice(&mut union_sum, &grad);
 
             union_count += count;
             chunk_sums.push(grad);

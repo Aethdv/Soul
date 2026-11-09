@@ -35,8 +35,8 @@ use crate::{
     shuffle::Shuffler,
     storage::{JsonLog, RunState, TrainerState, load_checkpoint, peek_checkpoint, save_checkpoint},
     training::{
-        DivergenceMonitor, GROUP_NAMES, GradientStats, Progress, beta2_for_lr, describe_beta2, group_ranges, merge_sample_weights,
-        phase_balance_weights, sigmoid, slot_masks, wdl_target,
+        DivergenceMonitor, GROUP_NAMES, GradientStats, Progress, add_slice, beta2_for_lr, describe_beta2, group_ranges, l2_norm,
+        merge_sample_weights, phase_balance_weights, sigmoid, slot_masks, wdl_target,
     },
 };
 
@@ -115,9 +115,7 @@ impl Objective<'_> {
             .reduce(
                 || (vec![0.0; values.len()], 0.0f64, 0.0f64, 0usize),
                 |(mut g1, kg1, l1, c1), (g2, kg2, l2, c2)| {
-                    for (a, b) in g1.iter_mut().zip(g2) {
-                        *a += b;
-                    }
+                    add_slice(&mut g1, &g2);
                     (g1, kg1 + kg2, l1 + l2, c1 + c2)
                 },
             )
@@ -168,9 +166,7 @@ impl Objective<'_> {
             .reduce(
                 || ([0.0_f64; N], 0.0_f64),
                 |(mut sums1, w1), (sums2, w2)| {
-                    for (s1, s2) in sums1.iter_mut().zip(&sums2) {
-                        *s1 += s2;
-                    }
+                    add_slice(&mut sums1, &sums2);
                     (sums1, w1 + w2)
                 },
             );
@@ -709,7 +705,7 @@ fn train_loop(
             train_count += batch_count;
 
             let n = batch_count.max(1) as f64;
-            let norm: f64 = grads.iter().map(|g| g * g).sum::<f64>().sqrt();
+            let norm = l2_norm(&grads);
             grad_stats.update(norm / n);
 
             let threshold = grad_stats.clip_threshold(config.grad_clip) * n;
@@ -831,8 +827,8 @@ fn train_loop(
             ref_loss,
             lr,
             is_best,
-            psqt_norm: epoch_grads[group_ranges[0].clone()].iter().map(|g| g * g).sum::<f64>().sqrt(),
-            mobility_norm: epoch_grads[group_ranges[2].clone()].iter().map(|g| g * g).sum::<f64>().sqrt(),
+            psqt_norm: l2_norm(&epoch_grads[group_ranges[0].clone()]),
+            mobility_norm: l2_norm(&epoch_grads[group_ranges[2].clone()]),
             overfit,
             drifted,
             moved,
