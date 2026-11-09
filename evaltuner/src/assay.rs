@@ -215,6 +215,7 @@ impl FeatureSpread {
         let phase = phase_of(record, phase_w);
         let phase_bin = (phase * PHASE_BINS / (TOTAL_PHASE as usize + 1)).min(PHASE_BINS - 1);
         self.phase_all.observe(phase_bin, phase);
+
         // Nonzero differential is where PASSED_PAWN[5] takes gradient; phase concentration decides MG/EG identifiability.
         if record.passed_pawn[5] != 0 {
             self.phase_rank7.observe(phase_bin, phase);
@@ -294,6 +295,7 @@ impl Table {
         for (i, head) in self.columns.iter().enumerate() {
             out.push_str(&format!("{}{head:>w$}", gap(i), w = widths[i]));
         }
+
         out.push_str(RESET);
 
         for (label, cells, dim) in &self.rows {
@@ -414,7 +416,6 @@ fn material(sets: &[Dataset], shipped: &str) {
     println!();
 
     let width = notes.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
-
     for (label, note) in notes {
         println!("  {LAB}{label:<width$}{RESET}  {note}");
     }
@@ -493,6 +494,7 @@ fn print_games(sets: &[Dataset]) {
             }
         })
         .collect();
+
     if scans.is_empty() {
         return;
     }
@@ -502,8 +504,8 @@ fn print_games(sets: &[Dataset]) {
         .map(Into::into)
         .collect();
     cols.extend([format!("past {MIN_DECISIVE_ENDING}"), format!("inside {MAX_QUIET_ENDING}")]);
-    let mut games = Table::new("dataset", cols);
 
+    let mut games = Table::new("dataset", cols);
     for (set, scan) in &scans {
         let n = scan.games as u64;
         let share = |count: usize| format!("{:.1}%", pct(count as u64, n));
@@ -538,6 +540,7 @@ fn best_loss(set: &Dataset, values: &[f64], loss: LossFn) -> (f64, f64) {
     if k <= k_min * 1.01 || k >= k_max * 0.99 {
         alarm!("K converged to boundary [{k_min}, {k_max}] on {}: loss may not be optimal.", set.label);
     }
+
     (k, loss_at(k))
 }
 

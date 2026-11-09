@@ -18,6 +18,7 @@ pub(crate) fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
     let Some(paths) = resolve_dataset_paths(&dataset_paths.join(",")) else {
         return;
     };
+
     let loaded = load_datasets(&paths, filter);
     if loaded.entries.is_empty() {
         eprintln!("No data loaded.");
@@ -104,6 +105,7 @@ fn title_case(name: &str) -> String {
             out.push_str(chars.as_str());
         }
     }
+
     out
 }
 

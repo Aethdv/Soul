@@ -99,11 +99,13 @@ impl Curvature {
 
         let values: Vec<f64> = order.iter().map(|&j| corr[j * m + j]).collect();
         let mut sorted_vectors = vec![0.0; m * m];
+
         for (col, &j) in order.iter().enumerate() {
             for row in 0..m {
                 sorted_vectors[row * m + col] = vectors[row * m + j];
             }
         }
+
         Spectrum { values, vectors: sorted_vectors, live, diagonal, untouched }
     }
 }

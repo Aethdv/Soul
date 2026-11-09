@@ -245,12 +245,14 @@ mod tests {
 
         let no_decay = Masks { decay: vec![0.0], ..Masks::uniform(1, 0.99) };
         let mut opt = Lion::new(1, 0.9, 1.0, 0.0);
+
         for m0 in [0.5, -0.5] {
             let mut p = [1.0];
             opt.restore_momentum(&[m0]);
             opt.update(&mut p, &[0.0], &no_decay);
             assert_eq!(p[0], 1.0, "zero gradient stepped at m={m0}");
         }
+
         let mut p = [10.0];
         Lion::new(1, 0.9, 1.0, 0.05).update(&mut p, &[0.0], &Masks::uniform(1, 0.99));
         assert!((p[0] - 9.5).abs() < 1e-12);

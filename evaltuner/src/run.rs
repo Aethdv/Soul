@@ -93,6 +93,7 @@ impl Objective<'_> {
                     for &idx in chunk {
                         let i = idx as usize;
                         let record = &self.train[i];
+
                         if !self.passes_volatility_filter(record) {
                             continue;
                         }
@@ -248,7 +249,6 @@ pub(crate) fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_pa
     trained
 }
 
-// Keeps batch-order and validation-split u64 seeds distinct across call boundaries.
 #[derive(Clone, Copy)]
 struct Seeds {
     rng_seed: u64,
@@ -269,6 +269,7 @@ fn shuffle_groups(
 
     let mut starts = Vec::with_capacity(groups.len());
     let mut offset = 0usize;
+
     for &size in groups {
         starts.push(offset);
         offset += size as usize;
@@ -292,6 +293,7 @@ fn shuffle_groups(
         }
         shuffled_sizes.push(size as u32);
     }
+
     (shuffled_entries, shuffled_weights, shuffled_sizes)
 }
 

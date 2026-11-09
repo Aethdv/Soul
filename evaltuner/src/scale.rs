@@ -105,6 +105,7 @@ pub(crate) fn canonicalize(values: &mut [f64], params: &[Tunable]) {
         for phase in 0..2 {
             let offset = LAYOUT.psqt_offset + piece * 2 * TABLE_SQUARES + phase * TABLE_SQUARES;
             let mat_idx = (piece != PieceType::King as usize).then(|| LAYOUT.material_offset + phase * PIECE_TABLES + piece);
+
             if mat_idx.is_some_and(|idx| params[idx].is_fixed) {
                 continue;
             }
@@ -207,6 +208,7 @@ pub(crate) fn golden_search_k<F: Fn(f64) -> f64>(mut lo: f64, mut hi: f64, tol: 
     }
 
     const INV_PHI: f64 = 0.618_033_988_749_894_9; // (√5 − 1) / 2
+
     let mut width = hi - lo;
     let (mut a, mut b) = (hi - INV_PHI * width, lo + INV_PHI * width);
     let (mut fa, mut fb) = (eval(a), eval(b));

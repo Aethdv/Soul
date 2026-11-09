@@ -79,8 +79,8 @@ pub(crate) struct BestSnapshots<'a> {
     pub(crate) last_train: Option<f64>,
 }
 
-/// Field order is the JSON record's. A run with no holdout leaves `val_loss` and `ref_loss` at
-/// NaN, which serde writes as `null` and the status line shows as a dash.
+/// Field order is the JSON record's. A run with no holdout leaves `val_loss` and `ref_loss`
+/// at NaN, which serde writes as `null` and the status line shows as a dash.
 #[derive(Serialize)]
 pub(crate) struct EpochStats {
     pub(crate) epoch: usize,
@@ -197,8 +197,8 @@ pub(crate) fn quantize(values: &[f64], out: &mut [i32]) {
     }
 }
 
-/// Tail EMA averages gauge-normalized iterates and lands fractionally under `1.0`, so the
-/// warning threshold sits at `1%` rather than the gauge's `1e-6`.
+/// Tail EMA averages gauge-normalized iterates and lands fractionally under `1.0`,
+/// so the warning threshold sits at `1%` rather than the gauge's `1e-6`.
 pub(crate) fn off_scale_warning(shipped: f64) -> String {
     if (shipped - 1.0).abs() <= 0.01 {
         return String::new();

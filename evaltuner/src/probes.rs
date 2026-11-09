@@ -315,6 +315,7 @@ fn pool_noise_trials(
 ) -> NoiseEstimate {
     let chunks = (big / SMALL_CHUNK).max(2);
     let chunk_len = big / chunks;
+
     let (mut pooled_signal, mut pooled_noise, mut degenerate) = (0.0, 0.0, 0usize);
     let (mut chunk_sums, mut chunk_counts): (Vec<Vec<f64>>, Vec<usize>) = (Vec::new(), Vec::new());
 
