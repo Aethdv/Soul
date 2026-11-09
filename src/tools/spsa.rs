@@ -108,24 +108,26 @@ fn validate_changes(changes: &[Change]) -> Result<(), String> {
 }
 
 fn find_value(text: &str, name: &str) -> Option<i32> {
-    for (at, _) in text.match_indices(name) {
+    text.match_indices(name).find_map(|(at, _)| {
         let before = text[..at].chars().next_back();
         let tail = &text[at + name.len()..];
 
         if before.is_some_and(is_name_char) || tail.starts_with(is_name_char) {
-            continue;
+            return None;
         }
 
-        if let Some(value) = tail
+        let line = tail.lines().next()?;
+        let mut tokens = line
             .split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '=' | '"' | '(' | ')' | '[' | ']' | '{' | '}'))
-            .filter(|token| !token.is_empty())
-            .find_map(|token| token.parse::<i32>().ok())
-        {
-            return Some(value);
-        }
-    }
+            .filter(|t| !t.is_empty());
 
-    None
+        let token = match tokens.next()? {
+            "int" => tokens.next()?,
+            other => other,
+        };
+
+        token.parse().ok()
+    })
 }
 
 fn is_name_char(c: char) -> bool { c.is_alphanumeric() || c == '_' }
