@@ -31,19 +31,15 @@ impl Shuffler {
         order.resize(num_blocks, 0);
         self.fill(&mut order[..num_blocks], seed);
 
-        let mut written = 0;
-
-        'expand: for &b in &order[..num_blocks] {
+        let expanded = order[..num_blocks].iter().flat_map(|&b| {
             let start = b as usize * block;
+            start..(start + block).min(len)
+        });
 
-            for idx in start..(start + block).min(len) {
-                if written == target {
-                    break 'expand;
-                }
-                out[written] = idx as u32;
-                written += 1;
-            }
+        for (slot, idx) in out[..target].iter_mut().zip(expanded) {
+            *slot = idx as u32;
         }
+
         self.block_order = order;
     }
 
@@ -80,9 +76,7 @@ impl Shuffler {
 
         for b in 0..buckets {
             for (task, slices) in dests.iter_mut().enumerate() {
-                let (head, tail) = std::mem::take(&mut rest).split_at_mut(counts[task * buckets + b] as usize);
-                slices.push(head);
-                rest = tail;
+                slices.push(take_slice(&mut rest, counts[task * buckets + b] as usize));
             }
         }
 
@@ -106,15 +100,20 @@ impl Shuffler {
 
         for b in 0..buckets {
             let bucket_len: usize = (0..num_tasks).map(|t| counts[t * buckets + b] as usize).sum();
-            let (head, tail) = std::mem::take(&mut rest).split_at_mut(bucket_len);
-            bucket_slices.push(head);
-            rest = tail;
+            bucket_slices.push(take_slice(&mut rest, bucket_len));
         }
 
         bucket_slices.par_iter_mut().enumerate().for_each(|(b, slice)| {
             Rng::with_seed(splitmix64(seed ^ BUCKET_DOMAIN, b as u64)).shuffle(&mut slice[..]);
         });
     }
+}
+
+#[inline]
+fn take_slice<'a, T>(rest: &mut &'a mut [T], n: usize) -> &'a mut [T] {
+    let (head, tail) = std::mem::take(rest).split_at_mut(n);
+    *rest = tail;
+    head
 }
 
 fn bucket_count(len: usize) -> usize { len.div_ceil(TARGET_BUCKET).next_power_of_two().clamp(MIN_BUCKETS, MAX_BUCKETS) }
