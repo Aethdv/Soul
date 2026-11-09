@@ -196,9 +196,9 @@ impl Spectrum {
         }
 
         println!("\n{LAB}Least curvature{RESET} {DIM}(raw diagonal, the freeze normalizer){RESET}");
-        let neg_diag: Vec<f64> = self.live.iter().map(|&i| -self.diagonal[i]).collect();
-        for &(negated, name) in self.ranked(&neg_diag, params).iter().take(REPORT_LIMIT) {
-            println!("  {VAL}{:9.3e}{RESET}  {name}", -negated);
+        let diag: Vec<f64> = self.live.iter().map(|&i| self.diagonal[i]).collect();
+        for &(value, name) in self.ranked(&diag, params).iter().rev().take(REPORT_LIMIT) {
+            println!("  {VAL}{:9.3e}{RESET}  {name}", value);
         }
 
         println!("\n{LAB}Most collinear parameters{RESET} {DIM}(variance inflation){RESET}");
@@ -215,19 +215,21 @@ impl Spectrum {
     // Fraction of each parameter's variance lying in the null space (Σ_k V_jk² for k >= determined),
     // invariant under orthogonal rotations of the null subspace.
     fn participation(&self) -> Vec<f64> {
-        let m = self.live.len();
-        let determined = self.determined();
-        (0..m).map(|j| (determined..m).map(|k| self.vectors[j * m + k].powi(2)).sum()).collect()
+        let d = self.determined();
+        self.vectors
+            .chunks_exact(self.live.len())
+            .map(|row| row[d..].iter().map(|&v| v * v).sum())
+            .collect()
     }
 
     // Variance inflation factor (C⁻¹)_jj = Σ_k (V_jk² / λ_k) across determined directions.
     // Null directions are excluded: a parameter there is unidentifiable rather than
     // ill-conditioned, and 1/λ would report an arbitrarily large number for it.
     fn inflation(&self) -> Vec<f64> {
-        let m = self.live.len();
-        let determined = self.determined();
-        (0..m)
-            .map(|j| (0..determined).map(|k| self.vectors[j * m + k].powi(2) / self.values[k]).sum())
+        let d = self.determined();
+        self.vectors
+            .chunks_exact(self.live.len())
+            .map(|row| row[..d].iter().zip(&self.values).map(|(&v, &l)| v * v / l).sum())
             .collect()
     }
 
