@@ -229,7 +229,7 @@ fn wsd_rate(base: f64, min: f64, warmup_ratio: f64, stable_ratio: f64, epoch: us
     } else if epoch <= warmup_len + stable_len {
         base
     } else {
-        base - ((epoch - warmup_len - stable_len) as f64 / decay_len.max(1) as f64).min(1.0) * (base - min)
+        lerp(base, min, (epoch - warmup_len - stable_len).min(decay_len), decay_len)
     }
 }
 
