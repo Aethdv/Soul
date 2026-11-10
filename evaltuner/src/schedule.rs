@@ -56,49 +56,51 @@ impl LrSchedule {
             Self::Cosine { base, min, cycles, .. } if cycles > 1 => format!("CosineAnnealing ({base} → {min}, {cycles} cycles)"),
             Self::Cosine { base, min, .. } => format!("CosineAnnealing ({base} → {min})"),
             Self::WarmupStableDecay { base, min, warmup_ratio, stable_ratio } => {
+                let decay_pct = (1.0 - warmup_ratio - stable_ratio).max(0.0) * 100.0;
                 format!(
-                    "WarmupStableDecay ({base} → {min}, warm: {:.0}%, stable: {:.0}%)",
+                    "WarmupStableDecay ({base} → {min}, warm: {:.0}%, stable: {:.0}%, decay: {decay_pct:.0}%)",
                     warmup_ratio * 100.0,
                     stable_ratio * 100.0
                 )
             },
             Self::StableDecay { base, min, stable_ratio } => {
-                format!("StableDecay ({base} → {min}, stable: {:.0}%)", stable_ratio * 100.0)
+                let decay_pct = (1.0 - stable_ratio).max(0.0) * 100.0;
+                format!("StableDecay ({base} → {min}, stable: {:.0}%, decay: {decay_pct:.0}%)", stable_ratio * 100.0)
             },
         }
     }
 
-    pub(crate) fn from_cli(
-        kind: &str,
+    pub(crate) fn apply_cli<'a>(
+        &mut self,
+        kind: Option<&'a str>,
         lr: Option<f64>,
         min_lr: Option<f64>,
         warmup: Option<f64>,
         cycles: Option<usize>,
-    ) -> Option<Self> {
-        match kind {
-            "constant" => Some(Self::Constant { value: lr.unwrap_or(0.1) }),
-            "linear" => Some(Self::Linear { start: lr.unwrap_or(0.1), end: min_lr.unwrap_or(0.0) }),
-            "cosine" => Some(Self::Cosine {
-                base: lr.unwrap_or(0.1),
-                min: min_lr.unwrap_or(0.0001),
-                warmup_ratio: warmup.unwrap_or(0.1),
-                cycles: cycles.unwrap_or(1),
-            }),
-            "warmup-stable-decay" | "wsd" => Some(Self::WarmupStableDecay {
-                base: lr.unwrap_or(0.1),
-                min: min_lr.unwrap_or(0.0),
-                warmup_ratio: warmup.unwrap_or(0.1),
-                stable_ratio: 0.5,
-            }),
-            "stable-decay" | "sd" => {
-                Some(Self::StableDecay { base: lr.unwrap_or(0.03), min: min_lr.unwrap_or(0.0001), stable_ratio: 0.5 })
-            },
-            _ => None,
+    ) -> Result<(), (&'a str, &'static str)> {
+        if let Some(name) = kind {
+            *self = match name {
+                "constant" => Self::Constant { value: 0.1 },
+                "linear" => Self::Linear { start: 0.1, end: 0.0 },
+                "cosine" => Self::Cosine { base: 0.1, min: 0.0001, warmup_ratio: 0.1, cycles: 1 },
+                "warmup-stable-decay" | "wsd" => {
+                    Self::WarmupStableDecay { base: 0.1, min: 0.0, warmup_ratio: 0.1, stable_ratio: 0.5 }
+                },
+                "stable-decay" | "sd" => Self::StableDecay { base: 0.03, min: 0.0001, stable_ratio: 0.5 },
+                _ => {
+                    return Err((
+                        name,
+                        "expected 'cosine', 'linear', 'constant', 'warmup-stable-decay' ('wsd'), or 'stable-decay' ('sd')",
+                    ));
+                },
+            };
         }
+        self.apply_overrides(lr, min_lr, warmup, cycles);
+        Ok(())
     }
 
     /// `--cycles` doubles as `StepDecay::step_epochs` on the command line.
-    pub(crate) fn apply_overrides(&mut self, lr: Option<f64>, min_lr: Option<f64>, warmup: Option<f64>, cycles: Option<usize>) {
+    fn apply_overrides(&mut self, lr: Option<f64>, min_lr: Option<f64>, warmup: Option<f64>, cycles: Option<usize>) {
         match self {
             Self::Constant { value } | Self::Exponential { start: value, .. } => set_if_some(value, lr),
             Self::Linear { start, end } | Self::StableDecay { base: start, min: end, .. } => {
@@ -158,48 +160,43 @@ impl WdlSchedule {
             Self::Linear { start, end } => format!("LinearWDL ({start} → {end})"),
             Self::Cosine { start, end } => format!("CosineWDL ({start} → {end})"),
             Self::StableDecay { start, end, stable_ratio } => {
-                format!("StableDecayWDL ({start} → {end}, stable: {:.0}%)", stable_ratio * 100.0)
+                let decay_pct = (1.0 - stable_ratio).max(0.0) * 100.0;
+                format!("StableDecayWDL ({start} → {end}, stable: {:.0}%, decay: {decay_pct:.0}%)", stable_ratio * 100.0)
             },
         }
     }
 
-    pub(crate) fn defaults(self) -> (f64, f64) {
-        match self {
-            Self::Cosine { start, end } | Self::Linear { start, end } | Self::StableDecay { start, end, .. } => (start, end),
-            Self::Constant { value } => (value, DEFAULT_WDL_END),
-        }
-    }
-
-    pub(crate) fn from_cli(
-        kind: &str,
+    pub(crate) fn apply_cli<'a>(
+        &mut self,
+        kind: Option<&'a str>,
         blend: Option<f64>,
         start: Option<f64>,
         end: Option<f64>,
-        (d_start, d_end): (f64, f64),
-    ) -> Option<Self> {
-        let (start, end) = (start.unwrap_or(d_start), end.unwrap_or(d_end));
-        match kind {
-            "constant" => Some(Self::Constant { value: blend.unwrap_or(d_start) }),
-            "linear" => Some(Self::Linear { start, end }),
-            "cosine" => Some(Self::Cosine { start, end }),
-            "stable-decay" => Some(Self::StableDecay { start, end, stable_ratio: 0.35 }),
-            _ => None,
-        }
-    }
-
-    /// `--blend` flattens any configured curve to a constant ratio.
-    pub(crate) fn apply_overrides(&mut self, blend: Option<f64>, start: Option<f64>, end: Option<f64>) {
-        if let Some(v) = blend {
+    ) -> Result<(), (&'a str, &'static str)> {
+        if let Some(name) = kind {
+            let (d_start, d_end) = match *self {
+                Self::Cosine { start, end } | Self::Linear { start, end } | Self::StableDecay { start, end, .. } => (start, end),
+                Self::Constant { value } => (value, DEFAULT_WDL_END),
+            };
+            *self = match name {
+                "constant" => Self::Constant { value: blend.unwrap_or(d_start) },
+                "linear" => Self::Linear { start: start.unwrap_or(d_start), end: end.unwrap_or(d_end) },
+                "cosine" => Self::Cosine { start: start.unwrap_or(d_start), end: end.unwrap_or(d_end) },
+                "stable-decay" | "sd" => {
+                    Self::StableDecay { start: start.unwrap_or(d_start), end: end.unwrap_or(d_end), stable_ratio: 0.35 }
+                },
+                _ => return Err((name, "expected 'constant', 'linear', 'cosine', or 'stable-decay' ('sd')")),
+            };
+        } else if let Some(v) = blend {
             *self = Self::Constant { value: v };
-            return;
-        }
-        if let Self::Linear { start: from, end: to }
+        } else if let Self::Linear { start: from, end: to }
         | Self::Cosine { start: from, end: to }
         | Self::StableDecay { start: from, end: to, .. } = self
         {
             set_if_some(from, start);
             set_if_some(to, end);
         }
+        Ok(())
     }
 }
 

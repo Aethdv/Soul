@@ -28,7 +28,6 @@ use crate::{
     config::{KMode, LossFn, TunerConfig},
     engine::Help,
     run::{Task, replay_filter},
-    schedule::{LrSchedule, WdlSchedule},
 };
 
 const DEFAULT_CONFIG: &str = "evaltuner/config.toml";
@@ -203,7 +202,7 @@ fn main() {
         Some(Commands::Momentum(args)) => probe(&args, Task::Momentum),
         Some(Commands::Score { assay: a, params, loss, shipped }) => {
             let Some(loss) = parse_loss(loss.as_deref(), &a.config) else {
-                return;
+                process::exit(1);
             };
             assay(&a.config, &a.datasets, Assay::Score { params, loss, shipped }, a.sample);
         },
@@ -276,24 +275,20 @@ fn run_evaltune(args: Args) -> bool {
     if let Some(lr_mult) = args.lr_mult {
         cfg.k_mode = KMode::Learned { lr_mult };
     }
-    if let Some(kind) = args.lr_schedule.as_deref() {
-        match LrSchedule::from_cli(kind, args.lr, args.min_lr, args.warmup, args.cycles) {
-            Some(s) => cfg.lr_schedule = s,
-            None => eprintln!("Warning: Unknown LR schedule '{kind}', ignoring."),
-        }
-    } else {
-        cfg.lr_schedule.apply_overrides(args.lr, args.min_lr, args.warmup, args.cycles);
+    if let Err((name, exp)) = cfg
+        .lr_schedule
+        .apply_cli(args.lr_schedule.as_deref(), args.lr, args.min_lr, args.warmup, args.cycles)
+    {
+        eprintln!("Unknown --lr-schedule '{name}'; {exp}");
+        return false;
     }
 
-    let defaults = cfg.wdl_schedule.defaults();
-
-    if let Some(kind) = args.wdl_schedule.as_deref() {
-        match WdlSchedule::from_cli(kind, args.blend, args.wdl_start, args.wdl_end, defaults) {
-            Some(s) => cfg.wdl_schedule = s,
-            None => eprintln!("Warning: Unknown WDL schedule '{kind}', ignoring."),
-        }
-    } else {
-        cfg.wdl_schedule.apply_overrides(args.blend, args.wdl_start, args.wdl_end);
+    if let Err((name, exp)) = cfg
+        .wdl_schedule
+        .apply_cli(args.wdl_schedule.as_deref(), args.blend, args.wdl_start, args.wdl_end)
+    {
+        eprintln!("Unknown --wdl-schedule '{name}'; {exp}");
+        return false;
     }
 
     let dataset_str = args.dataset.map(|v| v.join(","));
