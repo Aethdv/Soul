@@ -3,8 +3,8 @@
 
 use std::{
     cmp::Reverse,
-    env, fs,
-    path::PathBuf,
+    env, fs, io,
+    path::{Path, PathBuf},
     process::{self, Command},
     time::Instant,
 };
@@ -21,30 +21,39 @@ const TOP_SENSITIVE_COUNT: usize = 50;
 const SWEEP_HEADER: &str = "  lr_mult    Best L_val    Time\n  -------    ----------    ----";
 
 pub(crate) fn run_seed_spread(dataset: &str, config_path: &str, epochs: usize, count: usize, log_path: &str) {
+    let log_path = Path::new(log_path);
     let mut rng = fastrand::Rng::with_seed(0xA5EE_D000);
     let seeds: Vec<u64> = (0..count).map(|_| rng.u64(..)).collect();
+    let run_id = fastrand::u64(..);
 
     println!("\n{LAB}Seed spread:{RESET} {VAL}{count}{RESET} seeds × {VAL}{epochs}{RESET} epochs on {dataset}\n");
     let mut failures = 0usize;
     for (idx, &seed) in seeds.iter().enumerate() {
+        let work_dir = trial_dir(run_id, format!("{idx}_{seed}"));
         let start = Instant::now();
-        let ok = spawn_trial(dataset, config_path, epochs, log_path, &[("--seed", seed.to_string())]);
-        let copied = ok && fs::copy(trial_dir().join("evaltune_best.txt"), format!("seed_{seed}_best.txt")).is_ok();
-        failures += usize::from(!ok);
-        println!(
-            "  [{}/{count}] {seed:<22} {:<8} {:.1}s{}",
-            idx + 1,
-            if ok { "done" } else { "FAILED" },
-            start.elapsed().as_secs_f32(),
-            if ok && !copied { "  (no evaltune_best.txt found)" } else { "" }
-        );
+        let ok = spawn_trial(dataset, config_path, epochs, log_path, &work_dir, &[("--seed", seed.to_string())]);
+        let elapsed = start.elapsed().as_secs_f32();
+        let (copied, copy_suffix) = match ok.then(|| fs::copy(work_dir.join("evaltune_best.txt"), format!("seed_{seed}_best.txt")))
+        {
+            Some(Ok(_)) => {
+                let _ = fs::remove_dir_all(&work_dir);
+                (true, String::new())
+            },
+            Some(Err(err)) if err.kind() == io::ErrorKind::NotFound => (false, "  (no evaltune_best.txt found)".into()),
+            Some(Err(err)) => (false, format!("  (copy failed: {err})")),
+            None => (false, String::new()),
+        };
+        failures += usize::from(!copied);
+
+        println!("  [{}/{count}] {seed:<22} {:<8} {elapsed:.1}s{copy_suffix}", idx + 1, if copied { "done" } else { "FAILED" });
     }
 
     // A failed trial's artifact is never copied out, so its working directory is all that is left of it.
-    if failures == 0 {
-        let _ = fs::remove_dir_all(trial_dir());
-    } else {
-        eprintln!("  {failures} of {count} trials failed; their working directory is {}", trial_dir().display());
+    if failures != 0 {
+        eprintln!(
+            "  {failures} of {count} trials failed; their working directories under {} were preserved",
+            env::temp_dir().display()
+        );
     }
 
     let mut resolved: Vec<Option<FinalRecord>> = seeds.iter().map(|_| None).collect();
@@ -72,6 +81,7 @@ pub(crate) fn sweep_lr_mult(
     refine_rounds: usize,
     seed: Option<u64>,
 ) {
+    let run_id = fastrand::u64(..);
     let mut grid = match values {
         Some(v) if !v.is_empty() => v,
         _ => log_space(min, max, count),
@@ -89,8 +99,8 @@ pub(crate) fn sweep_lr_mult(
         let log_step = if grid.len() > 1 { (grid[grid.len() - 1].ln() - grid[0].ln()) / (grid.len() - 1) as f64 } else { 0.5 };
         println!("── Round {round}: {epochs} epochs\n{SWEEP_HEADER}");
 
-        for &lr_mult in &grid {
-            let (loss, duration) = run_sweep_trial(lr_mult, dataset, config_path, epochs, seed);
+        for (point, &lr_mult) in grid.iter().enumerate() {
+            let (loss, duration) = run_sweep_trial(lr_mult, dataset, config_path, epochs, seed, run_id, round, point);
             print_row(lr_mult, loss, duration);
             results.push((lr_mult, loss, duration));
 
@@ -135,12 +145,18 @@ fn log_space(min: f64, max: f64, points: usize) -> Vec<f64> {
     (0..points).map(|i| (lo + (hi - lo) * i as f64 / (points - 1) as f64).exp()).collect()
 }
 
-fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize, seed: Option<u64>) -> (f64, f32) {
-    let log_str = env::temp_dir()
-        .join(format!("sweep_lr_mult_{}.jsonl", process::id()))
-        .to_string_lossy()
-        .into_owned();
-    let _ = fs::remove_file(&log_str);
+fn run_sweep_trial(
+    lr_mult: f64,
+    dataset: &str,
+    config_path: &str,
+    epochs: usize,
+    seed: Option<u64>,
+    run_id: u64,
+    round: usize,
+    point: usize,
+) -> (f64, f32) {
+    let work_dir = trial_dir(run_id, format!("{round}_{point}"));
+    let log_path = work_dir.join("evaltune.jsonl");
     let mut extra = vec![("--lr-mult", lr_mult.to_string())];
 
     if let Some(s) = seed {
@@ -148,40 +164,44 @@ fn run_sweep_trial(lr_mult: f64, dataset: &str, config_path: &str, epochs: usize
     }
 
     let start = Instant::now();
-    let ok = spawn_trial(dataset, config_path, epochs, &log_str, &extra);
+    let ok = spawn_trial(dataset, config_path, epochs, &log_path, &work_dir, &extra);
     let elapsed = start.elapsed().as_secs_f32();
     let val_loss = if ok {
-        read_final_records(&log_str).last().and_then(|r| r.best_val_loss).unwrap_or(f64::MAX)
+        read_final_records(&log_path).last().and_then(|r| r.best_val_loss).unwrap_or(f64::MAX)
     } else {
         f64::MAX
     };
-    let _ = fs::remove_file(&log_str);
+
+    if ok {
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
     (val_loss, elapsed)
 }
 
-fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &str, extra_args: &[(&str, String)]) -> bool {
+fn spawn_trial(
+    dataset: &str,
+    config_path: &str,
+    epochs: usize,
+    log_path: &Path,
+    work_dir: &Path,
+    extra_args: &[(&str, String)],
+) -> bool {
     let Ok(exe) = env::current_exe() else {
         eprintln!("Failed to locate binary path to spawn trial process.");
         return false;
     };
 
-    let work_dir = trial_dir();
-    if let Err(err) = fs::create_dir_all(&work_dir) {
+    if let Err(err) = fs::create_dir_all(work_dir) {
         eprintln!("Failed to create trial working directory {}: {err}", work_dir.display());
         return false;
     }
 
     let mut cmd = Command::new(exe);
-    cmd.env(ARTIFACT_DIR, &work_dir).args([
-        "--dataset",
-        dataset,
-        "--config",
-        config_path,
-        "--epochs",
-        &epochs.to_string(),
-        "--log",
-        log_path,
-    ]);
+    cmd.env(ARTIFACT_DIR, work_dir)
+        .args(["--dataset", dataset, "--config", config_path, "--epochs", &epochs.to_string()])
+        .arg("--log")
+        .arg(log_path);
 
     for (flag, val) in extra_args {
         cmd.arg(flag).arg(val);
@@ -193,9 +213,11 @@ fn spawn_trial(dataset: &str, config_path: &str, epochs: usize, log_path: &str, 
         .is_ok_and(|s| s.success())
 }
 
-fn trial_dir() -> PathBuf { env::temp_dir().join(format!("evaltune_trial_{}", process::id())) }
+fn trial_dir(run_id: u64, tag: impl std::fmt::Display) -> PathBuf {
+    env::temp_dir().join(format!("evaltune_trial_{}_{run_id:016x}_{tag}", process::id()))
+}
 
-fn read_final_records(log_path: &str) -> Vec<FinalRecord> {
+fn read_final_records(log_path: &Path) -> Vec<FinalRecord> {
     fs::read_to_string(log_path)
         .unwrap_or_default()
         .lines()
