@@ -29,8 +29,11 @@ pub(crate) fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
     let records: Vec<FeatureRecord> = loaded.entries.par_iter().map(FeatureRecord::from_entry).collect();
     drop(loaded);
 
-    let defaults = eval_params::default_values(&eval_params::collect_parameters());
-    let groups = term_groups();
+    let params = eval_params::collect_parameters();
+    let defaults = eval_params::default_values(&params);
+    let groups = term_groups()
+        .into_iter()
+        .filter(|(_, range)| params[range.clone()].iter().any(|p| !p.is_fixed));
 
     println!("Optimizing K...");
     let k = golden_search_k(ABLATION_K.0, ABLATION_K.1, K_TOL, |k| mse_loss(&records, &defaults, k));
@@ -39,7 +42,6 @@ pub(crate) fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
 
     let mut ablated = defaults.clone();
     let mut results: Vec<(String, f64)> = groups
-        .into_iter()
         .map(|(name, range)| {
             ablated[range.clone()].fill(0.0);
             let delta = mse_loss(&records, &ablated, k) - baseline;
