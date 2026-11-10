@@ -251,6 +251,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             }
         },
         "result" => state.stop_search(),
+        "?" => state.stop_search(),
         "option" => cmd_option(state, args),
         "memory" => {
             if let Some(mb) = next_parsed(args) {
