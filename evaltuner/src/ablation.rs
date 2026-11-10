@@ -2,50 +2,28 @@
 
 use std::ops::Range;
 
-use rayon::prelude::*;
-
 use crate::{
-    engine::{BLOCKS, FeatureRecord, Group as BlockGroup, ReplayFilter, TABLE_SQUARES, eval_params, eval_record, sigmoid},
-    loader::{load_datasets, resolve_dataset_paths},
+    config::EvalTuneConfig,
+    engine::{BLOCKS, Group as BlockGroup, TABLE_SQUARES, eval_params},
+    probes::{ProbePoint, baseline_point},
     report::PIECE_NAMES,
-    scale::golden_search_k,
+    run::Objective,
 };
 
-const ABLATION_K: (f64, f64) = (0.001, 0.012);
-const K_TOL: f64 = 1e-8;
+pub(crate) fn ablation_report(obj: &Objective, config: &EvalTuneConfig) {
+    let ProbePoint { params, values, k, blend } = baseline_point(obj, config);
+    let probe = [(k, blend)];
+    let baseline = obj.all_eval(&values, probe)[0];
+    println!("  loss = {}    K = {k:.6}    blend = {blend}    baseline = {baseline:.6}\n", obj.loss_fn());
 
-pub(crate) fn run_ablation(dataset_paths: &[String], filter: &ReplayFilter) {
-    let Some(paths) = resolve_dataset_paths(&dataset_paths.join(",")) else {
-        return;
-    };
-
-    let loaded = load_datasets(&paths, filter);
-    if loaded.entries.is_empty() {
-        eprintln!("No data loaded.");
-        return;
-    }
-
-    println!("  {} positions", loaded.entries.len());
-    let records: Vec<FeatureRecord> = loaded.entries.par_iter().map(FeatureRecord::from_entry).collect();
-    drop(loaded);
-
-    let params = eval_params::collect_parameters();
-    let defaults = eval_params::default_values(&params);
-    let groups = term_groups()
+    let mut ablated = values.clone();
+    let mut results: Vec<(String, f64)> = term_groups()
         .into_iter()
-        .filter(|(_, range)| params[range.clone()].iter().any(|p| !p.is_fixed));
-
-    println!("Optimizing K...");
-    let k = golden_search_k(ABLATION_K.0, ABLATION_K.1, K_TOL, |k| mse_loss(&records, &defaults, k));
-    let baseline = mse_loss(&records, &defaults, k);
-    println!("  K = {k:.6}    baseline MSE = {baseline:.6}\n");
-
-    let mut ablated = defaults.clone();
-    let mut results: Vec<(String, f64)> = groups
+        .filter(|(_, range)| params[range.clone()].iter().any(|p| !p.is_fixed))
         .map(|(name, range)| {
             ablated[range.clone()].fill(0.0);
-            let delta = mse_loss(&records, &ablated, k) - baseline;
-            ablated[range.clone()].copy_from_slice(&defaults[range]);
+            let delta = obj.all_eval(&ablated, probe)[0] - baseline;
+            ablated[range.clone()].copy_from_slice(&values[range]);
             (name, delta)
         })
         .collect();
@@ -109,17 +87,6 @@ fn title_case(name: &str) -> String {
     }
 
     out
-}
-
-fn mse_loss(records: &[FeatureRecord], values: &[f64], k: f64) -> f64 {
-    let sum_sq_err: f64 = records
-        .par_iter()
-        .map(|r| {
-            let err = sigmoid(eval_record(r, values), k) - f64::from(r.result) / 2.0;
-            err * err
-        })
-        .sum();
-    sum_sq_err / records.len() as f64
 }
 
 #[cfg(test)]

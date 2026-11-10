@@ -16,6 +16,7 @@ use std::{
 use rayon::prelude::*;
 
 use crate::{
+    ablation::ablation_report,
     alarm,
     config::{EvalTuneConfig, Init, LossFn, RANDOM_INIT_SPREAD},
     engine::{
@@ -53,6 +54,7 @@ pub(crate) enum Task {
     ValCost,
     BatchSize,
     Momentum,
+    Ablation,
 }
 
 pub(crate) struct Objective<'a> {
@@ -126,6 +128,13 @@ impl Objective<'_> {
         self.split_eval(self.val, self.train.len(), values, probes)
     }
 
+    pub(crate) fn all_eval<const N: usize>(&self, values: &[f64], probes: [(f64, f64); N]) -> [f64; N] {
+        let (mut sums, weight) = self.split_sums(self.train, 0, values, probes);
+        let (val_sums, val_weight) = self.split_sums(self.val, self.train.len(), values, probes);
+        add_slice(&mut sums, &val_sums);
+        Self::normalized((sums, weight + val_weight))
+    }
+
     pub(crate) fn k_fit_eval(&self, values: &[f64], k: f64, blend: f64) -> f64 {
         if self.val.is_empty() {
             let probe = &self.train[..self.train.len().min(K_FIT_PROBE)];
@@ -141,7 +150,21 @@ impl Objective<'_> {
         values: &[f64],
         probes: [(f64, f64); N],
     ) -> [f64; N] {
-        let (weighted_loss_sums, total_weight) = records
+        Self::normalized(self.split_sums(records, offset, values, probes))
+    }
+
+    fn normalized<const N: usize>((weighted_loss_sums, total_weight): ([f64; N], f64)) -> [f64; N] {
+        if total_weight > 0.0 { weighted_loss_sums.map(|sum| sum / total_weight) } else { [0.0; N] }
+    }
+
+    fn split_sums<const N: usize>(
+        &self,
+        records: &[FeatureRecord],
+        offset: usize,
+        values: &[f64],
+        probes: [(f64, f64); N],
+    ) -> ([f64; N], f64) {
+        records
             .par_iter()
             .enumerate()
             .fold(
@@ -170,9 +193,7 @@ impl Objective<'_> {
                     add_slice(&mut sums1, &sums2);
                     (sums1, w1 + w2)
                 },
-            );
-
-        if total_weight > 0.0 { weighted_loss_sums.map(|sum| sum / total_weight) } else { [0.0; N] }
+            )
     }
 }
 
@@ -445,6 +466,10 @@ fn train_entries(
         },
         Task::Momentum => {
             momentum_report(&obj, config);
+            return false;
+        },
+        Task::Ablation => {
+            ablation_report(&obj, config);
             return false;
         },
         Task::Train => {},

@@ -27,7 +27,7 @@ use crate::{
     assay::Assay,
     config::{KMode, LossFn, TunerConfig},
     engine::Help,
-    run::{Task, replay_filter},
+    run::Task,
 };
 
 const DEFAULT_CONFIG: &str = "evaltuner/config.toml";
@@ -104,12 +104,7 @@ struct AssayArgs {
 #[derive(Subcommand)]
 enum Commands {
     #[command(name = "ablation")]
-    Ablation {
-        #[arg(short, long, value_delimiter = ',', num_args = 1..)]
-        data: Vec<String>,
-        #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
-    },
+    Ablation(ProbeArgs),
     #[command(name = "correlation")]
     Correlation,
     #[command(name = "seed-spread")]
@@ -188,9 +183,7 @@ fn main() {
 
     match args.command {
         Some(Commands::Help) => print_help(),
-        Some(Commands::Ablation { data, config }) => {
-            ablation::run_ablation(&data, &replay_filter(&load_config(&config).evaltune));
-        },
+        Some(Commands::Ablation(args)) => probe(&args, Task::Ablation),
         Some(Commands::Correlation) => correlation::run_correlation(),
         Some(Commands::SeedSpread { count, config, epochs, log, dataset }) => {
             seeds::run_seed_spread(&dataset, &config, epochs, count, &log);
@@ -302,7 +295,7 @@ fn print_help() {
     h.separator();
 
     h.header("Commands");
-    h.command_args("ablation", "-d <path,...>", "Zero term groups, report ΔL_val");
+    h.command_args("ablation", "<dataset>", "Zero term groups, report ΔL over every position");
     h.command_args("correlation", "", "Analyze PSQT square adjacency roughness");
     h.command_args("curvature", "<dataset>", "Report what the data determines about the weights");
     h.command_args("gather-cost", "<dataset>", "Time the gradient pass, sequential vs blocked vs shuffled");

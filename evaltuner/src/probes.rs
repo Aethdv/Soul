@@ -266,11 +266,11 @@ pub(crate) fn val_cost(obj: &Objective, config: &EvalTuneConfig) {
     );
 }
 
-struct ProbePoint {
-    params: Vec<Tunable>,
-    values: Vec<f64>,
-    k: f64,
-    blend: f64,
+pub(crate) struct ProbePoint {
+    pub(crate) params: Vec<Tunable>,
+    pub(crate) values: Vec<f64>,
+    pub(crate) k: f64,
+    pub(crate) blend: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -297,7 +297,7 @@ impl Rung {
 
 // Every probe measures at the shipped parameters and opening (K, blend) so their figures
 // compare on a common footing.
-fn baseline_point(obj: &Objective, config: &EvalTuneConfig) -> ProbePoint {
+pub(crate) fn baseline_point(obj: &Objective, config: &EvalTuneConfig) -> ProbePoint {
     let params = eval_params::collect_parameters();
     let values = eval_params::default_values(&params);
     let blend = config.wdl_schedule.blend(1, config.epochs);
