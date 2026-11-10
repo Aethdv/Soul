@@ -200,16 +200,21 @@ pub(crate) fn lr_mask(slots: usize, config: &EvalTuneConfig) -> Vec<f64> {
     lr
 }
 
-/// Returns `(target, ∂target/∂k)`, scaling `wdl_blend` by `|score| / 400` when `wdl_blend < 1.0`.
-pub(crate) fn wdl_target(record: &FeatureRecord, k: f64, wdl_blend: f64) -> (f64, f64) {
-    if record.score == SoulEntry::NO_SCORE {
-        return (f64::from(record.result) / 2.0, 0.0);
+/// Returns `(target, ∂target/∂k)` when `with_k_grad` is set (otherwise `0.0`), scaling `wdl_blend` by `|score| / 400` when `< 1.0`.
+pub(crate) fn wdl_target(record: &FeatureRecord, k: f64, wdl_blend: f64, with_k_grad: bool) -> (f64, f64) {
+    let outcome = f64::from(record.result) / 2.0;
+
+    if wdl_blend == 0.0 || record.score == SoulEntry::NO_SCORE {
+        return (outcome, 0.0);
     }
+
     let score = f64::from(record.score);
     let blend = if wdl_blend >= 1.0 { 1.0 } else { wdl_blend * (score.abs() / 400.0).min(1.0) };
     let expected = sigmoid(score, k);
-    let outcome = f64::from(record.result) / 2.0;
-    ((1.0 - blend).mul_add(outcome, blend * expected), blend * expected * (1.0 - expected) * score)
+    let target = (1.0 - blend).mul_add(outcome, blend * expected);
+    let dt_dk = if with_k_grad { blend * expected * (1.0 - expected) * score } else { 0.0 };
+
+    (target, dt_dk)
 }
 
 pub(crate) fn piece_phase_weights() -> [f64; 6] {

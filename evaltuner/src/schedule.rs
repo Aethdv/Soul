@@ -216,7 +216,33 @@ impl WdlSchedule {
             },
         }
 
+        next.validate()?;
+
         *self = next;
+        Ok(())
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match *self {
+            Self::Constant { value } => {
+                if value < 0.0 || value.is_nan() {
+                    return Err(format!("WDL blend must be non-negative, got {value}"));
+                }
+            },
+            Self::Linear { start, end } | Self::Cosine { start, end } => {
+                if start < 0.0 || start.is_nan() || end < 0.0 || end.is_nan() {
+                    return Err(format!("WDL schedule endpoints must be non-negative, got start={start}, end={end}"));
+                }
+            },
+            Self::StableDecay { start, end, stable_ratio } => {
+                if start < 0.0 || start.is_nan() || end < 0.0 || end.is_nan() {
+                    return Err(format!("WDL schedule endpoints must be non-negative, got start={start}, end={end}"));
+                }
+                if !(0.0..=1.0).contains(&stable_ratio) {
+                    return Err(format!("WDL stable_ratio must be between 0.0 and 1.0, got {stable_ratio}"));
+                }
+            },
+        }
         Ok(())
     }
 }

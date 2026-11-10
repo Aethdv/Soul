@@ -86,7 +86,14 @@ impl Objective<'_> {
         (i32::from(record.static_eval) - i32::from(record.score)).abs() <= i32::from(threshold)
     }
 
-    pub(crate) fn batch_grad(&self, batch_indices: &[u32], values: &[f64], k: f64, blend: f64) -> (Vec<f64>, f64, f64, usize) {
+    pub(crate) fn batch_grad(
+        &self,
+        batch_indices: &[u32],
+        values: &[f64],
+        k: f64,
+        blend: f64,
+        with_k_grad: bool,
+    ) -> (Vec<f64>, f64, f64, usize) {
         batch_indices
             .par_chunks(256)
             .fold(
@@ -100,16 +107,18 @@ impl Objective<'_> {
                             continue;
                         }
 
-                        let (target, dt_dk) = wdl_target(record, k, blend);
+                        let (target, dt_dk) = wdl_target(record, k, blend, with_k_grad);
                         let eval = eval_record_full(record, values);
                         let p = sigmoid(eval.score, k);
                         let w = if self.sample_weights.is_empty() { 1.0 } else { self.sample_weights[i] };
                         let gs = self.loss_fn.grad_scale(p, target, k);
-                        let k_term = if dt_dk == 0.0 { 0.0 } else { self.loss_fn.grad_target(p, target) * dt_dk };
 
                         loss_acc += w * self.loss_fn.loss(p, target);
                         accumulate_record_grad(record, &eval, gs * w, &mut grad_acc);
-                        k_grad_acc += ((gs / k) * eval.score + k_term) * w;
+                        if with_k_grad {
+                            let k_term = if dt_dk == 0.0 { 0.0 } else { self.loss_fn.grad_target(p, target) * dt_dk };
+                            k_grad_acc += ((gs / k) * eval.score + k_term) * w;
+                        }
                         count += 1;
                     }
                     (grad_acc, k_grad_acc, loss_acc, count)
@@ -179,7 +188,7 @@ impl Objective<'_> {
 
                     for (sum, &(k, blend)) in sums.iter_mut().zip(&probes) {
                         let p = sigmoid(score, k);
-                        let (target, _) = wdl_target(record, k, blend);
+                        let (target, _) = wdl_target(record, k, blend, false);
                         *sum += w * self.loss_fn.loss(p, target);
                     }
 
@@ -727,7 +736,8 @@ fn train_loop(
         for batch in indices[..epoch_sample].chunks(config.batch_size) {
             batches_run += 1;
 
-            let (mut grads, k_grad, batch_loss, batch_count) = obj.batch_grad(batch, &values, k_ctrl.k(), blend);
+            let (mut grads, k_grad, batch_loss, batch_count) =
+                obj.batch_grad(batch, &values, k_ctrl.k(), blend, k_ctrl.is_learned());
             train_loss += batch_loss;
             train_count += batch_count;
 
@@ -1143,9 +1153,9 @@ mod tests {
             volatility_adaptive: true,
         };
         let (k, blend, h) = (0.005, 0.3, 1e-6);
-        let (_, k_g, ..) = obj.batch_grad(&[0], &values, k, blend);
+        let (_, k_g, ..) = obj.batch_grad(&[0], &values, k, blend, true);
         let loss_at = |kk: f64| {
-            let (target, _) = wdl_target(&record, kk, blend);
+            let (target, _) = wdl_target(&record, kk, blend, false);
             obj.loss_fn.loss(sigmoid(eval_record_full(&record, &values).score, kk), target)
         };
         let numeric = (loss_at(k + h) - loss_at(k - h)) / (2.0 * h);

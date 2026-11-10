@@ -69,6 +69,9 @@ impl KController {
     #[inline]
     pub(crate) const fn k_ref(&self) -> f64 { self.k_ref }
 
+    #[inline]
+    pub(crate) const fn is_learned(&self) -> bool { matches!(self.mode, KMode::Learned { .. }) }
+
     pub(crate) fn on_epoch(&mut self, epoch: usize, obj: &Objective, ema_values: &[f64], blend: f64) -> Option<f64> {
         let KMode::Sweep { interval } = self.mode else { return None };
         if !epoch.is_multiple_of(interval.max(1)) {

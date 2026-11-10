@@ -40,7 +40,7 @@ pub(crate) fn curvature_report(obj: &Objective, config: &EvalTuneConfig) {
                 if obj.passes_volatility_filter(record) {
                     let eval = eval_record_full(record, &values);
                     let pred = sigmoid(eval.score, k);
-                    let (target, _) = wdl_target(record, k, blend);
+                    let (target, _) = wdl_target(record, k, blend, false);
                     let w = if obj.sample_weights.is_empty() { 1.0 } else { obj.sample_weights[idx] };
 
                     accumulate_record_grad(record, &eval, 1.0, &mut grad_buf);
@@ -131,8 +131,8 @@ pub(crate) fn momentum_report(obj: &Objective, config: &EvalTuneConfig) {
     for trial in 0..MOMENTUM_TRIALS {
         shuffler.fill(&mut indices, 0xD1FF_5EED ^ trial as u64);
         let (first, second) = (&indices[..batch], &indices[batch..batch * 2]);
-        let (a_sum, .., a_count) = obj.batch_grad(first, &values, k, blend);
-        let (b_sum, .., b_count) = obj.batch_grad(second, &values, k, blend);
+        let (a_sum, .., a_count) = obj.batch_grad(first, &values, k, blend, false);
+        let (b_sum, .., b_count) = obj.batch_grad(second, &values, k, blend, false);
 
         if a_count == 0 || b_count == 0 {
             continue;
@@ -146,7 +146,7 @@ pub(crate) fn momentum_report(obj: &Objective, config: &EvalTuneConfig) {
             .map(|i| if params[i].is_fixed { values[i] } else { gradient[i].signum().mul_add(-lr_mults[i], values[i]) })
             .collect();
 
-        let (moved_sum, .., moved_count) = obj.batch_grad(first, &stepped, k, blend);
+        let (moved_sum, .., moved_count) = obj.batch_grad(first, &stepped, k, blend, false);
         if moved_count == 0 {
             continue;
         }
@@ -196,7 +196,7 @@ pub(crate) fn gather_cost(obj: &Objective, config: &EvalTuneConfig) {
     let bench_pass = |order: &[u32]| {
         let start = Instant::now();
         for batch in order.chunks(config.batch_size).take(batches) {
-            black_box(obj.batch_grad(batch, &values, k, 0.0));
+            black_box(obj.batch_grad(batch, &values, k, 0.0, false));
         }
         start.elapsed().as_secs_f64()
     };
@@ -328,7 +328,7 @@ fn pool_noise_trials(
         chunk_counts.clear();
 
         for chunk in indices[..big].chunks(chunk_len) {
-            let (grad, .., count) = obj.batch_grad(chunk, &point.values, point.k, point.blend);
+            let (grad, .., count) = obj.batch_grad(chunk, &point.values, point.k, point.blend, false);
             if count == 0 {
                 continue;
             }

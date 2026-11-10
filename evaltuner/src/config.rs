@@ -314,6 +314,7 @@ impl TunerConfig {
             config.evaltune.replay_filter = Some(dir.join(filter).to_string_lossy().into_owned());
         }
 
+        config.evaltune.wdl_schedule.validate()?;
         Ok(config)
     }
 }
