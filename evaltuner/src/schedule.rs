@@ -70,14 +70,14 @@ impl LrSchedule {
         }
     }
 
-    pub(crate) fn apply_cli<'a>(
+    pub(crate) fn apply_cli(
         &mut self,
-        kind: Option<&'a str>,
+        kind: Option<&str>,
         lr: Option<f64>,
         min_lr: Option<f64>,
         warmup: Option<f64>,
         cycles: Option<usize>,
-    ) -> Result<(), (&'a str, &'static str)> {
+    ) -> Result<(), String> {
         if let Some(name) = kind {
             *self = match name {
                 "constant" => Self::Constant { value: 0.1 },
@@ -88,9 +88,8 @@ impl LrSchedule {
                 },
                 "stable-decay" | "sd" => Self::StableDecay { base: 0.03, min: 0.0001, stable_ratio: 0.5 },
                 _ => {
-                    return Err((
-                        name,
-                        "expected 'cosine', 'linear', 'constant', 'warmup-stable-decay' ('wsd'), or 'stable-decay' ('sd')",
+                    return Err(format!(
+                        "Unknown --lr-schedule '{name}'; expected 'cosine', 'linear', 'constant', 'warmup-stable-decay' ('wsd'), or 'stable-decay' ('sd')"
                     ));
                 },
             };
@@ -166,36 +165,58 @@ impl WdlSchedule {
         }
     }
 
-    pub(crate) fn apply_cli<'a>(
+    pub(crate) fn apply_cli(
         &mut self,
-        kind: Option<&'a str>,
+        kind: Option<&str>,
         blend: Option<f64>,
         start: Option<f64>,
         end: Option<f64>,
-    ) -> Result<(), (&'a str, &'static str)> {
-        if let Some(name) = kind {
+    ) -> Result<(), String> {
+        if blend.is_some() && (start.is_some() || end.is_some()) {
+            return Err("--blend cannot be combined with --wdl-start or --wdl-end".into());
+        }
+
+        let mut next = if let Some(name) = kind {
             let (d_start, d_end) = match *self {
                 Self::Cosine { start, end } | Self::Linear { start, end } | Self::StableDecay { start, end, .. } => (start, end),
                 Self::Constant { value } => (value, DEFAULT_WDL_END),
             };
-            *self = match name {
+
+            let next = match name {
                 "constant" => Self::Constant { value: blend.unwrap_or(d_start) },
-                "linear" => Self::Linear { start: start.unwrap_or(d_start), end: end.unwrap_or(d_end) },
-                "cosine" => Self::Cosine { start: start.unwrap_or(d_start), end: end.unwrap_or(d_end) },
-                "stable-decay" | "sd" => {
-                    Self::StableDecay { start: start.unwrap_or(d_start), end: end.unwrap_or(d_end), stable_ratio: 0.35 }
+                "linear" => Self::Linear { start: d_start, end: d_end },
+                "cosine" => Self::Cosine { start: d_start, end: d_end },
+                "stable-decay" | "sd" => Self::StableDecay { start: d_start, end: d_end, stable_ratio: 0.35 },
+                _ => {
+                    return Err(format!(
+                        "Unknown --wdl-schedule '{name}'; expected 'constant', 'linear', 'cosine', or 'stable-decay' ('sd')"
+                    ));
                 },
-                _ => return Err((name, "expected 'constant', 'linear', 'cosine', or 'stable-decay' ('sd')")),
             };
-        } else if let Some(v) = blend {
-            *self = Self::Constant { value: v };
-        } else if let Self::Linear { start: from, end: to }
-        | Self::Cosine { start: from, end: to }
-        | Self::StableDecay { start: from, end: to, .. } = self
-        {
-            set_if_some(from, start);
-            set_if_some(to, end);
+
+            if blend.is_some() && !matches!(next, Self::Constant { .. }) {
+                return Err(format!("--blend cannot be combined with dynamic schedule '{name}'"));
+            }
+
+            next
+        } else {
+            blend.map_or(*self, |value| Self::Constant { value })
+        };
+
+        match &mut next {
+            Self::Constant { .. } if start.is_some() || end.is_some() => {
+                return Err("--wdl-start and --wdl-end cannot be applied to a constant WDL schedule".into());
+            },
+            Self::Constant { .. } => {},
+            Self::Linear { start: from, end: to }
+            | Self::Cosine { start: from, end: to }
+            | Self::StableDecay { start: from, end: to, .. } => {
+                set_if_some(from, start);
+                set_if_some(to, end);
+            },
         }
+
+        *self = next;
         Ok(())
     }
 }

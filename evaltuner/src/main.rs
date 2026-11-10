@@ -275,19 +275,19 @@ fn run_evaltune(args: Args) -> bool {
     if let Some(lr_mult) = args.lr_mult {
         cfg.k_mode = KMode::Learned { lr_mult };
     }
-    if let Err((name, exp)) = cfg
+    if let Err(err) = cfg
         .lr_schedule
         .apply_cli(args.lr_schedule.as_deref(), args.lr, args.min_lr, args.warmup, args.cycles)
     {
-        eprintln!("Unknown --lr-schedule '{name}'; {exp}");
+        eprintln!("{err}");
         return false;
     }
 
-    if let Err((name, exp)) = cfg
+    if let Err(err) = cfg
         .wdl_schedule
         .apply_cli(args.wdl_schedule.as_deref(), args.blend, args.wdl_start, args.wdl_end)
     {
-        eprintln!("Unknown --wdl-schedule '{name}'; {exp}");
+        eprintln!("{err}");
         return false;
     }
 
