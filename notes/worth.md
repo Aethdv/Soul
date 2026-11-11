@@ -34,9 +34,9 @@ Stockfish folks only got away with that formulation because they tuned HCE via S
 1. Whenever `complexity < -abs(eg)`, the clamp zeroes out the derivative with respect to both `eg` and the `complexity` weights.
    If a won endgame gets clamped to 0.00, the complexity weights receive zero gradient to ever un-clamp it.
 
-2. Step discontinuity at `eg = 0` when `complexity > 0`: at `complexity = +40`, `eg = +1cp` jumps to `+41cp` while `eg = -1cp` jumps to `-41cp`,
-   opening a `2 * complexity` chasm across zero. Above the clamp, `d(eg_out) / d(complexity)` is a flat `sign(eg)`, so a `+1cp` coinflip pushes
-   the complexity weights just as hard as a `+400cp` position.
+2. Step discontinuity at `eg = 0` when `complexity > 0`: at `complexity = +40`, `eg = +1cp` jumps to +41cp while `eg = -1cp` jumps to -41cp,
+   opening a `2 * complexity` chasm across zero. Above the clamp, `d(eg_out) / d(complexity)` is a flat `sign(eg)`, so a +1cp coinflip pushes
+   the complexity weights just as hard as a +400cp position.
 
 Both go away if `complexity` is split into non-negative drive `D >= 0` (pawns, both flanks, passed pawns, infiltration, horizontal king separation `Δfile`)
 and positive draw friction `F > 0` (base bias, vertical king opposition `Δrank`, single-flank / OCB penalties), then gated rationally:
