@@ -195,11 +195,16 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             state.stop_search();
             state.mode = Mode::Force;
         },
-        "go" | "playother" => {
+        "go" => {
             state.stop_search();
             state.mode = Mode::Normal;
             state.engine_side = Some(state.board.stm);
             state.start_search();
+        },
+        "playother" => {
+            state.stop_search();
+            state.mode = Mode::Normal;
+            state.engine_side = Some(!state.board.stm);
         },
         "analyze" => {
             state.stop_search();
@@ -282,7 +287,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 eprintln!("Illegal move: {move_str}");
             }
         },
-        "accepted" | "rejected" | "hard" | "easy" | "draw" => { /* No-op */ },
+        "accepted" | "rejected" | "hard" | "easy" | "draw" | "random" => { /* No-op */ },
         _ => {
             if !cmd_move(state, cmd) {
                 eprintln!("Error (unknown command): {cmd}");
