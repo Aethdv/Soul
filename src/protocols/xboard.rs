@@ -270,7 +270,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 eprintln!("Illegal move: {move_str}");
             }
         },
-        "accepted" | "rejected" => { /* No-op, feature negotiation */ },
+        "accepted" | "rejected" | "hard" | "easy" => { /* No-op */ },
         _ => {
             if !cmd_move(state, cmd) {
                 eprintln!("Error (unknown command): {cmd}");
