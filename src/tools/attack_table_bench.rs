@@ -288,6 +288,8 @@ fn deserialize(bytes: &[u8]) -> Vec<Game> {
         });
     }
 
+    assert!(rest.is_empty(), "stream has trailing bytes");
+
     games
 }
 
@@ -973,9 +975,12 @@ fn variant_dest(stream: &[Game], repeats: usize) -> Outcome {
 }
 
 fn variant_hosting(stream: &[Game], repeats: usize) -> Outcome {
+    let Some(first) = stream.first() else {
+        return Outcome { iterations: 0, checksum: 0 };
+    };
     let mut checksum = 0u64;
     let mut iterations = 0u64;
-    let mut incremental = IncrementalAttackTable::from_scratch(&Position::from_fen(&stream[0].fen));
+    let mut incremental = IncrementalAttackTable::from_scratch(&Position::from_fen(&first.fen));
 
     for i in 0..repeats * stream.iter().map(|g| g.moves.len()).sum::<usize>() {
         let saved = black_box(incremental);
@@ -1185,31 +1190,44 @@ fn validate(stream: &[Game]) -> Option<u64> {
         let g = byteboard::Geometry::new();
 
         for (ply, &mv) in game.moves.iter().enumerate() {
+            let from = mv.from();
+            let to = mv.to();
+            let mover_entry = incremental.ids.at[usize::from(from)];
+            let bad_mover = mover_entry == 0 || mover_entry > 32;
+
+            let bad_castle = mv.is_castling() && {
+                let rook_entry = incremental.ids.at[usize::from(to)];
+                rook_entry == 0 || rook_entry > 32
+            };
+
+            let bad_victim = if mv.is_castling() {
+                false
+            } else if mv.is_en_passant() {
+                let victim_sq = Square(to.0 ^ 8);
+                let victim_entry = incremental.ids.at[usize::from(victim_sq)];
+                victim_entry == 0 || victim_entry > 32
+            } else if mv.is_capture() {
+                let victim_entry = incremental.ids.at[usize::from(to)];
+                victim_entry == 0 || victim_entry > 32
+            } else {
+                false
+            };
+
+            if bad_mover || bad_castle || bad_victim {
+                eprintln!("atb: stale id map, game {game_index}, ply {ply}, move {}", mv.inner());
+                eprintln!("fen before: {}", pos.to_fen());
+                eprintln!(
+                    "  at[from]={} at[to]={} real at from={}",
+                    incremental.ids.at[usize::from(from)],
+                    incremental.ids.at[usize::from(to)],
+                    pos.piece_at(from) as u8
+                );
+                return None;
+            }
+
             let incremental_before = incremental;
             let xorboard_before = xorboard;
             let plan = incremental.ids.plan_move(mv);
-
-            let stale = plan.movers[0].0 >= 32
-                || (plan.n_movers == 2 && plan.movers[1].0 >= 32)
-                || plan.captured.is_some_and(|(victim, _)| victim >= 32);
-
-            if stale {
-                eprintln!("atb: stale id map, game {game_index}, ply {ply}, move {}", mv.inner());
-                eprintln!("fen before: {}", pos.to_fen());
-                for m in 0..plan.n_movers {
-                    let (id, from, to) = plan.movers[m];
-                    eprintln!("  mover[{m}] id={} from={} to={}", id, from.0, to.0);
-                }
-                eprintln!("  captured: {:?}", plan.captured);
-                eprintln!(
-                    "  at[from]={} at[to]={} real at from={}",
-                    incremental.ids.at[usize::from(mv.from())],
-                    incremental.ids.at[usize::from(mv.to())],
-                    pos.piece_at(mv.from()) as u8
-                );
-
-                return None;
-            }
 
             let pre = PreMove::of(&pos);
             pos.make_move(mv, &mut acc);
@@ -1328,6 +1346,12 @@ fn validate(stream: &[Game]) -> Option<u64> {
             checked += 1;
         }
     }
+
+    if checked == 0 {
+        eprintln!("atb: empty stream (0 plies)");
+        return None;
+    }
+
     Some(checked)
 }
 
@@ -1382,11 +1406,17 @@ fn count_writes(stream: &[Game]) {
         }
     }
 
-    let move_count = moves as f64;
     println!("moves {moves}");
-    println!("pairs/move {:.2} (worst {worst})", pairs as f64 / move_count);
-    println!("rows/move  {:.2}", rows as f64 / move_count);
-    println!("danger bits flipped/move {:.2}", danger_flips as f64 / move_count);
+    if moves == 0 {
+        println!("pairs/move 0.00 (worst 0)");
+        println!("rows/move  0.00");
+        println!("danger bits flipped/move 0.00");
+    } else {
+        let move_count = moves as f64;
+        println!("pairs/move {:.2} (worst {worst})", pairs as f64 / move_count);
+        println!("rows/move  {:.2}", rows as f64 / move_count);
+        println!("danger bits flipped/move {:.2}", danger_flips as f64 / move_count);
+    }
 }
 
 pub fn run(args: &[&str]) {
@@ -1434,7 +1464,10 @@ pub fn run(args: &[&str]) {
             let path = args.get(1).copied().expect("atb dump <path> [plies]");
             let n = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
             let stream = read_stream(path);
-            let game = &stream[0];
+            let Some(game) = stream.first() else {
+                eprintln!("atb dump: stream has no games");
+                return;
+            };
             let mut pos = Position::from_fen(&game.fen);
             let mut acc = pos.psqt_accumulator();
 
