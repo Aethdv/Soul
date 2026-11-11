@@ -366,7 +366,7 @@ impl Default for Stack {
 impl<'cfg> Searcher<'cfg> {
     /// The last completed iteration supplies the move if a later one is interrupted.
     #[inline]
-    pub(crate) fn iterative_deepening(&mut self, history: &mut History) {
+    pub(crate) fn iterative_deepening(&mut self, history: &mut History) -> Option<Move> {
         let sp = &self.cfg.search_params;
         history.params = HistoryParams::from(sp);
         self.nodes = 0;
@@ -382,14 +382,14 @@ impl<'cfg> Searcher<'cfg> {
             let bulk = self.cfg.limits.perft_bulk;
             let nodes = crate::tools::perft::perft(&mut board, perft_depth, &mut acc, bulk);
             println!("Nodes searched: {nodes}");
-            return;
+            return None;
         }
 
         if self.root_moves.is_empty() {
             if !self.cfg.limits.silent {
                 println!("bestmove 0000");
             }
-            return;
+            return None;
         }
 
         if !self.cfg.limits.searchmoves.is_empty() {
@@ -399,7 +399,7 @@ impl<'cfg> Searcher<'cfg> {
                 if !self.cfg.limits.silent {
                     println!("bestmove 0000");
                 }
-                return;
+                return None;
             }
         }
 
@@ -565,6 +565,8 @@ impl<'cfg> Searcher<'cfg> {
             }
             let _ = io::stdout().flush();
         }
+
+        self.prev_pv.get(0).or_else(|| self.root_moves.first().map(|rm| rm.mv))
     }
 
     #[inline]

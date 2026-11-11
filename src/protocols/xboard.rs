@@ -15,6 +15,7 @@ use crate::{
     core::{
         board::{Position, STARTPOS},
         defs::{Color, Protocol},
+        moves::Move,
         zobrist::key_side,
     },
     engine::{
@@ -45,7 +46,7 @@ struct XBoardState {
     search: TableAndPool,
     mode: Mode,
     stop: Arc<AtomicBool>,
-    search_thread: Option<JoinHandle<Box<History>>>,
+    search_thread: Option<JoinHandle<(Box<History>, Option<Move>)>>,
     limits: Limits,
     overhead: u64,
     post: bool,
@@ -103,7 +104,13 @@ impl XBoardState {
 
         if let Some(handle) = self.search_thread.take() {
             match handle.join() {
-                Ok(history) => self.history = Some(history),
+                Ok((history, best)) => {
+                    self.history = Some(history);
+                    if let Some(mv) = best {
+                        self.board.make_move(mv, &mut self.accumulator);
+                        self.trail.push(self.board.hash);
+                    }
+                },
                 Err(err) => {
                     let message = err
                         .downcast_ref::<&str>()
@@ -155,8 +162,8 @@ impl XBoardState {
             let display = SearchDisplay { post, show_wdl, ..SearchDisplay::DEFAULT };
             let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             cfg.set_threads(search.threads());
-            search.search(&cfg, board, &trail, &mut history);
-            history
+            let best = search.search(&cfg, board, &trail, &mut history);
+            (history, best)
         }));
     }
 }
@@ -308,11 +315,12 @@ fn print_features() {
 }
 
 fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
+    state.stop_search();
+
     let Ok(mv) = parse_uci_move(&state.board, move_str) else {
         return false;
     };
 
-    state.stop_search();
     state.board.make_move(mv, &mut state.accumulator);
     state.trail.push(state.board.hash);
     state.search.tt().begin_search();

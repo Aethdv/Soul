@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    core::board::Position,
+    core::{board::Position, moves::Move},
     engine::{
         history::History,
         search::{SearchConfig, Searcher},
@@ -69,7 +69,7 @@ impl TableAndPool {
     }
 
     /// Runs the main search alongside the helpers and waits for them to finish.
-    pub(super) fn search(&self, cfg: &SearchConfig, board: Position, trail: &[u64], history: &mut History) {
+    pub(super) fn search(&self, cfg: &SearchConfig, board: Position, trail: &[u64], history: &mut History) -> Option<Move> {
         if !self.pool.handles.is_empty() {
             let mut helper_cfg = cfg.clone();
             helper_cfg.limits.silent = true;
@@ -77,7 +77,7 @@ impl TableAndPool {
         }
 
         self.tt.bind_search_thread(0, cfg.threads);
-        Searcher::new(cfg, &board, trail, self.tt.clone()).iterative_deepening(history);
+        let best = Searcher::new(cfg, &board, trail, self.tt.clone()).iterative_deepening(history);
 
         cfg.stop.store(true, Ordering::Relaxed);
         if !self.pool.handles.is_empty() {
@@ -85,6 +85,7 @@ impl TableAndPool {
         }
 
         cfg.stop.store(false, Ordering::Relaxed);
+        best
     }
 }
 
