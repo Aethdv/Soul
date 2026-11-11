@@ -4,7 +4,7 @@ DEPTH    ?= 12
 FEATURES ?=
 CARGO_FEATURES = $(if $(FEATURES),--features $(FEATURES))
 
-# Evaltune profiling dataset + epoch count.
+# For evaltune profiling.
 ET_DATA   ?= data/big3.txt
 ET_EPOCHS ?= 100
 
