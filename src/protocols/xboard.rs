@@ -275,7 +275,7 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
                 eprintln!("Illegal move: {move_str}");
             }
         },
-        "accepted" | "rejected" | "hard" | "easy" => { /* No-op */ },
+        "accepted" | "rejected" | "hard" | "easy" | "draw" => { /* No-op */ },
         _ => {
             if !cmd_move(state, cmd) {
                 eprintln!("Error (unknown command): {cmd}");
@@ -296,6 +296,7 @@ fn print_features() {
     println!("feature sigint=0");
     println!("feature sigterm=0");
     println!("feature colors=0");
+    println!("feature draw=0");
     println!("feature debug=1");
     println!("feature smp=1");
     println!("feature nps=1");
