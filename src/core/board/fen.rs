@@ -171,12 +171,14 @@ pub(super) fn pretty_print(pos: &Position) {
 }
 
 fn finish_position(mut pos: Position) -> Result<Position, FenError> {
-    let kings = pos.role_bb[PieceType::King];
-    if (kings & pos.side_bb[Color::White]).popcount() != 1 {
-        return Err(FenError::MissingKing { color: "white" });
-    }
-    if (kings & pos.side_bb[Color::Black]).popcount() != 1 {
-        return Err(FenError::MissingKing { color: "black" });
+    for (color, name) in [(Color::White, "white"), (Color::Black, "black")] {
+        let side = pos.side_bb[color];
+        if (pos.role_bb[PieceType::King] & side).popcount() != 1 {
+            return Err(FenError::MissingKing { color: name });
+        }
+        if side.popcount() > 16 {
+            return Err(FenError::TooManyPieces { color: name });
+        }
     }
 
     let illegal_pawns = pos.role_bb[PieceType::Pawn] & (RANK_1 | RANK_8);

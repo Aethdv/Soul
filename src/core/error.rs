@@ -32,6 +32,8 @@ pub(crate) enum FenError {
     IllegalCheck,
     #[error("Invalid castling right '{right}'")]
     InvalidCastlingRight { right: char },
+    #[error("Too many {color} pieces in position (maximum 16)")]
+    TooManyPieces { color: &'static str },
 }
 
 #[derive(Debug, Error, Clone, Copy)]
