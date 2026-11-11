@@ -105,6 +105,7 @@ pub(crate) struct Limits {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SearchDisplay {
+    pub(crate) post: bool,
     pub(crate) show_wdl: bool,
     pub(crate) go_pretty: bool,
     pub(crate) pretty_print: bool,
@@ -210,9 +211,15 @@ struct MoveResult {
 struct SearchAborted;
 
 impl SearchDisplay {
-    pub(crate) const SILENT: Self =
-        Self { show_wdl: false, go_pretty: false, pretty_print: false, show_currmove: false, use_ansi: false };
-    pub(crate) const DEFAULT: Self = Self { show_currmove: true, use_ansi: true, ..Self::SILENT };
+    pub(crate) const SILENT: Self = Self {
+        post: false,
+        show_wdl: false,
+        go_pretty: false,
+        pretty_print: false,
+        show_currmove: false,
+        use_ansi: false,
+    };
+    pub(crate) const DEFAULT: Self = Self { post: true, show_currmove: true, use_ansi: true, ..Self::SILENT };
 }
 
 impl SearchConfig {
@@ -667,7 +674,7 @@ impl<'cfg> Searcher<'cfg> {
 
     #[cold]
     fn print_info(&self, depth: i32, score: i32, pv: &PvLine) {
-        if self.cfg.limits.silent {
+        if self.cfg.limits.silent || !self.cfg.display.post {
             return;
         }
         self.print_line(depth, score, pv, tui::ScoreBound::Exact);
@@ -676,7 +683,7 @@ impl<'cfg> Searcher<'cfg> {
     #[cold]
     fn print_bound(&self, depth: i32, score: i32, bound: tui::ScoreBound) {
         // The current iteration is unfinished, therefore report the previous PV.
-        if self.cfg.limits.silent || is_mate(score) || self.prev_pv.len == 0 {
+        if self.cfg.limits.silent || !self.cfg.display.post || is_mate(score) || self.prev_pv.len == 0 {
             return;
         }
         self.print_line(depth, score, &self.prev_pv, bound);

@@ -48,6 +48,7 @@ struct XBoardState {
     search_thread: Option<JoinHandle<Box<History>>>,
     limits: Limits,
     overhead: u64,
+    post: bool,
     show_wdl: bool,
     engine_side: Option<Color>,
     frc_notation: bool,
@@ -89,6 +90,7 @@ impl XBoardState {
             search_thread: None,
             limits: Limits { protocol: Protocol::XBoard, ..Default::default() },
             overhead: DEFAULT_OVERHEAD_MS,
+            post: false,
             show_wdl: false,
             engine_side: None,
             frc_notation: false,
@@ -144,12 +146,13 @@ impl XBoardState {
         let stop = self.stop.clone();
         let trail = self.trail.clone();
         let overhead = self.overhead;
+        let post = self.post;
         let show_wdl = self.show_wdl;
         let mut history = self.history.take().unwrap_or_else(|| Box::new(History::new()));
         let search = self.search.clone();
 
         self.search_thread = Some(thread::spawn(move || {
-            let display = SearchDisplay { show_wdl, ..SearchDisplay::DEFAULT };
+            let display = SearchDisplay { post, show_wdl, ..SearchDisplay::DEFAULT };
             let mut cfg = SearchConfig::new_full(limits, Instant::now(), stop, overhead, display, SearchParams::default());
             cfg.set_threads(search.threads());
             search.search(&cfg, board, &trail, &mut history);
@@ -252,6 +255,8 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
         "result" => state.stop_search(),
         "?" => state.stop_search(),
+        "post" => state.post = true,
+        "nopost" => state.post = false,
         "option" => cmd_option(state, args),
         "memory" => {
             if let Some(mb) = next_parsed(args) {
