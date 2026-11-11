@@ -165,8 +165,8 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
     match cmd {
         "xboard" => { /* No-op, just protocol init */ },
         "protover" => {
-            if let Some(ver) = args.next()
-                && ver == "2"
+            if let Some(ver) = next_parsed::<u32>(args)
+                && ver >= 2
             {
                 print_features();
             }
