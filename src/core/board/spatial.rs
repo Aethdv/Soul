@@ -8,7 +8,7 @@ use crate::{
     weave::*,
 };
 
-#[cfg(any(test, feature = "rigs", feature = "nostore"))]
+#[cfg(any(test, feature = "nostore"))]
 #[inline(always)]
 pub(super) fn atk_rooks(generators: U64x4, empty: U64x4) -> U64x4 {
     let n = fill_north(generators, empty).shift_north();
@@ -18,7 +18,7 @@ pub(super) fn atk_rooks(generators: U64x4, empty: U64x4) -> U64x4 {
     n | s | e | w
 }
 
-#[cfg(any(test, feature = "rigs", feature = "nostore"))]
+#[cfg(any(test, feature = "nostore"))]
 #[inline(always)]
 pub(super) fn atk_bishops(generators: U64x4, empty: U64x4) -> U64x4 {
     let ne = fill_northeast(generators, empty).shift_ne();
@@ -28,7 +28,7 @@ pub(super) fn atk_bishops(generators: U64x4, empty: U64x4) -> U64x4 {
     ne | nw | se | sw
 }
 
-#[cfg(any(test, feature = "rigs", feature = "nostore"))]
+#[cfg(any(test, feature = "nostore"))]
 #[inline(always)]
 pub(super) fn atk_knights(knights: U64x4) -> U64x4 {
     let mask_a = U64x4::splat(FILE_A);
@@ -46,7 +46,7 @@ pub(super) fn atk_knights(knights: U64x4) -> U64x4 {
     (one_file.shl::<16>() | one_file.shr::<16>()) | (two_files.shl::<8>() | two_files.shr::<8>())
 }
 
-#[cfg(any(test, feature = "rigs", feature = "nostore"))]
+#[cfg(any(test, feature = "nostore"))]
 #[inline(always)]
 pub(super) fn atk_kings(kings: U64x4) -> U64x4 {
     let row = kings | kings.shift_east() | kings.shift_west();

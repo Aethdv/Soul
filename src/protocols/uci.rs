@@ -281,10 +281,7 @@ pub fn print_help(use_ansi: bool) {
     h.command("key", "Print Zobrist hash");
     h.command_args("bench", "<N>", "Benchmark to depth N");
     h.command_args("divide", "<N> [bulk]", "Perft divide test");
-    #[cfg(feature = "rigs")]
     h.command("speedtest", "Run performance test");
-    #[cfg(feature = "rigs")]
-    h.command_args("atb", "<run|gen|export|validate|count|dump> ...", "Attack-table benchmark");
     h.command("spsa", "Print the tunable search params as an SPSA table; long tables in a terminal go to spsa.txt");
     h.command_args("spsa apply", "<REPORT> [--dry-run] [--params <PATH>]", "Write a finished tune's values into the defaults");
     #[cfg(feature = "datagen")]
@@ -395,7 +392,6 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
             let bulk = matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk"));
             tools::perft::run(&state.board, depth, cmd == "divide", bulk);
         },
-        #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(0),
         #[cfg(feature = "datagen")]
         "datagen" => {

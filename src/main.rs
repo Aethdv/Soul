@@ -32,7 +32,6 @@ fn main() {
         },
 
         "spsa" => tools::spsa::run(&rest),
-        #[cfg(feature = "rigs")]
         "speedtest" => tools::speedtest::run(arg(&rest, 0).unwrap_or(0)),
         #[cfg(feature = "datagen")]
         "datagen" => {
@@ -41,8 +40,6 @@ fn main() {
             }
         },
         "genfens" => tools::genfens::run(&rest),
-        #[cfg(feature = "rigs")]
-        "atb" => tools::attack_table_bench::run(&rest),
         #[cfg(feature = "dataset")]
         "dataset" => {
             if !tools::dataset::cli::run(&rest) {

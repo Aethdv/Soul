@@ -2,7 +2,7 @@
 
 use std::iter;
 
-#[cfg(any(test, feature = "rigs", feature = "nostore"))]
+#[cfg(any(test, feature = "nostore"))]
 use crate::weave::U64x4;
 use crate::{
     core::{
@@ -413,7 +413,7 @@ impl Position {
         }
     }
 
-    #[cfg(any(test, feature = "rigs", feature = "nostore"))]
+    #[cfg(any(test, feature = "nostore"))]
     #[inline]
     pub(crate) fn threats(&self, color: Color) -> Bitboard {
         let us = self.side_bb[color];

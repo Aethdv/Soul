@@ -42,7 +42,6 @@ atomic-wait = "1.1"
 [features]
 dataset = ["dep:serde", "dep:serde_json", "dep:zerocopy"]
 datagen = ["dataset", "dep:ctrlc", "dep:fastrand"]
-rigs = []
 corrstats = []
 mvpstats = []
 nostore = []

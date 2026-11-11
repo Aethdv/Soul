@@ -183,8 +183,8 @@ bench: ## Fast compile w/ bench (DEPTH=12)
 	@cargo build --profile quick --quiet
 	@./target/quick/$(EXE_NAME) bench $(DEPTH)
 
-tools: #@ Native build with datagen, dataset and the measurement rigs
-	@$(MAKE) --no-print-directory native FEATURES=datagen,rigs EXE=tools$(EXE_EXT)
+tools: #@ Native build with datagen, dataset and tools
+	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=tools$(EXE_EXT)
 
 datagen: #@ Native build with self-play generation and the dataset pipeline
 	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=datagen$(EXE_EXT)
@@ -216,7 +216,7 @@ fmt: #@ Auto-format with rustfmt
 profile: #@ CPU profile of ./soul speedtest
 	@echo "Building with debug symbols..."
 	@RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
-		cargo build --profile profiling --quiet --features rigs
+		cargo build --profile profiling --quiet
 	@cp target/profiling/$(EXE_NAME) $(EXE)
 	@echo "Recording profile..."
 	@rm -f perf.data
