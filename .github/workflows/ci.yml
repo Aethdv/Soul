@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "soul" ]
+    branches: [ "banyan" ]
   pull_request:
-    branches: [ "soul" ]
+    branches: [ "banyan" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,7 +22,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-07-12
           components: rustfmt
       - name: Run rustfmt
         run: cargo fmt -- --check
@@ -37,7 +37,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-07-12
           components: clippy
       - name: Run clippy
         run: make clippy
@@ -52,7 +52,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-07-12
       - name: Run tests
         run: make test
 
@@ -66,7 +66,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-07-12
       - name: Verify Bench Signature
         run: |
           benchref=$(git show -s --format=%B HEAD | sed '1!G;h;$!d' | grep -m 1 -o -i 'bench[: ]\+[1-9][0-9]*\b' | sed 's/[^0-9]//g')
