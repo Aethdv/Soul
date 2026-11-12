@@ -22,6 +22,7 @@ fn_single_line = true
 fn_params_layout = "Tall"
 force_explicit_abi = true
 format_macro_bodies = true
+format_macro_matchers = true
 float_literal_trailing_zero = "Preserve"
 
 group_imports = "StdExternalCrate"
