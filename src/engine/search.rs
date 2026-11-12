@@ -1175,6 +1175,7 @@ impl Worker<'_> {
                     && depth <= sp.lmp_depth
                     && res.move_count as i32 >= sp.lmp_base + lmp_scale * depth * depth / 100
                 {
+                    picker.skip_quiets();
                     continue;
                 }
 

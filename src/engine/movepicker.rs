@@ -296,6 +296,14 @@ impl MovePicker {
         }
     }
 
+    #[inline]
+    pub(super) fn skip_quiets(&mut self) {
+        if self.stage == Stage::YieldQuiets {
+            self.count = MAX_MOVES;
+            self.stage = Stage::YieldBadCaptures;
+        }
+    }
+
     /// Full sorting beat lazy partial selection even when few moves were searched.
     #[inline]
     fn sort_candidates(&mut self) {
