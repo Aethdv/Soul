@@ -18,10 +18,10 @@ pub(crate) enum PageKind {
 }
 
 pub(crate) struct HugePages<T> {
-    ptr: NonNull<T>,
-    len: usize,
-    bytes: usize,
-    kind: PageKind,
+    ptr:     NonNull<T>,
+    len:     usize,
+    bytes:   usize,
+    kind:    PageKind,
     _marker: PhantomData<T>,
 }
 

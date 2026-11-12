@@ -47,23 +47,23 @@ impl Termination {
 }
 
 pub(super) struct RunStats {
-    start_time: Instant,
+    start_time:         Instant,
     existing_positions: u64,
-    target_count: u64,
-    games: AtomicU64,
-    positions: AtomicU64,
-    search_failures: AtomicU64,
-    terminations: [AtomicU64; Termination::ALL.len()],
+    target_count:       u64,
+    games:              AtomicU64,
+    positions:          AtomicU64,
+    search_failures:    AtomicU64,
+    terminations:       [AtomicU64; Termination::ALL.len()],
 }
 
 pub(super) struct Snapshot {
-    pub(super) elapsed: f64,
+    pub(super) elapsed:         f64,
     pub(super) total_positions: u64,
-    pub(super) target_count: u64,
-    pub(super) games: u64,
-    pub(super) positions: u64,
+    pub(super) target_count:    u64,
+    pub(super) games:           u64,
+    pub(super) positions:       u64,
     pub(super) search_failures: u64,
-    terminations: [u64; Termination::ALL.len()],
+    terminations:               [u64; Termination::ALL.len()],
 }
 
 impl RunStats {

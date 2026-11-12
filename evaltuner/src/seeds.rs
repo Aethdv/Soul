@@ -126,16 +126,16 @@ pub(crate) fn sweep_lr_mult(
 
 #[derive(Deserialize)]
 struct FinalRecord {
-    seed: u64,
+    seed:           u64,
     #[serde(default)]
-    split_seed: Option<u64>,
+    split_seed:     Option<u64>,
     #[serde(default)]
-    best_val_loss: Option<f64>,
+    best_val_loss:  Option<f64>,
     best_val_epoch: usize,
     #[serde(rename = "best_val_params", alias = "params")]
-    params: Vec<i32>,
+    params:         Vec<i32>,
     #[serde(default)]
-    sensitivity: Vec<f64>,
+    sensitivity:    Vec<f64>,
 }
 
 fn log_space(min: f64, max: f64, points: usize) -> Vec<f64> {

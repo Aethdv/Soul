@@ -88,32 +88,32 @@ pub(crate) fn run(report: &Assay, datasets: &[String], config: &EvalTuneConfig, 
 }
 
 struct Dataset {
-    label: String,
-    paths: Vec<String>,
+    label:   String,
+    paths:   Vec<String>,
     entries: Vec<SoulEntry>,
     records: Vec<FeatureRecord>,
-    loaded: usize,
+    loaded:  usize,
 }
 
 #[derive(Default)]
 struct DatasetProfile {
-    results: [usize; 3],
-    scored: usize,
-    score_sum: f64,
+    results:        [usize; 3],
+    scored:         usize,
+    score_sum:      f64,
     contradictions: usize,
-    phase_sum: f64,
-    phase_low: usize,
-    phase_high: usize,
-    pieces: u64,
-    unequal: [usize; PIECES.len()],
-    unequal_phase: [f64; PIECES.len()],
+    phase_sum:      f64,
+    phase_low:      usize,
+    phase_high:     usize,
+    pieces:         u64,
+    unequal:        [usize; PIECES.len()],
+    unequal_phase:  [f64; PIECES.len()],
 }
 
 #[derive(Clone, Copy, Default)]
 struct PhaseHist {
     bins: [u64; PHASE_BINS],
-    sum: f64,
-    n: u64,
+    sum:  f64,
+    n:    u64,
 }
 
 impl PhaseHist {
@@ -140,20 +140,20 @@ impl PhaseHist {
 
 #[derive(Clone, Default)]
 struct FeatureSpread {
-    mobility: [[u64; MOBILITY_MAX]; PIECES.len()],
-    openness: [u64; OPENNESS_BINS],
-    openness_floor: u64,
+    mobility:         [[u64; MOBILITY_MAX]; PIECES.len()],
+    openness:         [u64; OPENNESS_BINS],
+    openness_floor:   u64,
     openness_ceiling: u64,
-    openness_sum: f64,
-    phase_all: PhaseHist,
-    phase_rank7: PhaseHist,
+    openness_sum:     f64,
+    phase_all:        PhaseHist,
+    phase_rank7:      PhaseHist,
 }
 
 struct Table {
-    corner: String,
+    corner:  String,
     columns: Vec<String>,
-    rows: Vec<(String, Vec<String>, bool)>,
-    split: Option<usize>,
+    rows:    Vec<(String, Vec<String>, bool)>,
+    split:   Option<usize>,
 }
 
 impl DatasetProfile {
@@ -257,10 +257,10 @@ impl FeatureSpread {
 impl Table {
     fn new(corner: &str, columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
-            corner: corner.into(),
+            corner:  corner.into(),
             columns: columns.into_iter().map(Into::into).collect(),
-            rows: Vec::new(),
-            split: None,
+            rows:    Vec::new(),
+            split:   None,
         }
     }
 

@@ -55,27 +55,27 @@ static LICENSE_NOTICE: &str = concat!(
 );
 
 struct SearchRequest {
-    cfg: Box<SearchConfig>,
-    board: Position,
-    trail: Vec<u64>,
+    cfg:     Box<SearchConfig>,
+    board:   Position,
+    trail:   Vec<u64>,
     history: Box<History>,
-    search: TableAndPool,
+    search:  TableAndPool,
 }
 
 struct UciState {
-    board: Position,
-    accumulator: I16x8,
-    trail: Vec<u64>,
-    history: Option<Box<History>>,
-    search: TableAndPool,
-    stop: Arc<AtomicBool>,
-    search_tx: Sender<SearchRequest>,
-    history_rx: mpsc::Receiver<Box<History>>,
-    overhead: u64,
+    board:         Position,
+    accumulator:   I16x8,
+    trail:         Vec<u64>,
+    history:       Option<Box<History>>,
+    search:        TableAndPool,
+    stop:          Arc<AtomicBool>,
+    search_tx:     Sender<SearchRequest>,
+    history_rx:    mpsc::Receiver<Box<History>>,
+    overhead:      u64,
     search_params: SearchParams,
-    display: SearchDisplay,
-    soft_nodes: bool,
-    frc_notation: bool,
+    display:       SearchDisplay,
+    soft_nodes:    bool,
+    frc_notation:  bool,
 }
 
 impl UciState {

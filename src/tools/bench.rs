@@ -31,7 +31,7 @@ const FPS: u64 = 30;
 
 struct Progress {
     running: Arc<AtomicBool>,
-    handle: Option<thread::JoinHandle<()>>,
+    handle:  Option<thread::JoinHandle<()>>,
 }
 
 impl Progress {

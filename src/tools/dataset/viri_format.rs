@@ -26,13 +26,13 @@ const WDL_WIN: u8 = 2;
 
 #[derive(Default)]
 pub struct GameScan {
-    pub games: usize,
-    pub plies: u64,
-    pub pieces_left_sum: u64,
-    pub draws: usize,
-    pub mate_endings: usize,
+    pub games:            usize,
+    pub plies:            u64,
+    pub pieces_left_sum:  u64,
+    pub draws:            usize,
+    pub mate_endings:     usize,
     pub decisive_endings: usize,
-    pub quiet_endings: usize,
+    pub quiet_endings:    usize,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

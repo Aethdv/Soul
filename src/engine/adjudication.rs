@@ -11,8 +11,8 @@ const DRAW_START_PLY: usize = 80;
 
 #[derive(Default)]
 pub(crate) struct Adjudicator {
-    leader: Option<Color>,
-    win_plies: usize,
+    leader:     Option<Color>,
+    win_plies:  usize,
     draw_plies: usize,
 }
 

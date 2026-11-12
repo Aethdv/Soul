@@ -187,7 +187,7 @@ impl fmt::Debug for Move {
 
 pub(crate) struct MoveList {
     moves: [MaybeUninit<Move>; MAX_MOVES],
-    len: usize,
+    len:   usize,
 }
 
 impl MoveList {

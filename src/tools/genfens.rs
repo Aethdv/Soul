@@ -58,10 +58,10 @@ pub fn run(args: &[&str]) {
 }
 
 struct Request {
-    count: usize,
-    seed: u64,
+    count:     usize,
+    seed:      u64,
     book_path: Option<String>,
-    plies: Option<usize>,
+    plies:     Option<usize>,
 }
 
 impl Request {

@@ -68,35 +68,35 @@ macro_rules! alarm {
 }
 
 pub(crate) struct BestSnapshots<'a> {
-    pub(crate) best_val_params: &'a [f64],
+    pub(crate) best_val_params:   &'a [f64],
     /// `None` when the run had no holdout: nothing validated, so nothing ranks.
-    pub(crate) best_val_loss: Option<f64>,
-    pub(crate) best_val_epoch: usize,
+    pub(crate) best_val_loss:     Option<f64>,
+    pub(crate) best_val_epoch:    usize,
     pub(crate) best_train_params: &'a [f64],
-    pub(crate) best_train_loss: f64,
-    pub(crate) best_train_epoch: usize,
-    pub(crate) last_val: Option<f64>,
-    pub(crate) last_train: Option<f64>,
+    pub(crate) best_train_loss:   f64,
+    pub(crate) best_train_epoch:  usize,
+    pub(crate) last_val:          Option<f64>,
+    pub(crate) last_train:        Option<f64>,
 }
 
 /// Field order is the JSON record's. A run with no holdout leaves `val_loss` and `ref_loss`
 /// at NaN, which serde writes as `null` and the status line shows as a dash.
 #[derive(Serialize)]
 pub(crate) struct EpochStats {
-    pub(crate) epoch: usize,
-    pub(crate) train_loss: f64,
-    pub(crate) val_loss: f64,
-    pub(crate) ref_loss: f64,
-    pub(crate) lr: f64,
-    pub(crate) is_best: bool,
-    pub(crate) psqt_norm: f64,
+    pub(crate) epoch:         usize,
+    pub(crate) train_loss:    f64,
+    pub(crate) val_loss:      f64,
+    pub(crate) ref_loss:      f64,
+    pub(crate) lr:            f64,
+    pub(crate) is_best:       bool,
+    pub(crate) psqt_norm:     f64,
     pub(crate) mobility_norm: f64,
-    pub(crate) overfit: bool,
-    pub(crate) drifted: bool,
-    pub(crate) moved: usize,
-    pub(crate) gauge: f64,
-    pub(crate) step_l1: f64,
-    pub(crate) clipped: u64,
+    pub(crate) overfit:       bool,
+    pub(crate) drifted:       bool,
+    pub(crate) moved:         usize,
+    pub(crate) gauge:         f64,
+    pub(crate) step_l1:       f64,
+    pub(crate) clipped:       u64,
 }
 
 impl EpochStats {
@@ -230,7 +230,7 @@ pub(crate) fn calibration_report(obj: &Objective, values: &[f64], k: f64) -> Str
 
     #[derive(Clone, Copy, Default)]
     struct CalibrationCell {
-        n: u64,
+        n:    u64,
         pred: f64,
         real: f64,
     }

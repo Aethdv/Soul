@@ -20,9 +20,9 @@ enum PieceType {
 }
 
 struct MagicEntry {
-    mask: u64,
-    magic: u64,
-    shift: u8,
+    mask:   u64,
+    magic:  u64,
+    shift:  u8,
     offset: u32,
 }
 

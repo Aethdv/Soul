@@ -20,12 +20,12 @@
 
 #[derive(Debug)]
 pub(crate) struct ParamDef {
-    pub(crate) name: &'static str,
-    pub(crate) min: i32,
-    pub(crate) max: i32,
-    pub(crate) step: i32,
+    pub(crate) name:    &'static str,
+    pub(crate) min:     i32,
+    pub(crate) max:     i32,
+    pub(crate) step:    i32,
     pub(crate) default: i32,
-    pub(crate) frozen: bool,
+    pub(crate) frozen:  bool,
 }
 
 impl ParamDef {

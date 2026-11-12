@@ -12,15 +12,15 @@ pub(super) static BISHOP_RAYS: [Bitboard; 64] = init_bishop_rays();
 
 #[cfg(use_pext)]
 struct MagicEntry {
-    mask: u64,
+    mask:   u64,
     offset: u32,
 }
 
 #[cfg(not(use_pext))]
 struct MagicEntry {
-    mask: u64,
-    magic: u64,
-    shift: u8,
+    mask:   u64,
+    magic:  u64,
+    shift:  u8,
     offset: u32,
 }
 

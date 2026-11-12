@@ -43,18 +43,18 @@ pub(super) enum ScoreBound {
 }
 
 pub(super) struct SearchInfoData<'a> {
-    pub(super) bound: ScoreBound,
-    pub(super) depth: i32,
+    pub(super) bound:     ScoreBound,
+    pub(super) depth:     i32,
     pub(super) sel_depth: i32,
-    pub(super) score: i32,
-    pub(super) nodes: u64,
-    pub(super) nps: u64,
-    pub(super) time_ms: u128,
-    pub(super) hashfull: usize,
-    pub(super) pv: &'a PvLine,
-    pub(super) history: &'a VecDeque<PvSnapshot>,
-    pub(super) board: &'a Position,
-    pub(super) display: &'a SearchDisplay,
+    pub(super) score:     i32,
+    pub(super) nodes:     u64,
+    pub(super) nps:       u64,
+    pub(super) time_ms:   u128,
+    pub(super) hashfull:  usize,
+    pub(super) pv:        &'a PvLine,
+    pub(super) history:   &'a VecDeque<PvSnapshot>,
+    pub(super) board:     &'a Position,
+    pub(super) display:   &'a SearchDisplay,
 }
 
 pub(super) fn print_search_info(protocol: Protocol, data: &SearchInfoData<'_>) {

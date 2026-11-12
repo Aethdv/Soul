@@ -17,12 +17,12 @@ const CONT_SLOTS: [usize; 3] = [0, 1, 1];
 /// Gravity caps must be positive and fit in `i16`.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryParams {
-    pub(crate) quiet_cap: i32,
-    pub(crate) butterfly_cap: i32,
-    pub(crate) cont_cap: i32,
-    pub(crate) capt_cap: i32,
-    pub(crate) corr_weight_div: i32,
-    pub(crate) corr_weight_max: i32,
+    pub(crate) quiet_cap:         i32,
+    pub(crate) butterfly_cap:     i32,
+    pub(crate) cont_cap:          i32,
+    pub(crate) capt_cap:          i32,
+    pub(crate) corr_weight_div:   i32,
+    pub(crate) corr_weight_max:   i32,
     #[cfg(not(feature = "nocorr"))]
     pub(crate) minor_corr_weight: i32,
     #[cfg(not(feature = "nocorr"))]
@@ -32,20 +32,20 @@ pub(crate) struct HistoryParams {
 #[derive(Clone)]
 pub(crate) struct History {
     /// `[side][piece][to_square]`.
-    quiet: [[[i16; 64]; 6]; 2],
+    quiet:             [[[i16; 64]; 6]; 2],
     /// `[side][from_atk][to_atk][from · 64 + to]` (~35 Elo).
-    butterfly: [[[[i16; 4096]; 2]; 2]; 2],
+    butterfly:         [[[[i16; 4096]; 2]; 2]; 2],
     /// Slot 0 is n-1 (~13 Elo); slot 1 is shared by n-2 (~3 Elo) and n-4 (~3 Elo).
-    cont: [ContinuationHistory; 2],
+    cont:              [ContinuationHistory; 2],
     /// Pawn structure correction, keyed on `pawn_key` (~53 Elo).
-    pawn_correction: CorrectionHistory,
+    pawn_correction:   CorrectionHistory,
     /// Minor placement (knights + bishops, both colors), keyed on `minor_key`.
     /// Minor and major together ~23 Elo.
-    minor_correction: CorrectionHistory,
+    minor_correction:  CorrectionHistory,
     /// Major placement (rooks + queens, both colors), keyed on `major_key`.
-    major_correction: CorrectionHistory,
+    major_correction:  CorrectionHistory,
     /// `[side][attacker][to][victim]` (~8 Elo).
-    capt: CaptureHistory,
+    capt:              CaptureHistory,
     pub(crate) params: HistoryParams,
 }
 
@@ -187,14 +187,14 @@ impl Default for CorrectionHistory {
 impl History {
     pub(crate) fn new() -> Self {
         Self {
-            quiet: [[[0; 64]; 6]; 2],
-            butterfly: [[[[0; 4096]; 2]; 2]; 2],
-            cont: [ContinuationHistory::new(), ContinuationHistory::new()],
-            pawn_correction: CorrectionHistory::new(),
+            quiet:            [[[0; 64]; 6]; 2],
+            butterfly:        [[[[0; 4096]; 2]; 2]; 2],
+            cont:             [ContinuationHistory::new(), ContinuationHistory::new()],
+            pawn_correction:  CorrectionHistory::new(),
             minor_correction: CorrectionHistory::new(),
             major_correction: CorrectionHistory::new(),
-            capt: CaptureHistory::new(),
-            params: HistoryParams::default(),
+            capt:             CaptureHistory::new(),
+            params:           HistoryParams::default(),
         }
     }
 

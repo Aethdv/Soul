@@ -39,21 +39,21 @@ enum Mode {
 }
 
 struct XBoardState {
-    board: Position,
-    accumulator: I16x8,
-    trail: Vec<u64>,
-    history: Option<Box<History>>,
-    search: TableAndPool,
-    mode: Mode,
-    stop: Arc<AtomicBool>,
+    board:         Position,
+    accumulator:   I16x8,
+    trail:         Vec<u64>,
+    history:       Option<Box<History>>,
+    search:        TableAndPool,
+    mode:          Mode,
+    stop:          Arc<AtomicBool>,
     search_thread: Option<JoinHandle<(Box<History>, Option<Move>)>>,
-    limits: Limits,
-    overhead: u64,
-    post: bool,
-    show_wdl: bool,
-    engine_side: Option<Color>,
-    frc_notation: bool,
-    nps: Option<u64>,
+    limits:        Limits,
+    overhead:      u64,
+    post:          bool,
+    show_wdl:      bool,
+    engine_side:   Option<Color>,
+    frc_notation:  bool,
+    nps:           Option<u64>,
 }
 
 pub fn main_loop(stdin: &mut impl BufRead) {

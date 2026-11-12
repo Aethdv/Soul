@@ -40,9 +40,9 @@ pub struct FeatureRecord {
 }
 
 pub struct RecordEval {
-    pub score: f64,
-    phase: f64,
-    buckets: Accumulators<f64>,
+    pub score:       f64,
+    phase:           f64,
+    buckets:         Accumulators<f64>,
     combiner_params: CombinerParams<f64>,
 }
 
@@ -138,14 +138,14 @@ pub fn eval_record_full(record: &FeatureRecord, values: &[f64]) -> RecordEval {
 
     let mut buckets = Accumulators::<f64> {
         material_psqt: taper(mg_total, eg_total, phase),
-        mobility: 0.0,
-        bonus_mg: 0.0,
-        bonus_eg: 0.0,
-        safety_us: 0.0,
-        safety_them: 0.0,
-        pressure_us: 0.0,
+        mobility:      0.0,
+        bonus_mg:      0.0,
+        bonus_eg:      0.0,
+        safety_us:     0.0,
+        safety_them:   0.0,
+        pressure_us:   0.0,
         pressure_them: 0.0,
-        xray: 0.0,
+        xray:          0.0,
     };
 
     apply_all_records(record, values, phase, &mut buckets);

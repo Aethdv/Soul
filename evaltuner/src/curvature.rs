@@ -28,18 +28,18 @@ const LOADINGS: usize = 3;
 const RELATIVE_NULL_THRESHOLD: f64 = 1e-12;
 
 pub(crate) struct Curvature {
-    dim: usize,
+    dim:  usize,
     data: Vec<f64>,
 }
 
 /// Eigendecomposition of `C_ij = H_ij / √(H_ii · H_jj)`, sorted descending by eigenvalue so
 /// parameter interactions are compared free of physical units.
 pub(crate) struct Spectrum {
-    values: Vec<f64>,
+    values:    Vec<f64>,
     // Column-major eigenvectors: component i of eigenvector j is at i * live.len() + j.
-    vectors: Vec<f64>,
-    live: Vec<usize>,
-    diagonal: Vec<f64>,
+    vectors:   Vec<f64>,
+    live:      Vec<usize>,
+    diagonal:  Vec<f64>,
     // Parameters in the considered set with zero or negative diagonal curvature. Negative occurs
     // under MeanSquaredError, whose residual cross-term can outweigh S(1 − S).
     untouched: Vec<usize>,

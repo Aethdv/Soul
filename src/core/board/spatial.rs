@@ -55,9 +55,9 @@ pub(super) fn atk_kings(kings: U64x4) -> U64x4 {
 
 pub(crate) struct SliderMaps {
     ortho_direct: U64x4,
-    ortho_xray: U64x4,
-    diag_direct: U64x4,
-    diag_xray: U64x4,
+    ortho_xray:   U64x4,
+    diag_direct:  U64x4,
+    diag_xray:    U64x4,
 }
 
 impl SliderMaps {

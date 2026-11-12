@@ -22,20 +22,20 @@ use crate::{
 };
 
 pub(super) struct Game {
-    pub(super) opening: Position,
-    pub(super) result: u8,
-    pub(super) moves: Vec<(Move, i16)>,
-    pub(super) termination: Termination,
+    pub(super) opening:         Position,
+    pub(super) result:          u8,
+    pub(super) moves:           Vec<(Move, i16)>,
+    pub(super) termination:     Termination,
     pub(super) search_failures: u64,
 }
 
 pub(super) struct SelfPlayWorker {
-    game_history: Vec<u64>,
-    book: Arc<Vec<String>>,
-    max_plies: usize,
-    adjudicate: bool,
-    rng: fastrand::Rng,
-    tt: Arc<TranspositionTable>,
+    game_history:  Vec<u64>,
+    book:          Arc<Vec<String>>,
+    max_plies:     usize,
+    adjudicate:    bool,
+    rng:           fastrand::Rng,
+    tt:            Arc<TranspositionTable>,
     history_table: History,
     search_config: SearchConfig,
 }

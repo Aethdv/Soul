@@ -11,24 +11,24 @@ pub(crate) const DEFAULT_OVERHEAD_MS: u64 = 10;
 pub(crate) const MAX_OVERHEAD_MS: u64 = 2000;
 
 pub(super) struct TimeManager {
-    start: Instant,
-    hard: Duration,
-    soft: Duration,
-    base_soft: Duration,
-    effort: f64,
-    bm_inst: f64,
+    start:        Instant,
+    hard:         Duration,
+    soft:         Duration,
+    base_soft:    Duration,
+    effort:       f64,
+    bm_inst:      f64,
     score_factor: f64,
-    bm_changes: f64,
+    bm_changes:   f64,
 }
 
 pub(super) struct Iteration {
-    pub(super) depth: i32,
+    pub(super) depth:             i32,
     pub(super) best_move_changed: bool,
-    pub(super) root_moves: usize,
-    pub(super) best_nodes: u64,
-    pub(super) total_nodes: u64,
-    pub(super) score: i32,
-    pub(super) prev_score: i32,
+    pub(super) root_moves:        usize,
+    pub(super) best_nodes:        u64,
+    pub(super) total_nodes:       u64,
+    pub(super) score:             i32,
+    pub(super) prev_score:        i32,
 }
 
 impl TimeManager {
@@ -120,10 +120,10 @@ impl TimeManager {
 }
 
 struct Clock {
-    time: u64,
-    inc: u64,
+    time:      u64,
+    inc:       u64,
     movestogo: u64,
-    game_ply: u64,
+    game_ply:  u64,
 }
 
 impl Clock {
@@ -228,13 +228,13 @@ mod tests {
         assert!(discounted < undiscounted, "{discounted:?} is not a discount on {undiscounted:?}");
 
         let settled = Iteration {
-            depth: 12,
+            depth:             12,
             best_move_changed: false,
-            root_moves: 4,
-            best_nodes: 950,
-            total_nodes: 1000,
-            score: 0,
-            prev_score: 0,
+            root_moves:        4,
+            best_nodes:        950,
+            total_nodes:       1000,
+            score:             0,
+            prev_score:        0,
         };
 
         tm.update(&settled, &params);

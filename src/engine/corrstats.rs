@@ -35,20 +35,20 @@ pub(super) enum Table {
 }
 
 struct Counters {
-    reads: AtomicU64,
-    hits: AtomicU64,
-    abs_sum: AtomicU64,
+    reads:          AtomicU64,
+    hits:           AtomicU64,
+    abs_sum:        AtomicU64,
     saturated_hits: AtomicU64,
-    updates: AtomicU64,
+    updates:        AtomicU64,
 }
 
 static STATS: [Counters; NAMES.len()] = [const {
     Counters {
-        reads: AtomicU64::new(0),
-        hits: AtomicU64::new(0),
-        abs_sum: AtomicU64::new(0),
+        reads:          AtomicU64::new(0),
+        hits:           AtomicU64::new(0),
+        abs_sum:        AtomicU64::new(0),
         saturated_hits: AtomicU64::new(0),
-        updates: AtomicU64::new(0),
+        updates:        AtomicU64::new(0),
     }
 }; NAMES.len()];
 

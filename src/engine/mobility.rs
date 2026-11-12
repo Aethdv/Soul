@@ -43,35 +43,35 @@ pub(crate) struct KingSafetyTerm;
 /// `us` is White in every field; nothing here is side-to-move relative.
 #[derive(Clone, Default, Debug)]
 pub(crate) struct SpatialMetrics {
-    pub(crate) metrics_us: SideMetrics,
+    pub(crate) metrics_us:   SideMetrics,
     pub(crate) metrics_them: SideMetrics,
-    pub(crate) safety_us: SafetyMetrics,
-    pub(crate) safety_them: SafetyMetrics,
+    pub(crate) safety_us:    SafetyMetrics,
+    pub(crate) safety_them:  SafetyMetrics,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SideMetrics {
     /// Squares outside enemy pawn attacks, counted once per attacking piece.
-    pub(crate) mobility: i32,
+    pub(crate) mobility:        i32,
     /// X-ray squares outside enemy pawn attacks, counted once per square.
     pub(crate) shadow_mobility: i32,
-    pub(crate) threats: i32,
-    pub(crate) shadow_threats: i32,
+    pub(crate) threats:         i32,
+    pub(crate) shadow_threats:  i32,
 }
 
 /// Raw king-zone features for one side.
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SafetyMetrics {
     /// King-zone squares they attack, capped at `ATTACKER.len() - 1`.
-    pub(crate) attacked_zone: usize,
+    pub(crate) attacked_zone:  usize,
     /// King-zone squares attacked by them but not defended by us.
-    pub(crate) weak: i32,
+    pub(crate) weak:           i32,
     /// Friendly pawns adjacent to the king.
-    pub(crate) shield: i32,
+    pub(crate) shield:         i32,
     /// Rook-reachable squares from the king.
     pub(crate) ortho_exposure: i32,
     /// Bishop-reachable squares from the king.
-    pub(crate) diag_exposure: i32,
+    pub(crate) diag_exposure:  i32,
 }
 
 /// Openness in fixed point, 0 to [`OPEN_UNITY`]. Pawn colors must be absolute;
@@ -113,11 +113,11 @@ impl SafetyMetrics {
         let zone = atk_king(ksq);
         Self {
             // Five or more attacked squares all take the maximum danger entry.
-            attacked_zone: ((zone & atk_them).popcount() as usize).min(ATTACKER.len() - 1),
-            weak: (zone & atk_them & !atk_us).popcount() as i32,
-            shield: (zone & our_pawns).popcount() as i32,
+            attacked_zone:  ((zone & atk_them).popcount() as usize).min(ATTACKER.len() - 1),
+            weak:           (zone & atk_them & !atk_us).popcount() as i32,
+            shield:         (zone & our_pawns).popcount() as i32,
             ortho_exposure: atk_rook(ksq, occ).popcount() as i32,
-            diag_exposure: atk_bishop(ksq, occ).popcount() as i32,
+            diag_exposure:  atk_bishop(ksq, occ).popcount() as i32,
         }
     }
 
@@ -136,11 +136,11 @@ impl SafetyMetrics {
     #[inline]
     pub(crate) fn unpack(raw: [u8; 4]) -> Self {
         Self {
-            attacked_zone: raw[0] as usize,
-            weak: raw[1] as i32,
-            shield: raw[2] as i32,
+            attacked_zone:  raw[0] as usize,
+            weak:           raw[1] as i32,
+            shield:         raw[2] as i32,
             ortho_exposure: (raw[3] >> 4) as i32,
-            diag_exposure: (raw[3] & 0x0F) as i32,
+            diag_exposure:  (raw[3] & 0x0F) as i32,
         }
     }
 }
@@ -344,14 +344,14 @@ fn scatter_safety(us: SafetyMetrics, them: SafetyMetrics, upstream: KingSafetyUp
 
 struct EvalAttacks {
     // Piece and pawn attacks, king excluded.
-    atk_us: Bitboard,
-    atk_them: Bitboard,
-    pawn_atk_us: Bitboard,
+    atk_us:        Bitboard,
+    atk_them:      Bitboard,
+    pawn_atk_us:   Bitboard,
     pawn_atk_them: Bitboard,
-    ksq_us: Square,
-    ksq_them: Square,
-    xray_us: Bitboard,
-    xray_them: Bitboard,
+    ksq_us:        Square,
+    ksq_them:      Square,
+    xray_us:       Bitboard,
+    xray_them:     Bitboard,
 }
 
 impl EvalAttacks {

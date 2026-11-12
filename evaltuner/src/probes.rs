@@ -269,25 +269,25 @@ pub(crate) fn val_cost(obj: &Objective, config: &EvalTuneConfig) {
 pub(crate) struct ProbePoint {
     pub(crate) params: Vec<Tunable>,
     pub(crate) values: Vec<f64>,
-    pub(crate) k: f64,
-    pub(crate) blend: f64,
+    pub(crate) k:      f64,
+    pub(crate) blend:  f64,
 }
 
 #[derive(Clone, Copy)]
 struct NoiseEstimate {
-    signal: f64,
-    noise: f64,
+    signal:     f64,
+    noise:      f64,
     degenerate: usize,
 }
 
 #[derive(Clone, Copy, Default)]
 struct Rung {
-    positions: u64,
-    groups: u64,
-    flipped: u64,
-    compared: u64,
+    positions:    u64,
+    groups:       u64,
+    flipped:      u64,
+    compared:     u64,
     flipped_mass: f64,
-    mass: f64,
+    mass:         f64,
 }
 
 impl Rung {

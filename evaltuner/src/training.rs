@@ -33,7 +33,7 @@ const ALPHA_SLOW: f64 = 2.0 / (TREND_SLOW as f64 + 1.0);
 const TREND_NOISE_K: f64 = 1.0;
 
 pub(crate) struct GradientStats {
-    p95: f64,
+    p95:   f64,
     alpha: f64,
     count: usize,
 }
@@ -59,11 +59,11 @@ impl GradientStats {
 pub(crate) struct DivergenceMonitor {
     train_fast: f64,
     train_slow: f64,
-    val_fast: f64,
-    val_slow: f64,
-    noise: f64,
-    prev_val: f64,
-    seen: usize,
+    val_fast:   f64,
+    val_slow:   f64,
+    noise:      f64,
+    prev_val:   f64,
+    seen:       usize,
 }
 
 impl DivergenceMonitor {
@@ -87,19 +87,19 @@ impl DivergenceMonitor {
 /// Checkpoint selection tracks EMA-smoothed loss rather than raw troughs.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Progress {
-    pub(crate) best_val_loss: f64,
-    pub(crate) best_val_epoch: usize,
+    pub(crate) best_val_loss:     f64,
+    pub(crate) best_val_epoch:    usize,
     #[serde(default = "unset_smooth", deserialize_with = "unset_if_null")]
-    pub(crate) val_smooth: f64,
+    pub(crate) val_smooth:        f64,
     #[serde(default = "unset_best")]
-    pub(crate) best_val_smooth: f64,
-    pub(crate) best_train_loss: f64,
-    pub(crate) best_train_epoch: usize,
+    pub(crate) best_val_smooth:   f64,
+    pub(crate) best_train_loss:   f64,
+    pub(crate) best_train_epoch:  usize,
     #[serde(default = "unset_smooth", deserialize_with = "unset_if_null")]
-    pub(crate) train_smooth: f64,
+    pub(crate) train_smooth:      f64,
     #[serde(default = "unset_best")]
     pub(crate) best_train_smooth: f64,
-    pub(crate) plateau_count: usize,
+    pub(crate) plateau_count:     usize,
 }
 
 impl Progress {
@@ -126,15 +126,15 @@ impl Progress {
 impl Default for Progress {
     fn default() -> Self {
         Self {
-            best_val_loss: f64::MAX,
-            best_val_epoch: 0,
-            val_smooth: unset_smooth(),
-            best_val_smooth: unset_best(),
-            best_train_loss: f64::MAX,
-            best_train_epoch: 0,
-            train_smooth: unset_smooth(),
+            best_val_loss:     f64::MAX,
+            best_val_epoch:    0,
+            val_smooth:        unset_smooth(),
+            best_val_smooth:   unset_best(),
+            best_train_loss:   f64::MAX,
+            best_train_epoch:  0,
+            train_smooth:      unset_smooth(),
             best_train_smooth: unset_best(),
-            plateau_count: 0,
+            plateau_count:     0,
         }
     }
 }

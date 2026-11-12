@@ -38,27 +38,27 @@ pub(crate) struct PieceId(u8);
 #[derive(Clone, Debug)]
 pub(crate) struct XorBoard {
     /// id → attacked squares. Vacant rows are zero.
-    rows: [u64; SLOTS],
+    rows:         [u64; SLOTS],
     /// square → id + 1. Zero is empty.
-    at: [u8; 64],
+    at:           [u8; 64],
     /// id → square. `NOWHERE` is vacant.
-    squares: [u8; SLOTS],
-    kind: [PieceType; SLOTS],
+    squares:      [u8; SLOTS],
+    kind:         [PieceType; SLOTS],
     slider_slots: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Snapshot {
-    rows: [u64; SLOTS],
-    at: [u8; 64],
+    rows:    [u64; SLOTS],
+    at:      [u8; 64],
     squares: [u8; SLOTS],
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Relocation {
-    id: PieceId,
+    id:   PieceId,
     from: Square,
-    to: Square,
+    to:   Square,
 }
 
 impl PieceId {
@@ -91,10 +91,10 @@ fn is_slider(piece: PieceType) -> bool { matches!(piece, PieceType::Bishop | Pie
 impl XorBoard {
     pub(crate) fn from_position(pos: &Position) -> Self {
         let mut board = Self {
-            rows: [0; SLOTS],
-            at: [0; 64],
-            squares: [NOWHERE; SLOTS],
-            kind: [PieceType::None; SLOTS],
+            rows:         [0; SLOTS],
+            at:           [0; 64],
+            squares:      [NOWHERE; SLOTS],
+            kind:         [PieceType::None; SLOTS],
             slider_slots: 0,
         };
 

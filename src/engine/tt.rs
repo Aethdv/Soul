@@ -92,20 +92,20 @@ pub(super) fn clamp_to_bound(bound: Bound, score: i32, eval: i32) -> i32 {
 
 #[repr(C)]
 struct TtEntry {
-    key: AtomicU16,
-    mv: AtomicU16,
-    score: AtomicU16,
-    eval: AtomicU16,
+    key:    AtomicU16,
+    mv:     AtomicU16,
+    score:  AtomicU16,
+    eval:   AtomicU16,
     /// depth(8) | bound(2) | pv(1) | age(5).
     packed: AtomicU16,
 }
 
 pub(crate) struct TranspositionTable {
-    clusters: HugePages<Cluster>,
+    clusters:   HugePages<Cluster>,
     /// Bumped per search; aging measures generation distance modulo 32.
     generation: AtomicU8,
     age_factor: AtomicI32,
-    numa: NumaTopology,
+    numa:       NumaTopology,
 }
 
 #[repr(C, align(32))]
@@ -133,17 +133,23 @@ impl TtMove {
 
 #[derive(Clone, Copy)]
 pub(super) struct TtData {
-    raw_mv: Move,
-    pub(super) pv: bool,
-    pub(super) eval: i32,
+    raw_mv:           Move,
+    pub(super) pv:    bool,
+    pub(super) eval:  i32,
     pub(super) score: i32,
     pub(super) bound: Bound,
     pub(super) depth: i32,
 }
 
 impl TtData {
-    pub(super) const NONE: Self =
-        Self { raw_mv: Move::null(), pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
+    pub(super) const NONE: Self = Self {
+        raw_mv: Move::null(),
+        pv:     false,
+        eval:   SCORE_NONE,
+        score:  SCORE_NONE,
+        bound:  Bound::None,
+        depth:  0,
+    };
 
     /// A pseudo-illegal move makes every field in the entry untrustworthy.
     #[inline(always)]
@@ -159,14 +165,14 @@ impl TtData {
 }
 
 struct SlotWrite {
-    key: u16,
-    mv: u16,
+    key:   u16,
+    mv:    u16,
     score: i16,
-    eval: i16,
+    eval:  i16,
     depth: u8,
     bound: Bound,
-    age: u8,
-    pv: bool,
+    age:   u8,
+    pv:    bool,
 }
 
 /// Low 16 bits; `index` draws the cluster from high bits.

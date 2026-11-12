@@ -103,7 +103,7 @@ pub(super) fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
 /// Both colors' pinned pieces and king squares.
 #[derive(Clone, Copy)]
 pub(crate) struct Pins {
-    pinned: [Bitboard; 2],
+    pinned:  [Bitboard; 2],
     king_sq: [Square; 2],
 }
 
@@ -115,7 +115,7 @@ impl Pins {
             "Pins requires both kings"
         );
         Self {
-            pinned: [pinned_pieces(pos, Color::White), pinned_pieces(pos, Color::Black)],
+            pinned:  [pinned_pieces(pos, Color::White), pinned_pieces(pos, Color::Black)],
             king_sq: [pos.pieces(PieceType::King, Color::White).lsb(), pos.pieces(PieceType::King, Color::Black).lsb()],
         }
     }

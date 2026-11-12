@@ -23,14 +23,14 @@ type SearchJob = (SearchConfig, Position, Vec<u64>);
 
 #[derive(Clone)]
 pub(super) struct TableAndPool {
-    tt: Arc<TranspositionTable>,
-    pool: Arc<LazySmpPool>,
+    tt:      Arc<TranspositionTable>,
+    pool:    Arc<LazySmpPool>,
     hash_mb: usize,
     threads: usize,
 }
 
 struct LazySmpPool {
-    tx: spmc::Sender<SearchJob>,
+    tx:      spmc::Sender<SearchJob>,
     handles: Vec<thread::JoinHandle<()>>,
 }
 

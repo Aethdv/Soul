@@ -27,20 +27,20 @@ const DEAD_ZONE: f64 = 1e-9;
 const MOMENTUM_EPSILON: f64 = 1e-6;
 
 pub(crate) struct Lion {
-    beta1: f64,
-    lr: f64,
-    wd: f64,
+    beta1:    f64,
+    lr:       f64,
+    wd:       f64,
     momentum: Vec<f64>,
-    clipped: Vec<u64>,
-    step_l1: f64,
+    clipped:  Vec<u64>,
+    step_l1:  f64,
 }
 
 pub(crate) struct Masks {
     pub(crate) decay: Vec<f64>,
     pub(crate) fixed: Vec<bool>,
     pub(crate) beta2: Vec<f64>,
-    pub(crate) lr: Vec<f64>,
-    pub(crate) clip: Vec<(f64, f64)>,
+    pub(crate) lr:    Vec<f64>,
+    pub(crate) clip:  Vec<(f64, f64)>,
 }
 
 #[cfg(test)]
@@ -50,29 +50,29 @@ impl Masks {
             decay: vec![1.0; slots],
             fixed: vec![false; slots],
             beta2: vec![beta2; slots],
-            lr: vec![1.0; slots],
-            clip: vec![(f64::NEG_INFINITY, f64::INFINITY); slots],
+            lr:    vec![1.0; slots],
+            clip:  vec![(f64::NEG_INFINITY, f64::INFINITY); slots],
         }
     }
 }
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct GateTally {
-    pub(crate) total: u64,
+    pub(crate) total:          u64,
     /// Held because `m · g ≤ 0` with `|m| > 1e-6`.
-    pub(crate) skipped: u64,
+    pub(crate) skipped:        u64,
     /// Held because `|c| < 1e-9`.
-    pub(crate) dead: u64,
+    pub(crate) dead:           u64,
     /// Stepped despite `m · g ≤ 0` because `|m| ≤ 1e-6`.
     pub(crate) epsilon_waived: u64,
     /// Liang's cautious mask (`c · g ≤ 0`) would have held the step.
-    pub(crate) canonical: u64,
+    pub(crate) canonical:      u64,
     /// Held by `m · g ≤ 0` where `c · g > 0` would have stepped.
-    pub(crate) band: u64,
+    pub(crate) band:           u64,
     /// Held by `c · g ≤ 0` but stepped under the `|m| ≤ 1e-6` waiver.
     pub(crate) canonical_only: u64,
     /// `|g| < 1e-9`.
-    pub(crate) absent: u64,
+    pub(crate) absent:         u64,
 }
 
 impl Lion {

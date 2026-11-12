@@ -25,9 +25,9 @@ impl JsonLog {
         #[derive(Serialize)]
         struct Entry<'a, T> {
             timestamp: u64,
-            event: &'a str,
+            event:     &'a str,
             #[serde(flatten)]
-            data: &'a T,
+            data:      &'a T,
         }
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -40,72 +40,72 @@ impl JsonLog {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct RunState {
-    pub(crate) epoch: usize,
-    pub(crate) lr_scale: f64,
-    pub(crate) k: f64,
-    pub(crate) k_ref: f64,
+    pub(crate) epoch:      usize,
+    pub(crate) lr_scale:   f64,
+    pub(crate) k:          f64,
+    pub(crate) k_ref:      f64,
     #[serde(default)]
     pub(crate) k_momentum: f64,
     #[serde(flatten)]
-    pub(crate) progress: Progress,
+    pub(crate) progress:   Progress,
 }
 
 /// Flat `best_*` vectors carry no inline keys and remap through `param_names` on resume.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Checkpoint {
-    pub(crate) version: u32,
+    pub(crate) version:           u32,
     #[serde(flatten)]
-    pub(crate) run: RunState,
-    pub(crate) params: BTreeMap<String, ParamState>,
-    pub(crate) hash: u64,
-    pub(crate) rng_seed: u64,
+    pub(crate) run:               RunState,
+    pub(crate) params:            BTreeMap<String, ParamState>,
+    pub(crate) hash:              u64,
+    pub(crate) rng_seed:          u64,
     #[serde(default)]
-    pub(crate) split_seed: Option<u64>,
-    pub(crate) dataset: u64,
+    pub(crate) split_seed:        Option<u64>,
+    pub(crate) dataset:           u64,
     #[serde(default)]
-    pub(crate) dataset_path: String,
-    pub(crate) param_names: Vec<String>,
-    pub(crate) best_val_params: Vec<f64>,
+    pub(crate) dataset_path:      String,
+    pub(crate) param_names:       Vec<String>,
+    pub(crate) best_val_params:   Vec<f64>,
     pub(crate) best_train_params: Vec<f64>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ParamState {
-    pub(crate) value: f64,
+    pub(crate) value:    f64,
     pub(crate) momentum: f64,
-    pub(crate) ema: f64,
+    pub(crate) ema:      f64,
     pub(crate) grad_ema: f64,
     pub(crate) stagnant: usize,
-    pub(crate) frozen: bool,
+    pub(crate) frozen:   bool,
 }
 
 pub(crate) struct TrainerState<'a> {
-    pub(crate) run: RunState,
-    pub(crate) rng_seed: u64,
-    pub(crate) split_seed: u64,
-    pub(crate) dataset: u64,
-    pub(crate) dataset_path: &'a str,
-    pub(crate) values: &'a [f64],
-    pub(crate) momentum: &'a [f64],
-    pub(crate) ema: &'a [f64],
-    pub(crate) grad_ema: &'a [f64],
-    pub(crate) stagnant: &'a [usize],
-    pub(crate) frozen: &'a [bool],
-    pub(crate) best_val_params: &'a [f64],
+    pub(crate) run:               RunState,
+    pub(crate) rng_seed:          u64,
+    pub(crate) split_seed:        u64,
+    pub(crate) dataset:           u64,
+    pub(crate) dataset_path:      &'a str,
+    pub(crate) values:            &'a [f64],
+    pub(crate) momentum:          &'a [f64],
+    pub(crate) ema:               &'a [f64],
+    pub(crate) grad_ema:          &'a [f64],
+    pub(crate) stagnant:          &'a [usize],
+    pub(crate) frozen:            &'a [bool],
+    pub(crate) best_val_params:   &'a [f64],
     pub(crate) best_train_params: &'a [f64],
 }
 
 pub(crate) struct CheckpointData {
-    pub(crate) run: RunState,
-    pub(crate) values: Vec<f64>,
-    pub(crate) momentum: Vec<f64>,
-    pub(crate) ema: Vec<f64>,
-    pub(crate) grad_ema: Vec<f64>,
-    pub(crate) stagnant: Vec<usize>,
-    pub(crate) frozen: Vec<bool>,
-    pub(crate) best_val_params: Vec<f64>,
+    pub(crate) run:               RunState,
+    pub(crate) values:            Vec<f64>,
+    pub(crate) momentum:          Vec<f64>,
+    pub(crate) ema:               Vec<f64>,
+    pub(crate) grad_ema:          Vec<f64>,
+    pub(crate) stagnant:          Vec<usize>,
+    pub(crate) frozen:            Vec<bool>,
+    pub(crate) best_val_params:   Vec<f64>,
     pub(crate) best_train_params: Vec<f64>,
-    pub(crate) fresh_params: usize,
+    pub(crate) fresh_params:      usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -138,12 +138,12 @@ pub(crate) fn save_checkpoint(path: &str, tunables: &[Tunable], state: &TrainerS
     for t in tunables {
         param_names[t.idx] = t.name.clone();
         params.insert(t.name.clone(), ParamState {
-            value: state.values[t.idx],
+            value:    state.values[t.idx],
             momentum: state.momentum[t.idx],
-            ema: state.ema[t.idx],
+            ema:      state.ema[t.idx],
             grad_ema: state.grad_ema[t.idx],
             stagnant: state.stagnant[t.idx],
-            frozen: state.frozen[t.idx],
+            frozen:   state.frozen[t.idx],
         });
     }
 
@@ -269,29 +269,29 @@ mod tests {
         const BTRN: [f64; 2] = [3.5, 4.5];
 
         let progress = Progress {
-            best_val_loss: 0.2,
-            best_val_epoch: 3,
-            val_smooth: 0.21,
-            best_val_smooth: 0.205,
-            best_train_loss: 0.3,
-            best_train_epoch: 5,
-            train_smooth: 0.31,
+            best_val_loss:     0.2,
+            best_val_epoch:    3,
+            val_smooth:        0.21,
+            best_val_smooth:   0.205,
+            best_train_loss:   0.3,
+            best_train_epoch:  5,
+            train_smooth:      0.31,
             best_train_smooth: 0.305,
-            plateau_count: 0,
+            plateau_count:     0,
         };
         TrainerState {
-            run: RunState { epoch: 42, lr_scale: 0.5, k: 1.23, k_ref: 1.11, k_momentum: 0.42, progress },
-            rng_seed: 999,
-            split_seed: 888,
-            dataset: 777,
-            dataset_path: "data/test.txt",
-            values: &VALS[..n],
-            momentum: &MOM[..n],
-            ema: &EMA[..n],
-            grad_ema: &GEMA[..n],
-            stagnant: &STAG[..n],
-            frozen: &FROZ[..n],
-            best_val_params: &BVAL[..n],
+            run:               RunState { epoch: 42, lr_scale: 0.5, k: 1.23, k_ref: 1.11, k_momentum: 0.42, progress },
+            rng_seed:          999,
+            split_seed:        888,
+            dataset:           777,
+            dataset_path:      "data/test.txt",
+            values:            &VALS[..n],
+            momentum:          &MOM[..n],
+            ema:               &EMA[..n],
+            grad_ema:          &GEMA[..n],
+            stagnant:          &STAG[..n],
+            frozen:            &FROZ[..n],
+            best_val_params:   &BVAL[..n],
             best_train_params: &BTRN[..n],
         }
     }

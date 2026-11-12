@@ -28,14 +28,15 @@ static CUTOFF_CLASS: [AtomicU64; CLASS_NAMES.len()] = [const { AtomicU64::new(0)
 static CUTOFF_NODES: AtomicU64 = AtomicU64::new(0);
 
 struct TtScopeCounters {
-    probes: AtomicU64,
-    hits: AtomicU64,
+    probes:  AtomicU64,
+    hits:    AtomicU64,
     cutoffs: AtomicU64,
 }
 
 static TT_MAIN: TtScopeCounters =
     TtScopeCounters { probes: AtomicU64::new(0), hits: AtomicU64::new(0), cutoffs: AtomicU64::new(0) };
-static TT_QS: TtScopeCounters = TtScopeCounters { probes: AtomicU64::new(0), hits: AtomicU64::new(0), cutoffs: AtomicU64::new(0) };
+static TT_QS: TtScopeCounters =
+    TtScopeCounters { probes: AtomicU64::new(0), hits: AtomicU64::new(0), cutoffs: AtomicU64::new(0) };
 
 static QS_STANDPAT_NODES: AtomicU64 = AtomicU64::new(0);
 static QS_MOVE_NODES: AtomicU64 = AtomicU64::new(0);

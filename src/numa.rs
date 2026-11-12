@@ -6,7 +6,7 @@ type Cpu = usize;
 
 /// NUMA memory nodes and L3 cache domains available to this process.
 pub(crate) struct NumaTopology {
-    nodes: Vec<Vec<Cpu>>,
+    nodes:      Vec<Vec<Cpu>>,
     l3_domains: Vec<Vec<Cpu>>,
 }
 

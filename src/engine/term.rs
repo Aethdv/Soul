@@ -19,18 +19,18 @@ pub(crate) struct TaperPair {
 #[cfg(feature = "dataset")]
 #[derive(Clone, Copy)]
 pub(crate) struct KingSafetyUpstream {
-    pub(crate) safety: f64,
-    pub(crate) pressure_us: f64,
+    pub(crate) safety:        f64,
+    pub(crate) pressure_us:   f64,
     pub(crate) pressure_them: f64,
 }
 
 #[cfg(feature = "dataset")]
 pub(crate) struct BucketUpstreams {
     pub(crate) material_psqt: TaperPair,
-    pub(crate) mobility: TaperPair,
-    pub(crate) bonus: TaperPair,
-    pub(crate) king_safety: KingSafetyUpstream,
-    pub(crate) xray: f64,
+    pub(crate) mobility:      TaperPair,
+    pub(crate) bonus:         TaperPair,
+    pub(crate) king_safety:   KingSafetyUpstream,
+    pub(crate) xray:          f64,
 }
 
 pub(crate) trait LinearTerm {

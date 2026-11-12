@@ -146,10 +146,10 @@ pub(crate) struct BonusTerms;
 /// Score components from the side-to-move perspective.
 pub(crate) struct DetailedEval {
     pub(crate) material_psqt: i32,
-    pub(crate) mobility: i32,
-    pub(crate) bonus: i32,
-    pub(crate) safety: i32,
-    pub(crate) total: i32,
+    pub(crate) mobility:      i32,
+    pub(crate) bonus:         i32,
+    pub(crate) safety:        i32,
+    pub(crate) total:         i32,
 }
 
 /// White-relative evaluation features.
@@ -249,15 +249,15 @@ pub(crate) fn extract_phase(acc: &I16x8) -> i32 { i32::from(acc.extract::<{ LANE
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct PawnFeatures {
-    openness: i32,
-    passed_pawn: [i32; 6],
-    doubled_pawn_diff: i32,
+    openness:           i32,
+    passed_pawn:        [i32; 6],
+    doubled_pawn_diff:  i32,
     isolated_pawn_diff: i32,
-    phalanx: [i32; 6],
-    defended_pawn: [i32; 6],
+    phalanx:            [i32; 6],
+    defended_pawn:      [i32; 6],
     backward_pawn_diff: i32,
-    w_passers: Bitboard,
-    b_passers: Bitboard,
+    w_passers:          Bitboard,
+    b_passers:          Bitboard,
 }
 
 /// Direct-mapped pawn-feature cache.
@@ -267,7 +267,7 @@ pub(super) struct PawnCache {
 
 #[derive(Clone, Copy)]
 struct PawnEntry {
-    key: u64,
+    key:  u64,
     pawn: PawnFeatures,
 }
 
@@ -442,14 +442,14 @@ pub(crate) fn evaluate_buckets<T: EvalMath<Scalar = T>>(
 ) -> Accumulators<T> {
     let mut buckets = Accumulators::<T> {
         material_psqt: T::taper_acc(acc, phase),
-        mobility: T::zero(),
-        bonus_mg: T::zero(),
-        bonus_eg: T::zero(),
-        safety_us: T::zero(),
-        safety_them: T::zero(),
-        pressure_us: T::zero(),
+        mobility:      T::zero(),
+        bonus_mg:      T::zero(),
+        bonus_eg:      T::zero(),
+        safety_us:     T::zero(),
+        safety_them:   T::zero(),
+        pressure_us:   T::zero(),
         pressure_them: T::zero(),
-        xray: T::zero(),
+        xray:          T::zero(),
     };
 
     apply_all_terms::<T>(features, params, phase, &mut buckets);

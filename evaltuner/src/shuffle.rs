@@ -14,7 +14,7 @@ const BUCKET_DOMAIN: u64 = 0xD1B5_4A32_D192_ED03;
 const TASK_SIZE: usize = 1 << 16;
 
 pub(crate) struct Shuffler {
-    bucket_ids: Vec<u8>,
+    bucket_ids:  Vec<u8>,
     block_order: Vec<u32>,
 }
 

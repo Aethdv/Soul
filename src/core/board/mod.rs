@@ -105,36 +105,36 @@ pub struct Position {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub(crate) struct StateInfo {
-    pub(crate) hash: u64,
-    pub(crate) pawn_key: u64,
-    pub(crate) minor_key: u64,
-    pub(crate) major_key: u64,
-    pub(crate) en_passant: Option<Square>,
+    pub(crate) hash:            u64,
+    pub(crate) pawn_key:        u64,
+    pub(crate) minor_key:       u64,
+    pub(crate) major_key:       u64,
+    pub(crate) en_passant:      Option<Square>,
     pub(crate) castling_rights: u8,
-    pub(crate) captured: PieceType,
-    pub(crate) halfmove_clock: u8,
+    pub(crate) captured:        PieceType,
+    pub(crate) halfmove_clock:  u8,
     pub(crate) fullmove_number: u16,
 }
 
 impl Position {
     pub(crate) fn empty() -> Self {
         let mut pos = Self {
-            side_bb: [Bitboard(0); 2],
-            role_bb: [Bitboard(0); 6],
-            occ: Bitboard(0),
-            hash: 0,
-            pawn_key: 0,
-            minor_key: 0,
-            major_key: 0,
-            pieces: [PieceType::None; 64],
-            castling_rooks: [Square(0); 4],
+            side_bb:         [Bitboard(0); 2],
+            role_bb:         [Bitboard(0); 6],
+            occ:             Bitboard(0),
+            hash:            0,
+            pawn_key:        0,
+            minor_key:       0,
+            major_key:       0,
+            pieces:          [PieceType::None; 64],
+            castling_rooks:  [Square(0); 4],
             castling_rights: 0,
-            stm: Color::White,
-            halfmove_clock: 0,
-            en_passant: None,
-            frc_notation: false,
+            stm:             Color::White,
+            halfmove_clock:  0,
+            en_passant:      None,
+            frc_notation:    false,
             fullmove_number: 1,
-            _pad: [0; 12],
+            _pad:            [0; 12],
         };
 
         pos.hash = pos.calc_zobrist();
@@ -165,14 +165,14 @@ impl Position {
     #[inline]
     pub(crate) fn make_null_move(&mut self) -> StateInfo {
         let info = StateInfo {
-            hash: self.hash,
-            pawn_key: self.pawn_key,
-            minor_key: self.minor_key,
-            major_key: self.major_key,
-            en_passant: self.en_passant,
+            hash:            self.hash,
+            pawn_key:        self.pawn_key,
+            minor_key:       self.minor_key,
+            major_key:       self.major_key,
+            en_passant:      self.en_passant,
             castling_rights: self.castling_rights,
-            captured: PieceType::None,
-            halfmove_clock: self.halfmove_clock,
+            captured:        PieceType::None,
+            halfmove_clock:  self.halfmove_clock,
             fullmove_number: self.fullmove_number,
         };
 

@@ -51,10 +51,10 @@ struct AdjacentPair {
 }
 
 struct TableRoughness {
-    piece: &'static str,
-    phase: &'static str,
-    mean: f64,
-    max: i32,
+    piece:    &'static str,
+    phase:    &'static str,
+    mean:     f64,
+    max:      i32,
     outliers: Vec<AdjacentPair>,
 }
 

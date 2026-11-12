@@ -133,20 +133,20 @@ pub enum Group {
 
 #[derive(Clone, Copy)]
 pub struct Block {
-    pub name: &'static str,
-    pub group: Group,
+    pub name:    &'static str,
+    pub group:   Group,
     /// Declaration section, retained for source output formatting.
     pub section: u8,
-    pub offset: usize,
-    pub len: usize,
+    pub offset:  usize,
+    pub len:     usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct Tunable {
-    pub name: String,
-    pub value: f64,
-    pub idx: usize,
-    pub is_fixed: bool,
+    pub name:             String,
+    pub value:            f64,
+    pub idx:              usize,
+    pub is_fixed:         bool,
     pub freeze_resistant: bool,
 }
 
@@ -192,10 +192,10 @@ fn collect_tapered_params(name: &str, declarations: &[Param]) -> Vec<Tunable> {
         for (i, &param) in declarations.iter().enumerate() {
             let value = if is_eg { param.eg() } else { param.mg() };
             params.push(Tunable {
-                value: f64::from(value),
-                name: format!("{prefix}_{name}[{i}]"),
-                idx: 0,
-                is_fixed: matches!(param, Param::CS(..)),
+                value:            f64::from(value),
+                name:             format!("{prefix}_{name}[{i}]"),
+                idx:              0,
+                is_fixed:         matches!(param, Param::CS(..)),
                 freeze_resistant: false,
             });
         }

@@ -11,7 +11,7 @@ const SCREENFUL: usize = 70;
 
 struct Change {
     param: &'static ParamDef,
-    new: i32,
+    new:   i32,
 }
 
 pub fn run(args: &[&str]) {

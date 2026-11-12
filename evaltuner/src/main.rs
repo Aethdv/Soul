@@ -41,62 +41,62 @@ const DEFAULT_CONFIG: &str = "evaltuner/config.toml";
 )]
 struct Args {
     #[command(subcommand)]
-    command: Option<Commands>,
+    command:       Option<Commands>,
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
-    dataset: Option<Vec<String>>,
+    dataset:       Option<Vec<String>>,
     #[arg(short, long, default_value = DEFAULT_CONFIG)]
-    config: String,
+    config:        String,
     #[arg(short, long)]
-    epochs: Option<usize>,
+    epochs:        Option<usize>,
     #[arg(short, long)]
-    blend: Option<f64>,
+    blend:         Option<f64>,
     #[arg(short, long)]
-    resume: Option<String>,
+    resume:        Option<String>,
     #[arg(long)]
-    lr: Option<f64>,
+    lr:            Option<f64>,
     #[arg(long)]
-    min_lr: Option<f64>,
+    min_lr:        Option<f64>,
     #[arg(long)]
-    warmup: Option<f64>,
+    warmup:        Option<f64>,
     #[arg(long)]
-    cycles: Option<usize>,
+    cycles:        Option<usize>,
     #[arg(long)]
-    lr_schedule: Option<String>,
+    lr_schedule:   Option<String>,
     #[arg(long)]
-    wdl_start: Option<f64>,
+    wdl_start:     Option<f64>,
     #[arg(long)]
-    wdl_end: Option<f64>,
+    wdl_end:       Option<f64>,
     #[arg(long)]
-    wdl_schedule: Option<String>,
+    wdl_schedule:  Option<String>,
     #[arg(long)]
-    seed: Option<u64>,
+    seed:          Option<u64>,
     #[arg(long)]
-    split_seed: Option<u64>,
+    split_seed:    Option<u64>,
     #[arg(long)]
-    init: Option<String>,
+    init:          Option<String>,
     #[arg(long)]
-    lr_mult: Option<f64>,
+    lr_mult:       Option<f64>,
     #[arg(long)]
-    log: Option<String>,
+    log:           Option<String>,
     #[arg(long)]
     shuffle_block: Option<usize>,
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    help: bool,
+    help:          bool,
 }
 
 #[derive(clap::Args)]
 struct ProbeArgs {
     #[arg(short, long, default_value = DEFAULT_CONFIG)]
-    config: String,
+    config:  String,
     dataset: String,
 }
 
 #[derive(clap::Args)]
 struct AssayArgs {
     #[arg(short, long, default_value = DEFAULT_CONFIG)]
-    config: String,
+    config:   String,
     #[arg(long)]
-    sample: Option<usize>,
+    sample:   Option<usize>,
     #[arg(required = true, num_args = 1..)]
     datasets: Vec<String>,
 }
@@ -110,13 +110,13 @@ enum Commands {
     #[command(name = "seed-spread")]
     SeedSpread {
         #[arg(long, default_value_t = 8)]
-        count: usize,
+        count:   usize,
         #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
+        config:  String,
         #[arg(short, long, default_value_t = 100)]
-        epochs: usize,
+        epochs:  usize,
         #[arg(long, default_value = "evaltune.jsonl")]
-        log: String,
+        log:     String,
         dataset: String,
     },
     #[command(name = "gather-cost")]
@@ -132,18 +132,18 @@ enum Commands {
     #[command(name = "score")]
     Score {
         #[command(flatten)]
-        assay: AssayArgs,
+        assay:   AssayArgs,
         #[arg(short, long)]
-        params: Vec<String>,
+        params:  Vec<String>,
         #[arg(short, long)]
-        loss: Option<String>,
+        loss:    Option<String>,
         #[arg(long, default_value = "shipped")]
         shipped: String,
     },
     #[command(name = "material")]
     Material {
         #[command(flatten)]
-        assay: AssayArgs,
+        assay:   AssayArgs,
         #[arg(long, default_value = "shipped")]
         shipped: String,
     },
@@ -154,22 +154,22 @@ enum Commands {
     #[command(name = "sweep-lr-mult")]
     SweepLrMult {
         #[arg(short, long, value_delimiter = ',', num_args = 0..)]
-        values: Option<Vec<f64>>,
+        values:        Option<Vec<f64>>,
         #[arg(long, default_value_t = 0.001)]
-        min: f64,
+        min:           f64,
         #[arg(long, default_value_t = 0.3)]
-        max: f64,
+        max:           f64,
         #[arg(long, default_value_t = 6)]
-        count: usize,
+        count:         usize,
         #[arg(short, long, default_value = DEFAULT_CONFIG)]
-        config: String,
+        config:        String,
         #[arg(short, long)]
-        epochs: Option<usize>,
+        epochs:        Option<usize>,
         #[arg(long, default_value_t = 1)]
         refine_rounds: usize,
         #[arg(long)]
-        seed: Option<u64>,
-        dataset: String,
+        seed:          Option<u64>,
+        dataset:       String,
     },
     Help,
 }

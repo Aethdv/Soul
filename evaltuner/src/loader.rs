@@ -19,10 +19,10 @@ use crate::{
 };
 
 pub(crate) struct LoadedDataset {
-    pub(crate) entries: Vec<SoulEntry>,
+    pub(crate) entries:        Vec<SoulEntry>,
     pub(crate) sample_weights: Vec<f32>,
     /// Positions per independent game span (`1` per position for ungrouped EPD files).
-    pub(crate) group_sizes: Vec<u32>,
+    pub(crate) group_sizes:    Vec<u32>,
 }
 
 #[inline]

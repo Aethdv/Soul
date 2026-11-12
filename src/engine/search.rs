@@ -51,66 +51,66 @@ const MAX_TRACKED_CAPTURES: usize = 64;
 const LMR_SCALE: i32 = 1024;
 
 pub(crate) struct Searcher<'cfg> {
-    cfg: &'cfg SearchConfig,
-    tm: TimeManager,
-    root_moves: Vec<RootMove>,
-    zobrist_trail: Vec<u64>,
-    root_pos: Position,
-    prev_pv: PvLine,
-    prev_score: i32,
+    cfg:              &'cfg SearchConfig,
+    tm:               TimeManager,
+    root_moves:       Vec<RootMove>,
+    zobrist_trail:    Vec<u64>,
+    root_pos:         Position,
+    prev_pv:          PvLine,
+    prev_score:       i32,
     pub(crate) nodes: u64,
-    sel_depth: i32,
-    iter_depth: i32,
-    last_print: u128,
-    pv_history: VecDeque<PvSnapshot>,
-    tt: Arc<TranspositionTable>,
+    sel_depth:        i32,
+    iter_depth:       i32,
+    last_print:       u128,
+    pv_history:       VecDeque<PvSnapshot>,
+    tt:               Arc<TranspositionTable>,
 }
 
 #[repr(align(64))]
 struct Worker<'h> {
-    pos: Position,
-    accumulator: I16x8,
-    stack: Box<[Stack; MAX_PLY + 2]>,
+    pos:          Position,
+    accumulator:  I16x8,
+    stack:        Box<[Stack; MAX_PLY + 2]>,
     #[cfg(not(feature = "nostore"))]
-    xorboard: XorBoard,
+    xorboard:     XorBoard,
     #[cfg(not(feature = "nostore"))]
     xb_snapshots: Box<[XbSnapshot; MAX_PLY + 2]>,
-    history: &'h mut History,
+    history:      &'h mut History,
     /// Keyed by `pawn_key`.
-    pawn_cache: PawnCache,
-    eval_params: EvalParams<i32>,
+    pawn_cache:   PawnCache,
+    eval_params:  EvalParams<i32>,
     /// Prevents nested null-move verification.
     is_nmp_verif: bool,
 }
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct Limits {
-    pub(crate) wtime: u64,
-    pub(crate) btime: u64,
-    pub(crate) winc: u64,
-    pub(crate) binc: u64,
-    pub(crate) movestogo: u64,
-    pub(crate) movetime: u64,
-    pub(crate) depth: i32,
-    pub(crate) nodes: u64,
-    pub(crate) softnodes: u64,
-    pub(crate) infinite: bool,
-    pub(crate) silent: bool,
-    pub(crate) protocol: Protocol,
-    pub(crate) mate: Option<i32>,
-    pub(crate) perft: Option<u8>,
-    pub(crate) perft_bulk: bool,
+    pub(crate) wtime:       u64,
+    pub(crate) btime:       u64,
+    pub(crate) winc:        u64,
+    pub(crate) binc:        u64,
+    pub(crate) movestogo:   u64,
+    pub(crate) movetime:    u64,
+    pub(crate) depth:       i32,
+    pub(crate) nodes:       u64,
+    pub(crate) softnodes:   u64,
+    pub(crate) infinite:    bool,
+    pub(crate) silent:      bool,
+    pub(crate) protocol:    Protocol,
+    pub(crate) mate:        Option<i32>,
+    pub(crate) perft:       Option<u8>,
+    pub(crate) perft_bulk:  bool,
     pub(crate) searchmoves: Vec<Move>,
 }
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SearchDisplay {
-    pub(crate) post: bool,
-    pub(crate) show_wdl: bool,
-    pub(crate) go_pretty: bool,
-    pub(crate) pretty_print: bool,
+    pub(crate) post:          bool,
+    pub(crate) show_wdl:      bool,
+    pub(crate) go_pretty:     bool,
+    pub(crate) pretty_print:  bool,
     pub(crate) show_currmove: bool,
-    pub(crate) use_ansi: bool,
+    pub(crate) use_ansi:      bool,
 }
 
 #[derive(Clone)]
@@ -134,33 +134,33 @@ pub(crate) struct SearchConfig {
 #[derive(Clone, Copy)]
 pub(super) struct PvLine {
     pub(super) moves: [Move; MAX_PLY],
-    pub(super) len: usize,
+    pub(super) len:   usize,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct PvSnapshot {
-    pub(super) depth: i32,
+    pub(super) depth:   i32,
     pub(super) time_ms: u128,
-    pub(super) score: i32,
-    pub(super) line: PvLine,
+    pub(super) score:   i32,
+    pub(super) line:    PvLine,
 }
 
 #[derive(Clone, Copy)]
 struct Stack {
-    pv: PvLine,
-    quiet_moves: [Move; MAX_TRACKED_QUIETS],
-    quiet_count: usize,
+    pv:            PvLine,
+    quiet_moves:   [Move; MAX_TRACKED_QUIETS],
+    quiet_count:   usize,
     capture_moves: [Move; MAX_TRACKED_CAPTURES],
     capture_count: usize,
-    killers: [Move; 2],
-    moved_pt: PieceType,
-    moved_to: Square,
-    static_eval: i32,
-    is_null: bool,
+    killers:       [Move; 2],
+    moved_pt:      PieceType,
+    moved_to:      Square,
+    static_eval:   i32,
+    is_null:       bool,
     /// Cutoffs at this ply since the grandparent was entered, used by the parent's LMR.
-    cutoff_count: i32,
+    cutoff_count:  i32,
     /// TT move excluded during singular verification.
-    excluded: Move,
+    excluded:      Move,
 }
 
 trait NodeType {
@@ -192,18 +192,18 @@ impl NodeType for NonPvNode {
 }
 
 struct RootMove {
-    mv: Move,
+    mv:    Move,
     score: i32,
-    pv: Box<PvLine>,
+    pv:    Box<PvLine>,
     /// Cumulative nodes searched under this move across iterations.
     nodes: u64,
 }
 
 struct MoveResult {
     move_count: usize,
-    best_eval: i32,
-    alpha: i32,
-    best_move: Move,
+    best_eval:  i32,
+    alpha:      i32,
+    best_move:  Move,
 }
 
 /// Time, the node limit or a stop command cut the search short.
@@ -212,12 +212,12 @@ struct SearchAborted;
 
 impl SearchDisplay {
     pub(crate) const SILENT: Self = Self {
-        post: false,
-        show_wdl: false,
-        go_pretty: false,
-        pretty_print: false,
+        post:          false,
+        show_wdl:      false,
+        go_pretty:     false,
+        pretty_print:  false,
         show_currmove: false,
-        use_ansi: false,
+        use_ansi:      false,
     };
     pub(crate) const DEFAULT: Self = Self { post: true, show_currmove: true, use_ansi: true, ..Self::SILENT };
 }
@@ -347,18 +347,18 @@ impl RootMove {
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            pv: PvLine::new(),
-            quiet_moves: [Move::null(); MAX_TRACKED_QUIETS],
-            quiet_count: 0,
+            pv:            PvLine::new(),
+            quiet_moves:   [Move::null(); MAX_TRACKED_QUIETS],
+            quiet_count:   0,
             capture_moves: [Move::null(); MAX_TRACKED_CAPTURES],
             capture_count: 0,
-            killers: [Move::null(); 2],
-            moved_pt: PieceType::None,
-            moved_to: Square(0),
-            static_eval: tt::SCORE_NONE,
-            is_null: false,
-            cutoff_count: 0,
-            excluded: Move::null(),
+            killers:       [Move::null(); 2],
+            moved_pt:      PieceType::None,
+            moved_to:      Square(0),
+            static_eval:   tt::SCORE_NONE,
+            is_null:       false,
+            cutoff_count:  0,
+            excluded:      Move::null(),
         }
     }
 }
@@ -1892,15 +1892,15 @@ mod tests {
 
     #[derive(PartialEq, Eq)]
     struct SearchOutcome {
-        nodes: u64,
-        score: Option<i32>,
+        nodes:     u64,
+        score:     Option<i32>,
         best_move: Option<Move>,
     }
 
     #[derive(PartialEq, Eq)]
     struct TmObservation {
-        hard: Duration,
-        stops: bool,
+        hard:       Duration,
+        stops:      bool,
         soft_after: [Duration; 3],
     }
 

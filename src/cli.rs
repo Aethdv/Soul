@@ -19,7 +19,7 @@ pub fn banner() {
 
 pub struct Help {
     description_col: usize,
-    use_ansi: bool,
+    use_ansi:        bool,
 }
 
 impl Help {

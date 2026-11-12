@@ -9,10 +9,10 @@ use std::{
 use crate::core::board::Position;
 
 pub struct EpdEntry {
-    pub board: Position,
+    pub board:  Position,
     pub result: f64,
     /// White-relative centipawn evaluation, if present.
-    pub eval: Option<i32>,
+    pub eval:   Option<i32>,
 }
 
 /// Parses a pipe-delimited `fen | score | wdl` line or a classic EPD line with an

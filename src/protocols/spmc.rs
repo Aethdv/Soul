@@ -18,15 +18,15 @@ pub(super) struct Sender<M> {
 }
 
 pub(super) struct Receiver<M> {
-    shared: Arc<Shared<M>>,
+    shared:     Arc<Shared<M>>,
     generation: bool,
 }
 
 struct Shared<M> {
-    msg: AtomicPtr<M>,
-    ready: AtomicBool,
-    futex: AtomicU32,
-    exit: AtomicBool,
+    msg:           AtomicPtr<M>,
+    ready:         AtomicBool,
+    futex:         AtomicU32,
+    exit:          AtomicBool,
     num_receivers: u32,
 }
 

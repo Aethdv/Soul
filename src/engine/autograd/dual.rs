@@ -22,8 +22,8 @@ pub(crate) const DUAL_N: usize = (eval_params::DUAL_SLOTS + 7) & !7;
 #[repr(C, align(32))]
 pub(crate) struct DualNode {
     pub(crate) grad: [f32; DUAL_N],
-    pub(crate) val: f64,
-    tracked: bool,
+    pub(crate) val:  f64,
+    tracked:         bool,
 }
 
 impl DualNode {

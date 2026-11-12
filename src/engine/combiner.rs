@@ -18,14 +18,14 @@ const DANGER_SCALE: i32 = 32_768;
 /// Side labels follow the input features' perspective.
 pub(crate) struct Accumulators<T: EvalMath> {
     pub(crate) material_psqt: T,
-    pub(crate) mobility: T,
-    pub(crate) bonus_mg: T,
-    pub(crate) bonus_eg: T,
-    pub(crate) safety_us: T,
-    pub(crate) safety_them: T,
-    pub(crate) pressure_us: T,
+    pub(crate) mobility:      T,
+    pub(crate) bonus_mg:      T,
+    pub(crate) bonus_eg:      T,
+    pub(crate) safety_us:     T,
+    pub(crate) safety_them:   T,
+    pub(crate) pressure_us:   T,
     pub(crate) pressure_them: T,
-    pub(crate) xray: T,
+    pub(crate) xray:          T,
 }
 
 pub(crate) struct CombinerParams<T: EvalMath> {
@@ -84,8 +84,8 @@ pub(crate) fn backward(
 
     let slope = |p: f64| 1.0 + 2.0 * p * params.danger_curvature / scale;
     let king_safety = KingSafetyUpstream {
-        safety: d_mg,
-        pressure_us: -d_mg * slope(buckets.pressure_us),
+        safety:        d_mg,
+        pressure_us:   -d_mg * slope(buckets.pressure_us),
         pressure_them: d_mg * slope(buckets.pressure_them),
     };
 

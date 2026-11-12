@@ -281,7 +281,7 @@ pub(crate) fn run(dataset_path: Option<&str>, config: &EvalTuneConfig, resume_pa
 
 #[derive(Clone, Copy)]
 struct Seeds {
-    rng_seed: u64,
+    rng_seed:   u64,
     split_seed: u64,
 }
 
@@ -1000,14 +1000,14 @@ fn train_loop(
         &initial_values,
         &ema_values,
         &BestSnapshots {
-            best_val_params: &best_val_params,
-            best_val_loss: if has_val { Some(progress.best_val_loss) } else { None },
-            best_val_epoch: progress.best_val_epoch,
+            best_val_params:   &best_val_params,
+            best_val_loss:     if has_val { Some(progress.best_val_loss) } else { None },
+            best_val_epoch:    progress.best_val_epoch,
             best_train_params: &best_train_params,
-            best_train_loss: progress.best_train_loss,
-            best_train_epoch: progress.best_train_epoch,
-            last_val: val_history.last().copied(),
-            last_train: train_history.last().copied(),
+            best_train_loss:   progress.best_train_loss,
+            best_train_epoch:  progress.best_train_epoch,
+            last_val:          val_history.last().copied(),
+            last_train:        train_history.last().copied(),
         },
         config.epochs,
     );

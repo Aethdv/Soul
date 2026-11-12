@@ -22,10 +22,10 @@ impl ConstRng {
 }
 
 struct ZobristKeys {
-    pieces: [[u64; 64]; 12],
+    pieces:     [[u64; 64]; 12],
     en_passant: [u64; 8],
-    castling: [u64; 1 << 4],
-    side: u64,
+    castling:   [u64; 1 << 4],
+    side:       u64,
 }
 
 static KEYS: ZobristKeys = init_keys();

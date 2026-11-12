@@ -150,9 +150,9 @@ pub(crate) fn canonicalize(values: &mut [f64], params: &[Tunable]) {
 
 /// Pins `Σ|score|` over a fixed probe to the shipped eval scale so tuned weights match `search_params` centipawns.
 pub(crate) struct Gauge<'a> {
-    pub(crate) probe: Vec<&'a FeatureRecord>,
+    pub(crate) probe:     Vec<&'a FeatureRecord>,
     pub(crate) reference: f64,
-    pub(crate) applied: f64,
+    pub(crate) applied:   f64,
 }
 
 impl<'a> Gauge<'a> {
