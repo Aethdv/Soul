@@ -100,7 +100,8 @@ pub(crate) fn sweep_lr_mult(
         println!("── Round {round}: {epochs} epochs\n{SWEEP_HEADER}");
 
         for (point, &lr_mult) in grid.iter().enumerate() {
-            let (loss, duration) = run_sweep_trial(lr_mult, dataset, config_path, epochs, seed, run_id, round, point);
+            let work_dir = trial_dir(run_id, format!("{round}_{point}"));
+            let (loss, duration) = run_sweep_trial(lr_mult, dataset, config_path, epochs, seed, &work_dir);
             print_row(lr_mult, loss, duration);
             results.push((lr_mult, loss, duration));
 
@@ -151,11 +152,8 @@ fn run_sweep_trial(
     config_path: &str,
     epochs: usize,
     seed: Option<u64>,
-    run_id: u64,
-    round: usize,
-    point: usize,
+    work_dir: &Path,
 ) -> (f64, f32) {
-    let work_dir = trial_dir(run_id, format!("{round}_{point}"));
     let log_path = work_dir.join("evaltune.jsonl");
     let mut extra = vec![("--lr-mult", lr_mult.to_string())];
 
@@ -164,7 +162,7 @@ fn run_sweep_trial(
     }
 
     let start = Instant::now();
-    let ok = spawn_trial(dataset, config_path, epochs, &log_path, &work_dir, &extra);
+    let ok = spawn_trial(dataset, config_path, epochs, &log_path, work_dir, &extra);
     let elapsed = start.elapsed().as_secs_f32();
     let val_loss = if ok {
         read_final_records(&log_path).last().and_then(|r| r.best_val_loss).unwrap_or(f64::MAX)
@@ -173,7 +171,7 @@ fn run_sweep_trial(
     };
 
     if ok {
-        let _ = fs::remove_dir_all(&work_dir);
+        let _ = fs::remove_dir_all(work_dir);
     }
 
     (val_loss, elapsed)
