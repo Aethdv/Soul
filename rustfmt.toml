@@ -43,6 +43,7 @@ reorder_impl_items = false
 reorder_imports = true
 
 struct_lit_width = 100
+struct_variant_width = 100
 struct_lit_single_line = true
 spaces_around_ranges = false
 struct_field_align_threshold = 14
@@ -54,7 +55,6 @@ trailing_comma = "Vertical"
 trailing_semicolon = true
 
 use_try_shorthand = true
-use_small_heuristics = "Max"
 use_field_init_shorthand = true
 
 where_single_line = true
