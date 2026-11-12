@@ -1836,10 +1836,11 @@ impl Worker<'_> {
         Ok(best_eval)
     }
 
-    /// Draws are checked before mate detection, so mate on the 100th half-move scores as a draw.
     #[inline]
     fn is_draw(&self, ply: usize, trail: &[u64]) -> bool {
-        self.pos.is_fifty_move_draw() || self.pos.is_draw_by_material() || (ply > 0 && self.is_repetition(self.pos.hash, trail))
+        (self.pos.is_fifty_move_draw() && (self.xb_checkers().is_empty() || !gen_legal_moves(&self.pos).is_empty()))
+            || self.pos.is_draw_by_material()
+            || (ply > 0 && self.is_repetition(self.pos.hash, trail))
     }
 
     /// A second occurrence ends search cycles without waiting for threefold.
