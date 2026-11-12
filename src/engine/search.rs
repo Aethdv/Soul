@@ -841,6 +841,12 @@ impl Worker<'_> {
         // A collision invalidates the whole entry, including its score and PV flag.
         let tt_probe = if tt_move == TtMove::Collision { TtData::NONE } else { tt_probe };
 
+        #[cfg(feature = "mvpstats")]
+        if excluded.is_null() {
+            let tt_cutoff = !N::PV && tt_probe.depth >= depth && tt::can_cutoff(tt_probe.bound, tt_probe.score, alpha, beta);
+            crate::engine::mvpstats::record_main_tt(tt_probe.bound != tt::Bound::None, tt_cutoff);
+        }
+
         #[rustfmt::skip]
         if !N::PV
             && tt_probe.depth >= depth
@@ -1684,6 +1690,12 @@ impl Worker<'_> {
         let qs_tt_move = qs_tt.mv(&self.pos);
         let qs_tt = if qs_tt_move == TtMove::Collision { TtData::NONE } else { qs_tt };
 
+        #[cfg(feature = "mvpstats")]
+        {
+            let qs_tt_cutoff = !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta);
+            crate::engine::mvpstats::record_qs_tt(qs_tt.bound != tt::Bound::None, qs_tt_cutoff);
+        }
+
         if !N::PV && tt::can_cutoff(qs_tt.bound, qs_tt.score, alpha, beta) {
             return Ok(qs_tt.score);
         }
@@ -1704,6 +1716,8 @@ impl Worker<'_> {
             let lazy = self.corrected_eval(evaluate_psqt(&self.pos, &self.accumulator, phase));
             let lazy_floor = lazy - lazy_eval_margin(&self.pos, phase, sp); // ~1 Elo
             if lazy_floor >= beta {
+                #[cfg(feature = "mvpstats")]
+                crate::engine::mvpstats::record_qs_standpat();
                 return Ok(lerp(lazy, beta, sp.qs_lazy_blend));
             }
             self.evaluate()
@@ -1715,6 +1729,8 @@ impl Worker<'_> {
             let eval = self.corrected_eval(raw_eval);
             let stand_pat = if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
             if stand_pat >= beta {
+                #[cfg(feature = "mvpstats")]
+                crate::engine::mvpstats::record_qs_standpat();
                 return Ok(lerp(stand_pat, beta, sp.qs_standpat_blend));
             }
 
@@ -1796,6 +1812,8 @@ impl Worker<'_> {
                     current_stack[ply].pv.compose(mv, &next_stack[0].pv);
 
                     if score >= beta {
+                        #[cfg(feature = "mvpstats")]
+                        crate::engine::mvpstats::record_qs_move();
                         break;
                     }
 

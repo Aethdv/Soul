@@ -1,4 +1,4 @@
-//! Move-ordering statistics.
+//! Move-ordering and cutoff statistics.
 
 use std::{
     io::{self, IsTerminal},
@@ -27,6 +27,19 @@ static CUTOFF_HIST: [AtomicU64; CUTOFF_BUCKETS] = [const { AtomicU64::new(0) }; 
 static CUTOFF_CLASS: [AtomicU64; CLASS_NAMES.len()] = [const { AtomicU64::new(0) }; CLASS_NAMES.len()];
 static CUTOFF_NODES: AtomicU64 = AtomicU64::new(0);
 
+struct TtScopeCounters {
+    probes: AtomicU64,
+    hits: AtomicU64,
+    cutoffs: AtomicU64,
+}
+
+static TT_MAIN: TtScopeCounters =
+    TtScopeCounters { probes: AtomicU64::new(0), hits: AtomicU64::new(0), cutoffs: AtomicU64::new(0) };
+static TT_QS: TtScopeCounters = TtScopeCounters { probes: AtomicU64::new(0), hits: AtomicU64::new(0), cutoffs: AtomicU64::new(0) };
+
+static QS_STANDPAT_NODES: AtomicU64 = AtomicU64::new(0);
+static QS_MOVE_NODES: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Clone, Copy)]
 #[repr(usize)]
 pub(super) enum CutoffClass {
@@ -36,7 +49,6 @@ pub(super) enum CutoffClass {
     Quiet = 3,
 }
 
-/// Records a quiet-stage search node: `generated` sorted vs. `consumed` yielded.
 #[inline]
 pub(super) fn record_quiets(generated: u32, consumed: u32) {
     QUIET_HIST[(consumed as usize).min(QUIET_BUCKETS - 1)].fetch_add(1, Relaxed);
@@ -45,7 +57,6 @@ pub(super) fn record_quiets(generated: u32, consumed: u32) {
     QUIET_NODES.fetch_add(1, Relaxed);
 }
 
-/// Records a beta-cutoff occurring on the `index`-th searched move (1-based).
 #[inline]
 pub(super) fn record_cutoff(index: u32, kind: CutoffClass) {
     CUTOFF_HIST[(index.max(1) as usize - 1).min(CUTOFF_BUCKETS - 1)].fetch_add(1, Relaxed);
@@ -53,9 +64,39 @@ pub(super) fn record_cutoff(index: u32, kind: CutoffClass) {
     CUTOFF_NODES.fetch_add(1, Relaxed);
 }
 
+#[inline]
+pub(super) fn record_main_tt(hit: bool, cutoff: bool) {
+    TT_MAIN.probes.fetch_add(1, Relaxed);
+    if hit {
+        TT_MAIN.hits.fetch_add(1, Relaxed);
+    }
+    if cutoff {
+        TT_MAIN.cutoffs.fetch_add(1, Relaxed);
+    }
+}
+
+#[inline]
+pub(super) fn record_qs_tt(hit: bool, cutoff: bool) {
+    TT_QS.probes.fetch_add(1, Relaxed);
+    if hit {
+        TT_QS.hits.fetch_add(1, Relaxed);
+    }
+    if cutoff {
+        TT_QS.cutoffs.fetch_add(1, Relaxed);
+    }
+}
+
+#[inline]
+pub(super) fn record_qs_standpat() { QS_STANDPAT_NODES.fetch_add(1, Relaxed); }
+
+#[inline]
+pub(super) fn record_qs_move() { QS_MOVE_NODES.fetch_add(1, Relaxed); }
+
 pub(crate) fn report() {
     report_quiets();
     report_cutoffs();
+    report_qs();
+    report_tt();
 }
 
 fn report_quiets() {
@@ -97,6 +138,59 @@ fn report_cutoffs() {
     for (name, count) in CLASS_NAMES.iter().zip(&CUTOFF_CLASS) {
         let count = count.load(Relaxed);
         println!("  {name:>8}  {:>11}  {:>6.1}%", fmt_count(count), pct(count, nodes));
+    }
+}
+
+fn report_qs() {
+    let tt_cutoffs = TT_QS.cutoffs.load(Relaxed);
+    let standpat = QS_STANDPAT_NODES.load(Relaxed);
+    let moves = QS_MOVE_NODES.load(Relaxed);
+    let total = tt_cutoffs + standpat + moves;
+
+    if total == 0 {
+        return;
+    }
+
+    let (gold, _, reset) = style();
+    header("QSearch cutoff breakdown");
+    println!("  fail-high nodes {}", fmt_count(total));
+
+    println!("  {gold}by class{reset}");
+    println!("  {:>8}  {:>11}  {:>6.1}%", "tt", fmt_count(tt_cutoffs), pct(tt_cutoffs, total));
+    println!("  {:>8}  {:>11}  {:>6.1}%", "standpat", fmt_count(standpat), pct(standpat, total));
+    println!("  {:>8}  {:>11}  {:>6.1}%", "move", fmt_count(moves), pct(moves, total));
+}
+
+fn report_tt() {
+    let main_probes = TT_MAIN.probes.load(Relaxed);
+    let qs_probes = TT_QS.probes.load(Relaxed);
+    if main_probes == 0 && qs_probes == 0 {
+        return;
+    }
+
+    let (gold, bold, reset) = style();
+    header("Transposition table stats");
+    println!(
+        "  {gold}{bold}{:>8}  {:>11}  {:>11}  {:>7}  {:>11}  {:>7}{reset}",
+        "scope", "probes", "hits", "hit%", "cutoffs", "cut%"
+    );
+
+    for (name, counters) in [("main", &TT_MAIN), ("qsearch", &TT_QS)] {
+        let probes = counters.probes.load(Relaxed);
+        if probes == 0 {
+            continue;
+        }
+
+        let hits = counters.hits.load(Relaxed);
+        let cutoffs = counters.cutoffs.load(Relaxed);
+        println!(
+            "  {name:>8}  {:>11}  {:>11}  {:>6.1}%  {:>11}  {:>6.1}%",
+            fmt_count(probes),
+            fmt_count(hits),
+            pct(hits, probes),
+            fmt_count(cutoffs),
+            pct(cutoffs, hits),
+        );
     }
 }
 
