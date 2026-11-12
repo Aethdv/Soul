@@ -162,6 +162,15 @@ impl Move {
         }
         s
     }
+
+    pub(crate) fn to_xboard(self, frc_notation: bool) -> String {
+        if self.is_castling() && frc_notation {
+            let queenside = self.to().file() < self.from().file();
+            if queenside { "O-O-O".to_string() } else { "O-O".to_string() }
+        } else {
+            self.to_uci(frc_notation)
+        }
+    }
 }
 
 // PROM_N is the base T: its offset is zero by definition.

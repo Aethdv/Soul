@@ -561,7 +561,7 @@ impl<'cfg> Searcher<'cfg> {
             let best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
             match self.cfg.limits.protocol {
                 Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.frc_notation)),
-                Protocol::XBoard => println!("move {}", best.to_uci(self.root_pos.frc_notation)),
+                Protocol::XBoard => println!("move {}", best.to_xboard(self.root_pos.frc_notation)),
             }
             let _ = io::stdout().flush();
         }

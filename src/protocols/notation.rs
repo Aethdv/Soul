@@ -11,6 +11,22 @@ use crate::{
 };
 
 pub(super) fn parse_uci_move(board: &Position, uci: &str) -> Result<Move, MoveError> {
+    let clean = uci.trim().trim_end_matches(['+', '#']);
+    if clean.eq_ignore_ascii_case("o-o") || clean == "0-0" {
+        return gen_legal_moves(board)
+            .into_iter()
+            .find(|mv| mv.is_castling() && mv.to().file() > mv.from().file())
+            .copied()
+            .ok_or(MoveError::NotFound);
+    }
+    if clean.eq_ignore_ascii_case("o-o-o") || clean == "0-0-0" {
+        return gen_legal_moves(board)
+            .into_iter()
+            .find(|mv| mv.is_castling() && mv.to().file() < mv.from().file())
+            .copied()
+            .ok_or(MoveError::NotFound);
+    }
+
     // Reject non-ASCII before byte slicing.
     if !matches!(uci.len(), 4 | 5) || !uci.is_ascii() {
         return Err(MoveError::InvalidFormat);
@@ -67,5 +83,14 @@ mod tests {
         assert!(parse_uci_move(&board, "e1g1xx").is_err());
         assert!(parse_uci_move(&board, "a1a").is_err());
         assert!(parse_uci_move(&board, "aé1").is_err());
+    }
+
+    #[test]
+    fn xboard_frc_castling() {
+        let frc = Position::from_fen("4k3/8/8/8/8/8/8/6KR w H - 0 1");
+        let mv = parse_uci_move(&frc, "O-O").unwrap();
+        assert!(mv.is_castling());
+        assert_eq!(mv.to_xboard(true), "O-O");
+        assert_eq!(parse_uci_move(&Position::from_fen(CASTLING), "O-O-O").unwrap().to_xboard(true), "O-O-O");
     }
 }

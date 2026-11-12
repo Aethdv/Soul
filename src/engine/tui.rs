@@ -397,7 +397,7 @@ fn print_xboard(data: &SearchInfoData<'_>) {
     let mut line = String::with_capacity(128);
     write!(line, "{:>2} {:>5} {:>6} {:>10}", data.depth, data.score, cs, data.nodes).unwrap();
     for mv in &data.pv.moves[..data.pv.len] {
-        write!(line, " {}", mv.to_uci(data.board.frc_notation)).unwrap();
+        write!(line, " {}", mv.to_xboard(data.board.frc_notation)).unwrap();
     }
     println!("{line}");
 }

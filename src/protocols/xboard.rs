@@ -125,9 +125,9 @@ impl XBoardState {
         self.stop.store(false, Ordering::Relaxed);
     }
 
-    fn load_position(&mut self, board: Position) {
+    fn load_position(&mut self, mut board: Position) {
+        board.frc_notation = self.frc_notation || board.has_nonstandard_castling_rook();
         self.board = board;
-        self.board.frc_notation = self.frc_notation;
         self.accumulator = self.board.psqt_accumulator();
         self.trail.clear();
         self.trail.push(self.board.hash);
@@ -269,6 +269,12 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         "?" => state.stop_search(),
         "post" => state.post = true,
         "nopost" => state.post = false,
+        "variant" => match args.next() {
+            Some("fischerandom") => state.frc_notation = true,
+            Some("normal") => state.frc_notation = false,
+            Some(v) => eprintln!("Error (unknown variant): {v}"),
+            None => {},
+        },
         "option" => cmd_option(state, args),
         "memory" => {
             if let Some(mb) = next_parsed(args) {
@@ -312,7 +318,7 @@ fn print_features() {
     println!("feature debug=1");
     println!("feature smp=1");
     println!("feature nps=1");
-    println!("feature variants=\"normal\"");
+    println!("feature variants=\"normal,fischerandom\"");
     println!("feature option=\"Hash -spin {DEFAULT_HASH_MB} 1 {MAX_HASH_MB}\"");
     println!("feature option=\"Overhead -spin {DEFAULT_OVERHEAD_MS} 0 {MAX_OVERHEAD_MS}\"");
     println!("feature option=\"ShowWDL -check 0\"");
