@@ -1254,7 +1254,7 @@ impl Worker<'_> {
 
                 let mut extension = 0i32;
 
-                // ── Singular Extensions (~7 Elo)
+                // ── Singular Extensions
                 // A strong TT move may be holding the position together. Search the
                 // alternatives against a bound below its score; if none reaches it, extend.
                 if !N::ROOT
@@ -1284,9 +1284,9 @@ impl Worker<'_> {
 
                     let sing_score = sing_score?;
                     if sing_score < sing_beta {
-                        extension = 1;
+                        extension = 1; // ~7 Elo
                         if sing_score < sing_beta - sp.singext_double_margin {
-                            extension = 2;
+                            extension = 2; // ~3 Elo
                         }
                     } else if sing_score >= beta {
                         // ── Multicut (~15 Elo)
