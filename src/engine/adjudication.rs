@@ -26,8 +26,12 @@ impl Adjudicator {
 
         if abs_score >= WIN_SCORE {
             let leader = if score > 0 { stm } else { stm.opposite() };
-            self.win_plies = if self.win_plies > 0 && self.leader != Some(leader) { 0 } else { self.win_plies + 1 };
-            self.leader = Some(leader);
+            if self.leader == Some(leader) {
+                self.win_plies += 1;
+            } else {
+                self.leader = Some(leader);
+                self.win_plies = 1;
+            }
             self.draw_plies = 0;
 
             return (self.win_plies >= WIN_PLIES).then(|| GameOutcome::from_stm_score(score, stm));
@@ -56,14 +60,14 @@ mod tests {
     }
 
     #[test]
-    fn leader_change_discards_the_first_qualifying_ply() {
+    fn leader_change_counts_the_first_qualifying_ply() {
         let mut adjudicator = Adjudicator::default();
         assert_eq!(adjudicator.update(WIN_SCORE, Color::White, 0), None);
-        for offset in 0..=WIN_PLIES {
-            let stm = if offset % 2 == 0 { Color::Black } else { Color::White };
+        for ply in 1..=WIN_PLIES {
+            let stm = if ply % 2 == 1 { Color::Black } else { Color::White };
             let score = if stm == Color::Black { WIN_SCORE } else { -WIN_SCORE };
-            let expected = (offset == WIN_PLIES).then_some(GameOutcome::BlackWins);
-            assert_eq!(adjudicator.update(score, stm, offset + 1), expected);
+            let expected = (ply == WIN_PLIES).then_some(GameOutcome::BlackWins);
+            assert_eq!(adjudicator.update(score, stm, ply), expected);
         }
     }
 
