@@ -337,6 +337,8 @@ fn print_uci(data: &SearchInfoData<'_>) {
         String::new()
     };
 
+    let mut line = String::with_capacity(256);
+
     if pretty {
         let depth = data.depth;
         let sel = data.sel_depth;
@@ -347,9 +349,11 @@ fn print_uci(data: &SearchInfoData<'_>) {
         let time = fmt_duration(data.time_ms.try_into().unwrap_or(u64::MAX));
         let hash = data.hashfull;
 
-        print!(
+        write!(
+            line,
             "info depth {depth:>2} seldepth {sel:>2} score {mark}{score}{wdl_str} nodes {nodes:>7} {nps:>11} time {time:>9} hashfull {hash} pv"
-        );
+        )
+        .unwrap();
     } else {
         let bound = match data.bound {
             ScoreBound::Exact => "",
@@ -364,9 +368,11 @@ fn print_uci(data: &SearchInfoData<'_>) {
         let time = data.time_ms;
         let hash = data.hashfull;
 
-        print!(
+        write!(
+            line,
             "info depth {depth} seldepth {sel} score {score}{bound}{wdl_str} nodes {nodes} nps {nps} time {time} hashfull {hash} pv"
-        );
+        )
+        .unwrap();
     }
 
     let mut replay = pretty.then(|| (*data.board, data.board.psqt_accumulator()));
@@ -378,21 +384,22 @@ fn print_uci(data: &SearchInfoData<'_>) {
         match replay.as_mut() {
             Some((board, acc)) => {
                 let hue = if (i % 2 == 0) == white_first { PV_WHITE } else { PV_BLACK };
-                print!(" {}{}{reset}", tui_fg(hue, ansi), san_step(board, acc, mv));
+                write!(line, " {}{}{reset}", tui_fg(hue, ansi), san_step(board, acc, mv)).unwrap();
             },
-            None => print!(" {}", mv.to_uci(data.board.frc_notation)),
+            None => write!(line, " {}", mv.to_uci(data.board.frc_notation)).unwrap(),
         }
     }
-    println!();
+    println!("{line}");
 }
 
 fn print_xboard(data: &SearchInfoData<'_>) {
     let cs = (data.time_ms + 5) / 10;
-    print!("{:>2} {:>5} {:>6} {:>10} ", data.depth, data.score, cs, data.nodes);
+    let mut line = String::with_capacity(128);
+    write!(line, "{:>2} {:>5} {:>6} {:>10}", data.depth, data.score, cs, data.nodes).unwrap();
     for mv in &data.pv.moves[..data.pv.len] {
-        print!("{} ", mv.to_uci(data.board.frc_notation));
+        write!(line, " {}", mv.to_uci(data.board.frc_notation)).unwrap();
     }
-    println!();
+    println!("{line}");
 }
 
 fn fmt_pv(root: &Position, line: &PvLine, max: usize, enabled: bool) -> String {
