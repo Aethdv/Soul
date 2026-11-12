@@ -31,6 +31,7 @@ pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateI
         captured,
         halfmove_clock: pos.halfmove_clock,
         en_passant: pos.en_passant,
+        fullmove_number: pos.fullmove_number,
     };
 
     let placed = mv.promo().unwrap_or(pt);
@@ -93,7 +94,7 @@ pub(super) fn make_move(pos: &mut Position, mv: Move, acc: &mut I16x8) -> StateI
     pos.stm = opp;
 
     if stm == Color::Black {
-        pos.fullmove_number += 1;
+        pos.fullmove_number = pos.fullmove_number.saturating_add(1);
     }
 
     pos.hash ^= zobrist::key_side();
@@ -109,10 +110,6 @@ pub(super) fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.stm = pos.stm.opposite();
     let stm = pos.stm;
 
-    if stm == Color::Black {
-        pos.fullmove_number -= 1;
-    }
-
     let opp = stm.opposite();
     let from = mv.from();
     let to = mv.to();
@@ -120,6 +117,7 @@ pub(super) fn unmake_move(pos: &mut Position, mv: Move, info: &StateInfo) {
     pos.castling_rights = info.castling_rights;
     pos.en_passant = info.en_passant;
     pos.halfmove_clock = info.halfmove_clock;
+    pos.fullmove_number = info.fullmove_number;
     pos.hash = info.hash;
     pos.pawn_key = info.pawn_key;
     pos.minor_key = info.minor_key;

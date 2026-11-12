@@ -113,6 +113,7 @@ pub(crate) struct StateInfo {
     pub(crate) castling_rights: u8,
     pub(crate) captured: PieceType,
     pub(crate) halfmove_clock: u8,
+    pub(crate) fullmove_number: u16,
 }
 
 impl Position {
@@ -172,6 +173,7 @@ impl Position {
             castling_rights: self.castling_rights,
             captured: PieceType::None,
             halfmove_clock: self.halfmove_clock,
+            fullmove_number: self.fullmove_number,
         };
 
         if let Some(ep) = self.en_passant.take() {
@@ -193,6 +195,7 @@ impl Position {
         self.major_key = info.major_key;
         self.en_passant = info.en_passant;
         self.halfmove_clock = info.halfmove_clock;
+        self.fullmove_number = info.fullmove_number;
     }
 
     #[inline]
