@@ -1,5 +1,12 @@
 EXE_NAME := soul
 DEPTH    ?= 12
+HASH     ?= 16
+
+ifneq ($(filter $(firstword $(MAKECMDGOALS)),bench movepicker corrstats),)
+  DEPTH := $(or $(word 2,$(MAKECMDGOALS)),$(DEPTH))
+  HASH  := $(or $(word 3,$(MAKECMDGOALS)),$(HASH))
+  $(eval $(wordlist 2,99,$(MAKECMDGOALS)):;@:)
+endif
 
 FEATURES ?=
 CARGO_FEATURES = $(if $(FEATURES),--features $(FEATURES))
@@ -66,7 +73,7 @@ define stats_build
 	@cargo build --release --features $(1)
 	@cp target/release/$(EXE_NAME) $(EXE)-$(2)
 	@echo "Done: ./$(EXE)-$(2)"
-	@./$(EXE)-$(2) bench $(DEPTH)
+	@./$(EXE)-$(2) bench $(DEPTH) $(HASH)
 endef
 
 ifeq ($(and $(HAS_ZIG),$(HAS_WIN_STD)),)
@@ -179,9 +186,9 @@ debug: ## Build for development
 	@cp target/debug/$(EXE_NAME) $(DEBUG_EXE)
 	@echo "Done: ./$(DEBUG_EXE)"
 
-bench: ## Fast compile w/ bench (DEPTH=12)
+bench: ## Fast compile w/ bench (DEPTH=12, HASH=16)
 	@cargo build --profile quick --quiet
-	@./target/quick/$(EXE_NAME) bench $(DEPTH)
+	@./target/quick/$(EXE_NAME) bench $(DEPTH) $(HASH)
 
 tools: #@ Native build with datagen, dataset and tools
 	@$(MAKE) --no-print-directory native FEATURES=datagen EXE=tools$(EXE_EXT)
