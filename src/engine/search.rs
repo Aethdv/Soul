@@ -1047,6 +1047,10 @@ impl Worker<'_> {
                         raw_static_eval,
                     );
 
+                    if is_mate(value) {
+                        return Ok(value);
+                    }
+
                     return Ok(lerp(value, beta, sp.probcut_blend));
                 }
             }
