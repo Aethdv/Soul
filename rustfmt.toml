@@ -54,6 +54,7 @@ trailing_semicolon = true
 
 use_try_shorthand = true
 use_small_heuristics = "Max"
+use_field_init_shorthand = true
 
 where_single_line = true
 wrap_comments = false
