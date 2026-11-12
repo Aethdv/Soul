@@ -297,9 +297,8 @@ impl Position {
             return false;
         }
 
-        let king = ksq.bitboard();
         for sq in king_path {
-            if self.is_attacked(sq, attacker, king) {
+            if self.is_attacked(sq, attacker, movers) {
                 return false;
             }
         }

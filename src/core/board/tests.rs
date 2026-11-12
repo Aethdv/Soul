@@ -642,6 +642,10 @@ fn castling_legality_checks() {
     let pos = Position::from_fen("1k4r1/8/8/8/8/8/8/R3K2R w KQ - 0 1");
     let moves = gen_legal_moves(&pos);
     assert!(!moves.iter().any(|m| m.is_castling() && m.to().0 == 7), "Should not castle into check on g1");
+
+    let frc = Position::from_fen("4k3/8/8/8/8/8/8/rR2K3 w B - 0 1");
+    let moves = gen_legal_moves(&frc);
+    assert!(!moves.iter().any(|m| m.is_castling()), "Castling rook departure must not expose king to check");
 }
 
 fn find_uci_move(pos: &Position, uci: &str) -> Move {
