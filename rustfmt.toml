@@ -30,6 +30,7 @@ group_imports = "StdExternalCrate"
 hex_literal_case = "Upper"
 
 indent_style = "Block"
+imports_layout = "Mixed"
 imports_granularity = "Crate"
 inline_attribute_width = 60
 
