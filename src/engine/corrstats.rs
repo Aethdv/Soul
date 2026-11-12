@@ -13,7 +13,6 @@ use crate::{
     engine::{history::CORRECTION_SCALE, search_params::SearchParams},
 };
 
-const REPORT_WEIGHT_SCALE: i32 = 256;
 const NAMES: [&str; 3] = ["pawn", "minor", "major"];
 
 #[rustfmt::skip]
@@ -74,7 +73,8 @@ pub(super) fn record_update(table: Table) { STATS[table as usize].updates.fetch_
 /// Reports cumulative counters after recording stops.
 pub(crate) fn report() {
     let sp = SearchParams::default();
-    let weights: [i32; NAMES.len()] = [REPORT_WEIGHT_SCALE, sp.minor_corr_weight, sp.major_corr_weight];
+    let placement_weight = (sp.minor_corr_weight + sp.major_corr_weight).max(1);
+    let table_weights = [None, Some(sp.minor_corr_weight), Some(sp.major_corr_weight)];
     let ansi = io::stdout().is_terminal();
     let gold = if ansi { GOLD_PEN } else { "" };
     let (bold, reset) = if ansi { (BOLD, RESET) } else { ("", "") };
@@ -83,7 +83,7 @@ pub(crate) fn report() {
     let header: Vec<String> = COLS.iter().enumerate().map(|(i, &(label, ..))| cell(label, i, None, false)).collect();
     println!("  {gold}{bold}{}{reset}", header.join(" "));
 
-    for ((name, counters), weight) in NAMES.iter().zip(&STATS).zip(weights) {
+    for ((name, counters), weight) in NAMES.iter().zip(&STATS).zip(table_weights) {
         let reads = counters.reads.load(Relaxed);
         let hits = counters.hits.load(Relaxed);
         let updates = counters.updates.load(Relaxed);
@@ -93,7 +93,10 @@ pub(crate) fn report() {
         let hit_pct = pct(hits, reads);
         let saturation_pct = pct(saturated_hits, hits);
         let mean_cp = ratio(abs_sum as f64, hits as f64) / CORRECTION_SCALE as f64;
-        let effective_cp = mean_cp * f64::from(weight) / f64::from(REPORT_WEIGHT_SCALE);
+        let (effective_cp, wt_str) = match weight {
+            Some(w) => (mean_cp * f64::from(w) / f64::from(placement_weight), w.to_string()),
+            None => (mean_cp, "-".into()),
+        };
         let hit_rgb = color::advantage((hit_pct / 35.0 - 1.0).clamp(-1.0, 1.0));
         let sat_rgb = color::advantage(1.0 - saturation_pct / 25.0);
 
@@ -103,7 +106,7 @@ pub(crate) fn report() {
             cell(&format!("{hit_pct:.1}%"), 2, Some(hit_rgb), ansi),
             cell(&fmt_count(updates), 3, None, ansi),
             cell(&format!("{mean_cp:.2}cp"), 4, None, ansi),
-            cell(&weight.to_string(), 5, None, ansi),
+            cell(&wt_str, 5, None, ansi),
             cell(&format!("{effective_cp:.2}"), 6, None, ansi),
             cell(&format!("{saturation_pct:.1}%"), 7, Some(sat_rgb), ansi),
         ];
