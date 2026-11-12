@@ -12,7 +12,7 @@ pub(crate) const MAX_DEPTH: i32 = MAX_PLY as i32;
 pub(crate) const INF: i32 = 32_000;
 /// A mate n plies away scores MATE - n.
 pub(crate) const MATE: i32 = 30_000;
-/// Scores outside `±MATE_BOUND` are mate scores.
+/// Scores at or outside `±MATE_BOUND` are mate scores.
 pub(crate) const MATE_BOUND: i32 = MATE - MAX_PLY as i32 - 1;
 
 /// Opening phase at N=B=1, R=2, Q=4: 4 + 4 + 8 + 8 = 24.
@@ -255,11 +255,11 @@ pub(crate) fn draw_score(nodes: u64) -> i32 { (nodes & 0x2) as i32 - 1 }
 
 /// A forced mate the side to move delivers.
 #[inline]
-pub(crate) fn is_win(score: i32) -> bool { score > MATE_BOUND }
+pub(crate) fn is_win(score: i32) -> bool { score >= MATE_BOUND }
 
 /// A forced mate delivered against the side to move.
 #[inline]
-pub(crate) fn is_loss(score: i32) -> bool { score < -MATE_BOUND }
+pub(crate) fn is_loss(score: i32) -> bool { score <= -MATE_BOUND }
 
 #[inline]
 pub(crate) fn is_mate(score: i32) -> bool { is_win(score) || is_loss(score) }
