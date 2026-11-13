@@ -1010,6 +1010,8 @@ impl Worker<'_> {
                     continue;
                 }
 
+                self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
+                self.stack[ply].moved_to = mv.to();
                 let saved_acc = self.accumulator;
                 let undo = self.pos.make_move(mv, &mut self.accumulator);
                 self.xb_update(mv);
