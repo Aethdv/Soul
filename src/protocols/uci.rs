@@ -154,6 +154,8 @@ pub fn main_loop(initial_command: Option<String>) {
 
 pub fn run_commands(lines: &[String]) {
     let mut state = UciState::new();
+    let rx = spawn_stdin_listener(state.stop.clone());
+
     for line in lines {
         if !process_command(&mut state, line.trim()) {
             break;
@@ -161,6 +163,13 @@ pub fn run_commands(lines: &[String]) {
 
         // go returns while its search is still running, so the batch waits for it here.
         state.wait_for_search();
+
+        while let Ok(cmd) = rx.try_recv() {
+            if matches!(cmd.split_whitespace().next(), Some("quit" | "q")) {
+                return;
+            }
+        }
+        state.stop.store(false, Ordering::Relaxed);
     }
 }
 
@@ -168,16 +177,23 @@ pub fn run_cli_go(args: &[&str]) {
     let mut state = UciState::new();
     let mut iter = args.iter().copied().peekable();
     let limits = parse_go_limits(&state.board, &mut iter);
-    dispatch_search(&mut state, limits);
-    state.wait_for_search();
+    run_one_search(&mut state, limits);
 }
 
 pub fn run_cli_pretty(depth: Option<i32>) {
     let mut state = UciState::new();
     state.display.show_wdl = true;
     state.display.go_pretty = true;
-    dispatch_search(&mut state, Limits { depth: depth.unwrap_or(MAX_DEPTH), protocol: Protocol::Uci, ..Default::default() });
+    let limits = Limits { depth: depth.unwrap_or(MAX_DEPTH), protocol: Protocol::Uci, ..Default::default() };
+    run_one_search(&mut state, limits);
+}
+
+fn run_one_search(state: &mut UciState, limits: Limits) {
+    // Hold rx until search finishes so unknown lines on stdin don't close the channel early.
+    let rx = spawn_stdin_listener(state.stop.clone());
+    dispatch_search(state, limits);
     state.wait_for_search();
+    drop(rx);
 }
 
 fn dispatch_search(state: &mut UciState, limits: Limits) {
@@ -319,9 +335,9 @@ fn spawn_stdin_listener(stop: Arc<AtomicBool>) -> mpsc::Receiver<String> {
                     let _ = io::stdout().flush();
                     continue;
                 },
-                "quit" => {
-                    stop.store(true, Ordering::Relaxed);
+                "quit" | "q" => {
                     let _ = tx.send(line);
+                    stop.store(true, Ordering::Relaxed);
                     break;
                 },
                 "stop" => {
@@ -344,7 +360,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
     let Some(cmd) = tokens.next() else { return true };
 
     match cmd {
-        "quit" => {
+        "quit" | "q" => {
             state.stop_search();
             return false;
         },
