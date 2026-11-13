@@ -1297,9 +1297,6 @@ impl Worker<'_> {
                     }
                 }
 
-                self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
-                self.stack[ply].moved_to = mv.to();
-
                 self.search_move::<N>(
                     searcher, mv, depth, &mut res, beta, ply, last_critical_ply, None, reduction, extension, cut_node,
                 )?;
@@ -1514,6 +1511,8 @@ impl Worker<'_> {
         cut_node: bool,
     ) -> Result<(), SearchAborted> {
         let sp = &searcher.cfg.search_params;
+        self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
+        self.stack[ply].moved_to = mv.to();
         let saved_acc = self.accumulator;
         let undo = self.pos.make_move(mv, &mut self.accumulator);
         self.xb_update(mv);
