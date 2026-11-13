@@ -1067,7 +1067,7 @@ impl Worker<'_> {
         // ── Internal Iterative Reduction (~14 Elo)
         // Without a TT move to guide ordering, search a little shallower
         // to find one for later visits.
-        if !N::ROOT && excluded.is_null() && depth >= sp.iir_depth && tt_move.get().is_none() {
+        if !N::ROOT && excluded.is_null() && !in_check && depth >= sp.iir_depth && tt_move.get().is_none() {
             depth -= sp.iir_reduction;
         }
 
