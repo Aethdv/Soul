@@ -860,7 +860,7 @@ impl Worker<'_> {
 
         // ── Check Extension (~11 Elo)
         // A check can lead straight into a tactic, so search the evasion too.
-        let depth = if in_check { depth + 1 } else { depth };
+        let mut depth = if in_check { depth + 1 } else { depth };
 
         // ── Static Eval
         // A score for the position without searching moves, used by pruning.
@@ -1067,7 +1067,9 @@ impl Worker<'_> {
         // ── Internal Iterative Reduction (~14 Elo)
         // Without a TT move to guide ordering, search a little shallower
         // to find one for later visits.
-        let depth = if depth >= sp.iir_depth && tt_move.get().is_none() { depth - sp.iir_reduction } else { depth };
+        if !N::ROOT && excluded.is_null() && depth >= sp.iir_depth && tt_move.get().is_none() {
+            depth -= sp.iir_reduction;
+        }
 
         // ──────── Move loop ────────
 
