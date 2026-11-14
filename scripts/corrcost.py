@@ -10,29 +10,31 @@ one depth with both and reports the per-position difference.
 
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
 
 FENS = "src/data/bench.fens"
+SCORE = re.compile(r"score cp (-?\d+) (?!lowerbound|upperbound)")
 
 
 def build(features):
-    target = "target/quick/soul"
     cmd = ["cargo", "build", "--quiet", "--profile", "quick"]
     if features:
         cmd += ["--features", features]
     subprocess.run(cmd, check=True, env={**os.environ, "RUSTFLAGS": "-C target-cpu=native"})
     out = f"/tmp/soul-{features or 'base'}"
-    subprocess.run(["cp", target, out], check=True)
+    shutil.copy2("target/quick/soul", out)
     return out
 
 
 def score(binary, fen, depth):
     out = subprocess.run(
-        [binary, f"position fen {fen}", f"go depth {depth}"], capture_output=True, text=True
+        [binary, f"position fen {fen}", f"go depth {depth}"],
+        capture_output=True, text=True, check=True,
     ).stdout
-    final = re.findall(r"score cp (-?\d+) (?!lowerbound|upperbound)", out + " ")
+    final = SCORE.findall(out + " ")
     return int(final[-1]) if final else None
 
 
@@ -41,7 +43,8 @@ def main():
     limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
 
     base, nocorr = build(""), build("nocorr")
-    fens = [f.strip() for f in open(FENS) if f.strip()][:limit]
+    with open(FENS, encoding="utf-8") as f:
+        fens = [fen for line in f if (fen := line.split("//", 1)[0].strip())][:limit]
 
     deltas = []
     print(f"  {'on':>6} {'off':>6} {'delta':>6}   position")
@@ -53,11 +56,14 @@ def main():
         print(f"  {on:>6} {off:>6} {on - off:>+6}   {fen.split()[0][:32]}")
 
     n = len(deltas)
+    if not n:
+        raise SystemExit("no centipawn scores collected")
+
     ranked = sorted(deltas)
     cut = n // 10
     trimmed = ranked[cut : n - cut] if n > 2 * cut else ranked
     spread = statistics.stdev(deltas) if n > 1 else 0.0
-    error = spread / (n**0.5) if n else 0.0
+    error = spread / (n**0.5)
     print(f"\ndepth {depth}, {n} positions")
     print(f"  mean   {statistics.mean(deltas):+.2f} +- {2 * error:.2f}   (2 standard errors)")
     print(f"  trim   {statistics.mean(trimmed):+.2f}   (10% off each end, {len(trimmed)} positions)")

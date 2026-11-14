@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 event=${FLOP_EVENT:-fp_ret_sse_avx_ops.all}
 
-bin=$(RUSTFLAGS="-C target-cpu=native" cargo test --release -p soul --features dataset --no-run --message-format=json 2>/dev/null \
+bin=$(RUSTFLAGS="-C target-cpu=native" cargo test --quiet --release -p soul --features dataset --no-run --message-format=json \
     | jq -r 'select(.executable != null and .target.kind[0] == "lib") | .executable' | tail -1)
 
 [[ -n $bin ]] || { echo "no lib test binary; cargo test --no-run built nothing" >&2; exit 1; }
@@ -21,12 +21,12 @@ measure() {
     for _ in $(seq "${SOUL_OPS_RUNS:-3}"); do
         SOUL_OPS_MODE=$1 perf stat -x, -e "$event",cycles,task-clock "$bin" bench_gradient_cost --ignored --nocapture 2>&1
     done | awk -F, -v event="$event" '
-        $0 ~ event { ops = $1 }
-        /,cycles/ { if (cyc == "" || $1 + 0 < cyc + 0) cyc = $1 }
-        /task-clock/ { if (ms == "" || $1 + 0 < ms + 0) ms = $1 }
+        $1 ~ /^[0-9]+(\.[0-9]+)?$/ && index($3, event) { ops = $1 }
+        $1 ~ /^[0-9]+$/ && $3 ~ /(^|\/)cycles(:|$)/     { if (cyc == "" || $1 + 0 < cyc + 0) cyc = $1 }
+        $1 ~ /^[0-9]+(\.[0-9]+)?$/ && $3 ~ /^task-clock(:|$)/ { if (ms == "" || $1 + 0 < ms + 0) ms = $1 }
         # Not CSV, so this one splits on whitespace.
         /^positions/ { split($0, field, " "); positions = field[2] }
-        END { print ops, cyc, ms, positions }'
+        END { print ops + 0, cyc + 0, ms + 0, positions + 0 }'
 }
 
 read -r eval_ops eval_cyc eval_ms positions <<<"$(measure eval)"

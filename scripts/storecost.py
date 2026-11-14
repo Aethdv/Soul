@@ -16,6 +16,7 @@ printed beside it to show whether one lucky run carried the verdict.
 
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -32,7 +33,7 @@ def build(label, flags):
         check=True,
     )
     path = f"/tmp/soul-{label}"
-    subprocess.run(["cp", "target/release/soul", path], check=True)
+    shutil.copy2("target/release/soul", path)
     return path
 
 
@@ -46,14 +47,17 @@ def measure(binary):
     text = run.stdout + run.stderr
     counts = {name: int(value.replace(",", "")) for value, name in COUNTERS.findall(text)}
     bench = NODES.search(text)
-    if bench is None:
-        raise SystemExit(f"no bench line from {binary}:\n{text}")
+    if bench is None or "instructions" not in counts or "cycles" not in counts:
+        raise SystemExit(f"missing perf/bench output from {binary}:\n{text}")
 
     return counts["instructions"], counts["cycles"], int(bench.group(1))
 
 
 def main():
     runs = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+    if runs < 1:
+        raise SystemExit(f"runs must be >= 1, got {runs}")
+
     binaries = {label: build(label, flags) for label, flags in BUILDS}
     samples = {label: [] for label in binaries}
     nodes = 0
@@ -61,6 +65,8 @@ def main():
     for _ in range(runs):
         for label, path in binaries.items():
             insn, cycles, count = measure(path)
+            if count <= 0:
+                raise SystemExit(f"{label} reported {count} bench nodes")
             # Per node only means something if both builds walked the same tree.
             if nodes and count != nodes:
                 raise SystemExit(f"{label} searched {count} nodes against {nodes}; the two builds disagree")

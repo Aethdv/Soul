@@ -3,30 +3,10 @@
 # dependencies = ["matplotlib", "numpy", "chess"]
 # ///
 """
-Game evaluation river.
-
-Walks a PGN, evaluates every position, draws advantage as a colored river:
-the line's color tracks who's ahead (green White, red Black, dim near equal),
-filled to the center line, the sharpest swings annotated.
+Game evaluation river from a PGN.
 
     uv run scripts/plot_game.py game.pgn [--engine ./soul] [--nodes 100000]
-
-Two-engine comparison:
     uv run scripts/plot_game.py game.pgn -e ./soul --compare ./other
-
-Options:
-    -e, --engine PATH      primary engine (default: ./soul)
-        --compare PATH     overlay a second engine's read
-    -n, --nodes INT        search nodes per position (default: 100000)
-    -m, --movetime INT     search time per position, milliseconds
-    -t, --threads INT      search threads (default: engine default)
-    -H, --hash MB          transposition table size in MB (default: engine default)
-        --fresh            clear TT/history between positions (independent evals)
-        --clamp INT        fix the y-axis cp range (default: auto from P98)
-    -o, --output PATH      image path (default: <pgn>_eval.png)
-        --dpi INT          output DPI (default: 300)
-        --show             open interactively after saving
-    -wr, --white-relative  treat the engine's score as White-relative
 """
 
 from __future__ import annotations
@@ -53,13 +33,9 @@ except ImportError:
     sys.exit("python-chess is required: pip install chess")
 
 
-# Advantage hues from the shared gradient; the comparison line a subordinate blue.
-WHITE_A = sp.advantage(0.7)   # White ahead, green
-BLACK_A = sp.advantage(-0.7)  # Black ahead, red
-CMP     = "#7d97b8"           # comparison engine
-BLUNDER = BLACK_A
-MISTAKE = sp.GOLD
-GREAT   = WHITE_A
+WHITE_A = sp.advantage(0.7)
+BLACK_A = sp.advantage(-0.7)
+CMP     = "#7d97b8"
 
 
 def _load_game(path: str) -> chess.pgn.Game:
@@ -94,19 +70,16 @@ def _evaluate_game(engine: str, fens: list[str], *, nodes: int | None = None,
         t0 = time.perf_counter()
 
         for i, fen in enumerate(fens, 1):
-            # A checkmated final position has no move for the engine to score (it
-            # returns 0), which would yank the river back off the rail. Pin it to
-            # the winner's side directly: the mated side is the one to move.
+            stm = fen.split()[1]
+            # Mated final position has no legal move so UCI scores 0; pin it to the winner.
             if chess.Board(fen).is_checkmate():
-                r = uci.Score(-uci.MATE if fen.split()[1] == "w" else uci.MATE, 0)
+                r = uci.Score(-uci.MATE if stm == "w" else uci.MATE, 0)
             else:
-                # Clear TT/history.
                 if fresh:
                     eng.new_game()
                 r = eng.search(f"fen {fen}", lim)
-                # White-relative engines already report White's view; otherwise the
-                # score is side-to-move relative, so flip cp *and* mate sign on Black.
-                if not white_relative and fen.split()[1] == "b":
+                # Non-WR engines report side-to-move scores; flip cp and mate sign on Black.
+                if not white_relative and stm == "b":
                     r = uci.Score(-r.cp, -r.mate if r.mate is not None else None)
             out.append(r)
             el  = time.perf_counter() - t0
@@ -115,36 +88,24 @@ def _evaluate_game(engine: str, fens: list[str], *, nodes: int | None = None,
     return out
 
 
-def _winprob(cp: float) -> float:
-    """Centipawns → signed advantage in [−1, 1] via the standard logistic.
-
-    Squashes the unbounded cp scale so the river's color saturates smoothly: a
-    pawn or two reads decisive, tiny edges stay near-neutral, mate-scores cap out.
-    """
-    return 2.0 / (1.0 + 10.0 ** (-cp / 400.0)) - 1.0
+def _logistic(cp, scale: float) -> np.ndarray:
+    return 2.0 / (1.0 + 10.0 ** (-np.asarray(cp, dtype=float) / scale)) - 1.0
 
 
-def _wp_pos(cp, scale: float = 800.0):
-    """cp → display position in [−1, 1] via a logistic, clamped inside the rails.
+def _wp_pos(cp) -> np.ndarray:
+    # 800 cp scale trades near-zero resolution for a gentler slope toward the rails than
+    # the 400 cp win-prob scale; clamping pins mate scores just inside [-1, 1].
+    return np.clip(_logistic(cp, 800.0), -0.9985, 0.9985)
 
-    Plotting the river in this space (on a linear axis) gives the near-zero
-    middlegame room while compressing decisive evals; the clamp pins mate-range
-    to the edge, visible, instead of running to infinity as a true scale would.
-    `scale` is deliberately gentler than the 400 used for true win-probability
-    *color*: it trades a little near-zero resolution for a slower flatten, so the
-    slide into a winning position reads as a slope rather than slamming the rail.
-    """
-    w = 2.0 / (1.0 + 10.0 ** (-np.asarray(cp, dtype=float) / scale)) - 1.0
-    return np.clip(w, -0.9985, 0.9985)
+
+def _series(raw: list[uci.Score], clip_limit: int) -> tuple[np.ndarray, np.ndarray]:
+    evals = np.clip(np.array([s.cp for s in raw], dtype=float), -clip_limit, clip_limit)
+    return evals, sp.ema(evals, 0.40)
 
 
 def _find_swings(evals: np.ndarray, sans: list[str], n: int = 5,
                  min_cp: int = 50, min_gap: int = 3) -> list[tuple[int, int, str]]:
-    """The n largest single-move eval swings, as (half_move_idx, delta_cp, san).
-
-    Greedy by magnitude, but keeps picks ≥ `min_gap` half-moves apart so one
-    decisive sequence doesn't claim every label and pile them in a corner.
-    """
+    """Top `n` single-move cp swings spaced at least `min_gap` plies apart."""
     cands = sorted(
         ((i, int(evals[i] - evals[i - 1]), sans[i])
          for i in range(1, len(evals)) if abs(evals[i] - evals[i - 1]) >= min_cp),
@@ -185,52 +146,49 @@ def plot_game(
     white_relative: bool = False,
     compare_white_relative: bool = False,
 ) -> None:
-    if movetime is not None:
-        nodes = None  # movetime overrides nodes
     game = _load_game(pgn_path)
     fens, sans = _game_positions(game)
     n_pos = len(fens)
-    headers = dict(game.headers)
+    if not n_pos:
+        sys.exit(f"No moves found in '{pgn_path}'")
 
-    white  = headers.get("White",  "White")
-    black  = headers.get("Black",  "Black")
-    result = headers.get("Result", "*")
-    event  = headers.get("Event",  "")
-    date   = headers.get("Date",   "")[:4]
+    headers = game.headers
+    white   = headers.get("White",  "White")
+    black   = headers.get("Black",  "Black")
+    result  = headers.get("Result", "*")
+    event   = headers.get("Event",  "")
+    date    = headers.get("Date",   "")[:4]
+
+    def eval_with(path: str, wr: bool) -> list[uci.Score]:
+        return _evaluate_game(
+            path, fens, nodes=nodes, movetime=movetime, threads=threads,
+            hash_mb=hash_mb, fresh=fresh, white_relative=wr,
+        )
 
     eng_name  = Path(engine).stem
     limit_str = uci.limit_label(nodes=nodes, movetime=movetime)
     print(f"Evaluating {n_pos} positions ({eng_name}, {limit_str}) …")
-    raw1 = _evaluate_game(engine, fens, nodes=nodes, movetime=movetime, threads=threads,
-                          hash_mb=hash_mb, fresh=fresh, white_relative=white_relative)
+    raw1 = eval_with(engine, white_relative)
 
     raw2: list[uci.Score] | None = None
-    cmp_name: str | None   = None
+    cmp_name: str | None = None
 
     if compare:
         cmp_name = Path(compare).stem
         print(f"Evaluating with {cmp_name} …")
-        raw2 = _evaluate_game(compare, fens, nodes=nodes, movetime=movetime, threads=threads,
-                              hash_mb=hash_mb, fresh=fresh, white_relative=compare_white_relative)
+        raw2 = eval_with(compare, compare_white_relative)
 
     clip_limit = clamp if clamp is not None else 30000
-    mate1  = [s.mate for s in raw1]
-    evals1 = np.clip(np.array([s.cp for s in raw1], dtype=float), -clip_limit, clip_limit)
-    sm1    = sp.ema(evals1, 0.40)
-
-    sm2: np.ndarray | None = None
-    y2 = yr2 = None
-
-    if raw2 is not None:
-        evals2 = np.clip(np.array([s.cp for s in raw2], dtype=float), -clip_limit, clip_limit)
-        sm2     = sp.ema(evals2, 0.40)
-        y2, yr2 = _wp_pos(sm2), _wp_pos(evals2)
-
-    # Pre-transform everything into winprob space and plot on a linear axis. The
-    # view auto-zooms to the data: a quiet game fills the axis, a decisive one
-    # spreads to the rails. --clamp fixes the extent in cp if you want it pinned.
+    mate1 = [s.mate for s in raw1]
+    evals1, sm1 = _series(raw1, clip_limit)
     y1, yr1 = _wp_pos(sm1), _wp_pos(evals1)
 
+    y2 = yr2 = None
+    if raw2 is not None:
+        evals2, sm2 = _series(raw2, clip_limit)
+        y2, yr2 = _wp_pos(sm2), _wp_pos(evals2)
+
+    # Plot in bounded win-prob space on a linear axis; auto-zoom unless --clamp fixes cp.
     reach = max(abs(float(y1.min())), abs(float(y1.max())))
 
     if y2 is not None:
@@ -244,13 +202,11 @@ def plot_game(
     fig, ax = plt.subplots(figsize=(14, 6))
     fig.subplots_adjust(top=0.83, bottom=0.09, left=0.07, right=0.96)
 
-    # advantage fills to the center line; interpolate for clean zero crossings
     ax.fill_between(xs, y1, 0, where=(y1 >= 0), color=WHITE_A, alpha=0.14, interpolate=True, zorder=1)
     ax.fill_between(xs, y1, 0, where=(y1 <= 0), color=BLACK_A, alpha=0.14, interpolate=True, zorder=1)
-
     ax.plot(xs, yr1, color=sp.MUTE, alpha=0.20, lw=0.6, zorder=3)
 
-    river_c = np.array([sp.advantage(_winprob(v)) for v in sm1])
+    river_c = np.array([sp.advantage(float(v)) for v in _logistic(sm1, 400.0)])
     sp.gradient_line(ax, xs, y1, river_c, lw=2.0, zorder=4)
 
     if y2 is not None and yr2 is not None:
@@ -258,44 +214,35 @@ def plot_game(
         ax.plot(xs, y2, color=CMP, lw=1.5, ls="--", alpha=0.80, zorder=4)
 
     ax.axhline(0, color=sp.MUTE, lw=0.9, alpha=0.5, zorder=2)
-
     ax.set_xlim(0.5, n_pos + max(n_pos * 0.06, 2))
 
-    # A decisive sequence clusters swings into a tight x-range and their labels
-    # overprint. Pack them into vertical lanes: left to right, each label drops to
-    # the lowest tier whose previous label clears it, so a crowded run fans out
-    # instead of overprinting on one line. Monospace font makes a label's width a
-    # clean char-count × glyph advance, so collisions are known without a trial
-    # render. Above- and below-zero labels pack separately (they can't collide),
-    # and the leader line keeps each label tied to its dot.
+    # Pack swing labels into non-overlapping vertical tiers above/below zero using 7pt mono width.
     ax_w_in = ax.get_position().width * fig.get_size_inches()[0]
     xlo, xhi = ax.get_xlim()
-    glyph_dx = (7 * 0.6 / 72) * (xhi - xlo) / ax_w_in   # one 7pt mono glyph, in data-x
-    lanes_up: list[float] = []   # rightmost x consumed per tier, above zero
-    lanes_dn: list[float] = []   # ditto below zero
+    glyph_dx = (7 * 0.6 / 72) * (xhi - xlo) / ax_w_in
+    lanes_up: list[float] = []
+    lanes_dn: list[float] = []
 
-    for idx, delta, san in sorted((s for s in swings if s[0] < n_pos), key=lambda s: s[0]):
+    for idx, delta, san in sorted(swings, key=lambda s: s[0]):
         y = float(y1[idx])
-        is_white = (idx % 2 == 0)
-        good_for_mover = (delta > 0) if is_white else (delta < 0)
+        good_for_mover = (delta > 0) if (idx % 2 == 0) else (delta < 0)
         ad = abs(delta)
 
         if ad >= 100 and not good_for_mover:
-            col = BLUNDER
+            col = BLACK_A
         elif ad >= 70 and good_for_mover:
-            col = GREAT
+            col = WHITE_A
         else:
-            col = MISTAKE
+            col = sp.GOLD
 
-        # Mate reads as #N, not the meaningless cp delta into the sentinel.
+        # Mate reads as #N, not the cp delta into the mate sentinel.
         m = mate1[idx]
         detail = f"#{abs(m)}" if m is not None else f"{delta:+d}"
         text = f"{_move_label(idx, san)}  ({detail})"
 
-        # Drop into the lowest free tier on this side, then claim its right edge.
         lanes = lanes_up if y >= 0 else lanes_dn
         half = len(text) * glyph_dx / 2 + glyph_dx
-        left, right = xs[idx] - half, xs[idx] + half
+        left, right = float(xs[idx]) - half, float(xs[idx]) + half
         tier = next((t for t, redge in enumerate(lanes) if left > redge), len(lanes))
 
         if tier == len(lanes):
@@ -310,7 +257,7 @@ def plot_game(
             xy=(xs[idx], y), xytext=(0, side * (16 + tier * 13)), textcoords="offset points",
             ha="center", va="bottom" if side > 0 else "top",
             fontsize=7, color=col, zorder=8,
-            arrowprops=dict(arrowstyle="-", color=col, lw=0.6, alpha=0.40),
+            arrowprops={"arrowstyle": "-", "color": col, "lw": 0.6, "alpha": 0.40},
             path_effects=[pe.withStroke(linewidth=2.0, foreground=sp.PANEL)],
         )
 
@@ -319,12 +266,9 @@ def plot_game(
     ax.set_xticks(ticks)
     ax.set_xticklabels([str(t // 2) for t in ticks], fontsize=8)
     ax.set_xlabel("move", labelpad=8)
-
-    # Linear axis in winprob space, symmetric about zero, padded to the data.
     ax.set_ylim(-edge, edge)
 
-    # cp tick ladder placed at winprob positions, thinned so the compressed upper
-    # region never collides: keep a rung only a readable gap from the last kept.
+    # Keep cp rungs >= 0.07 apart in winprob space so top labels stay readable.
     ladder = [50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600]
     pos, last_w = [], 0.0
 
@@ -343,13 +287,11 @@ def plot_game(
     ax.set_yticklabels([f"{v:+d}" if v else "0" for v in cps], fontsize=8)
     ax.set_ylabel("centipawns", labelpad=8)
 
-    # No grain here: it samples uniformly in data coords, which the winprob
-    # y-scale would squash into smeared bands up top. The river's fills carry the
-    # texture instead.
+    # No grain: uniform data-coord grain squashes near the top of the winprob y-scale.
     sp.style_axes(ax, grid=True, grain=False)
 
-    # legend only when comparing: proxy handles (the river is multi-colored)
-    if sm2 is not None:
+    # Proxy handles because the river changes color along x.
+    if y2 is not None:
         handles = [Line2D([0], [0], color=sp.TEXT, lw=2.0, label=eng_name),
                    Line2D([0], [0], color=CMP, lw=1.6, ls="--", label=cmp_name)]
         leg = ax.legend(handles=handles, fontsize=8, facecolor=sp.PANEL,
@@ -393,28 +335,31 @@ def main() -> None:
     ap.add_argument("--output", "-o", default=None)
     ap.add_argument("--dpi", type=int, default=sp.DPI)
     ap.add_argument("--show", action="store_true")
-    ap.add_argument("--white-relative", "-wr", action="store_true", default=False)
+    ap.add_argument("--white-relative", "-wr", action="store_true", default=False,
+                    help="treat preceding engine's score as White-relative")
     args = ap.parse_args()
 
-    # --white-relative pairs with the most recently named engine/compare:
-    #   --engine ./soul -wr --compare ./other -wr
+    # -wr / --white-relative pairs with the most recently named --engine or --compare.
     wr_engine = wr_compare = False
     last = ""
 
     for a in sys.argv[1:]:
-        if a in ("--engine", "-e"):
+        flag = a.split("=", 1)[0]
+        if flag in ("--engine", "-e"):
             last = "engine"
-        elif a == "--compare":
+        elif flag == "--compare":
             last = "compare"
-        elif a in ("--white-relative", "-wr"):
+        elif flag in ("--white-relative", "-wr"):
             if last == "compare":
                 wr_compare = True
             else:
                 wr_engine = True
 
     plot_game(
-        args.pgn, args.engine, args.compare, args.nodes, args.movetime, args.threads,
-        args.hash, args.fresh, args.clamp, args.output, args.dpi, args.show, wr_engine, wr_compare,
+        args.pgn, engine=args.engine, compare=args.compare, nodes=args.nodes,
+        movetime=args.movetime, threads=args.threads, hash_mb=args.hash, fresh=args.fresh,
+        clamp=args.clamp, output=args.output, dpi=args.dpi, show=args.show,
+        white_relative=wr_engine, compare_white_relative=wr_compare,
     )
 
 
