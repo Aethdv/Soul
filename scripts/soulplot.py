@@ -217,8 +217,8 @@ def glow_column(ax, x, center, half, color, *, width: float = 8, max_alpha: floa
 
 def gradient_line(ax, x, y, colors, *, lw: float = 2.0, zorder: float = 4, capstyle: str = "round"):
     """Polyline colored per-vertex; each segment takes the mean of its endpoint colors."""
-    points = np.column_stack([np.asarray(x, float), np.asarray(y, float)]).reshape(-1, 1, 2)
-    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    pts = np.column_stack([np.asarray(x, float), np.asarray(y, float)])
+    segments = list(np.stack([pts[:-1], pts[1:]], axis=1))
     c = np.asarray(colors, dtype=float)
     lc = LineCollection(segments, colors=0.5 * (c[:-1] + c[1:]), linewidths=lw,
                         zorder=zorder, capstyle=capstyle)
