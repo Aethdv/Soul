@@ -1,8 +1,4 @@
-"""What correction history does to the score, measured against a build without it.
-
-Builds the engine twice from one tree, the second with `nocorr`, which sends
-`corrected_eval` back to the raw evaluation. Searches every position in a suite to
-one depth with both and reports the per-position difference.
+"""Score difference from correction history (`--features nocorr`) over a FEN suite.
 
     python3 scripts/corrcost.py            # depth 20 over src/data/bench.fens
     python3 scripts/corrcost.py 24 30      # depth 24, first 30 positions

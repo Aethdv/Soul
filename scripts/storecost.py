@@ -1,17 +1,7 @@
-"""What XorBoard costs, measured against a build without it.
+"""Compare perf instructions and cycles with and without `XorBoard` (`--features nostore`).
 
-Builds the engine twice from one tree, the second with `nostore`, which drops
-the store and sends `checkers` and the picker's threat map back to their
-from-scratch forms. Runs both under perf, interleaved so clock drift cannot
-favor one, and reports per node.
-
-    make storecost          # 5 runs each
+    make storecost          # 5 interleaved bench runs each
     make storecost RUNS=9
-
-Instructions are deterministic, so a difference of zero between the two
-binaries means the feature gate did not take. Cycles are not: the minimum is
-the honest estimator, since interference only ever adds, and the median is
-printed beside it to show whether one lucky run carried the verdict.
 """
 
 import os
@@ -65,7 +55,6 @@ def main():
     for _ in range(runs):
         for label, path in binaries.items():
             insn, cycles, count = measure(path)
-            # Per node only means something if both builds walked the same tree.
             if nodes and count != nodes:
                 raise SystemExit(f"{label} searched {count} nodes against {nodes}; the two builds disagree")
             nodes = count
