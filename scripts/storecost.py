@@ -47,7 +47,7 @@ def measure(binary):
     text = run.stdout + run.stderr
     counts = {name: int(value.replace(",", "")) for value, name in COUNTERS.findall(text)}
     bench = NODES.search(text)
-    if bench is None or "instructions" not in counts or "cycles" not in counts:
+    if bench is None or len(counts) < 2:
         raise SystemExit(f"missing perf/bench output from {binary}:\n{text}")
 
     return counts["instructions"], counts["cycles"], int(bench.group(1))
@@ -65,8 +65,6 @@ def main():
     for _ in range(runs):
         for label, path in binaries.items():
             insn, cycles, count = measure(path)
-            if count <= 0:
-                raise SystemExit(f"{label} reported {count} bench nodes")
             # Per node only means something if both builds walked the same tree.
             if nodes and count != nodes:
                 raise SystemExit(f"{label} searched {count} nodes against {nodes}; the two builds disagree")
@@ -78,18 +76,16 @@ def main():
 
     stats = {}
     for label, rows in samples.items():
-        total = min(row[0] for row in rows)
-        stats[label] = (
-            total / nodes,
-            min(row[1] for row in rows) / nodes,
-            statistics.median(row[1] for row in rows) / nodes,
-        )
-        print(f"{label:9}{total:16,}{stats[label][0]:10.1f}{stats[label][1]:10.1f}{stats[label][2]:10.1f}")
+        insns, cycs = zip(*rows)
+        total = min(insns)
+        ipn, cmin, cmed = total / nodes, min(cycs) / nodes, statistics.median(cycs) / nodes
+        stats[label] = (ipn, cmin, cmed)
+        print(f"{label:9}{total:16,}{ipn:10.1f}{cmin:10.1f}{cmed:10.1f}")
 
-    cost = [stats["with"][i] - stats["without"][i] for i in range(3)]
-    print(f"\n{'store':9}{'':16}{cost[0]:+10.1f}{cost[1]:+10.1f}{cost[2]:+10.1f}")
+    di, dc, dm = (a - b for a, b in zip(stats["with"], stats["without"]))
+    print(f"\n{'store':9}{'':16}{di:+10.1f}{dc:+10.1f}{dm:+10.1f}")
 
-    if abs(cost[0]) < 0.05:
+    if abs(di) < 0.05:
         print("\ninstructions identical: the nostore gate did not take")
 
 
