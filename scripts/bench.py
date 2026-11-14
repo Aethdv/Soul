@@ -3,22 +3,13 @@
 # dependencies = []
 # ///
 """
-Runs `./engine bench` in N parallel processes and pools their nps, mirroring how an
-OpenBench worker measures speed: N independent single-threaded benches contending
-for cache and memory bandwidth, not one clean solo run. That contended mean is the
-figure comparable to what OB reports; a lone `soul bench` already gives peak
-single-threaded nps, so re-running it sequentially would only re-measure the peak.
+Concurrent `bench` runner, matching how an OpenBench worker measures speed.
+
+Runs N single-threaded benches in parallel so they contend for cache and memory
+bandwidth (`workers` defaults to `cpu_count // 2` for physical cores under
+2-way SMT). Stdlib-only so it can be copied next to any engine.
 
     uv run scripts/bench.py [workers] [sets]
-
-  workers  concurrent benches per batch  (default: cpu_count // 2)
-  sets     batches to pool               (default: 1)
-
-The default halves the logical CPU count to land on physical cores in the common
-two-way-hyperthreading case, the way an OB worker's concurrency is set; on a box
-without HT, pass the core count. The spread color flags a choice running too hot.
-
-Single file, standard library only: drop it next to any engine and it works.
 """
 
 from __future__ import annotations
@@ -35,27 +26,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 ENGINE = "./soul"
 
-# `<nodes> nodes <nps> nps`, with or without a leading `Bench:`.
-# Take the last match so any info/progress lines printed ahead of it don't win.
+# Take the last match so earlier progress/info lines do not win.
 _SUMMARY = re.compile(r"(\d+)\s+nodes\s+(\d+)\s+nps")
 
 _TTY = sys.stdout.isatty()
-_GOLD = "1;38;2;230;180;80" # the headline nps
-_DIM  = "38;2;138;126;104"  # labels and secondary numbers
+_GOLD = "1;38;2;230;180;80"
+_DIM  = "38;2;138;126;104"
 
 
 def paint(text: str, code: str) -> str:
-    """ANSI-wrap `text` on a tty; leave it plain when piped or redirected."""
     return f"\x1b[{code}m{text}\x1b[0m" if _TTY else text
 
 
 def spread_color(spread: float, *, good: float = 0.025, noisy: float = 0.12) -> str:
-    """ANSI truecolor for a spread fraction: green when tight, red when noisy.
-
-    Interpolated in OkLCH, so the hue sweeps through amber as the spread grows
-    instead of snapping between buckets. The anchors span the range that matters:
-    `good` is a realistic-best spread, `noisy` is a batch worth distrusting.
-    """
+    """ANSI truecolor for spread fraction: green at `good`, red at `noisy`."""
     t = min(max((spread - good) / (noisy - good), 0.0), 1.0)
     green, red = (0.76, 0.16, 145.0), (0.64, 0.17, 22.0)
     L, C, H = (a + (b - a) * t for a, b in zip(green, red))
@@ -64,11 +48,6 @@ def spread_color(spread: float, *, good: float = 0.025, noisy: float = 0.12) -> 
 
 
 def _oklch_to_srgb(L: float, C: float, H: float) -> tuple[float, float, float]:
-    """OkLCH (lightness, chroma, hue°) → sRGB in [0, 1].
-
-    Oklab's perceptual space: a straight line between two colors reads as an even
-    gradient, where the same lerp in raw sRGB would muddy through grey.
-    """
     a, b = C * math.cos(math.radians(H)), C * math.sin(math.radians(H))
     l_ = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3
     m_ = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3
@@ -86,19 +65,14 @@ def _oklch_to_srgb(L: float, C: float, H: float) -> tuple[float, float, float]:
 
 
 def bench_once(engine: str) -> tuple[int, int] | None:
-    """One `soul bench` → (nodes, nps), or None if it didn't run or didn't parse."""
     try:
-        out = subprocess.run([engine, "bench"], capture_output=True, text=True, timeout=120).stdout
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        res = subprocess.run([engine, "bench"], check=False, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    matches = _SUMMARY.findall(out)
+    if res.returncode != 0:
+        return None
+    matches = _SUMMARY.findall(res.stdout)
     return (int(matches[-1][0]), int(matches[-1][1])) if matches else None
-
-
-def run_batch(engine: str, workers: int) -> list[tuple[int, int]]:
-    """`workers` benches at once; the contention between them is the measurement."""
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        return [r for r in pool.map(lambda _: bench_once(engine), range(workers)) if r]
 
 
 def main() -> None:
@@ -110,14 +84,19 @@ def main() -> None:
     args = ap.parse_args()
     engine, workers, sets = args.engine, args.workers, args.sets
 
-    bench_once(engine)  # warm the binary into page cache so the first timed run isn't cold
-    runs = [r for _ in range(sets) for r in run_batch(engine, workers)]
+    if workers < 1 or sets < 1:
+        ap.error("workers and sets must be >= 1")
+
+    # Warm the binary in page cache before timing.
+    if bench_once(engine) is None:
+        sys.exit(f"error: no bench completed; is {engine} built?")
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        runs = [r for _ in range(sets) for r in pool.map(lambda _: bench_once(engine), range(workers)) if r]
 
     if not runs:
-        sys.exit(f"error: no bench completed — is {engine} built?")
+        sys.exit(f"error: no bench completed; is {engine} built?")
 
-    # A deterministic bench reports the same node count every run; a split means
-    # the search is non-deterministic, which is a real bug worth surfacing.
     nodes = {n for n, _ in runs}
     if len(nodes) != 1:
         sys.exit(f"error: non-deterministic bench, node counts differ: {sorted(nodes)}")
@@ -125,7 +104,7 @@ def main() -> None:
     speeds = sorted(nps for _, nps in runs)
     mean = sum(speeds) // len(speeds)
     median = statistics.median(speeds)
-    spread = (speeds[-1] - speeds[0]) / median  # run-to-run range; the trust signal
+    spread = (speeds[-1] - speeds[0]) / median
     label = f"{workers}-wide" + (f" × {sets} sets" if sets > 1 else "")
 
     detail = (f"median {median:,.0f}   min {speeds[0]:,}   max {speeds[-1]:,}"
