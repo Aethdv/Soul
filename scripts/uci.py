@@ -2,14 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""
-uci - a small UCI engine harness for the engine-driven plotters.
-
-A line-buffered subprocess with a background reader thread, the UCI handshake,
-and one search primitive. Engine-agnostic: it speaks the protocol and nothing
-more, so it drives any UCI engine. Score sign conventions (white-relative,
-side-to-move) are left to the callers.
-"""
+"""Minimal UCI engine subprocess wrapper."""
 
 from __future__ import annotations
 
@@ -25,22 +18,17 @@ MATE = 29_000
 
 
 class Score(NamedTuple):
-    """A search result. `cp` is stm-relative centipawns with mate mapped to ±MATE
-    (so it positions and sorts sanely); `mate` is the signed moves-to-mate from
-    the engine (stm view, + = stm mates), or None for a normal eval."""
+    """Stm-relative search score (`mate` mapped to `±MATE` in `cp`)."""
     cp: int
     mate: int | None = None
 
 
 def limit_str(*, nodes: int | None = None, movetime: int | None = None,
               depth: int | None = None) -> str:
-    """UCI `go` limit clause from whichever budget is set (depth > movetime > nodes)."""
     if depth is not None:
         return f"depth {depth}"
-
     if movetime is not None:
         return f"movetime {movetime}"
-
     if nodes is not None:
         return f"nodes {nodes}"
     raise ValueError("limit_str: supply one of nodes / movetime / depth")
@@ -51,22 +39,15 @@ def limit_label(*, nodes: int | None = None, movetime: int | None = None,
     """Hooman readable search budget: 'depth 8' / '200ms' / '100,000 nodes'."""
     if depth is not None:
         return f"depth {depth}"
-
     if movetime is not None:
         return f"{movetime}ms"
-
     if nodes is not None:
         return f"{nodes:,} nodes"
     return "?"
 
 
 class UCIEngine:
-    """A UCI engine subprocess; use as a context manager.
-
-    `search` returns the engine's reported score in centipawns from the
-    side-to-move's perspective, mate mapped to ±MATE. Callers apply their own
-    perspective convention (negate for opponent-to-move, etc.).
-    """
+    """UCI engine subprocess; use as a context manager. `search` returns stm-relative scores."""
 
     def __init__(self, path: str, *, threads: int | None = None, hash_mb: int | None = None,
                  timeout: float = 120.0) -> None:
@@ -82,34 +63,39 @@ class UCIEngine:
             stderr=subprocess.DEVNULL, text=True, bufsize=1,
         )
 
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue[str | None] = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
-        self._cmd("uci");     self._wait("uciok")
 
-        if threads is not None:
-            self._cmd(f"setoption name Threads value {threads}")
+        try:
+            self._cmd("uci");     self._wait("uciok")
 
-        if hash_mb is not None:
-            self._cmd(f"setoption name Hash value {hash_mb}")
-        self._cmd("isready"); self._wait("readyok")
+            if threads is not None:
+                self._cmd(f"setoption name Threads value {threads}")
+
+            if hash_mb is not None:
+                self._cmd(f"setoption name Hash value {hash_mb}")
+            self._cmd("isready"); self._wait("readyok")
+        except Exception:
+            self.close()
+            raise
 
     def new_game(self) -> None:
-        """Reset search state between unrelated positions (clears TT/history)."""
         self._cmd("ucinewgame")
         self._cmd("isready")
         self._wait("readyok")
 
     def search(self, position: str, limit: str) -> Score:
-        """`position <position>` then `go <limit>`; return the stm-relative Score."""
+        """Send `position <position>` and `go <limit>`; return stm-relative `Score`."""
         self._cmd(f"position {position}")
         self._cmd(f"go {limit}")
         cp, mate = 0, None
 
         while True:
-            line = self._get()
-            tokens = line.split()
+            tokens = self._get().split()
+            if not tokens:
+                continue
 
-            if "score" in tokens:
+            if tokens[0] == "info" and "score" in tokens:
                 try:
                     score_i = tokens.index("score")
                     kind, val = tokens[score_i + 1], int(tokens[score_i + 2])
@@ -121,47 +107,55 @@ class UCIEngine:
                 except (ValueError, IndexError):
                     pass
 
-            if line.startswith("bestmove"):
+            if tokens[0] == "bestmove":
                 return Score(cp, mate)
 
     def _read(self) -> None:
         assert self._proc.stdout
-
-        for line in self._proc.stdout:
-            self._q.put(line.rstrip())
+        try:
+            for line in self._proc.stdout:
+                self._q.put(line.rstrip())
+        finally:
+            self._q.put(None)
 
     def _cmd(self, s: str) -> None:
         assert self._proc.stdin
         self._proc.stdin.write(s + "\n")
         self._proc.stdin.flush()
 
-    def _get(self) -> str:
+    def _get(self, timeout: float | None = None) -> str:
+        wait = self._timeout if timeout is None else timeout
         try:
-            return self._q.get(timeout=self._timeout)
+            line = self._q.get(timeout=wait)
         except queue.Empty:
             raise TimeoutError("Engine unresponsive") from None
+        if line is None:
+            raise EOFError(f"Engine exited (rc={self._proc.poll()})")
+        return line
 
     def _wait(self, tok: str) -> None:
         deadline = time.monotonic() + self._timeout
 
         while True:
             remaining = deadline - time.monotonic()
-
             if remaining <= 0:
                 raise TimeoutError(f"Timed out waiting for '{tok}'")
-            try:
-                if tok in self._q.get(timeout=remaining):
-                    return
-            except queue.Empty:
-                raise TimeoutError(f"Timed out waiting for '{tok}'") from None
+            if self._get(remaining).split()[:1] == [tok]:
+                return
 
     def close(self) -> None:
         try:
-            self._cmd("quit")
-            self._proc.wait(timeout=3)
-        except Exception:
+            if self._proc.poll() is None:
+                self._cmd("quit")
+                self._proc.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
             self._proc.kill()
             self._proc.wait()
+        if self._proc.stdin is not None:
+            try:
+                self._proc.stdin.close()
+            except OSError:
+                pass
 
     def __enter__(self) -> UCIEngine:
         return self
