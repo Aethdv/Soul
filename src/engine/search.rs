@@ -1091,7 +1091,8 @@ impl Worker<'_> {
                 // are our worst guesses. Scout them at reduced depth; if one beats
                 // alpha, search it again at full depth.
                 let reduction = if depth >= sp.lmr_min_depth && i >= 1 && mv.is_quiet() && !in_check {
-                    searcher.cfg.lmr(depth, i + 1) / LMR_SCALE
+                    let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
+                    searcher.cfg.lmr(depth, i + 1).clamp(0, max_r) / LMR_SCALE
                 } else {
                     0
                 };
