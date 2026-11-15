@@ -19,7 +19,7 @@ use crate::core::board::xorboard::Snapshot as XbSnapshot;
 use crate::engine::history::CORRECTION_SCALE;
 use crate::{
     core::{
-        board::{Position, attacks::Pins, xorboard::XorBoard},
+        board::{Position, StateInfo, attacks::Pins, xorboard::XorBoard},
         defs::{
             Bitboard, Color, INF, LANE_PHASE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Protocol, Square, draw_score, is_loss,
             is_mate, is_win, mate_in, mated_in,
@@ -204,6 +204,11 @@ struct MoveResult {
     best_eval:  i32,
     alpha:      i32,
     best_move:  Move,
+}
+
+struct MoveUndo {
+    state: StateInfo,
+    acc:   I16x8,
 }
 
 /// Time, the node limit or a stop command cut the search short.
@@ -1015,12 +1020,8 @@ impl Worker<'_> {
 
                 self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
                 self.stack[ply].moved_to = mv.to();
-                let saved_acc = self.accumulator;
-                let undo = self.pos.make_move(mv, &mut self.accumulator);
-                self.xb_update(mv);
-
+                let undo = self.push_move(&mut searcher.zobrist_trail, mv);
                 searcher.tt.prefetch(self.pos.hash);
-                searcher.zobrist_trail.push(self.pos.hash);
 
                 let qscore = self.qsearch::<NonPvNode>(searcher, -probcut_beta, -probcut_beta + 1, ply + 1, Some(mv.to()), 0);
                 let value = match qscore {
@@ -1040,10 +1041,7 @@ impl Worker<'_> {
                     Err(e) => Err(e),
                 };
 
-                searcher.zobrist_trail.pop();
-                self.pos.unmake_move(mv, &undo);
-                self.xb_restore(mv, ply);
-                self.accumulator = saved_acc;
+                self.pop_move(&mut searcher.zobrist_trail, mv, ply, undo);
 
                 let value = value?;
                 if value >= probcut_beta {
@@ -1513,10 +1511,7 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
         self.stack[ply].moved_to = mv.to();
-        let saved_acc = self.accumulator;
-        let undo = self.pos.make_move(mv, &mut self.accumulator);
-        self.xb_update(mv);
-
+        let undo = self.push_move(&mut searcher.zobrist_trail, mv);
         searcher.tt.prefetch(self.pos.hash);
 
         // ── Gives-Check LMR Adjustment (~4 Elo)
@@ -1526,7 +1521,6 @@ impl Worker<'_> {
         }
 
         res.move_count += 1;
-        searcher.zobrist_trail.push(self.pos.hash);
 
         if N::ROOT {
             searcher.print_currmove(depth, mv, res.move_count);
@@ -1546,10 +1540,7 @@ impl Worker<'_> {
             cut_node,
         );
 
-        searcher.zobrist_trail.pop();
-        self.pos.unmake_move(mv, &undo);
-        self.xb_restore(mv, ply);
-        self.accumulator = saved_acc;
+        self.pop_move(&mut searcher.zobrist_trail, mv, ply, undo);
 
         let eval = eval?;
 
@@ -1785,19 +1776,12 @@ impl Worker<'_> {
                 continue;
             }
 
-            let saved_acc = self.accumulator;
-            let undo = self.pos.make_move(mv, &mut self.accumulator);
-            self.xb_update(mv);
-
+            let undo = self.push_move(&mut searcher.zobrist_trail, mv);
             moves_made += 1;
-            searcher.zobrist_trail.push(self.pos.hash);
 
             let score = self.qsearch::<N>(searcher, -beta, -alpha, ply + 1, Some(mv.to()), qs_ply + 1);
 
-            searcher.zobrist_trail.pop();
-            self.pos.unmake_move(mv, &undo);
-            self.xb_restore(mv, ply);
-            self.accumulator = saved_acc;
+            self.pop_move(&mut searcher.zobrist_trail, mv, ply, undo);
 
             let score = -score?;
             if score > best_eval {
@@ -1831,6 +1815,23 @@ impl Worker<'_> {
             .store_qs(self.pos.hash, ply, best_eval, best_move, bound, N::PV || qs_tt.pv, raw_eval);
 
         Ok(best_eval)
+    }
+
+    #[inline(always)]
+    fn push_move(&mut self, trail: &mut Vec<u64>, mv: Move) -> MoveUndo {
+        let acc = self.accumulator;
+        let state = self.pos.make_move(mv, &mut self.accumulator);
+        self.xb_update(mv);
+        trail.push(self.pos.hash);
+        MoveUndo { state, acc }
+    }
+
+    #[inline(always)]
+    fn pop_move(&mut self, trail: &mut Vec<u64>, mv: Move, ply: usize, undo: MoveUndo) {
+        trail.pop();
+        self.pos.unmake_move(mv, &undo.state);
+        self.xb_restore(mv, ply);
+        self.accumulator = undo.acc;
     }
 
     #[inline]
