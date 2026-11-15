@@ -333,6 +333,7 @@ impl MovePicker {
     fn gen_pawn_caps(&mut self, board: &Position, us: Bitboard, them: Bitboard, history: &History) {
         let stm = board.stm;
         let pawns = board.role_bb[PieceType::Pawn] & us;
+        let attacker_pen = *debug_index!(self.mvvlva_attacker, PieceType::Pawn as usize);
 
         let targets = if stm == Color::White {
             [(9i8, pawns.shift(Direction::NorthEast) & them), (7i8, pawns.shift(Direction::NorthWest) & them)]
@@ -351,19 +352,26 @@ impl MovePicker {
             }
             for to in standard {
                 let from = to.offset_unchecked(-delta);
-                self.add_cap(board, Move::new(from, to, Move::CAPTURE), PieceType::Pawn, history);
+                let victim = board.piece_at(to);
+                let mvv = *debug_index!(self.mvvlva_victim, victim as usize) - attacker_pen;
+                self.add_cap(Move::new(from, to, Move::CAPTURE), PieceType::Pawn, victim, mvv, stm, history);
             }
         }
 
         if let Some(ep_sq) = board.en_passant {
             for from in atk_pawn(ep_sq, stm.opposite()) & pawns {
-                self.add_cap(board, Move::new(from, ep_sq, Move::EP_CAPTURE), PieceType::Pawn, history);
+                let mv = Move::new(from, ep_sq, Move::EP_CAPTURE);
+                self.add_cap(mv, PieceType::Pawn, PieceType::Pawn, self.mvvlva_ep, stm, history);
             }
         }
     }
 
     #[inline(always)]
-    fn cap_score(&self, mvv: i32, chist: i32) -> i32 { mvv + chist / self.capt_hist_divisor }
+    fn add_cap(&mut self, mv: Move, attacker: PieceType, victim: PieceType, mvv: i32, stm: Color, history: &History) {
+        let chist = history.score_capture(stm, attacker, mv.to(), victim);
+        let score = mvv + chist / self.capt_hist_divisor;
+        self.add_scored(mv, score as MoveScore);
+    }
 
     #[inline]
     fn gen_piece_caps<const PT: PieceType>(
@@ -381,10 +389,8 @@ impl MovePicker {
         for from in board.role_bb[PT as usize] & us {
             for to in Self::attacks::<PT>(rows, from, occ) & them {
                 let victim = board.piece_at(to);
-                let victim_val = *debug_index!(self.mvvlva_victim, victim as usize);
-                let chist = history.score_capture(stm, PT, to, victim);
-                let score = self.cap_score(victim_val - attacker_pen, chist);
-                self.add_scored(Move::new(from, to, Move::CAPTURE), score as MoveScore);
+                let mvv = *debug_index!(self.mvvlva_victim, victim as usize) - attacker_pen;
+                self.add_cap(Move::new(from, to, Move::CAPTURE), PT, victim, mvv, stm, history);
             }
         }
     }
@@ -397,24 +403,6 @@ impl MovePicker {
         debug_assert!(self.count < MAX_MOVES, "MovePicker capacity exceeded");
         debug_index_mut!(self.candidates, self.count).write(packed);
         self.count += 1;
-    }
-
-    /// Excludes promotion-captures.
-    #[inline]
-    fn add_cap(&mut self, board: &Position, mv: Move, attacker: PieceType, history: &History) {
-        let victim = board.captured_piece(mv);
-        let mvv = if mv.is_en_passant() {
-            self.mvvlva_ep as MoveScore
-        } else {
-            debug_assert!(mv.promo().is_none(), "mvv_lva is only reached by non-promotion captures");
-            debug_assert!(usize::from(victim) < self.mvvlva_victim.len());
-            debug_assert!(usize::from(attacker) < self.mvvlva_attacker.len());
-            let v = *debug_index!(self.mvvlva_victim, victim as usize);
-            let a = *debug_index!(self.mvvlva_attacker, attacker as usize);
-            (v - a) as MoveScore
-        };
-        let chist = history.score_capture(board.stm, attacker, mv.to(), victim);
-        self.add_scored(mv, self.cap_score(mvv as i32, chist) as MoveScore);
     }
 
     #[inline]
