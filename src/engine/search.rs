@@ -828,6 +828,7 @@ impl Worker<'_> {
 
         let alpha_orig = alpha;
         let excluded = self.stack[ply].excluded;
+        let all_node = !N::PV && !cut_node;
 
         // ── TT Probe (~128 Elo)
         // Have we seen this position before? Different move orders often reach the
@@ -985,7 +986,7 @@ impl Worker<'_> {
         // ── Internal Iterative Reduction (~14 Elo)
         // Without a TT move to guide ordering, search a little shallower
         // to find one for later visits.
-        if !N::ROOT && excluded.is_null() && depth >= sp.iir_depth && tt_move.get().is_none() {
+        if !N::ROOT && !all_node && excluded.is_null() && depth >= sp.iir_depth && tt_move.get().is_none() {
             depth -= sp.iir_reduction;
         }
 
