@@ -1155,15 +1155,6 @@ impl Worker<'_> {
                     appended_quiet = true;
                 }
 
-                let mut appended_capture = false;
-
-                if mv.is_capture() && !mv.is_promotion() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
-                    let count = self.stack[ply].capture_count;
-                    self.stack[ply].capture_moves[count] = mv;
-                    self.stack[ply].capture_count += 1;
-                    appended_capture = true;
-                }
-
                 // ── Futility Pruning (~10 Elo)
                 // At shallow depth, skip quiet moves whose eval is too low to raise alpha.
                 if !in_check
@@ -1366,12 +1357,17 @@ impl Worker<'_> {
 
                     // ── Capture Malus
                     // MVV-LVA favors material-rich captures; capture history learns which ones keep failing.
-                    let capture_limit = self.stack[ply].capture_count - appended_capture as usize;
-                    for i in 0..capture_limit {
+                    for i in 0..self.stack[ply].capture_count {
                         let cm = self.stack[ply].capture_moves[i];
                         self.update_capture_history(cm, -bonus);
                     }
                     break;
+                }
+
+                if mv.is_capture() && !mv.is_promotion() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
+                    let count = self.stack[ply].capture_count;
+                    self.stack[ply].capture_moves[count] = mv;
+                    self.stack[ply].capture_count += 1;
                 }
             }
         }
