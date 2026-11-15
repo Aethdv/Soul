@@ -390,22 +390,16 @@ impl<'cfg> Searcher<'cfg> {
             return None;
         }
 
-        if self.root_moves.is_empty() {
-            if !self.cfg.limits.silent {
-                println!("bestmove 0000");
-            }
-            return None;
-        }
-
-        if !self.cfg.limits.searchmoves.is_empty() {
+        if !self.root_moves.is_empty() && !self.cfg.limits.searchmoves.is_empty() {
             self.root_moves.retain(|rm| self.cfg.limits.searchmoves.contains(&rm.mv));
             if self.root_moves.is_empty() {
                 eprintln!("info string error: no legal moves match searchmoves");
-                if !self.cfg.limits.silent {
-                    println!("bestmove 0000");
-                }
-                return None;
             }
+        }
+
+        if self.root_moves.is_empty() {
+            self.print_best_move(None);
+            return None;
         }
 
         let depth_limit = match (self.cfg.limits.mate, self.cfg.limits.depth) {
@@ -562,16 +556,33 @@ impl<'cfg> Searcher<'cfg> {
             }
         }
 
-        if !self.cfg.limits.silent {
-            let best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
-            match self.cfg.limits.protocol {
-                Protocol::Uci => println!("bestmove {}", best.to_uci(self.root_pos.frc_notation)),
-                Protocol::XBoard => println!("move {}", best.to_xboard(self.root_pos.frc_notation)),
-            }
-            let _ = io::stdout().flush();
-        }
+        let best = self.prev_pv.get(0).unwrap_or(self.root_moves[0].mv);
+        self.print_best_move(Some(best));
+        Some(best)
+    }
 
-        self.prev_pv.get(0).or_else(|| self.root_moves.first().map(|rm| rm.mv))
+    fn print_best_move(&self, best: Option<Move>) {
+        if self.cfg.limits.silent {
+            return;
+        }
+        match (self.cfg.limits.protocol, best) {
+            (Protocol::Uci, mv) => println!("bestmove {}", mv.unwrap_or(Move::null()).to_uci(self.root_pos.frc_notation)),
+            (Protocol::XBoard, Some(mv)) => println!("move {}", mv.to_xboard(self.root_pos.frc_notation)),
+            (Protocol::XBoard, None) => {
+                let stm = self.root_pos.stm;
+                let king_bb = self.root_pos.pieces(PieceType::King, stm);
+                let in_check = !king_bb.is_empty() && self.root_pos.is_attacked(king_bb.lsb(), stm.opposite(), Bitboard::EMPTY);
+                let result = if !in_check {
+                    "1/2-1/2 {Stalemate}"
+                } else if stm == Color::White {
+                    "0-1 {Black mates}"
+                } else {
+                    "1-0 {White mates}"
+                };
+                println!("{result}");
+            },
+        }
+        let _ = io::stdout().flush();
     }
 
     #[inline]
