@@ -113,27 +113,9 @@ struct Cluster {
     slots: [TtEntry; CLUSTER_SIZE],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum TtMove {
-    Null,
-    Found(Move),
-    /// A pseudo-illegal move means the verification key collided; discard.
-    Collision,
-}
-
-impl TtMove {
-    #[inline(always)]
-    pub(super) fn get(self) -> Option<Move> {
-        match self {
-            Self::Found(mv) => Some(mv),
-            Self::Null | Self::Collision => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct TtData {
-    raw_mv:           Move,
+    pub(super) mv:    Option<Move>,
     pub(super) pv:    bool,
     pub(super) eval:  i32,
     pub(super) score: i32,
@@ -142,26 +124,8 @@ pub(super) struct TtData {
 }
 
 impl TtData {
-    pub(super) const NONE: Self = Self {
-        raw_mv: Move::null(),
-        pv:     false,
-        eval:   SCORE_NONE,
-        score:  SCORE_NONE,
-        bound:  Bound::None,
-        depth:  0,
-    };
-
-    /// A pseudo-illegal move makes every field in the entry untrustworthy.
-    #[inline(always)]
-    pub(super) fn mv(&self, pos: &Position) -> TtMove {
-        if self.raw_mv.is_null() {
-            TtMove::Null
-        } else if is_pseudo_legal(pos, self.raw_mv) {
-            TtMove::Found(self.raw_mv)
-        } else {
-            TtMove::Collision
-        }
-    }
+    pub(super) const NONE: Self =
+        Self { mv: None, pv: false, eval: SCORE_NONE, score: SCORE_NONE, bound: Bound::None, depth: 0 };
 }
 
 struct SlotWrite {
@@ -210,12 +174,15 @@ impl TtEntry {
 
         let packed = self.packed.load(Ordering::Relaxed);
         let bound = packed_bound(packed);
+
         if bound == Bound::None {
             return None;
         }
 
+        let mv = Move::from_u16(self.mv.load(Ordering::Relaxed));
+
         Some(TtData {
-            raw_mv: Move::from_u16(self.mv.load(Ordering::Relaxed)),
+            mv: (!mv.is_null()).then_some(mv),
             score: score_from_tt(i32::from(self.score.load(Ordering::Relaxed).cast_signed()), ply),
             depth: i32::from(packed_depth(packed)),
             bound,
@@ -255,7 +222,6 @@ impl TranspositionTable {
     /// Page rounding determines the cluster count, not the requested size.
     fn alloc(size_mb: usize, numa: &NumaTopology, threads: usize) -> HugePages<Cluster> {
         let bytes = size_mb.max(1) * 1024 * 1024;
-
         if numa.should_split_across_nodes(threads) {
             // SAFETY: zero-initialized clusters are valid: a zero bound marks each slot empty.
             // Page alignment satisfies Cluster's 32-byte alignment requirement.
@@ -322,13 +288,24 @@ impl TranspositionTable {
     }
 
     #[inline(always)]
-    pub(super) fn probe(&self, hash: u64, ply: usize) -> TtData {
-        let key16 = verification_key(hash);
-        self.cluster(self.index(hash))
+    pub(super) fn probe(&self, pos: &Position, ply: usize) -> TtData {
+        let key16 = verification_key(pos.hash);
+        let Some(data) = self
+            .cluster(self.index(pos.hash))
             .slots
             .iter()
             .find_map(|slot| slot.probe_read(key16, ply))
-            .unwrap_or(TtData::NONE)
+        else {
+            return TtData::NONE;
+        };
+
+        if let Some(mv) = data.mv
+            && !is_pseudo_legal(pos, mv)
+        {
+            return TtData::NONE;
+        }
+
+        data
     }
 
     #[inline(always)]
@@ -361,7 +338,6 @@ impl TranspositionTable {
                 }
 
                 let store_mv = if mv.is_null() && !QS { slot.mv.load(Ordering::Relaxed) } else { mv.inner() };
-
                 let store_pv = pv | packed_pv(packed);
 
                 slot.store(SlotWrite {

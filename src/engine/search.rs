@@ -35,7 +35,7 @@ use crate::{
         see::{self, see_ge},
         tm::{Iteration, TimeManager},
         tt,
-        tt::{TranspositionTable, TtData, TtMove},
+        tt::{TranspositionTable, TtData},
         tui,
     },
     weave::{I16x8, U64x4},
@@ -835,11 +835,7 @@ impl Worker<'_> {
         //
         // Singular verification excludes the TT move, so the stored score can't tell
         // us whether that move stands alone.
-        let tt_probe = if excluded.is_null() { searcher.tt.probe(self.pos.hash, ply) } else { TtData::NONE };
-        let tt_move = tt_probe.mv(&self.pos);
-
-        // A collision invalidates the whole entry, including its score and PV flag.
-        let tt_probe = if tt_move == TtMove::Collision { TtData::NONE } else { tt_probe };
+        let tt_probe = if excluded.is_null() { searcher.tt.probe(&self.pos, ply) } else { TtData::NONE };
 
         #[cfg(feature = "mvpstats")]
         if excluded.is_null() {
@@ -985,7 +981,7 @@ impl Worker<'_> {
         // ── Internal Iterative Reduction (~14 Elo)
         // Without a TT move to guide ordering, search a little shallower
         // to find one for later visits.
-        if !N::ROOT && excluded.is_null() && depth >= sp.iir_depth && tt_move.get().is_none() {
+        if !N::ROOT && excluded.is_null() && depth >= sp.iir_depth && tt_probe.mv.is_none() {
             depth -= sp.iir_reduction;
         }
 
@@ -1126,7 +1122,7 @@ impl Worker<'_> {
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
             let mut picker =
-                MovePicker::new(tt_move.get(), searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
+                MovePicker::new(tt_probe.mv, searcher.cfg, pins, self.stack[ply].killers, threats, cont1, cont2, cont4);
 
             self.xb_snapshot(ply);
 
@@ -1264,7 +1260,7 @@ impl Worker<'_> {
                 if !N::ROOT
                     && !N::PV
                     && excluded.is_null()
-                    && Some(mv) == tt_move.get()
+                    && Some(mv) == tt_probe.mv
                     && depth >= sp.singext_min_depth
                     && tt_probe.depth >= depth - sp.singext_tt_depth
                     && tt_probe.bound != tt::Bound::Upper
@@ -1312,7 +1308,7 @@ impl Worker<'_> {
                     {
                         use crate::engine::mvpstats::{CutoffClass, record_cutoff};
 
-                        let kind = if Some(mv) == tt_move.get() {
+                        let kind = if Some(mv) == tt_probe.mv {
                             CutoffClass::Hash
                         } else if mv.is_capture() {
                             CutoffClass::Capture
@@ -1690,9 +1686,7 @@ impl Worker<'_> {
 
         // ── QSearch TT Probe (~22 Elo)
         // PV nodes must search the line to rebuild the principal variation.
-        let qs_tt = searcher.tt.probe(self.pos.hash, ply);
-        let qs_tt_move = qs_tt.mv(&self.pos);
-        let qs_tt = if qs_tt_move == TtMove::Collision { TtData::NONE } else { qs_tt };
+        let qs_tt = searcher.tt.probe(&self.pos, ply);
 
         #[cfg(feature = "mvpstats")]
         {
@@ -1761,7 +1755,7 @@ impl Worker<'_> {
         let pinned = pins.pinned(stm);
 
         // ── Quiescence TT Move (~9 Elo)
-        let mut picker = MovePicker::new_qsearch(qs_tt_move.get(), searcher.cfg, pins, in_check);
+        let mut picker = MovePicker::new_qsearch(qs_tt.mv, searcher.cfg, pins, in_check);
 
         let recapture_only = !in_check && qs_ply >= sp.qs_recapture_ply;
 
