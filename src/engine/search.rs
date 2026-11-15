@@ -763,7 +763,7 @@ impl Worker<'_> {
 
     #[cfg(feature = "nocorr")]
     #[inline]
-    fn corrected_eval(&self, raw_eval: i32) -> i32 { raw_eval.clamp(-MATE_BOUND, MATE_BOUND) }
+    fn corrected_eval(&self, raw_eval: i32) -> i32 { raw_eval.clamp(-(MATE_BOUND - 1), MATE_BOUND - 1) }
 
     #[cfg(not(feature = "nocorr"))]
     #[inline]
@@ -773,7 +773,7 @@ impl Worker<'_> {
             .correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key)
             / CORRECTION_SCALE;
 
-        (raw_eval + correction).clamp(-MATE_BOUND, MATE_BOUND)
+        (raw_eval + correction).clamp(-(MATE_BOUND - 1), MATE_BOUND - 1)
     }
 
     /// At MAX_PLY, checked positions score as draws because there is no room to search an evasion.
