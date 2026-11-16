@@ -852,6 +852,7 @@ impl Worker<'_> {
         // Singular verification excludes the TT move, so the stored score can't tell
         // us whether that move stands alone.
         let tt_probe = if excluded.is_null() { searcher.tt.probe(&self.pos, ply) } else { TtData::NONE };
+        let tt_pv = N::PV || tt_probe.pv;
 
         #[cfg(feature = "mvpstats")]
         if excluded.is_null() {
@@ -1056,16 +1057,9 @@ impl Worker<'_> {
 
                 let value = value?;
                 if value >= probcut_beta {
-                    searcher.tt.store(
-                        self.pos.hash,
-                        ply,
-                        probcut_depth + 1,
-                        value,
-                        mv,
-                        tt::Bound::Lower,
-                        tt_probe.pv,
-                        raw_static_eval,
-                    );
+                    searcher
+                        .tt
+                        .store(self.pos.hash, ply, probcut_depth + 1, value, mv, tt::Bound::Lower, tt_pv, raw_static_eval);
 
                     if is_mate(value) {
                         return Ok(value);
@@ -1238,6 +1232,9 @@ impl Worker<'_> {
                     // The farther we get from the last reduced scout, the less we reduce.
                     r -= sp.lmr_critical_bonus * (ply as i32 - last_critical_ply as i32).min(sp.lmr_critical_cap);
 
+                    // PV and former-PV nodes still contend for the main line, so reduce it less.
+                    r -= sp.lmr_tt_pv_bonus * tt_pv as i32;
+
                     if cut_node {
                         // At a cut node, later moves are less likely to find the cutoff, so reduce them more.
                         r += sp.lmr_cutnode_malus;
@@ -1390,16 +1387,9 @@ impl Worker<'_> {
         // ── TT store
         // Singular verification excludes the TT move, so its bound can't represent the full position.
         if excluded.is_null() {
-            searcher.tt.store(
-                self.pos.hash,
-                ply,
-                depth,
-                res.best_eval,
-                res.best_move,
-                bound,
-                N::PV || tt_probe.pv,
-                raw_static_eval,
-            );
+            searcher
+                .tt
+                .store(self.pos.hash, ply, depth, res.best_eval, res.best_move, bound, tt_pv, raw_static_eval);
         }
 
         // ── Correction History Update
