@@ -126,6 +126,10 @@ impl Move {
     #[inline(always)]
     pub(crate) const fn is_history_quiet(self) -> bool { self.is_quiet() && !self.is_castling() }
 
+    /// Promotion captures use material-only ordering, without capture history.
+    #[inline(always)]
+    pub(crate) const fn is_history_capture(self) -> bool { self.is_capture() && !self.is_promotion() }
+
     /// Single bitmask testing adjacent bits T (0x2000) and C (0x1000).
     #[inline(always)]
     pub(crate) const fn is_tactical(self) -> bool { (self.0 & 0x3000) != 0 }
@@ -185,40 +189,50 @@ impl fmt::Debug for Move {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.to_uci(false)) }
 }
 
-pub(crate) struct MoveList {
-    moves: [MaybeUninit<Move>; MAX_MOVES],
+#[derive(Clone, Copy)]
+pub(crate) struct MoveList<const N: usize = MAX_MOVES> {
+    moves: [MaybeUninit<Move>; N],
     len:   usize,
 }
 
-impl MoveList {
+impl<const N: usize> MoveList<N> {
     #[inline(always)]
-    pub(crate) const fn new() -> Self { Self { moves: [MaybeUninit::uninit(); MAX_MOVES], len: 0 } }
+    pub(crate) const fn new() -> Self { Self { moves: [MaybeUninit::uninit(); N], len: 0 } }
+
+    #[inline(always)]
+    pub(crate) fn clear(&mut self) { self.len = 0; }
 
     #[inline(always)]
     pub(crate) fn push(&mut self, mv: Move) {
-        debug_assert!(self.len < MAX_MOVES, "MoveList capacity exceeded");
-        // SAFETY: MAX_MOVES exceeds the 218 moves any legal position can offer,
-        // so a generator filling one list cannot reach the end of it.
+        debug_assert!(self.len < N, "MoveList capacity exceeded");
+        // SAFETY: Caller guarantees capacity (e.g. MAX_MOVES exceeds the 218-move legal max).
         unsafe { self.moves.get_unchecked_mut(self.len).write(mv) };
         self.len += 1;
     }
+
+    #[inline(always)]
+    pub(crate) fn try_push(&mut self, mv: Move) {
+        if self.len < N {
+            self.push(mv);
+        }
+    }
 }
 
-impl Default for MoveList {
+impl<const N: usize> Default for MoveList<N> {
     fn default() -> Self { Self::new() }
 }
 
-impl Deref for MoveList {
+impl<const N: usize> Deref for MoveList<N> {
     type Target = [Move];
 
     #[inline(always)]
     fn deref(&self) -> &[Move] {
-        // SAFETY: push initializes every element below len.
-        unsafe { self.moves[..self.len].assume_init_ref() }
+        // SAFETY: Every element below len is initialized and len <= N is maintained.
+        unsafe { self.moves.get_unchecked(..self.len).assume_init_ref() }
     }
 }
 
-impl<'a> IntoIterator for &'a MoveList {
+impl<'a, const N: usize> IntoIterator for &'a MoveList<N> {
     type Item = &'a Move;
     type IntoIter = std::slice::Iter<'a, Move>;
 

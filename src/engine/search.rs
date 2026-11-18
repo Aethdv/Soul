@@ -24,7 +24,7 @@ use crate::{
             Bitboard, Color, INF, LANE_PHASE, MATE_BOUND, MAX_DEPTH, MAX_PLY, PieceType, Protocol, Square, draw_score, is_loss,
             is_mate, is_win, mate_in, mated_in,
         },
-        moves::Move,
+        moves::{Move, MoveList},
     },
     engine::{
         eval::{EvalParams, PawnCache, SharedFeatures, evaluate_generic, evaluate_psqt, extract_phase, lazy_eval_margin},
@@ -45,7 +45,6 @@ const NODE_CHECK_INTERVAL: u64 = 2048;
 const CURRMOVE_NODE_THRESHOLD: u64 = 100_000_000;
 const PRINT_UPDATE_MS: u128 = 25;
 
-const MAX_TRACKED_QUIETS: usize = 256;
 const MAX_TRACKED_CAPTURES: usize = 64;
 
 const LMR_SCALE: i32 = 1024;
@@ -147,20 +146,18 @@ pub(super) struct PvSnapshot {
 
 #[derive(Clone, Copy)]
 struct Stack {
-    pv:            PvLine,
-    quiet_moves:   [Move; MAX_TRACKED_QUIETS],
-    quiet_count:   usize,
-    capture_moves: [Move; MAX_TRACKED_CAPTURES],
-    capture_count: usize,
-    killers:       [Move; 2],
-    moved_pt:      PieceType,
-    moved_to:      Square,
-    static_eval:   i32,
-    is_null:       bool,
+    pv:           PvLine,
+    quiets:       MoveList,
+    captures:     MoveList<MAX_TRACKED_CAPTURES>,
+    killers:      [Move; 2],
+    moved_pt:     PieceType,
+    moved_to:     Square,
+    static_eval:  i32,
+    is_null:      bool,
     /// Cutoffs at this ply since the grandparent was entered, used by the parent's LMR.
-    cutoff_count:  i32,
+    cutoff_count: i32,
     /// TT move excluded during singular verification.
-    excluded:      Move,
+    excluded:     Move,
 }
 
 trait NodeType {
@@ -352,18 +349,16 @@ impl RootMove {
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            pv:            PvLine::new(),
-            quiet_moves:   [Move::null(); MAX_TRACKED_QUIETS],
-            quiet_count:   0,
-            capture_moves: [Move::null(); MAX_TRACKED_CAPTURES],
-            capture_count: 0,
-            killers:       [Move::null(); 2],
-            moved_pt:      PieceType::None,
-            moved_to:      Square(0),
-            static_eval:   tt::SCORE_NONE,
-            is_null:       false,
-            cutoff_count:  0,
-            excluded:      Move::null(),
+            pv:           PvLine::new(),
+            quiets:       MoveList::new(),
+            captures:     MoveList::new(),
+            killers:      [Move::null(); 2],
+            moved_pt:     PieceType::None,
+            moved_to:     Square(0),
+            static_eval:  tt::SCORE_NONE,
+            is_null:      false,
+            cutoff_count: 0,
+            excluded:     Move::null(),
         }
     }
 }
@@ -752,6 +747,13 @@ fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, Cont
     (at(1), at(2), at(4))
 }
 
+/// Reads the attacker and victim from the pre-move position, so `mv` must be unmade first.
+#[inline(always)]
+fn update_capture_history(pos: &Position, history: &mut History, mv: Move, bonus: i32) {
+    let attacker = pos.expect_piece_at(mv.from());
+    history.update_capture(pos.stm, attacker, mv.to(), pos.captured_piece(mv), bonus);
+}
+
 impl Worker<'_> {
     #[inline]
     fn evaluate(&mut self) -> i32 {
@@ -1120,8 +1122,8 @@ impl Worker<'_> {
             let ksq = pins.king(stm);
             let pinned = pins.pinned(stm);
 
-            self.stack[ply].quiet_count = 0;
-            self.stack[ply].capture_count = 0;
+            self.stack[ply].quiets.clear();
+            self.stack[ply].captures.clear();
 
             let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
 
@@ -1139,15 +1141,6 @@ impl Worker<'_> {
 
                 if mv == excluded {
                     continue;
-                }
-
-                let mut appended_quiet = false;
-
-                if mv.is_history_quiet() && self.stack[ply].quiet_count < MAX_TRACKED_QUIETS {
-                    let count = self.stack[ply].quiet_count;
-                    self.stack[ply].quiet_moves[count] = mv;
-                    self.stack[ply].quiet_count += 1;
-                    appended_quiet = true;
                 }
 
                 // ── Futility Pruning (~10 Elo)
@@ -1275,10 +1268,8 @@ impl Worker<'_> {
                     let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply, ply, cut_node);
                     self.stack[ply].excluded = Move::null();
 
-                    self.stack[ply].quiet_moves = saved.quiet_moves;
-                    self.stack[ply].quiet_count = saved.quiet_count;
-                    self.stack[ply].capture_moves = saved.capture_moves;
-                    self.stack[ply].capture_count = saved.capture_count;
+                    self.stack[ply].quiets = saved.quiets;
+                    self.stack[ply].captures = saved.captures;
 
                     let sing_score = sing_score?;
                     if sing_score < sing_beta {
@@ -1340,32 +1331,28 @@ impl Worker<'_> {
                         // ── Quiet Malus (~25 Elo)
                         // Cutoffs reward one move, so penalize earlier quiets too.
                         // Otherwise, history only accumulates bonuses.
-                        let quiet_limit = self.stack[ply].quiet_count - appended_quiet as usize;
-                        for i in 0..quiet_limit {
-                            let qm = self.stack[ply].quiet_moves[i];
+                        for &qm in &self.stack[ply].quiets {
                             let q_pt = self.pos.expect_piece_at(qm.from());
                             self.history
                                 .update_quiet(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                         }
-                    } else if mv.is_capture() && !mv.is_promotion() {
+                    } else if mv.is_history_capture() {
                         // ── Capture History Update
-                        // Promotion captures use material-only ordering, without capture history.
-                        self.update_capture_history(mv, bonus);
+                        update_capture_history(&self.pos, self.history, mv, bonus);
                     }
 
                     // ── Capture Malus
                     // MVV-LVA favors material-rich captures; capture history learns which ones keep failing.
-                    for i in 0..self.stack[ply].capture_count {
-                        let cm = self.stack[ply].capture_moves[i];
-                        self.update_capture_history(cm, -bonus);
+                    for &cm in &self.stack[ply].captures {
+                        update_capture_history(&self.pos, self.history, cm, -bonus);
                     }
                     break;
                 }
 
-                if mv.is_capture() && !mv.is_promotion() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
-                    let count = self.stack[ply].capture_count;
-                    self.stack[ply].capture_moves[count] = mv;
-                    self.stack[ply].capture_count += 1;
+                if mv.is_history_quiet() {
+                    self.stack[ply].quiets.try_push(mv);
+                } else if mv.is_history_capture() {
+                    self.stack[ply].captures.try_push(mv);
                 }
             }
         }
@@ -1409,14 +1396,6 @@ impl Worker<'_> {
                 .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, diff, depth);
         }
         Ok(res.best_eval)
-    }
-
-    /// Reads the attacker and victim from the pre-move position, so `mv` must be unmade first.
-    #[inline(always)]
-    fn update_capture_history(&mut self, mv: Move, bonus: i32) {
-        let attacker = self.pos.expect_piece_at(mv.from());
-        self.history
-            .update_capture(self.pos.stm, attacker, mv.to(), self.pos.captured_piece(mv), bonus);
     }
 
     /// One snapshot serves every sibling move at this ply.
