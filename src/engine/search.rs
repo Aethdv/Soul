@@ -800,6 +800,10 @@ impl Worker<'_> {
         last_critical_ply: usize,
         cut_node: bool,
     ) -> Result<i32, SearchAborted> {
+        if depth <= 0 {
+            return self.qsearch::<N>(searcher, alpha, beta, ply, None, 0);
+        }
+
         self.stack[ply].pv.len = 0;
         let sp = &searcher.cfg.search_params;
 
@@ -815,10 +819,6 @@ impl Worker<'_> {
 
         if ply as i32 > searcher.sel_depth {
             searcher.sel_depth = ply as i32;
-        }
-
-        if depth <= 0 {
-            return self.qsearch::<N>(searcher, alpha, beta, ply, None, 0);
         }
 
         if ply >= MAX_PLY {
