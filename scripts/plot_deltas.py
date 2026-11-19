@@ -58,6 +58,11 @@ def _frac(num: np.ndarray, den: np.ndarray) -> np.ndarray:
     return np.divide(num, den, out=np.zeros(num.shape, dtype=float), where=den > 0)
 
 
+def _bin_rules(ax, bins: np.ndarray) -> None:
+    """Separators in points; a data-space gap collapses to a sub-pixel stripe in narrow bins."""
+    ax.vlines(bins, 0, 1, color=sp.PANEL, lw=0.3, zorder=3.5)
+
+
 def _single(files: list[str], args: argparse.Namespace) -> None:
     ds = _load(files[0])
     masks = _wdl_masks(ds.result)
@@ -72,7 +77,7 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
 
     ax_top.hist(
         [ds.score[m] for m in masks],
-        bins=bins, stacked=True, zorder=3, alpha=0.9,
+        bins=bins, stacked=True, zorder=3, alpha=0.9, log=args.log_y,
         color=[WIN, DRAW, LOSS], label=["win", "draw", "loss"],
     )
 
@@ -87,13 +92,15 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
     frac_b = _frac(counts_b, counts_total)
 
     centers = (bins[:-1] + bins[1:]) / 2
-    width = 2 * clip / args.bins * 0.95
+    width = 2 * clip / args.bins
 
     # Dimmed so the calibration curves read on top.
     bottom = np.zeros_like(centers)
     for frac, color in ((frac_w, WIN), (frac_d, DRAW), (frac_b, LOSS)):
-        ax_bot.bar(centers, frac, bottom=bottom, width=width, color=color, alpha=0.5, zorder=3)
+        ax_bot.bar(centers, frac, bottom=bottom, width=width, color=color, alpha=0.5,
+                   antialiased=False, zorder=3)
         bottom += frac
+    _bin_rules(ax_bot, bins)
 
     # Empirical expected score E = win + ½·draw against the logistic fit for K.
     if masks[0].any() or masks[2].any():
@@ -112,10 +119,12 @@ def _single(files: list[str], args: argparse.Namespace) -> None:
 
     n_sent = int((ds.score == 32767).sum())
     sent_str = f"   ·   sentinel {n_sent:,}" if n_sent else ""
+    outside = int(np.count_nonzero(np.abs(ds.score) > clip))
+    clip_str = f"   ·   {sp.format_count(outside)} outside ±{clip}" if outside else ""
     sub = (f"{ds.stem}   ·   {n_total:,} samples   ·   "
            f"W {pct_w:.1f}%  D {pct_d:.1f}%  B {pct_b:.1f}%   ·   "
-           f"{args.bins} bins   ·   ±{clip} cp{sent_str}")
-    _finish(fig, ax_top, ax_bot, clip,
+           f"{args.bins} bins   ·   ±{clip} cp{sent_str}{clip_str}")
+    _finish(fig, ax_top, ax_bot, clip, log_y=args.log_y,
             legend=["win", "draw", "loss"], legend_colors=[WIN, DRAW, LOSS],
             sub=sub, output=args.output or f"{ds.stem}_scores.png", dpi=args.dpi)
 
@@ -129,7 +138,7 @@ def _multi(files: list[str], args: argparse.Namespace) -> None:
     clip = args.max_cp
     bins = np.linspace(-clip, clip, args.bins + 1)
     centers = (bins[:-1] + bins[1:]) / 2
-    width = 2 * clip / args.bins * 0.90
+    width = 2 * clip / args.bins
 
     datasets = [_load(path) for path in files]
     labels = [ds.stem for ds in datasets]
@@ -138,7 +147,7 @@ def _multi(files: list[str], args: argparse.Namespace) -> None:
     all_counts = []
     for ds, c in zip(datasets, colors):
         ax_top.hist(ds.score, bins=bins, zorder=3, alpha=0.32, color=c, label=ds.stem,
-                    histtype="stepfilled", edgecolor=c, linewidth=0.8)
+                    histtype="stepfilled", edgecolor=c, linewidth=0.8, log=args.log_y)
         all_counts.append(np.histogram(ds.score, bins=bins)[0].astype(float))
 
     # WDL win-fraction when any file carries wins/losses, else relative dataset share.
@@ -153,13 +162,17 @@ def _multi(files: list[str], args: argparse.Namespace) -> None:
         bottom = np.zeros_like(centers)
         for counts, c in zip(all_counts, colors):
             frac = _frac(counts, total_counts)
-            ax_bot.bar(centers, frac, bottom=bottom, width=width, color=c, alpha=0.85, zorder=3)
+            ax_bot.bar(centers, frac, bottom=bottom, width=width, color=c, alpha=0.85,
+                       antialiased=False, zorder=3)
             bottom += frac
+        _bin_rules(ax_bot, bins)
         ax_bot.set_ylabel("fraction", labelpad=8)
 
     total_str = "   ".join(f"{len(ds.score):,}" for ds in datasets)
-    sub = f"{', '.join(labels)}   ·   {total_str} samples   ·   {args.bins} bins   ·   ±{clip} cp"
-    _finish(fig, ax_top, ax_bot, clip,
+    outside = sum(int(np.count_nonzero(np.abs(ds.score) > clip)) for ds in datasets)
+    clip_str = f"   ·   {sp.format_count(outside)} outside ±{clip}" if outside else ""
+    sub = f"{', '.join(labels)}   ·   {total_str} samples   ·   {args.bins} bins   ·   ±{clip} cp{clip_str}"
+    _finish(fig, ax_top, ax_bot, clip, log_y=args.log_y,
             legend=labels, legend_colors=colors,
             sub=sub, output=args.output or "deltas_compare.png", dpi=args.dpi)
 
@@ -184,8 +197,8 @@ def _fit_k(cp: np.ndarray, exp_score: np.ndarray, weight: np.ndarray) -> float:
     return (a + b) / 2.0
 
 
-def _finish(fig, ax_top, ax_bot, clip: int, *, legend: list[str], legend_colors: list,
-            sub: str, output: str, dpi: int) -> None:
+def _finish(fig, ax_top, ax_bot, clip: int, *, log_y: bool, legend: list[str],
+            legend_colors: list, sub: str, output: str, dpi: int) -> None:
     ax_top.axvline(0, color=sp.MUTE, lw=0.8, alpha=0.6, zorder=2)
     ax_top.set_ylabel("positions", labelpad=8)
     ax_top.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
@@ -200,7 +213,7 @@ def _finish(fig, ax_top, ax_bot, clip: int, *, legend: list[str], legend_colors:
     ax_bot.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0%}"))
 
     plt.setp(ax_top.get_xticklabels(), visible=False)
-    sp.style_axes(ax_top)
+    sp.style_axes(ax_top, grain=not log_y)
     sp.style_axes(ax_bot)
 
     handles = [Line2D([0], [0], color=c, lw=6, alpha=0.9) for c in legend_colors]
@@ -222,6 +235,7 @@ def main() -> None:
     ap.add_argument("csv", nargs="+", help="one or more .scores.csv files (comma-separated ok)")
     ap.add_argument("--bins", type=int, default=60, help="histogram bins (default: 60)")
     ap.add_argument("--max-cp", type=int, default=500, help="score cap for the bin range")
+    ap.add_argument("--log-y", action="store_true", help="log-scale the position counts")
     ap.add_argument("-o", "--output", default=None)
     ap.add_argument("--dpi", type=int, default=sp.DPI)
     args = ap.parse_args()
