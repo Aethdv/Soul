@@ -52,7 +52,7 @@ TL;DR:
 
 **Conditions:**
 - Must provide source code to users who access it over a network
-- Derivative works must be licensed under AGPL-3.0
+- Derivative works must be licensed under AGPL-3.0-or-later
 - Changes must be documented
 - Must include original copyright and license notice
 
