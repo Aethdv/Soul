@@ -72,13 +72,13 @@ pub(super) fn can_capture_ep(pos: &Position, ep_sq: Square, color: Color) -> boo
 }
 
 #[inline]
-pub(super) fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
+fn scan_pins(pos: &Position, color: Color) -> (Bitboard, Bitboard) {
     let opp = color.opposite();
     let us = pos.side_bb[color];
     let king_bb = pos.pieces(PieceType::King, color);
 
     if king_bb.is_empty() {
-        return Bitboard(0);
+        return (Bitboard(0), Bitboard(0));
     }
 
     let king_sq = king_bb.lsb();
@@ -89,21 +89,27 @@ pub(super) fn pinned_pieces(pos: &Position, color: Color) -> Bitboard {
     let snipers = (ROOK_RAYS[usize::from(king_sq)] & rq) | (BISHOP_RAYS[usize::from(king_sq)] & bq);
 
     let mut pinned = Bitboard(0);
+    let mut pinners = Bitboard(0);
 
     for sniper_sq in snipers {
         let between = between_bb(king_sq, sniper_sq) & pos.occ;
         if between.popcount() == 1 && (between & us).is_not_empty() {
             pinned |= between;
+            pinners |= sniper_sq.bitboard();
         }
     }
 
-    pinned
+    (pinned, pinners)
 }
 
-/// Both colors' pinned pieces and king squares.
+#[inline]
+pub(super) fn pinned_pieces(pos: &Position, color: Color) -> Bitboard { scan_pins(pos, color).0 }
+
+/// Both colors' pinned pieces, their enemy pinners, and king squares.
 #[derive(Clone, Copy)]
 pub(crate) struct Pins {
     pinned:  [Bitboard; 2],
+    pinners: [Bitboard; 2],
     king_sq: [Square; 2],
 }
 
@@ -114,14 +120,20 @@ impl Pins {
             pos.pieces(PieceType::King, Color::White).is_not_empty() && pos.pieces(PieceType::King, Color::Black).is_not_empty(),
             "Pins requires both kings"
         );
+        let (pinned_w, pinners_w) = scan_pins(pos, Color::White);
+        let (pinned_b, pinners_b) = scan_pins(pos, Color::Black);
         Self {
-            pinned:  [pinned_pieces(pos, Color::White), pinned_pieces(pos, Color::Black)],
+            pinned:  [pinned_w, pinned_b],
+            pinners: [pinners_w, pinners_b],
             king_sq: [pos.pieces(PieceType::King, Color::White).lsb(), pos.pieces(PieceType::King, Color::Black).lsb()],
         }
     }
 
     #[inline]
     pub(crate) fn pinned(&self, color: Color) -> Bitboard { self.pinned[color] }
+
+    #[inline]
+    pub(crate) fn pinners(&self, color: Color) -> Bitboard { self.pinners[color] }
 
     #[inline]
     pub(crate) fn king(&self, color: Color) -> Square { self.king_sq[color] }

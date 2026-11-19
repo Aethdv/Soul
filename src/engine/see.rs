@@ -7,7 +7,7 @@ use crate::{
             attacks::{Pins, all_attackers_to},
             bitboard::{atk_bishop, atk_rook, line_bb},
         },
-        defs::{Bitboard, Color, PieceType, Square},
+        defs::{Color, PieceType},
         moves::Move,
     },
     engine::search_params::SearchParams,
@@ -57,15 +57,19 @@ pub(crate) fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, valu
         return true; // even if the attacker is lost for nothing, the move still clears threshold.
     }
 
-    // Attacks to `to` don't depend on its occupancy. Vacating `from` and,
-    // for en passant, the captured pawn's square can reveal sliders.
-    let mut occ = pos.occ ^ from.bitboard();
+    // Vacating from and, for en passant, the captured pawn's square can reveal sliders.
+    // Clearing to keeps occ free of any piece captured there.
+    let mut occ = (pos.occ ^ from.bitboard()) & !to.bitboard();
     if mv.is_en_passant() {
         occ ^= (to ^ 8).bitboard();
     }
 
-    let excluded = pin_excluded(pins, to);
-    let mut attackers = all_attackers_to(pos, to, occ) & occ & !excluded;
+    let excluded = [
+        pins.pinned(Color::White) & !line_bb(pins.king(Color::White), to),
+        pins.pinned(Color::Black) & !line_bb(pins.king(Color::Black), to),
+    ];
+
+    let mut attackers = all_attackers_to(pos, to, occ) & occ;
 
     let diag = pos.role_bb[PieceType::Bishop] | pos.role_bb[PieceType::Queen];
     let orth = pos.role_bb[PieceType::Rook] | pos.role_bb[PieceType::Queen];
@@ -75,7 +79,11 @@ pub(crate) fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, valu
 
     loop {
         stm = stm.opposite();
-        let stm_attackers = attackers & pos.side_bb[stm];
+        let mut stm_attackers = attackers & pos.side_bb[stm];
+
+        if (pins.pinners(stm) & !occ).is_empty() {
+            stm_attackers &= !excluded[stm];
+        }
         if stm_attackers.is_empty() {
             // The previous mover keeps their net gain.
             return !flipped;
@@ -104,7 +112,7 @@ pub(crate) fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, valu
             },
             _ => {},
         }
-        attackers &= occ & !excluded;
+        attackers &= occ;
 
         // Flip the balance for the next side's perspective. Ties favor the
         // original mover, so the cutoff alternates between < 0 and <= 0.
@@ -117,14 +125,6 @@ pub(crate) fn see_ge(pos: &Position, mv: Move, threshold: i32, pins: &Pins, valu
     }
 }
 
-/// Exclude pinned attackers that cannot legally recapture on `to`.
-/// A pinned piece can recapture only along its pin line.
-#[inline]
-fn pin_excluded(pins: &Pins, to: Square) -> Bitboard {
-    (pins.pinned(Color::White) & !line_bb(pins.king(Color::White), to))
-        | (pins.pinned(Color::Black) & !line_bb(pins.king(Color::Black), to))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +135,7 @@ mod tests {
 
     const P: i32 = VALUES[PieceType::Pawn.as_usize()];
     const N: i32 = VALUES[PieceType::Knight.as_usize()];
+    const B: i32 = VALUES[PieceType::Bishop.as_usize()];
     const R: i32 = VALUES[PieceType::Rook.as_usize()];
     const Q: i32 = VALUES[PieceType::Queen.as_usize()];
 
@@ -210,4 +211,10 @@ mod tests {
 
     #[test]
     fn king_cannot_recapture_defended_rook() { assert_see("8/8/5k2/4p3/3B4/4R3/8/7K w - - 0 1", "e3e5", P); }
+
+    #[test]
+    fn pinner_moving_frees_defender() { assert_see("3k4/8/8/8/3n4/5p2/8/3Q3K w - - 0 1", "d1f3", P - Q); }
+
+    #[test]
+    fn pinner_joining_exchange_frees_defender() { assert_see("3k4/8/8/8/3nB1p1/5p2/8/3Q3K w - - 0 1", "e4f3", P - B); }
 }
