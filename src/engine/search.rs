@@ -1153,7 +1153,7 @@ impl Worker<'_> {
                 // ── Futility Pruning (~10 Elo)
                 // At shallow depth, skip quiet moves whose eval is too low to raise alpha.
                 if !in_check
-                    && mv.is_quiet()
+                    && !mv.is_tactical()
                     && !N::PV
                     && res.move_count >= 1
                     && depth <= sp.fp_depth
