@@ -1084,7 +1084,7 @@ impl Worker<'_> {
                 // Root moves are ordered by the previous iteration, so later moves
                 // are our worst guesses. Scout them at reduced depth; if one beats
                 // alpha, search it again at full depth.
-                let reduction = if depth >= sp.lmr_min_depth && i >= 1 && mv.is_quiet() && !in_check {
+                let reduction = if depth >= sp.lmr_min_depth && i >= 1 && !mv.is_tactical() && !in_check {
                     let max_r = (depth - sp.lmr_retained).max(0) * LMR_SCALE;
                     searcher.cfg.lmr(depth, i + 1).clamp(0, max_r) / LMR_SCALE
                 } else {
@@ -1211,7 +1211,7 @@ impl Worker<'_> {
                 // ── Late Move Reductions (~90 Elo)
                 // Later quiets are less likely to beat alpha, so scout them at reduced depth.
                 // A reduced scout that beats alpha gets a full-depth re-search.
-                let reduction = if depth >= sp.lmr_min_depth && res.move_count >= 1 && mv.is_quiet() && !in_check {
+                let reduction = if depth >= sp.lmr_min_depth && res.move_count >= 1 && !mv.is_tactical() && !in_check {
                     let mut r = searcher.cfg.lmr(depth, res.move_count + 1);
                     let pt = self.pos.expect_piece_at(mv.from());
                     let hist = self
