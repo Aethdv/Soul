@@ -226,7 +226,7 @@ search_params! {
         T (rfp_blend,        50,   0, 100),
 
         //                  default  min  max
-        T (probcut_depth_min,    10,   3,  10),
+        T (probcut_depth_min,    10,   3,  16),
         T (probcut_margin,      227,  50),
         T (probcut_reduction,     5,   1,   8),
         T (probcut_blend,         0,   0, 100),
@@ -244,7 +244,7 @@ search_params! {
         T (singext_min_depth,      5,   4,   16),
         T (singext_margin,         1,   1),
         T (singext_tt_depth,       3,   1,    6),
-        T (singext_depth_div,      4,   1,    4),
+        T (singext_depth_div,      4,   1,    8),
         T (singext_double_margin, 65,   0,  100),
 
         //           default  min  max
@@ -284,7 +284,7 @@ search_params! {
 
         //                  default   min   max
         T (capt_hist_divisor,    39,    4,   64),
-        T (hist_bonus_mult,      12,    1,   12),
+        T (hist_bonus_mult,      12,    1,   24),
         T (hist_bonus_cap,     2376,  400, 3200),
 
         //                    default    min    max
