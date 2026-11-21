@@ -160,7 +160,7 @@ fn is_castling_rook(board: &Position, sq: Square, color: Color) -> bool {
     (base..base + 2).any(|slot| board.castling_rights & (1 << slot) != 0 && board.castling_rooks[slot] == sq)
 }
 
-pub(crate) fn material_count(entry: &SoulEntry) -> u32 {
+pub(crate) fn material_value(entry: &SoulEntry) -> u32 {
     const MATERIAL_WEIGHTS: [u32; 7] = [1, 3, 3, 5, 9, 0, 5];
 
     unpack_pieces(entry.occupancy, &entry.pieces)
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn nibble_material_count_matches_board_evaluation() {
+    fn nibble_material_value_matches_board_evaluation() {
         for fen in [
             STARTPOS,
             "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
@@ -193,7 +193,7 @@ mod tests {
             "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
         ] {
             let board = Position::from_fen(fen);
-            assert_eq!(from_board(&board, 0.5, None).material_count(), board.material_count(), "{fen}");
+            assert_eq!(from_board(&board, 0.5, None).material_value(), board.material_value(), "{fen}");
         }
     }
 }

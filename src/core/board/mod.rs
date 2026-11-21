@@ -383,7 +383,7 @@ impl Position {
 
     /// P=1, N=B=3, R=5, Q=9 across both colors.
     #[inline]
-    pub(crate) const fn material_count(&self) -> u32 {
+    pub(crate) const fn material_value(&self) -> u32 {
         let p = self.role_bb[PieceType::Pawn as usize].popcount();
         let n = self.role_bb[PieceType::Knight as usize].popcount();
         let b = self.role_bb[PieceType::Bishop as usize].popcount();

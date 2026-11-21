@@ -114,7 +114,7 @@ impl ReplayFilter {
     fn sample_weight(&self, pos: &Position, white_eval: i32, white_result: u8) -> f64 {
         let mut weight = 1.0;
         if self.wdl_filtered {
-            weight *= Self::result_chance(white_eval, pos.material_count(), white_result);
+            weight *= Self::result_chance(white_eval, pos.material_value(), white_result);
         }
 
         if self.material_count_filtered {

@@ -97,7 +97,7 @@ fn inspect(path: &str, count: usize) -> bool {
         let score = entry.score;
         let result = entry.result;
         let piece_count = entry.occupancy.count_ones();
-        let (win, draw, loss) = wdl_model(i32::from(score), entry.material_count());
+        let (win, draw, loss) = wdl_model(i32::from(score), entry.material_value());
         let wdl = format!("W:{:.1}% D:{:.1}% L:{:.1}%", win * 100.0, draw * 100.0, loss * 100.0);
         let _ = writeln!(out, "[{i:05}] {fen}");
         let _ = writeln!(out, "       Search: {:+5}  Result: {}  {}  Pieces: {}", score, result, wdl, piece_count);

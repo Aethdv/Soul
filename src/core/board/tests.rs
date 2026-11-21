@@ -325,15 +325,15 @@ fn move_promotion_piece_types() {
 }
 
 #[test]
-fn material_count_startpos() {
+fn material_value_startpos() {
     let pos = Position::from_fen(STARTPOS);
-    assert_eq!(pos.material_count(), 78);
+    assert_eq!(pos.material_value(), 78);
 }
 
 #[test]
-fn material_count_bare_kings() {
+fn material_value_bare_kings() {
     let pos = Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-    assert_eq!(pos.material_count(), 0, "Bare kings should have 0 material");
+    assert_eq!(pos.material_value(), 0, "Bare kings should have 0 material");
 }
 
 #[test]

@@ -70,7 +70,7 @@ impl SoulEntry {
     pub(super) fn to_fen(self) -> String { self.to_board().to_string() }
 
     #[inline]
-    pub(super) fn material_count(&self) -> u32 { packing::material_count(self) }
+    pub(super) fn material_value(&self) -> u32 { packing::material_value(self) }
 
     /// Unpacks the stored board. Clocks are reset; callers that need them read the file header.
     #[inline]

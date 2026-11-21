@@ -107,7 +107,7 @@ pub(super) fn print_pretty_search_info(data: &SearchInfoData<'_>) {
 
     println!("{reset}{eol}\n");
 
-    let (wf, df, lf) = wdl::wdl_model(data.score, data.board.material_count());
+    let (wf, df, lf) = wdl::wdl_model(data.score, data.board.material_value());
     let bound = bound_mark(data.bound, ansi);
     let score = fmt_score_colored(data.score, 0, ansi);
 
@@ -328,7 +328,7 @@ fn print_uci(data: &SearchInfoData<'_>) {
     let ansi = data.display.use_ansi;
     let pretty = data.display.pretty_print;
     let wdl_str = if data.display.show_wdl {
-        let (wf, _, lf) = wdl::wdl_model(data.score, data.board.material_count());
+        let (wf, _, lf) = wdl::wdl_model(data.score, data.board.material_value());
         let w = (wf * 1000.0).round() as u32;
         let l = (lf * 1000.0).round() as u32;
         let d = 1000u32.saturating_sub(w + l);
