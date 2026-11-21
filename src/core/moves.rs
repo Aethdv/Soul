@@ -125,7 +125,7 @@ impl Move {
     #[inline(always)]
     pub(crate) const fn uses_capture_history(self) -> bool { self.is_capture() && !self.is_promotion() }
 
-    /// Single bitmask testing adjacent bits T (0x2000) and C (0x1000).
+    /// Capture or promotion; quiet checks return false.
     #[inline(always)]
     pub(crate) const fn is_tactical(self) -> bool { (self.0 & 0x3000) != 0 }
 
