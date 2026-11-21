@@ -1347,9 +1347,7 @@ impl Worker<'_> {
                             self.history
                                 .update_quiet(stm, q_pt, qm.from(), qm.to(), threats, cont1, cont2, cont4, -bonus);
                         }
-                    } else if mv.is_capture() && !mv.is_promotion() {
-                        // ── Capture History Update
-                        // Promotion captures use material-only ordering, without capture history.
+                    } else if mv.uses_capture_history() {
                         self.update_capture_history(mv, bonus);
                     }
 
@@ -1362,7 +1360,7 @@ impl Worker<'_> {
                     break;
                 }
 
-                if mv.is_capture() && !mv.is_promotion() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
+                if mv.uses_capture_history() && self.stack[ply].capture_count < MAX_TRACKED_CAPTURES {
                     let count = self.stack[ply].capture_count;
                     self.stack[ply].capture_moves[count] = mv;
                     self.stack[ply].capture_count += 1;
