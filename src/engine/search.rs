@@ -507,12 +507,12 @@ impl<'cfg> Searcher<'cfg> {
                     beta = lerp(beta, alpha, sp.asp_narrow);
                     alpha = (score - delta).max(-INF);
                 } else if score >= beta {
-                    self.print_bound(depth, score, tui::ScoreBound::Lower);
                     // Earlier moves scored below beta, so the first match is the cutoff move.
                     // Rotate it to the front; sorting would mix scores from different depths.
                     if let Some(i) = self.root_moves.iter().position(|rm| rm.score == score) {
                         self.root_moves[..=i].rotate_right(1);
                     }
+                    self.print_bound(depth, score, tui::ScoreBound::Lower);
                     asp_reduction = (asp_reduction + 1).min(sp.asp_reduction_max);
                     beta = (score + delta).min(INF);
                 } else {
@@ -700,11 +700,10 @@ impl<'cfg> Searcher<'cfg> {
 
     #[cold]
     fn print_bound(&self, depth: i32, score: i32, bound: tui::ScoreBound) {
-        // The current iteration is unfinished, therefore report the previous PV.
-        if self.cfg.limits.silent || !self.cfg.display.post || is_mate(score) || self.prev_pv.len == 0 {
+        if self.cfg.limits.silent || !self.cfg.display.post || is_mate(score) || self.root_moves[0].pv.len == 0 {
             return;
         }
-        self.print_line(depth, score, &self.prev_pv, bound);
+        self.print_line(depth, score, &self.root_moves[0].pv, bound);
     }
 
     #[cold]
