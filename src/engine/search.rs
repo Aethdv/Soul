@@ -519,7 +519,7 @@ impl<'cfg> Searcher<'cfg> {
                     break;
                 }
 
-                delta += delta / sp.asp_widen_div;
+                delta += (delta / sp.asp_widen_div).max(1);
             }
 
             if aborted {
