@@ -1008,10 +1008,13 @@ impl Worker<'_> {
         // ── ProbCut (~4 Elo)
         // If a shallow search clears beta comfortably, the full-depth search likely will too.
         // SEE and qsearch filter captures before the reduced-depth search.
-        if !N::PV && !in_check && excluded.is_null() && depth >= sp.probcut_depth_min && !is_mate(beta) {
-            let probcut_beta = beta + sp.probcut_margin;
-            let probcut_depth = (depth - sp.probcut_reduction).max(1);
+        let probcut_beta = beta + sp.probcut_margin;
+        let probcut_depth = (depth - sp.probcut_reduction).max(1);
+        let tt_blocks_probcut = tt_probe.depth >= probcut_depth
+            && matches!(tt_probe.bound, tt::Bound::Upper | tt::Bound::Exact)
+            && tt_probe.score < probcut_beta;
 
+        if !N::PV && !in_check && excluded.is_null() && depth >= sp.probcut_depth_min && !is_mate(beta) && !tt_blocks_probcut {
             let stm = self.pos.stm;
             let opp = stm.opposite();
             let ksq = pins.king(stm);
