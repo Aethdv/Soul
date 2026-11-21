@@ -372,7 +372,7 @@ impl Default for Snapshot {
 
 impl XorBoard {
     #[inline(always)]
-    pub(crate) fn threats(&self, color: Color) -> Bitboard {
+    pub(crate) fn attacked_squares(&self, color: Color) -> Bitboard {
         // SAFETY: four loads cover exactly one 16-row color half.
         unsafe {
             let base = usize::from(color) * 16;
@@ -520,7 +520,11 @@ mod tests {
                 assert!(board.tracks(&pos), "{fen} ply {ply} move {}\n{pos}", mv.to_uci(pos.frc_notation));
 
                 for color in [Color::White, Color::Black] {
-                    assert_eq!(board.threats(color), pos.threats(color), "threats {color:?}, {fen} ply {ply}\n{pos}");
+                    assert_eq!(
+                        board.attacked_squares(color),
+                        pos.attacked_squares(color),
+                        "attacked_squares {color:?}, {fen} ply {ply}\n{pos}"
+                    );
                 }
 
                 assert_eq!(board.checkers(&pos), pos.checkers(), "checkers, {fen} ply {ply}\n{pos}");

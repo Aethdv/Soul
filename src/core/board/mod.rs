@@ -417,7 +417,7 @@ impl Position {
 
     #[cfg(any(test, feature = "nostore"))]
     #[inline]
-    pub(crate) fn threats(&self, color: Color) -> Bitboard {
+    pub(crate) fn attacked_squares(&self, color: Color) -> Bitboard {
         let us = self.side_bb[color];
         let empty = U64x4::splat(!self.occ.0);
 
