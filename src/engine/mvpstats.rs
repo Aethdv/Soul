@@ -15,8 +15,10 @@ const CLASS_NAMES: [&str; 5] = ["hash", "capture", "promo", "killer", "quiet"];
 const QUIET_BUCKETS: usize = 12;
 const CUTOFF_BUCKETS: usize = 8;
 
-const QUIET_USE_NEUTRAL: f64 = 50.0;
-const FIRST_CUTOFF_NEUTRAL: f64 = 90.0;
+const QUIET_USE_NEUTRAL: f64 = 55.0;
+const QUIET_USE_SPAN: f64 = 25.0;
+const FIRST_CUTOFF_NEUTRAL: f64 = 80.0;
+const FIRST_CUTOFF_SPAN: f64 = 15.0;
 
 static QUIET_HIST: [AtomicU64; QUIET_BUCKETS] = [const { AtomicU64::new(0) }; QUIET_BUCKETS];
 static QUIET_GENERATED: AtomicU64 = AtomicU64::new(0);
@@ -109,7 +111,7 @@ fn report_quiets() {
 
     let generated = QUIET_GENERATED.load(Relaxed);
     let consumed = QUIET_CONSUMED.load(Relaxed);
-    let used = pct_colored(pct(consumed, generated), QUIET_USE_NEUTRAL);
+    let used = pct_colored(pct(consumed, generated), QUIET_USE_NEUTRAL, -QUIET_USE_SPAN);
 
     header("MovePicker quiet stats");
     println!(
@@ -128,7 +130,7 @@ fn report_cutoffs() {
         return;
     }
 
-    let rate = pct_colored(pct(CUTOFF_HIST[0].load(Relaxed), nodes), FIRST_CUTOFF_NEUTRAL);
+    let rate = pct_colored(pct(CUTOFF_HIST[0].load(Relaxed), nodes), FIRST_CUTOFF_NEUTRAL, FIRST_CUTOFF_SPAN);
 
     header("MovePicker cutoff ordering");
     println!("  fail-high nodes {}   first-move cutoff {rate}", fmt_count(nodes));
@@ -217,10 +219,10 @@ fn header(title: &str) {
     println!("\n{gold}{bold}{title}{reset}");
 }
 
-fn pct_colored(pct: f64, neutral: f64) -> String {
+fn pct_colored(pct: f64, neutral: f64, span: f64) -> String {
     let text = format!("{pct:.1}%");
     if io::stdout().is_terminal() {
-        let advantage = (pct / neutral - 1.0).clamp(-1.0, 1.0);
+        let advantage = ((pct - neutral) / span).clamp(-1.0, 1.0);
         format!("{}{text}{RESET}", color::ansi_fg(color::advantage(advantage)))
     } else {
         text
