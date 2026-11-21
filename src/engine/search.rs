@@ -874,7 +874,7 @@ impl Worker<'_> {
 
         // ── Check Extension (~11 Elo)
         // A check can lead straight into a tactic, so search the evasion too.
-        let mut depth = if in_check { depth + 1 } else { depth };
+        let mut depth = if in_check && ply < 2 * searcher.iter_depth as usize { depth + 1 } else { depth };
 
         // ── Static Eval
         // A score for the position without searching moves, used by pruning.
