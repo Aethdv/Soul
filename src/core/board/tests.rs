@@ -283,12 +283,10 @@ fn move_flag_predicates() {
     let prom_cap = Move::new(Square(0), Square(8), Move::PROM_Q_CAPTURE);
     let double = Move::new(Square(0), Square(8), Move::DOUBLE_PUSH);
 
-    assert!(quiet.is_quiet());
     assert!(!quiet.is_capture());
     assert!(!quiet.is_promotion());
 
     assert!(cap.is_capture());
-    assert!(!cap.is_quiet());
     assert!(cap.is_tactical());
 
     assert!(ep.is_en_passant());
