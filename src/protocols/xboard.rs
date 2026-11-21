@@ -25,10 +25,10 @@ use crate::{
         tm::{DEFAULT_OVERHEAD_MS, MAX_OVERHEAD_MS},
     },
     protocols::{
+        GameState,
         notation::parse_uci_move,
         smp::{DEFAULT_HASH_MB, MAX_HASH_MB, TableAndPool},
     },
-    weave::I16x8,
 };
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -39,10 +39,7 @@ enum Mode {
 }
 
 struct XBoardState {
-    board:         Position,
-    accumulator:   I16x8,
-    trail:         Vec<u64>,
-    history:       Option<Box<History>>,
+    game:          GameState,
     search:        TableAndPool,
     mode:          Mode,
     stop:          Arc<AtomicBool>,
@@ -77,25 +74,19 @@ pub fn main_loop(stdin: &mut impl BufRead) {
 
 impl XBoardState {
     fn new() -> Self {
-        let board = Position::from_fen(STARTPOS);
-        let trail = vec![board.hash];
-
         Self {
-            accumulator: board.psqt_accumulator(),
-            board,
-            trail,
-            history: Some(Box::new(History::new())),
-            search: TableAndPool::default(),
-            mode: Mode::Normal,
-            stop: Arc::new(AtomicBool::new(false)),
+            game:          GameState::new(),
+            search:        TableAndPool::default(),
+            mode:          Mode::Normal,
+            stop:          Arc::new(AtomicBool::new(false)),
             search_thread: None,
-            limits: Limits { protocol: Protocol::XBoard, ..Default::default() },
-            overhead: DEFAULT_OVERHEAD_MS,
-            post: false,
-            show_wdl: false,
-            engine_side: None,
-            frc_notation: false,
-            nps: None,
+            limits:        Limits { protocol: Protocol::XBoard, ..Default::default() },
+            overhead:      DEFAULT_OVERHEAD_MS,
+            post:          false,
+            show_wdl:      false,
+            engine_side:   None,
+            frc_notation:  false,
+            nps:           None,
         }
     }
 
@@ -105,10 +96,9 @@ impl XBoardState {
         if let Some(handle) = self.search_thread.take() {
             match handle.join() {
                 Ok((history, best)) => {
-                    self.history = Some(history);
+                    self.game.history = Some(history);
                     if let Some(mv) = best {
-                        self.board.make_move(mv, &mut self.accumulator);
-                        self.trail.push(self.board.hash);
+                        self.game.make_move(mv);
                     }
                 },
                 Err(err) => {
@@ -123,14 +113,6 @@ impl XBoardState {
         }
 
         self.stop.store(false, Ordering::Relaxed);
-    }
-
-    fn load_position(&mut self, mut board: Position) {
-        board.frc_notation = self.frc_notation || board.has_nonstandard_castling_rook();
-        self.board = board;
-        self.accumulator = self.board.psqt_accumulator();
-        self.trail.clear();
-        self.trail.push(self.board.hash);
     }
 
     fn start_search(&mut self) {
@@ -149,13 +131,13 @@ impl XBoardState {
             limits.nodes = nps * limits.movetime / 1000;
         }
 
-        let board = self.board;
+        let board = self.game.board;
         let stop = self.stop.clone();
-        let trail = self.trail.clone();
+        let trail = self.game.trail.clone();
         let overhead = self.overhead;
         let post = self.post;
         let show_wdl = self.show_wdl;
-        let mut history = self.history.take().unwrap_or_else(|| Box::new(History::new()));
+        let mut history = self.game.take_history();
         let search = self.search.clone();
 
         self.search_thread = Some(thread::spawn(move || {
@@ -180,10 +162,8 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         },
         "new" => {
             state.stop_search();
-            if let Some(history) = &mut state.history {
-                history.clear();
-            }
-            state.load_position(Position::from_fen(STARTPOS));
+            state.game.clear_history();
+            state.game.load(Position::from_fen(STARTPOS), state.frc_notation);
             // SAFETY: stop_search joins the search thread, which waits for all
             // helpers to finish before returning.
             unsafe { state.search.tt().clear(state.search.threads()) };
@@ -198,13 +178,13 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
         "go" => {
             state.stop_search();
             state.mode = Mode::Normal;
-            state.engine_side = Some(state.board.stm);
+            state.engine_side = Some(state.game.board.stm);
             state.start_search();
         },
         "playother" => {
             state.stop_search();
             state.mode = Mode::Normal;
-            state.engine_side = Some(!state.board.stm);
+            state.engine_side = Some(!state.game.board.stm);
         },
         "analyze" => {
             state.stop_search();
@@ -221,13 +201,13 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             let stm = if cmd == "white" { Color::White } else { Color::Black };
             state.stop_search();
             state.engine_side = Some(!stm);
-            if state.board.stm != stm {
-                state.board.stm = stm;
-                state.board.hash ^= key_side();
+            if state.game.board.stm != stm {
+                state.game.board.stm = stm;
+                state.game.board.hash ^= key_side();
 
                 // Repetition history must end at the current position's hash.
-                if let Some(last) = state.trail.last_mut() {
-                    *last = state.board.hash;
+                if let Some(last) = state.game.trail.last_mut() {
+                    *last = state.game.board.hash;
                 }
             }
         },
@@ -259,7 +239,8 @@ fn handle_command<'a>(state: &mut XBoardState, cmd: &str, args: &mut impl Iterat
             match Position::try_from_fen(&fen) {
                 Ok(board) => {
                     state.stop_search();
-                    state.load_position(board);
+                    let frc = state.frc_notation || board.has_nonstandard_castling_rook();
+                    state.game.load(board, frc);
                     state.search.tt().begin_search();
                 },
                 Err(e) => eprintln!("Error (invalid fen): {e}"),
@@ -328,19 +309,18 @@ fn print_features() {
 fn cmd_move(state: &mut XBoardState, move_str: &str) -> bool {
     state.stop_search();
 
-    let Ok(mv) = parse_uci_move(&state.board, move_str) else {
+    let Ok(mv) = parse_uci_move(&state.game.board, move_str) else {
         return false;
     };
 
-    state.board.make_move(mv, &mut state.accumulator);
-    state.trail.push(state.board.hash);
+    state.game.make_move(mv);
     state.search.tt().begin_search();
 
-    if state.board.is_threefold_repetition(&state.trail) {
+    if state.game.board.is_threefold_repetition(&state.game.trail) {
         println!("1/2-1/2 {{Draw by repetition}}");
     }
 
-    let engine_turn = state.engine_side == Some(state.board.stm);
+    let engine_turn = state.engine_side == Some(state.game.board.stm);
     if state.mode == Mode::Normal && engine_turn {
         state.start_search();
     }
@@ -375,7 +355,7 @@ fn cmd_level<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a st
 /// opponent's clock. Until `engine_side` is known, assume the side to move is the engine.
 fn cmd_clock<'a>(state: &mut XBoardState, args: &mut impl Iterator<Item = &'a str>, own_clock: bool) {
     let Some(cs) = next_parsed::<u64>(args) else { return };
-    let engine_is_white = state.engine_side.unwrap_or(state.board.stm) == Color::White;
+    let engine_is_white = state.engine_side.unwrap_or(state.game.board.stm) == Color::White;
     if engine_is_white == own_clock {
         state.limits.wtime = cs * 10;
     } else {

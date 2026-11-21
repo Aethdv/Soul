@@ -30,11 +30,11 @@ use crate::{
     },
     numa::NumaTopology,
     protocols::{
+        GameState,
         notation::parse_uci_move,
         smp::{DEFAULT_HASH_MB, MAX_HASH_MB, MAX_THREADS, TableAndPool},
     },
     tools,
-    weave::I16x8,
 };
 
 static LICENSE_NOTICE: &str = concat!(
@@ -63,10 +63,7 @@ struct SearchRequest {
 }
 
 struct UciState {
-    board:         Position,
-    accumulator:   I16x8,
-    trail:         Vec<u64>,
-    history:       Option<Box<History>>,
+    game:          GameState,
     search:        TableAndPool,
     stop:          Arc<AtomicBool>,
     search_tx:     Sender<SearchRequest>,
@@ -80,8 +77,6 @@ struct UciState {
 
 impl UciState {
     fn new() -> Self {
-        let board = Position::from_fen(STARTPOS);
-        let trail = vec![board.hash];
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel::<SearchRequest>();
         let (h_tx, h_rx) = mpsc::channel::<Box<History>>();
@@ -94,10 +89,7 @@ impl UciState {
         });
 
         Self {
-            accumulator: board.psqt_accumulator(),
-            board,
-            trail,
-            history: Some(Box::new(History::new())),
+            game: GameState::new(),
             search: TableAndPool::default(),
             stop,
             search_tx: tx,
@@ -117,17 +109,9 @@ impl UciState {
     }
 
     fn wait_for_search(&mut self) {
-        if self.history.is_none() {
-            self.history = self.history_rx.recv().ok();
+        if self.game.history.is_none() {
+            self.game.history = self.history_rx.recv().ok();
         }
-    }
-
-    fn load_position(&mut self, board: Position) {
-        self.board = board;
-        self.board.frc_notation = self.frc_notation;
-        self.accumulator = self.board.psqt_accumulator();
-        self.trail.clear();
-        self.trail.push(self.board.hash);
     }
 }
 
@@ -176,7 +160,7 @@ pub fn run_commands(lines: &[String]) {
 pub fn run_cli_go(args: &[&str]) {
     let mut state = UciState::new();
     let mut iter = args.iter().copied().peekable();
-    let limits = parse_go_limits(&state.board, &mut iter);
+    let limits = parse_go_limits(&state.game.board, &mut iter);
     run_one_search(&mut state, limits);
 }
 
@@ -202,14 +186,14 @@ fn dispatch_search(state: &mut UciState, limits: Limits) {
     let mut cfg =
         SearchConfig::new_full(limits, Instant::now(), state.stop.clone(), state.overhead, state.display, state.search_params);
     cfg.set_threads(state.search.threads());
-    let history = state.history.take().unwrap_or_else(|| Box::new(History::new()));
+    let history = state.game.take_history();
 
     state
         .search_tx
         .send(SearchRequest {
             cfg: Box::new(cfg),
-            board: state.board,
-            trail: state.trail.clone(),
+            board: state.game.board,
+            trail: state.game.trail.clone(),
             history,
             search: state.search.clone(),
         })
@@ -375,12 +359,10 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "isready" => println!("readyok"),
         "ucinewgame" => {
             state.stop_search();
-            if let Some(history) = &mut state.history {
-                history.clear();
-            }
+            state.game.clear_history();
             // SAFETY: stop_search waits for search() to return with all helpers parked.
             unsafe { state.search.tt().clear(state.search.threads()) };
-            state.load_position(Position::from_fen(STARTPOS));
+            state.game.load(Position::from_fen(STARTPOS), state.frc_notation);
         },
         "position" => cmd_position(state, &mut tokens),
         "go" => cmd_go(state, &mut tokens),
@@ -389,11 +371,11 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "setoption" => cmd_setoption(state, &mut tokens),
         "license" => print_license(),
         "isatty" => cmd_isatty(state, &mut tokens),
-        "d" | "display" => state.board.pretty_print(),
-        "fen" => println!("{}", state.board.to_fen()),
+        "d" | "display" => state.game.board.pretty_print(),
+        "fen" => println!("{}", state.game.board.to_fen()),
 
         "eval" => {
-            let res = detailed_eval(&state.board, &state.accumulator);
+            let res = detailed_eval(&state.game.board, &state.game.accumulator);
             println!("PSQT:     {:>5}", res.material_psqt);
             println!("Mobility: {:>5}", res.mobility);
             println!("Bonus:    {:>5}", res.bonus);
@@ -406,7 +388,7 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         "perft" | "divide" => {
             let depth = parse_default(&mut tokens, 5);
             let bulk = matches!(tokens.peek(), Some(&t) if t.eq_ignore_ascii_case("bulk"));
-            tools::perft::run(&state.board, depth, cmd == "divide", bulk);
+            tools::perft::run(&state.game.board, depth, cmd == "divide", bulk);
         },
         "speedtest" => tools::speedtest::run(0),
         #[cfg(feature = "datagen")]
@@ -425,11 +407,11 @@ fn process_command(state: &mut UciState, input: &str) -> bool {
         },
 
         "flip" => {
-            state.board.stm = state.board.stm.opposite();
-            state.board.hash ^= key_side();
-            println!("Side to move: {:?}", state.board.stm);
+            state.game.board.stm = state.game.board.stm.opposite();
+            state.game.board.hash ^= key_side();
+            println!("Side to move: {:?}", state.game.board.stm);
         },
-        "key" => println!("Zobrist: 0x{:016X}", state.board.hash),
+        "key" => println!("Zobrist: 0x{:016X}", state.game.board.hash),
         "help" => print_help(state.display.use_ansi),
         _ => {},
     }
@@ -467,7 +449,7 @@ where I: Iterator<Item = &'a str> {
         _ => return,
     };
 
-    state.load_position(board);
+    state.game.load(board, state.frc_notation);
     state.search.tt().begin_search();
 
     if tokens.next_if_eq(&"moves").is_some() {
@@ -477,11 +459,8 @@ where I: Iterator<Item = &'a str> {
 
 fn process_moves<'a>(state: &mut UciState, moves: impl Iterator<Item = &'a str>) {
     for move_str in moves {
-        match parse_uci_move(&state.board, move_str) {
-            Ok(mv) => {
-                state.board.make_move(mv, &mut state.accumulator);
-                state.trail.push(state.board.hash);
-            },
+        match parse_uci_move(&state.game.board, move_str) {
+            Ok(mv) => state.game.make_move(mv),
             Err(_) => {
                 println!("info string warning: illegal move {move_str}");
                 break;
@@ -493,7 +472,7 @@ fn process_moves<'a>(state: &mut UciState, moves: impl Iterator<Item = &'a str>)
 fn cmd_go<'a, I>(state: &mut UciState, tokens: &mut Peekable<I>)
 where I: Iterator<Item = &'a str> {
     state.stop_search();
-    let mut limits = parse_go_limits(&state.board, tokens);
+    let mut limits = parse_go_limits(&state.game.board, tokens);
 
     if state.soft_nodes && limits.nodes > 0 {
         limits.softnodes = mem::take(&mut limits.nodes);
