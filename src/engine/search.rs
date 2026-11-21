@@ -1165,7 +1165,7 @@ impl Worker<'_> {
                 // ── Late Move Pruning (~14 Elo)
                 // At shallow depth, later quiet moves are less likely to be the best.
                 if !in_check
-                    && mv.is_quiet()
+                    && !mv.is_tactical()
                     && !N::PV
                     && depth <= sp.lmp_depth
                     && res.move_count as i32 >= sp.lmp_base + lmp_scale * depth * depth / 100
