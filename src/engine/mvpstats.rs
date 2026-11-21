@@ -10,7 +10,7 @@ use crate::{
     core::util::{fmt_count, pct},
 };
 
-const CLASS_NAMES: [&str; 4] = ["hash", "capture", "killer", "quiet"];
+const CLASS_NAMES: [&str; 5] = ["hash", "capture", "promo", "killer", "quiet"];
 
 const QUIET_BUCKETS: usize = 12;
 const CUTOFF_BUCKETS: usize = 8;
@@ -46,8 +46,9 @@ static QS_MOVE_NODES: AtomicU64 = AtomicU64::new(0);
 pub(super) enum CutoffClass {
     Hash = 0,
     Capture = 1,
-    Killer = 2,
-    Quiet = 3,
+    Promo = 2,
+    Killer = 3,
+    Quiet = 4,
 }
 
 #[inline]

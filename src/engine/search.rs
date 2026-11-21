@@ -1116,7 +1116,7 @@ impl Worker<'_> {
         } else {
             let stm = self.pos.stm;
             let opp = stm.opposite();
-            let threats = self.xb_threats(opp);
+            let threats = self.xb_attacked_squares(opp);
             let ksq = pins.king(stm);
             let pinned = pins.pinned(stm);
 
@@ -1310,6 +1310,8 @@ impl Worker<'_> {
                             CutoffClass::Hash
                         } else if mv.is_capture() {
                             CutoffClass::Capture
+                        } else if mv.is_promotion() {
+                            CutoffClass::Promo
                         } else if mv == self.stack[ply].killers[0] || mv == self.stack[ply].killers[1] {
                             CutoffClass::Killer
                         } else {
@@ -1477,14 +1479,14 @@ impl Worker<'_> {
     fn xb_rows(&self) -> core::marker::PhantomData<&()> { core::marker::PhantomData }
 
     #[inline(always)]
-    fn xb_threats(&self, color: Color) -> Bitboard {
+    fn xb_attacked_squares(&self, color: Color) -> Bitboard {
         #[cfg(not(feature = "nostore"))]
         {
-            self.xorboard.threats(color)
+            self.xorboard.attacked_squares(color)
         }
         #[cfg(feature = "nostore")]
         {
-            self.pos.threats(color)
+            self.pos.attacked_squares(color)
         }
     }
 
