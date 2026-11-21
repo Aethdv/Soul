@@ -120,11 +120,7 @@ impl Move {
     pub(crate) const fn is_promotion(self) -> bool { (self.0 & 0x2000) != 0 }
 
     #[inline(always)]
-    pub(crate) const fn is_quiet(self) -> bool { !self.is_capture() }
-
-    /// Castling is excluded because history keys on `to`, which is the rook square.
-    #[inline(always)]
-    pub(crate) const fn is_history_quiet(self) -> bool { self.is_quiet() && !self.is_castling() }
+    pub(crate) const fn uses_quiet_history(self) -> bool { !self.is_tactical() && !self.is_castling() }
 
     #[inline(always)]
     pub(crate) const fn uses_capture_history(self) -> bool { self.is_capture() && !self.is_promotion() }

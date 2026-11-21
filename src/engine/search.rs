@@ -1143,7 +1143,7 @@ impl Worker<'_> {
 
                 let mut appended_quiet = false;
 
-                if mv.is_history_quiet() && self.stack[ply].quiet_count < MAX_TRACKED_QUIETS {
+                if mv.uses_quiet_history() && self.stack[ply].quiet_count < MAX_TRACKED_QUIETS {
                     let count = self.stack[ply].quiet_count;
                     self.stack[ply].quiet_moves[count] = mv;
                     self.stack[ply].quiet_count += 1;
@@ -1324,7 +1324,7 @@ impl Worker<'_> {
                     // Deeper cutoffs get larger bonuses, capped to limit any one update.
                     let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
 
-                    if mv.is_history_quiet() {
+                    if mv.uses_quiet_history() {
                         let pt = self.pos.expect_piece_at(mv.from());
 
                         self.history
@@ -1616,7 +1616,7 @@ impl Worker<'_> {
 
             // ── Post-LMR Continuation History (~8 Elo)
             // Reward quiets that still cut at full depth; penalize those that fall back below alpha.
-            if mv.is_history_quiet() && (score <= alpha || score >= beta) {
+            if mv.uses_quiet_history() && (score <= alpha || score >= beta) {
                 let stm = self.pos.stm.opposite();
                 let pt = self.stack[ply].moved_pt;
                 let to = self.stack[ply].moved_to;
