@@ -514,7 +514,7 @@ impl<'cfg> Searcher<'cfg> {
                         self.root_moves[..=i].rotate_right(1);
                     }
                     asp_reduction = (asp_reduction + 1).min(sp.asp_reduction_max);
-                    beta = (score + delta).min(INF);
+                    beta = if delta >= 500 { INF } else { (score + delta).min(INF) };
                 } else {
                     break;
                 }
