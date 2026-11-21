@@ -825,8 +825,9 @@ impl Worker<'_> {
             return Ok(self.max_ply_score(searcher.nodes));
         }
 
-        // Grandchildren share this counter, so reset it once for the whole subtree.
+        // Grandchildren share these slots, so reset them once for the whole subtree.
         self.stack[ply + 2].cutoff_count = 0;
+        self.stack[ply + 2].killers = [Move::null(); 2];
 
         // ── Mate Distance Pruning
         // We know how close a mate can be at this ply, so don't search beyond it.
