@@ -1020,7 +1020,7 @@ impl Worker<'_> {
             let ksq = pins.king(stm);
             let pinned = pins.pinned(stm);
 
-            let mut picker = MovePicker::new_qsearch(None, searcher.cfg, pins, false);
+            let mut picker = MovePicker::new_qsearch(tt_probe.mv.filter(|mv| mv.is_capture()), searcher.cfg, pins, false);
 
             self.xb_snapshot(ply);
 
