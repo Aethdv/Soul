@@ -1202,7 +1202,7 @@ impl Worker<'_> {
                 // ── SEE Pruning (~20 Elo)
                 // SEE is reliable for captures, but only a rough guide for quiets,
                 // whose value may lie in threats and follow-ups elsewhere.
-                if !in_check && !N::PV && res.move_count >= 1 {
+                if !in_check && !N::PV && res.move_count >= 1 && depth <= sp.see_prune_depth {
                     let margin =
                         if mv.is_capture() { -sp.see_capture_margin * depth } else { -sp.see_quiet_margin * depth * depth };
 

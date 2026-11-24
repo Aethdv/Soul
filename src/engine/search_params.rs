@@ -190,6 +190,7 @@ search_params! {
         T (see_value_bishop,    431,  250),
         T (see_value_rook,      541,  400),
         T (see_value_queen,    1119,  800),
+        T (see_prune_depth,      10,    4,   16),
         T (see_capture_margin,   50,    1),
         T (see_quiet_margin,     37,    1),
 
