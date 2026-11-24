@@ -762,26 +762,45 @@ impl Worker<'_> {
 
     #[cfg(feature = "nocorr")]
     #[inline]
-    fn corrected_eval(&self, raw_eval: i32) -> i32 { raw_eval.clamp(-(MATE_BOUND - 1), MATE_BOUND - 1) }
+    fn corrected_eval(&self, raw_eval: i32, _ply: usize) -> i32 { raw_eval.clamp(-(MATE_BOUND - 1), MATE_BOUND - 1) }
 
     #[cfg(not(feature = "nocorr"))]
     #[inline]
-    fn corrected_eval(&self, raw_eval: i32) -> i32 {
-        let correction = self
-            .history
-            .correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key)
-            / CORRECTION_SCALE;
+    fn cont_corr_key(&self, ply: usize) -> Option<u64> {
+        if ply < 2 {
+            return None;
+        }
+        let c1 = &self.stack[ply - 1];
+        let c2 = &self.stack[ply - 2];
+        if c1.moved_pt == PieceType::None || c2.moved_pt == PieceType::None {
+            return None;
+        }
+        let packed =
+            (c1.moved_pt as u64) | (u64::from(c1.moved_to.0) << 3) | ((c2.moved_pt as u64) << 9) | (u64::from(c2.moved_to.0) << 12);
+        Some(packed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 50)
+    }
+
+    #[cfg(not(feature = "nocorr"))]
+    #[inline]
+    fn corrected_eval(&self, raw_eval: i32, ply: usize) -> i32 {
+        let correction = self.history.correction(
+            self.pos.stm,
+            self.pos.pawn_key,
+            self.pos.minor_key,
+            self.pos.major_key,
+            self.cont_corr_key(ply),
+        ) / CORRECTION_SCALE;
 
         (raw_eval + correction).clamp(-(MATE_BOUND - 1), MATE_BOUND - 1)
     }
 
     /// At MAX_PLY, checked positions score as draws because there is no room to search an evasion.
-    fn max_ply_score(&mut self, nodes: u64) -> i32 {
+    fn max_ply_score(&mut self, nodes: u64, ply: usize) -> i32 {
         if self.xb_checkers().is_not_empty() {
             return draw_score(nodes);
         }
         let raw_eval = self.evaluate();
-        self.corrected_eval(raw_eval)
+        self.corrected_eval(raw_eval, ply)
     }
 
     /// We do negamax instead of minimax because the zero-sum symmetry folds both
@@ -821,7 +840,7 @@ impl Worker<'_> {
         }
 
         if ply >= MAX_PLY {
-            return Ok(self.max_ply_score(searcher.nodes));
+            return Ok(self.max_ply_score(searcher.nodes, ply));
         }
 
         // Grandchildren share these slots, so reset them once for the whole subtree.
@@ -888,7 +907,7 @@ impl Worker<'_> {
         // ── Correction History
         // The same pawn or piece structure can make static eval consistently too high or low.
         // Correction history learns that bias from the gap between static eval and search score.
-        let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval) };
+        let static_eval = if in_check { tt::SCORE_NONE } else { self.corrected_eval(raw_static_eval, ply) };
 
         // Positions in check have no static eval, but we still need the previous
         // one to judge whether that side's next position is improving.
@@ -1408,8 +1427,12 @@ impl Worker<'_> {
                 || (bound == tt::Bound::Upper && res.best_eval >= raw_static_eval))
         {
             let diff = res.best_eval - raw_static_eval;
+            #[cfg(not(feature = "nocorr"))]
+            let cont_key = self.cont_corr_key(ply);
+            #[cfg(feature = "nocorr")]
+            let cont_key = None;
             self.history
-                .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, diff, depth);
+                .update_correction(self.pos.stm, self.pos.pawn_key, self.pos.minor_key, self.pos.major_key, cont_key, diff, depth);
         }
         Ok(res.best_eval)
     }
@@ -1671,7 +1694,7 @@ impl Worker<'_> {
         }
 
         if ply >= MAX_PLY {
-            return Ok(self.max_ply_score(searcher.nodes));
+            return Ok(self.max_ply_score(searcher.nodes, ply));
         }
 
         let alpha_orig = alpha;
@@ -1703,7 +1726,7 @@ impl Worker<'_> {
             qs_tt.eval
         } else {
             let phase = extract_phase(&self.accumulator);
-            let lazy = self.corrected_eval(evaluate_psqt(&self.pos, &self.accumulator, phase));
+            let lazy = self.corrected_eval(evaluate_psqt(&self.pos, &self.accumulator, phase), ply);
             let lazy_floor = lazy - lazy_eval_margin(&self.pos, phase, sp); // ~1 Elo
             if lazy_floor >= beta {
                 #[cfg(feature = "mvpstats")]
@@ -1716,7 +1739,7 @@ impl Worker<'_> {
         let mut best_eval = if in_check {
             -INF
         } else {
-            let eval = self.corrected_eval(raw_eval);
+            let eval = self.corrected_eval(raw_eval, ply);
             let stand_pat = if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
             if stand_pat >= beta {
                 #[cfg(feature = "mvpstats")]

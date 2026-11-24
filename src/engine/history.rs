@@ -27,6 +27,8 @@ pub(crate) struct HistoryParams {
     pub(crate) minor_corr_weight: i32,
     #[cfg(not(feature = "nocorr"))]
     pub(crate) major_corr_weight: i32,
+    #[cfg(not(feature = "nocorr"))]
+    pub(crate) cont_corr_weight:  i32,
 }
 
 #[derive(Clone)]
@@ -44,6 +46,8 @@ pub(crate) struct History {
     minor_correction:  CorrectionHistory,
     /// Major placement (rooks + queens, both colors), keyed on `major_key`.
     major_correction:  CorrectionHistory,
+    /// Move-pair continuation correction, keyed on `(cont1, cont2)`.
+    cont_correction:   CorrectionHistory,
     /// `[side][attacker][to][victim]` (~8 Elo).
     capt:              CaptureHistory,
     pub(crate) params: HistoryParams,
@@ -85,6 +89,8 @@ impl From<&SearchParams> for HistoryParams {
             minor_corr_weight: sp.minor_corr_weight,
             #[cfg(not(feature = "nocorr"))]
             major_corr_weight: sp.major_corr_weight,
+            #[cfg(not(feature = "nocorr"))]
+            cont_corr_weight: sp.cont_corr_weight,
         }
     }
 }
@@ -193,6 +199,7 @@ impl History {
             pawn_correction:  CorrectionHistory::new(),
             minor_correction: CorrectionHistory::new(),
             major_correction: CorrectionHistory::new(),
+            cont_correction:  CorrectionHistory::new(),
             capt:             CaptureHistory::new(),
             params:           HistoryParams::default(),
         }
@@ -206,6 +213,7 @@ impl History {
         self.pawn_correction.clear();
         self.minor_correction.clear();
         self.major_correction.clear();
+        self.cont_correction.clear();
         self.capt.clear();
     }
 
@@ -280,14 +288,15 @@ impl History {
         *entry = (e + bonus - e * bonus.abs() / cap).clamp(-cap, cap) as i16;
     }
 
-    /// In fixed-point centipawns. Pawn correction counts in full; minor and major are weighted
-    /// estimates of the same placement error, so average rather than sum them.
+    /// In fixed-point centipawns. Pawn correction counts in full; minor and major average
+    /// the placement error; continuation adds on top without diluting placement.
     #[cfg(not(feature = "nocorr"))]
     #[inline(always)]
-    pub(super) fn correction(&self, stm: Color, pawn_key: u64, minor_key: u64, major_key: u64) -> i32 {
+    pub(super) fn correction(&self, stm: Color, pawn_key: u64, minor_key: u64, major_key: u64, cont_key: Option<u64>) -> i32 {
         let pawn = self.pawn_correction.get(stm, pawn_key);
         let minor = self.minor_correction.get(stm, minor_key);
         let major = self.major_correction.get(stm, major_key);
+        let cont = cont_key.map_or(0, |k| self.cont_correction.get(stm, k));
 
         #[cfg(feature = "corrstats")]
         {
@@ -295,18 +304,33 @@ impl History {
             record_read(Table::Pawn, pawn);
             record_read(Table::Minor, minor);
             record_read(Table::Major, major);
+            if cont_key.is_some() {
+                record_read(Table::Cont, cont);
+            }
         }
 
         let placement = (minor * self.params.minor_corr_weight + major * self.params.major_corr_weight)
             / (self.params.minor_corr_weight + self.params.major_corr_weight);
-        pawn + placement
+        pawn + placement + cont * self.params.cont_corr_weight / 256
     }
 
     #[inline(always)]
-    pub(super) fn update_correction(&mut self, stm: Color, pawn_key: u64, minor_key: u64, major_key: u64, diff: i32, depth: i32) {
+    pub(super) fn update_correction(
+        &mut self,
+        stm: Color,
+        pawn_key: u64,
+        minor_key: u64,
+        major_key: u64,
+        cont_key: Option<u64>,
+        diff: i32,
+        depth: i32,
+    ) {
         self.pawn_correction.update(stm, pawn_key, diff, depth, &self.params);
         self.minor_correction.update(stm, minor_key, diff, depth, &self.params);
         self.major_correction.update(stm, major_key, diff, depth, &self.params);
+        if let Some(k) = cont_key {
+            self.cont_correction.update(stm, k, diff, depth, &self.params);
+        }
 
         #[cfg(feature = "corrstats")]
         {
@@ -314,6 +338,9 @@ impl History {
             record_update(Table::Pawn);
             record_update(Table::Minor);
             record_update(Table::Major);
+            if cont_key.is_some() {
+                record_update(Table::Cont);
+            }
         }
     }
 

@@ -13,7 +13,7 @@ use crate::{
     engine::{history::CORRECTION_SCALE, search_params::SearchParams},
 };
 
-const NAMES: [&str; 3] = ["pawn", "minor", "major"];
+const NAMES: [&str; 4] = ["pawn", "minor", "major", "cont"];
 
 #[rustfmt::skip]
 const COLS: [(&str, usize, bool); 8] = [
@@ -32,6 +32,7 @@ pub(super) enum Table {
     Pawn = 0,
     Minor = 1,
     Major = 2,
+    Cont = 3,
 }
 
 struct Counters {
@@ -74,7 +75,12 @@ pub(super) fn record_update(table: Table) { STATS[table as usize].updates.fetch_
 pub(crate) fn report() {
     let sp = SearchParams::default();
     let placement_weight = (sp.minor_corr_weight + sp.major_corr_weight).max(1);
-    let table_weights = [None, Some(sp.minor_corr_weight), Some(sp.major_corr_weight)];
+    let table_weights = [
+        (None, 1),
+        (Some(sp.minor_corr_weight), placement_weight),
+        (Some(sp.major_corr_weight), placement_weight),
+        (Some(sp.cont_corr_weight), 256),
+    ];
     let ansi = io::stdout().is_terminal();
     let gold = if ansi { GOLD_PEN } else { "" };
     let (bold, reset) = if ansi { (BOLD, RESET) } else { ("", "") };
@@ -83,7 +89,7 @@ pub(crate) fn report() {
     let header: Vec<String> = COLS.iter().enumerate().map(|(i, &(label, ..))| cell(label, i, None, false)).collect();
     println!("  {gold}{bold}{}{reset}", header.join(" "));
 
-    for ((name, counters), weight) in NAMES.iter().zip(&STATS).zip(table_weights) {
+    for ((name, counters), (weight, denom)) in NAMES.iter().zip(&STATS).zip(table_weights) {
         let reads = counters.reads.load(Relaxed);
         let hits = counters.hits.load(Relaxed);
         let updates = counters.updates.load(Relaxed);
@@ -94,7 +100,7 @@ pub(crate) fn report() {
         let saturation_pct = pct(saturated_hits, hits);
         let mean_cp = ratio(abs_sum as f64, hits as f64) / CORRECTION_SCALE as f64;
         let (effective_cp, wt_str) = match weight {
-            Some(w) => (mean_cp * f64::from(w) / f64::from(placement_weight), w.to_string()),
+            Some(w) => (mean_cp * f64::from(w) / f64::from(denom), w.to_string()),
             None => (mean_cp, "-".into()),
         };
         let hit_rgb = color::advantage((hit_pct / 35.0 - 1.0).clamp(-1.0, 1.0));
