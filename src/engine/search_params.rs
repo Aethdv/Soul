@@ -204,13 +204,14 @@ search_params! {
         T (asp_narrow,         50,   0,  100),
         T (asp_reduction_max,   3,   0,    5),
 
-        //               default   min   max
-        T (qs_recapture_ply,   4,    2),
-        T (qs_see_margin,      4, -100,  100),
-        NT(qs_lazy_margin,   160,   80,  300),
-        NT(qs_lazy_divisor,   16,    1,   64),
-        T (qs_lazy_blend,     50,    0,  100),
-        T (qs_standpat_blend, 50,    0,  100),
+        //                default    min   max
+        T (qs_recapture_ply,    4,     2),
+        T (qs_see_margin,       4,  -100,  100),
+        T (qs_futility_margin, 200,   50,  400),
+        NT(qs_lazy_margin,     160,   80,  300),
+        NT(qs_lazy_divisor,     16,    1,   64),
+        T (qs_lazy_blend,       50,    0,  100),
+        T (qs_standpat_blend,   50,    0,  100),
 
         //           default  min
         T (delta_margin, 279,  50),

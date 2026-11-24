@@ -1713,8 +1713,8 @@ impl Worker<'_> {
             self.evaluate()
         };
 
-        let mut best_eval = if in_check {
-            -INF
+        let (mut best_eval, stand_pat) = if in_check {
+            (-INF, -INF)
         } else {
             let eval = self.corrected_eval(raw_eval);
             let stand_pat = if is_mate(qs_tt.score) { eval } else { tt::clamp_to_bound(qs_tt.bound, qs_tt.score, eval) };
@@ -1736,7 +1736,7 @@ impl Worker<'_> {
             if stand_pat + best_capturable + sp.delta_margin < alpha {
                 return Ok(alpha);
             }
-            stand_pat
+            (stand_pat, stand_pat)
         };
 
         let mut moves_made = 0;
@@ -1768,6 +1768,15 @@ impl Worker<'_> {
                 && mv.to() != prev
             {
                 continue;
+            }
+
+            if !in_check && !mv.is_promotion() {
+                let victim = searcher.cfg.see_values[self.pos.captured_piece(mv) as usize];
+                let futility = stand_pat + victim + sp.qs_futility_margin;
+                if futility <= alpha {
+                    best_eval = best_eval.max(futility);
+                    continue;
+                }
             }
 
             // ── QSearch SEE Pruning (~65 Elo)
