@@ -1268,18 +1268,12 @@ impl Worker<'_> {
                     let sing_beta = (tt_probe.score - depth * sp.singext_margin).max(-MATE_BOUND);
                     let sing_depth = (depth - 1) / sp.singext_depth_div;
 
-                    // Verification runs at this ply and overwrites the move lists
-                    // this node still needs for its history update.
+                    // Verification runs at this ply and overwrites `stack[ply]`.
                     let saved = self.stack[ply];
 
                     self.stack[ply].excluded = mv;
                     let sing_score = self.negamax::<NonPvNode>(searcher, sing_depth, sing_beta - 1, sing_beta, ply, ply, cut_node);
-                    self.stack[ply].excluded = Move::null();
-
-                    self.stack[ply].quiet_moves = saved.quiet_moves;
-                    self.stack[ply].quiet_count = saved.quiet_count;
-                    self.stack[ply].capture_moves = saved.capture_moves;
-                    self.stack[ply].capture_count = saved.capture_count;
+                    self.stack[ply] = saved;
 
                     let sing_score = sing_score?;
                     if sing_score < sing_beta {
