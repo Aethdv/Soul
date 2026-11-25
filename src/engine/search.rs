@@ -1155,14 +1155,12 @@ impl Worker<'_> {
 
                 // ── Futility Pruning (~10 Elo)
                 // At shallow depth, skip quiet moves whose eval is too low to raise alpha.
-                if !in_check
-                    && !mv.is_tactical()
-                    && !N::PV
-                    && res.move_count >= 1
-                    && depth <= sp.fp_depth
-                    && static_eval + sp.fp_margin * depth <= res.alpha
-                {
-                    continue;
+                if !in_check && !mv.is_tactical() && !N::PV && res.move_count >= 1 && depth <= sp.fp_depth {
+                    let futility_value = static_eval + sp.fp_margin * depth;
+                    if futility_value <= res.alpha {
+                        res.best_eval = res.best_eval.max(futility_value);
+                        continue;
+                    }
                 }
 
                 // ── Late Move Pruning (~14 Elo)
