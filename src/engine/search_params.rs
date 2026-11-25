@@ -285,6 +285,7 @@ search_params! {
 
         //                  default   min   max
         T (capt_hist_divisor,    39,    4,   64),
+        T (hist_bonus_lin,       32,    0,  128),
         T (hist_bonus_mult,      12,    1,   24),
         T (hist_bonus_cap,     2376,  400, 3200),
 

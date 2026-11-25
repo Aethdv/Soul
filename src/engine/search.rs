@@ -738,6 +738,11 @@ fn boxed_array<T: Clone, const N: usize>(value: T) -> Box<[T; N]> {
 
 fn lerp(from: i32, to: i32, pct: i32) -> i32 { (from * (100 - pct) + to * pct) / 100 }
 
+#[inline(always)]
+fn history_bonus(sp: &SearchParams, depth: i32) -> i32 {
+    (depth.pow(2) * sp.hist_bonus_mult + depth * sp.hist_bonus_lin).min(sp.hist_bonus_cap)
+}
+
 /// Continuation-history contexts from 1, 2, and 4 plies back.
 fn cont_contexts(stack: &[Stack], ply: usize) -> (ContContext, ContContext, ContContext) {
     let at = |back: usize| {
@@ -1319,7 +1324,7 @@ impl Worker<'_> {
                     // ── History Gravity Heuristic (~95 Elo)
                     // Reward the cutoff move and penalize earlier quiets that failed.
                     // Deeper cutoffs get larger bonuses, capped to limit any one update.
-                    let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
+                    let bonus = history_bonus(sp, depth);
 
                     if mv.uses_quiet_history() {
                         let pt = self.pos.expect_piece_at(mv.from());
@@ -1618,7 +1623,7 @@ impl Worker<'_> {
                 let pt = self.stack[ply].moved_pt;
                 let to = self.stack[ply].moved_to;
                 let (cont1, cont2, cont4) = cont_contexts(&self.stack[..], ply);
-                let bonus = (depth.pow(2) * sp.hist_bonus_mult).min(sp.hist_bonus_cap);
+                let bonus = history_bonus(sp, depth);
                 let signed = if score <= alpha { -bonus } else { bonus };
 
                 self.history.update_conthist(stm, pt, to, cont1, cont2, cont4, signed);
