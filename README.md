@@ -1,15 +1,16 @@
 # <img src="assets/tetosing.png" alt="TetoSing" width="32" height="32" /> Soul
 
-Soul is a contemporary, Hand-Crafted Evaluation (HCE) alpha-beta chess engine written in Rust.
-First chess engine with [XorBoard](<https://aethdv.com/posts/xorboard/>).
-Supports the UCI and XBoard/CECP protocols, plus full Chess960 (Fischer Random).
+Soul is a contemporary alpha-beta chess engine written in Rust with a hand-crafted evaluation (HCE),
+and the first engine built on [XorBoard](<https://aethdv.com/posts/xorboard/>).
+Supports both the UCI and XBoard/CECP protocols, including full Chess960 (Fischer Random).
 
-Rather than relying on black-box Neural Networks, Soul pushes traditional algorithmic evaluation to its
-absolute limit with SIMD, zero-cost abstractions, and a custom tuning framework built from scratch.
+Instead of relying on NNUE, Soul pushes classical evaluation as far as it can go using SIMD accumulators
+and a custom tuning framework built from scratch.
 
 ## Rating
 
-Official ratings from [COPE Chess](https://cope-chess.live/engines/soul). Ranks shift over time and reflect the lists at the time of writing.
+Official ratings from [COPE Chess](https://cope-chess.live/engines/soul).\
+Ranks shift over time and reflect the lists at the time of writing.\
 Self-estimated ratings are calibrated via head-to-head matches against Stash.
 
 | Version | Self-est. |     HCE    |   Rapid    |   Bullet   |    DFRC    |
@@ -42,10 +43,10 @@ make avx2
 
 ## 🎮 Configuration (UCI / XBoard Options)
 
-Soul exposes the following options via both protocols:
+Soul supports the following UCI options (with equivalents exposed under XBoard where applicable):
 
 |       Option       | Default |                                   Description                                     |
-|--------------------|---------|-----------------------------------------------------------------------------------|
+| :--- | :---: | :--- |
 | `Hash`             | 16      | Transposition table size in MB                                                    |
 | `Threads`          | 1       | Number of search threads                                                          |
 | `Overhead`         | 10      | Move-time overhead buffer in ms                                                   |
@@ -74,7 +75,9 @@ TL;DR:
 - ✗ No warranty
 - ✗ No liability
 
-## <img src="assets/tetoheart.png" alt="TetoHeart" width="32" height="32" /> In no particular order, Special Thanks
+## <img src="assets/tetoheart.png" alt="TetoHeart" width="32" height="32" /> Special Thanks
+
+In no particular order.
 
 <img src="assets/gemheartgreen.gif" alt="GemHeartGreen" width="16" height="16" /> [Lofty](https://github.com/yukarichess): the author of [Yukari](https://github.com/yukarichess/Yukari), for being a patient and understanding friend. Also helped me understand XBoard.\
 <img src="assets/gemheartpink.gif" alt="GemHeartPink" width="16" height="16" /> [Lily](https://github.com/87flowers): the author of [Rose](https://github.com/87flowers/Rose) and co-author of [Clockwork](https://github.com/official-clockwork/Clockwork), for always getting me. Check her [ByteBoard Attack Tables](<https://87flowers.com/byteboard-attack-tables-1/>) blog!\
