@@ -161,6 +161,7 @@ struct Stack {
     cutoff_count:  i32,
     /// TT move excluded during singular verification.
     excluded:      Move,
+    follow_pv:     bool,
 }
 
 trait NodeType {
@@ -364,6 +365,7 @@ impl Default for Stack {
             is_null:       false,
             cutoff_count:  0,
             excluded:      Move::null(),
+            follow_pv:     false,
         }
     }
 }
@@ -824,6 +826,10 @@ impl Worker<'_> {
             return Ok(self.max_ply_score(searcher.nodes));
         }
 
+        if N::ROOT {
+            self.stack[0].follow_pv = true;
+        }
+
         // Grandchildren share these slots, so reset them once for the whole subtree.
         self.stack[ply + 2].cutoff_count = 0;
         self.stack[ply + 2].killers = [Move::null(); 2];
@@ -964,6 +970,7 @@ impl Worker<'_> {
 
             self.stack[ply].moved_pt = PieceType::None;
             self.stack[ply + 1].is_null = true;
+            self.stack[ply + 1].follow_pv = false;
 
             let undo = self.pos.make_null_move();
             searcher.zobrist_trail.push(self.pos.hash);
@@ -998,7 +1005,7 @@ impl Worker<'_> {
         // ── Internal Iterative Reduction (~14 Elo)
         // Without a TT move to guide ordering, search a little shallower
         // to find one for later visits.
-        if !N::ROOT && excluded.is_null() && depth >= sp.iir_depth && tt_probe.mv.is_none() {
+        if !N::ROOT && excluded.is_null() && !self.stack[ply].follow_pv && depth >= sp.iir_depth && tt_probe.mv.is_none() {
             depth -= sp.iir_reduction;
         }
 
@@ -1035,6 +1042,7 @@ impl Worker<'_> {
 
                 self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
                 self.stack[ply].moved_to = mv.to();
+                self.stack[ply + 1].follow_pv = false;
                 let undo = self.push_move(&mut searcher.zobrist_trail, mv);
                 searcher.tt.prefetch(self.pos.hash);
 
@@ -1504,6 +1512,8 @@ impl Worker<'_> {
         let sp = &searcher.cfg.search_params;
         self.stack[ply].moved_pt = self.pos.expect_piece_at(mv.from());
         self.stack[ply].moved_to = mv.to();
+        self.stack[ply + 1].follow_pv =
+            self.stack[ply].follow_pv && ply < searcher.prev_pv.len && mv == searcher.prev_pv.moves[ply];
         let undo = self.push_move(&mut searcher.zobrist_trail, mv);
         searcher.tt.prefetch(self.pos.hash);
 
