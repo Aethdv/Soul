@@ -7,6 +7,20 @@ Supports the UCI and XBoard/CECP protocols, plus full Chess960 (Fischer Random).
 Rather than relying on black-box Neural Networks, Soul pushes traditional algorithmic evaluation to its
 absolute limit with SIMD, zero-cost abstractions, and a custom tuning framework built from scratch.
 
+## Rating
+
+Official ratings from [COPE Chess](https://cope-chess.live/engines/soul). Ranks shift over time and reflect the lists at the time of writing.
+Self-estimated ratings are calibrated via head-to-head matches against Stash.
+
+| Version | Self-est. |     HCE    |   Rapid    |   Bullet   |    DFRC    |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| v0.6.0  | ~3141     | 2967 (#18) | 3169 (#81) | 3018 (#99) | 3008 (#54) |
+| v0.5.0  | ~2946     |      -     |      -     |      -     |      -     |
+| v0.4.0  | ~2782     |      -     |      -     |      -     |      -     |
+| v0.3.0  | ~2490     |      -     |      -     |      -     |      -     |
+| v0.2.0  | ~2275     |      -     |      -     |      -     |      -     |
+| v0.1.0  | ~1660     |      -     |      -     |      -     |      -     |
+
 ## <img src="assets/rocket.gif" alt="Rocket" width="20" height="20" /> Quick Start
 
 You will need `rustup` with the nightly toolchain and `make`.\
