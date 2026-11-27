@@ -192,11 +192,12 @@ impl NodeType for NonPvNode {
 }
 
 struct RootMove {
-    mv:    Move,
-    score: i32,
-    pv:    Box<PvLine>,
+    mv:            Move,
+    score:         i32,
+    average_score: i32,
+    pv:            Box<PvLine>,
     /// Cumulative nodes searched under this move across iterations.
-    nodes: u64,
+    nodes:         u64,
 }
 
 struct MoveResult {
@@ -346,7 +347,7 @@ impl Default for PvLine {
 
 impl RootMove {
     #[inline]
-    fn new(mv: Move) -> Self { Self { mv, score: -INF, pv: Box::new(PvLine::new()), nodes: 0 } }
+    fn new(mv: Move) -> Self { Self { mv, score: -INF, average_score: -INF, pv: Box::new(PvLine::new()), nodes: 0 } }
 }
 
 impl Default for Stack {
@@ -475,9 +476,10 @@ impl<'cfg> Searcher<'cfg> {
             // ── Aspiration Windows (~42 Elo)
             // Scores usually don't change much between iterations,
             // so a narrow window around the previous score gets us more cutoffs.
+            let center = if self.root_moves[0].average_score == -INF { self.prev_score } else { self.root_moves[0].average_score };
             let mut delta = sp.asp_initial;
-            let mut alpha = if depth >= sp.asp_depth { (self.prev_score - delta).max(-INF) } else { -INF };
-            let mut beta = if depth >= sp.asp_depth { (self.prev_score + delta).min(INF) } else { INF };
+            let mut alpha = if depth >= sp.asp_depth { (center - delta).max(-INF) } else { -INF };
+            let mut beta = if depth >= sp.asp_depth { (center + delta).min(INF) } else { INF };
             let mut aborted = false;
 
             // ── Aspiration Fail-High Reduction (~10 Elo)
@@ -1543,8 +1545,10 @@ impl Worker<'_> {
             // A fail-low gives only an upper bound, not a useful score for ordering.
             // Stable sorting keeps these moves in their previous iteration's order.
             if res.move_count == 1 || eval > res.alpha {
-                searcher.root_moves[i].score = eval;
-                searcher.root_moves[i].pv.compose(mv, &self.stack[ply + 1].pv);
+                let rm = &mut searcher.root_moves[i];
+                rm.score = eval;
+                rm.average_score = if rm.average_score == -INF { eval } else { (2 * eval + rm.average_score) / 3 };
+                rm.pv.compose(mv, &self.stack[ply + 1].pv);
             } else {
                 searcher.root_moves[i].score = -INF;
             }
