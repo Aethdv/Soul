@@ -506,6 +506,7 @@ impl<'cfg> Searcher<'cfg> {
                     asp_reduction = 0;
                     beta = lerp(beta, alpha, sp.asp_narrow);
                     alpha = (score - delta).max(-INF);
+                    delta = (delta + (delta / sp.asp_fail_low_widen_div).max(1)).min(INF);
                 } else if score >= beta {
                     // Earlier moves scored below beta, so the first match is the cutoff move.
                     // Rotate it to the front; sorting would mix scores from different depths.
@@ -515,11 +516,10 @@ impl<'cfg> Searcher<'cfg> {
                     self.print_bound(depth, score, tui::ScoreBound::Lower);
                     asp_reduction = (asp_reduction + 1).min(sp.asp_reduction_max);
                     beta = (score + delta).min(INF);
+                    delta += (delta / sp.asp_widen_div).max(1);
                 } else {
                     break;
                 }
-
-                delta += (delta / sp.asp_widen_div).max(1);
             }
 
             if aborted {
