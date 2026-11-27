@@ -9,9 +9,9 @@ and a custom tuning framework built from scratch.
 
 ## Rating
 
-Official ratings from [COPE Chess](https://cope-chess.live/engines/soul).\
+Official ratings from [COPE Chess](<https://cope-chess.live/engines/soul>).\
 Ranks shift over time and reflect the lists at the time of writing.\
-Self-estimated ratings are calibrated via head-to-head matches against Stash.
+Self-estimated ratings are calibrated via head-to-head matches against [Stash](<https://gitlab.com/mhouppin/stash-bot>).
 
 | Version | Self-est. |     HCE    |   Rapid    |   Bullet   |    DFRC    |
 | :---: | :---: | :---: | :---: | :---: | :---: |
