@@ -2,7 +2,7 @@
 
 Soul is a contemporary alpha-beta chess engine written in Rust with a hand-crafted evaluation (HCE),
 and the first engine built on [XorBoard](<https://aethdv.com/posts/xorboard/>).
-Supports both the UCI and XBoard/CECP protocols, including full Chess960 (Fischer Random).
+It supports both the UCI and XBoard/CECP protocols, including full Chess960 (Fischer Random).
 
 Instead of relying on NNUE, Soul pushes classical evaluation as far as it can go using SIMD accumulators
 and a custom tuning framework built from scratch.
@@ -24,17 +24,18 @@ Self-estimated ratings are calibrated via head-to-head matches against [Stash](<
 
 ## <img src="assets/rocket.gif" alt="Rocket" width="20" height="20" /> Quick Start
 
-You will need `rustup` with the nightly toolchain and `make`.\
-The nightly version is specified in `rust-toolchain.toml` and will be installed automatically by `rustup` on first build.
+You will need `rustup` and `make`, plus `cargo-pgo` to compile PGO-optimized binary.\
+The nightly version specified in `rust-toolchain.toml` will be installed automatically by `rustup` on first build.
 
-> [!WARNING]  
-> The evaluation accumulator is SIMD throughout, so Soul strictly requires an **AVX2**-capable CPU (x86-64-v3 or newer). Older CPUs are not supported.
+> [!WARNING]
+> The evaluation accumulator is SIMD throughout, so Soul strictly requires an ***AVX2***-capable CPU.\
+> Therefore CPUs without AVX2 are not supported, and we have no plans to support them.
 
 ### Building
 
 ```bash
 make pgo     # Profile-Guided Optimization (recommended)
-make native  # Optimized specifically for your host CPU
+make native  # Compiles for your host CPU's instruction set and extensions
 
 make avx512
 make avx2-bmi2
